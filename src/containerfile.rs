@@ -24,6 +24,20 @@ const NIRI_PACKAGES: &[&str] = &[
     "mesa-dri-drivers",
     "default-fonts-core-sans",
     "default-fonts-core-mono",
+    // hardware enablement — the minimal base targets servers
+    "NetworkManager-wifi",
+    "wpa_supplicant",
+    "brightnessctl",
+    "power-profiles-daemon",
+    // session essentials
+    "wl-clipboard",
+    "xdg-user-dirs",
+    "default-fonts-core-emoji",
+    "mate-polkit",
+    "swaybg",
+    "swayidle",
+    "swaylock",
+    "firewalld",
 ];
 
 const GREETD_CONFIG: &str = r#"[terminal]
@@ -49,13 +63,23 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/bash -c 'xargs -r -a /usr/lib/kuma/flatpaks flatpak install --system --assumeyes --noninteractive --or-update'
+ExecStart=/usr/bin/bash -c 'xargs -r -a /usr/lib/kuma/flatpaks flatpak install --system --assumeyes --noninteractive --or-update flathub'
 
 [Install]
 WantedBy=multi-user.target
 "#;
 
 const FLATHUB_URL: &str = "https://dl.flathub.org/repo/flathub.flatpakrepo";
+
+/// Appended to niri's full default config (copied from the package) so the
+/// stock keybindings survive; niri configs replace defaults entirely.
+const NIRI_EXTRAS: &str = r##"
+
+// Kuma session services
+spawn-at-startup "/usr/libexec/polkit-mate-authentication-agent-1"
+spawn-at-startup "swaybg" "-c" "#16161e"
+spawn-at-startup "swayidle" "-w" "timeout" "900" "swaylock -f -c 16161e" "before-sleep" "swaylock -f -c 16161e"
+"##;
 
 /// Homebrew lives in /home/linuxbrew — machine-local mutable state, so it
 /// can't be image content. First boot installs it; the tarball is the
@@ -109,8 +133,14 @@ pub fn generate(config: &Config) -> String {
         ));
         out.push_str("COPY greetd-config.toml /etc/greetd/config.toml\n");
         out.push_str("COPY kargs-desktop.toml /usr/lib/bootc/kargs.d/10-kuma-desktop.toml\n");
+        out.push_str("COPY niri-extras.kdl /usr/lib/kuma/niri-extras.kdl\n");
+        // The packaged default config is complete (all keybindings); Kuma's
+        // config is that plus our session extras, validated at build time.
         out.push_str(
-            "RUN systemctl set-default graphical.target && systemctl enable greetd.service\n",
+            "RUN mkdir -p /etc/niri \\\n    && cp /usr/share/doc/niri/default-config.kdl /etc/niri/config.kdl \\\n    && cat /usr/lib/kuma/niri-extras.kdl >> /etc/niri/config.kdl \\\n    && niri validate --config /etc/niri/config.kdl\n",
+        );
+        out.push_str(
+            "RUN systemctl set-default graphical.target && systemctl enable greetd.service firewalld.service power-profiles-daemon.service\n",
         );
     }
 
@@ -121,9 +151,12 @@ pub fn generate(config: &Config) -> String {
             out.push_str("\nRUN dnf -y install flatpak && dnf clean all\n");
         }
         // Preconfigured-remote mechanism: flatpak reads /etc/flatpak/remotes.d,
-        // so Flathub (with its GPG key) ships as image content.
+        // so Flathub (with its GPG key) ships as image content. Flathub is
+        // Kuma's only app source — mask the unit that injects Fedora's
+        // registry remote at boot, or non-interactive installs become
+        // ambiguous between the two.
         out.push_str(&format!(
-            "RUN curl --fail -Lo /etc/flatpak/remotes.d/flathub.flatpakrepo {FLATHUB_URL}\n"
+            "RUN curl --fail -Lo /etc/flatpak/remotes.d/flathub.flatpakrepo {FLATHUB_URL} \\\n    && systemctl mask flatpak-add-fedora-repos.service\n"
         ));
     }
     if !config.packages.flatpak.is_empty() {
@@ -180,6 +213,7 @@ pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
     if config.system.desktop == Desktop::Niri {
         std::fs::write(dir.join("greetd-config.toml"), GREETD_CONFIG)?;
         std::fs::write(dir.join("kargs-desktop.toml"), DESKTOP_KARGS)?;
+        std::fs::write(dir.join("niri-extras.kdl"), NIRI_EXTRAS)?;
     }
     if !config.packages.flatpak.is_empty() {
         let mut list = config.packages.flatpak.join("\n");
@@ -241,9 +275,12 @@ mod tests {
         ));
         assert!(out.contains("niri"));
         assert!(out.contains("greetd"));
+        assert!(out.contains("NetworkManager-wifi"));
         assert!(out.contains("COPY greetd-config.toml /etc/greetd/config.toml"));
+        assert!(out.contains("niri validate --config /etc/niri/config.kdl"));
         assert!(out.contains("systemctl set-default graphical.target"));
-        assert!(out.contains("systemctl enable greetd.service"));
+        assert!(out.contains("greetd.service firewalld.service power-profiles-daemon.service"));
+        assert!(out.contains("mask flatpak-add-fedora-repos.service"));
     }
 
     #[test]
@@ -295,7 +332,11 @@ mod tests {
         .unwrap();
         let list = std::fs::read_to_string(dir.path().join("flatpaks")).unwrap();
         assert_eq!(list, "org.mozilla.firefox\norg.gnome.Loupe\n");
-        assert!(dir.path().join("kuma-flatpak-sync.service").exists());
+        let service =
+            std::fs::read_to_string(dir.path().join("kuma-flatpak-sync.service")).unwrap();
+        // remote pinned: multiple remotes offering the same ref would make
+        // non-interactive installs fail
+        assert!(service.contains("--or-update flathub"));
     }
 
     #[test]
