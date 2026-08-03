@@ -88,6 +88,32 @@ flatpak uninstall --system --unused --assumeyes --noninteractive
 
 const FLATHUB_URL: &str = "https://dl.flathub.org/repo/flathub.flatpakrepo";
 
+/// `kuma vm` passes the host's timezone over qemu's fw_cfg channel
+/// (bootc-image-builder silently ignores [customizations.timezone] for
+/// qcow2 builds). This service adopts it at boot; on real hardware the
+/// fw_cfg key doesn't exist and the service is a no-op.
+const VM_TZ_SERVICE: &str = r#"[Unit]
+Description=Adopt the host timezone passed by kuma vm
+Before=systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/kuma-vm-timezone
+
+[Install]
+WantedBy=multi-user.target
+"#;
+
+const VM_TZ_SCRIPT: &str = r#"#!/usr/bin/bash
+set -euo pipefail
+modprobe -q qemu_fw_cfg 2>/dev/null || exit 0
+raw=/sys/firmware/qemu_fw_cfg/by_name/opt/org.kuma.tz/raw
+[ -r "$raw" ] || exit 0
+tz=$(tr -d '\0' < "$raw")
+[ -e "/usr/share/zoneinfo/$tz" ] || exit 0
+ln -sfn "../usr/share/zoneinfo/$tz" /etc/localtime
+"#;
+
 /// Runs before any login (console, greeter, ssh) so the declared account
 /// exists the first time a login prompt appears.
 const USER_SYNC_SERVICE: &str = r#"[Unit]
@@ -326,6 +352,13 @@ pub fn generate(config: &Config) -> String {
         out.push_str(&format!("\nRUN {}\n", services.join(" && ")));
     }
 
+    // Every image can adopt a kuma vm host timezone; no-op on hardware.
+    out.push_str("\nCOPY --chmod=755 kuma-vm-timezone /usr/libexec/kuma-vm-timezone\n");
+    out.push_str(
+        "COPY kuma-vm-timezone.service /usr/lib/systemd/system/kuma-vm-timezone.service\n",
+    );
+    out.push_str("RUN systemctl enable kuma-vm-timezone.service\n");
+
     if let Some(tz) = &config.system.timezone {
         // test -e first so a typo'd zone fails the build instead of
         // silently producing a dangling /etc/localtime symlink.
@@ -386,6 +419,8 @@ fn langpack(locale: &str) -> Option<&str> {
 
 pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
     std::fs::write(dir.join("Containerfile"), generate(config))?;
+    std::fs::write(dir.join("kuma-vm-timezone"), VM_TZ_SCRIPT)?;
+    std::fs::write(dir.join("kuma-vm-timezone.service"), VM_TZ_SERVICE)?;
     if config.system.desktop == Desktop::Niri {
         std::fs::write(dir.join("greetd-config.toml"), GREETD_CONFIG)?;
         std::fs::write(dir.join("kargs-desktop.toml"), DESKTOP_KARGS)?;
@@ -523,6 +558,15 @@ mod tests {
         assert!(DCONF_DARK.contains("color-scheme='prefer-dark'"));
         // a titlebar in a tiling compositor renders light Adwaita chrome
         assert!(ALACRITTY_CONFIG.contains("decorations = \"None\""));
+    }
+
+    #[test]
+    fn vm_timezone_adoption_ships_in_every_image() {
+        let out = generate(&config("schema_version = 1"));
+        assert!(out.contains("RUN systemctl enable kuma-vm-timezone.service"));
+        assert!(VM_TZ_SCRIPT.contains("qemu_fw_cfg/by_name/opt/org.kuma.tz"));
+        // guard against a garbage or hostile fw_cfg value
+        assert!(VM_TZ_SCRIPT.contains("[ -e \"/usr/share/zoneinfo/$tz\" ] || exit 0"));
     }
 
     #[test]

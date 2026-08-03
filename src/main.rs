@@ -330,7 +330,8 @@ fn find_ssh_pubkey() -> Option<String> {
 
 fn boot_disk(disk: &Path) -> Result<()> {
     println!("Booting VM (user: kuma, password: kuma; ssh: `ssh -p 2222 kuma@localhost`)...");
-    run_host(&[
+    let drive = format!("file={},if=virtio", path_str(disk)?);
+    let mut args: Vec<&str> = vec![
         // LIBGL_ALWAYS_SOFTWARE: render virgl on llvmpipe so guest GL work
         // never reaches the host GPU driver — a bad guest submission can
         // otherwise wedge the real GPU and take the host session down.
@@ -345,7 +346,7 @@ fn boot_disk(disk: &Path) -> Result<()> {
         "-m",
         "4096",
         "-drive",
-        &format!("file={},if=virtio", path_str(disk)?),
+        &drive,
         // virtio-vga-gl + gl=on (virgl): niri's GBM allocator needs a real
         // 3D-capable device; plain -vga virtio is display-only and leaves
         // the compositor with no output.
@@ -355,7 +356,14 @@ fn boot_disk(disk: &Path) -> Result<()> {
         "gtk,gl=on",
         "-nic",
         "user,model=virtio-net-pci,hostfwd=tcp::2222-:22",
-    ])
+    ];
+    // Mirror the host timezone into the guest (adopted at boot by
+    // kuma-vm-timezone; bib ignores [customizations.timezone] for qcow2).
+    let fw_cfg = host_timezone().map(|tz| format!("name=opt/org.kuma.tz,string={tz}"));
+    if let Some(fw_cfg) = &fw_cfg {
+        args.extend(["-fw_cfg", fw_cfg]);
+    }
+    run_host(&args)
 }
 
 fn path_str(path: &Path) -> Result<&str> {
