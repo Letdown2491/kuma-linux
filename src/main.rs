@@ -330,11 +330,15 @@ fn vm_apply(tag: &str) -> Result<()> {
     // space holding three copies of the image at once with oci-archive.
     println!("Streaming image into the VM...");
     let ssh_opts = VM_SSH_OPTS.join(" ");
+    // The password must arrive out-of-band (askpass): `echo kuma | sudo -S`
+    // would make the password pipe podman's stdin and starve it of the
+    // image stream coming over ssh.
+    let remote_load = r##"f=$(mktemp); printf "#!/bin/sh\necho kuma\n" > "$f"; chmod 700 "$f"; SUDO_ASKPASS="$f" sudo -A podman load; rc=$?; rm -f "$f"; exit $rc"##;
     run_host(&[
         "sh",
         "-c",
         &format!(
-            "podman save {tag} | ssh -p 2222 {ssh_opts} kuma@localhost 'echo kuma | sudo -S podman load'"
+            "podman save {tag} | ssh -p 2222 {ssh_opts} kuma@localhost '{remote_load}'"
         ),
     ])?;
 
