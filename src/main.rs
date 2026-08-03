@@ -210,6 +210,11 @@ fn build_disk(tag: &str, output: &Path) -> Result<()> {
         "xfs",
         tag,
     ])?;
+
+    // bib ran as root, so its output is root-owned; hand it back to the
+    // user so QEMU (and cleanup) work without privileges.
+    let user = std::env::var("USER").context("USER is not set")?;
+    run_host(&["sudo", "chown", "-R", &format!("{user}:"), path_str(output)?])?;
     Ok(())
 }
 
