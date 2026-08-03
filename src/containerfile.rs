@@ -218,6 +218,22 @@ const XSETTINGSD_CONF: &str = r#"Net/ThemeName "Adwaita-dark"
 Net/IconThemeName "Adwaita"
 Gtk/ApplicationPreferDarkTheme 1
 Gtk/CursorThemeName "Adwaita"
+Xft/DPI 98304
+"#;
+
+/// GTK's base-layer config, read by every GTK app on every backend when
+/// higher-priority sources (XSettings, gsettings) don't reach it. The
+/// value is 96 dpi << 10 above: without a broadcast DPI, X11 clients
+/// compute one from XWayland's bogus virtual-monitor physical size and
+/// render enormous.
+const GTK3_SETTINGS_INI: &str = r#"[Settings]
+gtk-theme-name = Adwaita-dark
+gtk-application-prefer-dark-theme = true
+gtk-icon-theme-name = Adwaita
+"#;
+
+const GTK4_SETTINGS_INI: &str = r#"[Settings]
+gtk-application-prefer-dark-theme = true
 "#;
 
 const XSETTINGS_LAUNCHER: &str = r#"#!/usr/bin/bash
@@ -337,6 +353,8 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY --chmod=755 kuma-clipboard-bridge /usr/libexec/kuma-clipboard-bridge\n");
         out.push_str("COPY --chmod=755 kuma-xsettings /usr/libexec/kuma-xsettings\n");
         out.push_str("COPY xsettingsd.conf /usr/lib/kuma/xsettingsd.conf\n");
+        out.push_str("COPY gtk3-settings.ini /etc/gtk-3.0/settings.ini\n");
+        out.push_str("COPY gtk4-settings.ini /etc/gtk-4.0/settings.ini\n");
         out.push_str("COPY dconf-profile /etc/dconf/profile/user\n");
         out.push_str("COPY dconf-kuma-dark /etc/dconf/db/local.d/10-kuma-dark\n");
         out.push_str("RUN dconf update\n");
@@ -496,6 +514,8 @@ pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
         std::fs::write(dir.join("kuma-clipboard-bridge"), CLIPBOARD_BRIDGE)?;
         std::fs::write(dir.join("kuma-xsettings"), XSETTINGS_LAUNCHER)?;
         std::fs::write(dir.join("xsettingsd.conf"), XSETTINGSD_CONF)?;
+        std::fs::write(dir.join("gtk3-settings.ini"), GTK3_SETTINGS_INI)?;
+        std::fs::write(dir.join("gtk4-settings.ini"), GTK4_SETTINGS_INI)?;
         std::fs::write(dir.join("dconf-profile"), DCONF_PROFILE)?;
         std::fs::write(dir.join("dconf-kuma-dark"), DCONF_DARK)?;
     }
