@@ -57,6 +57,43 @@ WantedBy=multi-user.target
 
 const FLATHUB_URL: &str = "https://dl.flathub.org/repo/flathub.flatpakrepo";
 
+/// Homebrew lives in /home/linuxbrew — machine-local mutable state, so it
+/// can't be image content. First boot installs it; the tarball is the
+/// official "untar anywhere" method. Prefix owned by uid 1000, brew's
+/// single-user model (same choice Bluefin makes).
+const BREW_SETUP_SCRIPT: &str = r#"#!/usr/bin/bash
+set -euo pipefail
+prefix=/home/linuxbrew/.linuxbrew
+mkdir -p "$prefix/Homebrew" "$prefix/bin"
+curl -fsSL https://github.com/Homebrew/brew/tarball/HEAD \
+    | tar -xz --strip-components=1 -C "$prefix/Homebrew"
+ln -sf ../Homebrew/bin/brew "$prefix/bin/brew"
+chown -R 1000:1000 /home/linuxbrew
+"#;
+
+const BREW_SETUP_SERVICE: &str = r#"[Unit]
+Description=Install Homebrew
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=!/home/linuxbrew/.linuxbrew/bin/brew
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/kuma-brew-setup
+
+[Install]
+WantedBy=multi-user.target
+"#;
+
+const BREW_PROFILE_SH: &str = r#"[ -x /home/linuxbrew/.linuxbrew/bin/brew ] \
+    && eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+"#;
+
+const BREW_PROFILE_FISH: &str = r#"if test -x /home/linuxbrew/.linuxbrew/bin/brew
+    /home/linuxbrew/.linuxbrew/bin/brew shellenv | source
+end
+"#;
+
 /// Compile a kuma config into a Containerfile for a bootc image build.
 pub fn generate(config: &Config) -> String {
     let mut out = String::new();
@@ -95,6 +132,18 @@ pub fn generate(config: &Config) -> String {
             "COPY kuma-flatpak-sync.service /usr/lib/systemd/system/kuma-flatpak-sync.service\n",
         );
         out.push_str("RUN systemctl enable kuma-flatpak-sync.service\n");
+    }
+
+    if config.system.brew {
+        // git-core: brew needs git at runtime to update itself
+        out.push_str("\nRUN dnf -y install git-core && dnf clean all\n");
+        out.push_str("COPY --chmod=755 kuma-brew-setup /usr/libexec/kuma-brew-setup\n");
+        out.push_str(
+            "COPY kuma-brew-setup.service /usr/lib/systemd/system/kuma-brew-setup.service\n",
+        );
+        out.push_str("COPY brew-profile.sh /etc/profile.d/kuma-brew.sh\n");
+        out.push_str("COPY brew-profile.fish /etc/fish/conf.d/kuma-brew.fish\n");
+        out.push_str("RUN systemctl enable kuma-brew-setup.service\n");
     }
 
     if !config.packages.rpm.is_empty() {
@@ -137,6 +186,12 @@ pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
         list.push('\n');
         std::fs::write(dir.join("flatpaks"), list)?;
         std::fs::write(dir.join("kuma-flatpak-sync.service"), FLATPAK_SYNC_SERVICE)?;
+    }
+    if config.system.brew {
+        std::fs::write(dir.join("kuma-brew-setup"), BREW_SETUP_SCRIPT)?;
+        std::fs::write(dir.join("kuma-brew-setup.service"), BREW_SETUP_SERVICE)?;
+        std::fs::write(dir.join("brew-profile.sh"), BREW_PROFILE_SH)?;
+        std::fs::write(dir.join("brew-profile.fish"), BREW_PROFILE_FISH)?;
     }
     Ok(())
 }
@@ -241,6 +296,31 @@ mod tests {
         let list = std::fs::read_to_string(dir.path().join("flatpaks")).unwrap();
         assert_eq!(list, "org.mozilla.firefox\norg.gnome.Loupe\n");
         assert!(dir.path().join("kuma-flatpak-sync.service").exists());
+    }
+
+    #[test]
+    fn brew_generates_setup_service_and_shell_profiles() {
+        let out = generate(&config(
+            "schema_version = 1\n[system]\nbrew = true\n",
+        ));
+        assert!(out.contains("git-core"));
+        assert!(out.contains("COPY --chmod=755 kuma-brew-setup /usr/libexec/kuma-brew-setup"));
+        assert!(out.contains("systemctl enable kuma-brew-setup.service"));
+        assert!(out.contains("/etc/profile.d/kuma-brew.sh"));
+        assert!(out.contains("/etc/fish/conf.d/kuma-brew.fish"));
+
+        let dir = tempfile::tempdir().unwrap();
+        write_context(&config("schema_version = 1\n[system]\nbrew = true\n"), dir.path())
+            .unwrap();
+        let script = std::fs::read_to_string(dir.path().join("kuma-brew-setup")).unwrap();
+        assert!(script.contains("/home/linuxbrew/.linuxbrew"));
+        assert!(dir.path().join("kuma-brew-setup.service").exists());
+    }
+
+    #[test]
+    fn no_brew_by_default() {
+        let out = generate(&config("schema_version = 1"));
+        assert!(!out.contains("brew"));
     }
 
     #[test]

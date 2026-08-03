@@ -24,11 +24,15 @@ pub struct System {
     pub base: String,
     #[serde(default)]
     pub desktop: Desktop,
+    /// Homebrew in /home/linuxbrew: imperative CLI tools that survive image
+    /// updates and need no reboot. Installed by a first-boot service.
+    #[serde(default)]
+    pub brew: bool,
 }
 
 impl Default for System {
     fn default() -> Self {
-        Self { base: default_base(), desktop: Desktop::default() }
+        Self { base: default_base(), desktop: Desktop::default(), brew: false }
     }
 }
 
