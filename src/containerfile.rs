@@ -33,6 +33,7 @@ const NIRI_PACKAGES: &[&str] = &[
     "power-profiles-daemon",
     // session essentials
     "wl-clipboard",
+    "spice-vdagent",
     "xdg-user-dirs",
     "default-fonts-core-emoji",
     "mate-polkit",
@@ -163,6 +164,7 @@ const NIRI_EXTRAS: &str = r##"
 
 // Kuma session services
 spawn-at-startup "/usr/libexec/polkit-mate-authentication-agent-1"
+spawn-at-startup "/usr/libexec/kuma-clipboard-bridge"
 spawn-at-startup "waybar"
 spawn-at-startup "swaybg" "-i" "/usr/share/backgrounds/kuma/kuma-wallpaper.png" "-m" "fill"
 spawn-at-startup "swayidle" "-w" "timeout" "900" "swaylock -f -i /usr/share/backgrounds/kuma/kuma-wallpaper.png -s fill" "before-sleep" "swaylock -f -i /usr/share/backgrounds/kuma/kuma-wallpaper.png -s fill"
@@ -188,6 +190,23 @@ const DCONF_PROFILE: &str = "user-db:user\nsystem-db:local\n";
 const DCONF_DARK: &str = r#"[org/gnome/desktop/interface]
 color-scheme='prefer-dark'
 gtk-theme='Adwaita-dark'
+"#;
+
+/// Session half of host<->guest clipboard in `kuma vm`. spice-vdagent's
+/// clipboard side is X11, so under niri it rides the xwayland-satellite
+/// bridge — wait briefly for DISPLAY to appear in the session
+/// environment. No vdagent port (real hardware) means exit quietly.
+const CLIPBOARD_BRIDGE: &str = r#"#!/usr/bin/bash
+set -euo pipefail
+[ -e /dev/virtio-ports/com.redhat.spice.0 ] || exit 0
+for _ in $(seq 60); do
+    [ -n "${DISPLAY:-}" ] && break
+    DISPLAY=$(systemctl --user show-environment 2>/dev/null | sed -n 's/^DISPLAY=//p')
+    [ -n "$DISPLAY" ] && export DISPLAY && break
+    sleep 0.5
+done
+[ -n "${DISPLAY:-}" ] || exit 0
+exec spice-vdagent -x
 "#;
 
 /// Theme files for the curated desktop, drawn from the Kuma wallpaper palette.
@@ -275,6 +294,7 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY fuzzel.ini /etc/skel/.config/fuzzel/fuzzel.ini\n");
         out.push_str("COPY mako.conf /etc/skel/.config/mako/config\n");
         out.push_str("COPY alacritty.toml /etc/skel/.config/alacritty/alacritty.toml\n");
+        out.push_str("COPY --chmod=755 kuma-clipboard-bridge /usr/libexec/kuma-clipboard-bridge\n");
         out.push_str("COPY dconf-profile /etc/dconf/profile/user\n");
         out.push_str("COPY dconf-kuma-dark /etc/dconf/db/local.d/10-kuma-dark\n");
         out.push_str("RUN dconf update\n");
@@ -431,6 +451,7 @@ pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
         std::fs::write(dir.join("fuzzel.ini"), FUZZEL_CONFIG)?;
         std::fs::write(dir.join("mako.conf"), MAKO_CONFIG)?;
         std::fs::write(dir.join("alacritty.toml"), ALACRITTY_CONFIG)?;
+        std::fs::write(dir.join("kuma-clipboard-bridge"), CLIPBOARD_BRIDGE)?;
         std::fs::write(dir.join("dconf-profile"), DCONF_PROFILE)?;
         std::fs::write(dir.join("dconf-kuma-dark"), DCONF_DARK)?;
     }
@@ -606,6 +627,8 @@ mod tests {
         let extras = std::fs::read_to_string(dir.path().join("niri-extras.kdl")).unwrap();
         assert!(extras.contains("/usr/share/backgrounds/kuma/kuma-wallpaper.png"));
         assert!(extras.contains("spawn-at-startup \"waybar\""));
+        assert!(extras.contains("kuma-clipboard-bridge"));
+        assert!(dir.path().join("kuma-clipboard-bridge").exists());
         let greetd = std::fs::read_to_string(dir.path().join("greetd-config.toml")).unwrap();
         assert!(greetd.contains("Welcome to Kuma"));
         assert!(dir.path().join("waybar-config.jsonc").exists());

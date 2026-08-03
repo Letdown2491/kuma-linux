@@ -356,6 +356,15 @@ fn boot_disk(disk: &Path) -> Result<()> {
         "gtk,gl=on",
         "-nic",
         "user,model=virtio-net-pci,hostfwd=tcp::2222-:22",
+        // Host<->guest clipboard: qemu speaks the spice vdagent protocol
+        // itself (no SPICE server needed); the guest's spice-vdagent picks
+        // it up on the virtio-serial port named com.redhat.spice.0.
+        "-device",
+        "virtio-serial-pci",
+        "-chardev",
+        "qemu-vdagent,id=vdagent,name=vdagent,clipboard=on",
+        "-device",
+        "virtserialport,chardev=vdagent,name=com.redhat.spice.0",
     ];
     // Mirror the host timezone into the guest (adopted at boot by
     // kuma-vm-timezone; bib ignores [customizations.timezone] for qcow2).
