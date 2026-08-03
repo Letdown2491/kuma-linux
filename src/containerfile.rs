@@ -41,6 +41,7 @@ const NIRI_PACKAGES: &[&str] = &[
     "gvfs",
     "gvfs-mtp",
     // (nwg-look would fit here for GTK theme tweaks, but it's COPR-only)
+    "wob",
     "wlsunset",
     "cups",
     "system-config-printer",
@@ -187,6 +188,7 @@ environment {
 spawn-at-startup "/usr/libexec/polkit-mate-authentication-agent-1"
 spawn-at-startup "/usr/libexec/kuma-clipboard-bridge"
 spawn-at-startup "/usr/libexec/kuma-xsettings"
+spawn-at-startup "/usr/libexec/kuma-wob"
 spawn-at-startup "blueman-applet"
 // Time-based night light: no location needed, unlike solar mode.
 spawn-at-startup "wlsunset" "-S" "07:00" "-s" "20:00"
@@ -215,6 +217,60 @@ const DCONF_PROFILE: &str = "user-db:user\nsystem-db:local\n";
 const DCONF_DARK: &str = r#"[org/gnome/desktop/interface]
 color-scheme='prefer-dark'
 gtk-theme='Adwaita'
+"#;
+
+/// Volume/brightness OSD: wob draws an overlay bar from levels written
+/// to a FIFO (swayosd would be nicer but is COPR-only). kuma-osd is
+/// bound to the media keys in place of niri's stock wpctl binds — it
+/// makes the same adjustment, then feeds the resulting level to the bar.
+const WOB_INI: &str = r#"[default]
+anchor = bottom
+margin = 48
+height = 28
+width = 360
+border_size = 1
+border_color = 7ee0a8ff
+background_color = 101a28e6
+bar_color = 7ee0a8ff
+"#;
+
+const WOB_LAUNCHER: &str = r#"#!/usr/bin/bash
+set -euo pipefail
+fifo="${XDG_RUNTIME_DIR}/kuma-wob.fifo"
+rm -f "$fifo"; mkfifo "$fifo"
+# tail keeps the fifo open between writes so wob doesn't exit
+exec sh -c "tail -f \"$fifo\" | wob -c /usr/lib/kuma/wob.ini"
+"#;
+
+const OSD_SCRIPT: &str = r#"#!/usr/bin/bash
+set -euo pipefail
+fifo="${XDG_RUNTIME_DIR}/kuma-wob.fifo"
+feed() { [ -p "$fifo" ] && echo "$1" > "$fifo" || true; }
+vol() {
+    v=$(wpctl get-volume @DEFAULT_AUDIO_SINK@)
+    case "$v" in
+        *MUTED*) feed 0 ;;
+        *) feed "$(awk '{print int($2*100)}' <<<"$v")" ;;
+    esac
+}
+case "$1" in
+    volume-up)       wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+; vol ;;
+    volume-down)     wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-; vol ;;
+    mute)            wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle; vol ;;
+    brightness-up)   brightnessctl -q set +5%; feed "$(brightnessctl -m | cut -d, -f4 | tr -d %)" ;;
+    brightness-down) brightnessctl -q set 5%-; feed "$(brightnessctl -m | cut -d, -f4 | tr -d %)" ;;
+esac
+"#;
+
+/// Media-key binds routed through kuma-osd, spliced INTO the stock
+/// `binds {}` section during the merge (niri rejects a second binds
+/// node) while the stock wpctl/brightnessctl lines are sed-stripped.
+const NIRI_MEDIA_BINDS: &str = r#"    XF86AudioRaiseVolume allow-when-locked=true { spawn "/usr/libexec/kuma-osd" "volume-up"; }
+    XF86AudioLowerVolume allow-when-locked=true { spawn "/usr/libexec/kuma-osd" "volume-down"; }
+    XF86AudioMute allow-when-locked=true { spawn "/usr/libexec/kuma-osd" "mute"; }
+    XF86AudioMicMute allow-when-locked=true { spawn "wpctl" "set-mute" "@DEFAULT_AUDIO_SOURCE@" "toggle"; }
+    XF86MonBrightnessUp allow-when-locked=true { spawn "/usr/libexec/kuma-osd" "brightness-up"; }
+    XF86MonBrightnessDown allow-when-locked=true { spawn "/usr/libexec/kuma-osd" "brightness-down"; }
 "#;
 
 /// GTK theme settings travel two roads: Wayland-native apps read
@@ -360,6 +416,10 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY --chmod=755 kuma-clipboard-bridge /usr/libexec/kuma-clipboard-bridge\n");
         out.push_str("COPY --chmod=755 kuma-xsettings /usr/libexec/kuma-xsettings\n");
         out.push_str("COPY xsettingsd.conf /usr/lib/kuma/xsettingsd.conf\n");
+        out.push_str("COPY niri-binds.kdl /usr/lib/kuma/niri-binds.kdl\n");
+        out.push_str("COPY --chmod=755 kuma-wob /usr/libexec/kuma-wob\n");
+        out.push_str("COPY --chmod=755 kuma-osd /usr/libexec/kuma-osd\n");
+        out.push_str("COPY wob.ini /usr/lib/kuma/wob.ini\n");
         out.push_str("COPY gtk3-settings.ini /etc/gtk-3.0/settings.ini\n");
         out.push_str("COPY gtk4-settings.ini /etc/gtk-4.0/settings.ini\n");
         out.push_str("COPY dconf-profile /etc/dconf/profile/user\n");
@@ -370,7 +430,7 @@ pub fn generate(config: &Config) -> String {
         // Fedora's default config already spawns waybar — drop that line (and
         // its comment) or the bar starts twice; Kuma's extras spawn it.
         out.push_str(
-            "RUN mkdir -p /etc/niri \\\n    && sed -e '/starts waybar/d' -e '/^spawn-at-startup \"waybar\"$/d' /usr/share/doc/niri/default-config.kdl > /etc/niri/config.kdl \\\n    && cat /usr/lib/kuma/niri-extras.kdl >> /etc/niri/config.kdl \\\n    && niri validate --config /etc/niri/config.kdl\n",
+            "RUN mkdir -p /etc/niri \\\n    && sed -e '/starts waybar/d' -e '/^spawn-at-startup \"waybar\"$/d' -e '/XF86Audio/d' -e '/XF86MonBrightness/d' -e '/^binds {/r /usr/lib/kuma/niri-binds.kdl' /usr/share/doc/niri/default-config.kdl > /etc/niri/config.kdl \\\n    && cat /usr/lib/kuma/niri-extras.kdl >> /etc/niri/config.kdl \\\n    && niri validate --config /etc/niri/config.kdl\n",
         );
         out.push_str(
             "RUN systemctl set-default graphical.target && systemctl enable greetd.service firewalld.service power-profiles-daemon.service bluetooth.service cups.service\n",
@@ -521,6 +581,10 @@ pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
         std::fs::write(dir.join("kuma-clipboard-bridge"), CLIPBOARD_BRIDGE)?;
         std::fs::write(dir.join("kuma-xsettings"), XSETTINGS_LAUNCHER)?;
         std::fs::write(dir.join("xsettingsd.conf"), XSETTINGSD_CONF)?;
+        std::fs::write(dir.join("niri-binds.kdl"), NIRI_MEDIA_BINDS)?;
+        std::fs::write(dir.join("kuma-wob"), WOB_LAUNCHER)?;
+        std::fs::write(dir.join("kuma-osd"), OSD_SCRIPT)?;
+        std::fs::write(dir.join("wob.ini"), WOB_INI)?;
         std::fs::write(dir.join("gtk3-settings.ini"), GTK3_SETTINGS_INI)?;
         std::fs::write(dir.join("gtk4-settings.ini"), GTK4_SETTINGS_INI)?;
         std::fs::write(dir.join("dconf-profile"), DCONF_PROFILE)?;
