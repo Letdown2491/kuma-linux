@@ -46,6 +46,7 @@ const NIRI_PACKAGES: &[&str] = &[
     "system-config-printer",
     // session essentials
     "wl-clipboard",
+    "xsettingsd",
     "spice-vdagent",
     "xdg-user-dirs",
     "default-fonts-core-emoji",
@@ -178,6 +179,7 @@ const NIRI_EXTRAS: &str = r##"
 // Kuma session services
 spawn-at-startup "/usr/libexec/polkit-mate-authentication-agent-1"
 spawn-at-startup "/usr/libexec/kuma-clipboard-bridge"
+spawn-at-startup "/usr/libexec/kuma-xsettings"
 spawn-at-startup "blueman-applet"
 // Time-based night light: no location needed, unlike solar mode.
 spawn-at-startup "wlsunset" "-S" "07:00" "-s" "20:00"
@@ -206,6 +208,28 @@ const DCONF_PROFILE: &str = "user-db:user\nsystem-db:local\n";
 const DCONF_DARK: &str = r#"[org/gnome/desktop/interface]
 color-scheme='prefer-dark'
 gtk-theme='Adwaita-dark'
+"#;
+
+/// GTK theme settings travel two roads: Wayland-native apps read
+/// gsettings (the dconf defaults cover those), but X11/XWayland GTK apps
+/// only listen to an XSettings daemon — without one they render stock
+/// light Adwaita. xsettingsd broadcasts the same dark values there.
+const XSETTINGSD_CONF: &str = r#"Net/ThemeName "Adwaita-dark"
+Net/IconThemeName "Adwaita"
+Gtk/ApplicationPreferDarkTheme 1
+Gtk/CursorThemeName "Adwaita"
+"#;
+
+const XSETTINGS_LAUNCHER: &str = r#"#!/usr/bin/bash
+set -euo pipefail
+for _ in $(seq 60); do
+    [ -n "${DISPLAY:-}" ] && break
+    DISPLAY=$(systemctl --user show-environment 2>/dev/null | sed -n 's/^DISPLAY=//p')
+    [ -n "$DISPLAY" ] && export DISPLAY && break
+    sleep 0.5
+done
+[ -n "${DISPLAY:-}" ] || exit 0
+exec xsettingsd -c /usr/lib/kuma/xsettingsd.conf
 "#;
 
 /// Session half of host<->guest clipboard in `kuma vm`. spice-vdagent's
@@ -311,6 +335,8 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY mako.conf /etc/skel/.config/mako/config\n");
         out.push_str("COPY alacritty.toml /etc/skel/.config/alacritty/alacritty.toml\n");
         out.push_str("COPY --chmod=755 kuma-clipboard-bridge /usr/libexec/kuma-clipboard-bridge\n");
+        out.push_str("COPY --chmod=755 kuma-xsettings /usr/libexec/kuma-xsettings\n");
+        out.push_str("COPY xsettingsd.conf /usr/lib/kuma/xsettingsd.conf\n");
         out.push_str("COPY dconf-profile /etc/dconf/profile/user\n");
         out.push_str("COPY dconf-kuma-dark /etc/dconf/db/local.d/10-kuma-dark\n");
         out.push_str("RUN dconf update\n");
@@ -468,6 +494,8 @@ pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
         std::fs::write(dir.join("mako.conf"), MAKO_CONFIG)?;
         std::fs::write(dir.join("alacritty.toml"), ALACRITTY_CONFIG)?;
         std::fs::write(dir.join("kuma-clipboard-bridge"), CLIPBOARD_BRIDGE)?;
+        std::fs::write(dir.join("kuma-xsettings"), XSETTINGS_LAUNCHER)?;
+        std::fs::write(dir.join("xsettingsd.conf"), XSETTINGSD_CONF)?;
         std::fs::write(dir.join("dconf-profile"), DCONF_PROFILE)?;
         std::fs::write(dir.join("dconf-kuma-dark"), DCONF_DARK)?;
     }
