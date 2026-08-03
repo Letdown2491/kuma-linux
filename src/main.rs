@@ -60,6 +60,10 @@ enum Cmd {
         /// Rebuild the disk image even if one already exists
         #[arg(long)]
         rebuild: bool,
+        /// Apply the built image to the RUNNING VM (bootc switch inside,
+        /// then reboot) — /var (flatpaks, brew, homes) persists
+        #[arg(long, conflicts_with_all = ["no_run", "rebuild"])]
+        apply: bool,
     },
     /// Hash a password for the [user] section (prompts; prints the line to paste)
     Passwd,
@@ -83,7 +87,9 @@ fn main() -> Result<()> {
         }
         Cmd::Build { tag } => build(&cli.config, &tag),
         Cmd::Switch { tag, yes } => switch(&tag, yes),
-        Cmd::Vm { tag, output, no_run, rebuild } => vm(&tag, &output, no_run, rebuild),
+        Cmd::Vm { tag, output, no_run, rebuild, apply } => {
+            vm(&tag, &output, no_run, rebuild, apply)
+        }
         Cmd::Passwd => passwd(),
         Cmd::Status => run_host(&["bootc", "status"]),
         Cmd::Completions { shell } => {
@@ -203,10 +209,13 @@ fn switch(tag: &str, yes: bool) -> Result<()> {
     run_host(&sudo_args)
 }
 
-fn vm(tag: &str, output: &Path, no_run: bool, rebuild: bool) -> Result<()> {
+fn vm(tag: &str, output: &Path, no_run: bool, rebuild: bool, apply: bool) -> Result<()> {
     std::fs::create_dir_all(output)
         .with_context(|| format!("cannot create {}", output.display()))?;
     let output = std::fs::canonicalize(output)?;
+    if apply {
+        return vm_apply(tag, &output);
+    }
     let disk = output.join("qcow2/disk.qcow2");
 
     if !disk.exists() || rebuild {
@@ -287,6 +296,63 @@ fn build_disk(tag: &str, output: &Path) -> Result<()> {
     // Stamp which image this disk came from, so a later `kuma vm` can
     // warn when the image has moved on and the disk is silently stale.
     std::fs::write(output.join("image-id"), &local_id)?;
+    Ok(())
+}
+
+const VM_SSH_OPTS: &[&str] = &[
+    // the VM's host key changes with every rebuilt disk
+    "-o",
+    "StrictHostKeyChecking=no",
+    "-o",
+    "UserKnownHostsFile=/dev/null",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "LogLevel=ERROR",
+];
+
+/// The dev-loop update: stream the built image into the running VM and
+/// `bootc switch` inside it. Unlike a disk rebuild this keeps /var —
+/// flatpaks, brew, homes — and exercises the real update path (staged
+/// deployment, rollback) instead of the install path.
+fn vm_apply(tag: &str, output: &Path) -> Result<()> {
+    host_output(&["podman", "image", "inspect", "--format", "{{.Id}}", tag])
+        .with_context(|| format!("{tag} not found — run `kuma build` first"))?;
+
+    let mut probe = vec!["ssh", "-p", "2222", "-o", "ConnectTimeout=4"];
+    probe.extend(VM_SSH_OPTS);
+    probe.extend(["kuma@localhost", "true"]);
+    host_output(&probe)
+        .context("no running VM reachable on port 2222 — boot one with `kuma vm` first")?;
+
+    let archive = output.join("kuma-image.tar");
+    let archive_str = path_str(&archive)?;
+    println!("Exporting {tag}...");
+    run_host(&["podman", "save", "--format", "oci-archive", "-o", archive_str, tag])?;
+
+    println!("Streaming image into the VM...");
+    let mut scp = vec!["scp", "-P", "2222"];
+    scp.extend(VM_SSH_OPTS);
+    scp.extend([archive_str, "kuma@localhost:/var/tmp/kuma-image.tar"]);
+    run_host(&scp)?;
+    let _ = std::fs::remove_file(&archive);
+
+    println!("Switching the VM to the new image (staged; applies on reboot)...");
+    let mut switch = vec!["ssh", "-p", "2222"];
+    switch.extend(VM_SSH_OPTS);
+    switch.extend([
+        "kuma@localhost",
+        "echo kuma | sudo -S sh -c 'bootc switch --transport oci-archive /var/tmp/kuma-image.tar && rm -f /var/tmp/kuma-image.tar'",
+    ]);
+    run_host(&switch)?;
+
+    println!("Rebooting the VM into it...");
+    let mut reboot = vec!["ssh", "-p", "2222"];
+    reboot.extend(VM_SSH_OPTS);
+    reboot.extend(["kuma@localhost", "echo kuma | sudo -S systemctl reboot"]);
+    // the connection may drop as the VM goes down; that's success
+    let _ = run_host(&reboot);
+    println!("Done. /var (flatpaks, brew, homes) is untouched; `bootc rollback` inside the VM undoes this.");
     Ok(())
 }
 

@@ -67,6 +67,12 @@ enable = ["tailscaled.service"]
   automatically). It needs sudo: bootc-image-builder runs as root.
   After a rebuild of the image, pass `--rebuild` — kuma warns when the
   reused disk is older than the image.
+- **Iterating without losing state**: `kuma vm --apply` streams the freshly
+  built image into the *running* VM and `bootc switch`es inside it. The VM
+  reboots into the new image with `/var` intact — flatpaks, brew, and homes
+  survive, so nothing re-downloads. It's also the real update path (staged
+  deployment; `bootc rollback` inside the VM undoes it). Use `--rebuild`
+  only when you want a factory-fresh machine.
 
 ## Roadmap
 
