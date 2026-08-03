@@ -47,8 +47,19 @@ window#waybar {
 #bluetooth,
 #network,
 #battery,
+#idle_inhibitor,
+#power-profiles-daemon,
+#privacy,
 #tray {
     padding: 0 10px;
+}
+
+#idle_inhibitor.activated {
+    color: #7ee0a8;
+}
+
+#privacy {
+    color: #e8c47c;
 }
 
 #pulseaudio.muted,

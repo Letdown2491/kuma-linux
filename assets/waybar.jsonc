@@ -9,7 +9,7 @@
     "spacing": 4,
     "modules-left": ["niri/workspaces", "niri/window"],
     "modules-center": ["clock"],
-    "modules-right": ["tray", "pulseaudio", "bluetooth", "network", "battery"],
+    "modules-right": ["tray", "privacy", "idle_inhibitor", "pulseaudio", "bluetooth", "network", "power-profiles-daemon", "battery"],
 
     "niri/window": {
         "max-length": 60,
@@ -47,5 +47,24 @@
     "tray": {
         "icon-size": 16,
         "spacing": 8
+    },
+    "idle_inhibitor": {
+        "format": "{icon}",
+        "format-icons": { "activated": "", "deactivated": "" },
+        "tooltip-format-activated": "staying awake",
+        "tooltip-format-deactivated": "screen locks when idle"
+    },
+    "power-profiles-daemon": {
+        "format": "{icon}",
+        "format-icons": {
+            "default": "",
+            "performance": "",
+            "balanced": "",
+            "power-saver": ""
+        }
+    },
+    "privacy": {
+        "icon-size": 14,
+        "icon-spacing": 6
     }
 }
