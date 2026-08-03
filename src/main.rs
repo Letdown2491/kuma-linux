@@ -345,10 +345,14 @@ fn vm_apply(tag: &str) -> Result<()> {
     println!("Switching the VM to the new image (staged; applies on reboot)...");
     let mut switch = vec!["ssh", "-p", "2222"];
     switch.extend(VM_SSH_OPTS);
-    // rmi after: bootc's ostree import is self-contained, so the podman
-    // copy is dead weight the small disk can't afford to keep.
+    // switch is a no-op when the origin spec is unchanged (every apply
+    // after the first!) — bootc upgrade is what re-pulls the origin and
+    // stages new content. Then verify something IS staged: without the
+    // check a no-op apply reboots into the same deployment looking like
+    // success. rmi after: the ostree import is self-contained and the
+    // podman copy is dead weight.
     let switch_cmd = format!(
-        "echo kuma | sudo -S sh -c 'bootc switch --transport containers-storage {tag} && podman rmi -f {tag}'"
+        "echo kuma | sudo -S sh -c 'bootc switch --transport containers-storage {tag} && bootc upgrade; podman rmi -f {tag} >/dev/null; bootc status | grep -qiE \"^  Staged|staged image\" || {{ echo \"kuma: nothing staged — the VM already runs this image\" >&2; exit 3; }}'"
     );
     switch.extend(["kuma@localhost", &switch_cmd]);
     run_host(&switch)?;
