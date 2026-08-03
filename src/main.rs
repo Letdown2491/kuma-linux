@@ -4,10 +4,11 @@ mod containerfile;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use config::Config;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const DEFAULT_TAG: &str = "localhost/kuma:latest";
+const BIB_IMAGE: &str = "quay.io/centos-bootc/bootc-image-builder:latest";
 
 #[derive(Parser)]
 #[command(name = "kuma", version, about = "Your system is one file.")]
@@ -45,6 +46,21 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
+    /// Build a bootable qcow2 disk from the image and boot it in QEMU
+    Vm {
+        /// Image tag to make a disk from
+        #[arg(long, default_value = DEFAULT_TAG)]
+        tag: String,
+        /// Directory for the generated disk image
+        #[arg(long, default_value = "vm")]
+        output: PathBuf,
+        /// Build the disk image but don't launch QEMU
+        #[arg(long)]
+        no_run: bool,
+        /// Rebuild the disk image even if one already exists
+        #[arg(long)]
+        rebuild: bool,
+    },
     /// Show bootc status for this machine
     Status,
 }
@@ -60,11 +76,12 @@ fn main() -> Result<()> {
         }
         Cmd::Build { tag } => build(&cli.config, &tag),
         Cmd::Switch { tag, yes } => switch(&tag, yes),
+        Cmd::Vm { tag, output, no_run, rebuild } => vm(&tag, &output, no_run, rebuild),
         Cmd::Status => run_host(&["bootc", "status"]),
     }
 }
 
-const STARTER: &str = r#"# Kuma system definition — https://github.com/mira/kuma
+const STARTER: &str = r#"# Kuma system definition
 schema_version = 1
 
 [system]
@@ -90,7 +107,7 @@ fn init(force: bool) -> Result<()> {
     Ok(())
 }
 
-fn build(config_path: &std::path::Path, tag: &str) -> Result<()> {
+fn build(config_path: &Path, tag: &str) -> Result<()> {
     let config = Config::load(config_path)?;
     if !config.packages.flatpak.is_empty() {
         eprintln!(
@@ -111,7 +128,7 @@ fn build(config_path: &std::path::Path, tag: &str) -> Result<()> {
         containerfile.to_str().context("non-UTF-8 temp path")?,
         dir.path().to_str().context("non-UTF-8 temp path")?,
     ])?;
-    println!("\nBuilt {tag}. Apply it with `kuma switch`.");
+    println!("\nBuilt {tag}. Apply it with `kuma switch`, or boot it with `kuma vm`.");
     Ok(())
 }
 
@@ -134,23 +151,145 @@ fn switch(tag: &str, yes: bool) -> Result<()> {
     run_host(&sudo_args)
 }
 
+fn vm(tag: &str, output: &Path, no_run: bool, rebuild: bool) -> Result<()> {
+    std::fs::create_dir_all(output)
+        .with_context(|| format!("cannot create {}", output.display()))?;
+    let output = std::fs::canonicalize(output)?;
+    let disk = output.join("qcow2/disk.qcow2");
+
+    if !disk.exists() || rebuild {
+        build_disk(tag, &output)?;
+    } else {
+        println!("Reusing existing disk {} (use --rebuild to regenerate).", disk.display());
+    }
+
+    if no_run {
+        println!("Disk ready: {}", disk.display());
+        println!("Boot it later with `kuma vm`, or import it into GNOME Boxes / virt-manager.");
+        return Ok(());
+    }
+    boot_disk(&disk)
+}
+
+fn build_disk(tag: &str, output: &Path) -> Result<()> {
+    // bootc-image-builder runs as root and reads root's containers-storage,
+    // so a rootless-built image has to be copied over first.
+    if !host_ok(&["sudo", "podman", "image", "exists", tag]) {
+        println!("Copying {tag} into root podman storage (one-time, may take a minute)...");
+        let archive = output.join("kuma-image.tar");
+        let archive_str = path_str(&archive)?;
+        run_host(&["podman", "save", "--format", "oci-archive", "-o", archive_str, tag])?;
+        run_host(&["sudo", "podman", "load", "-i", archive_str])?;
+        let _ = std::fs::remove_file(&archive);
+    }
+
+    let bib_config = output.join("config.toml");
+    std::fs::write(&bib_config, bib_config_toml())?;
+
+    println!("Building qcow2 with bootc-image-builder (this takes a few minutes)...");
+    run_host(&[
+        "sudo",
+        "podman",
+        "run",
+        "--rm",
+        "--privileged",
+        "--security-opt",
+        "label=type:unconfined_t",
+        "-v",
+        &format!("{}:/output", path_str(output)?),
+        "-v",
+        "/var/lib/containers/storage:/var/lib/containers/storage",
+        "-v",
+        &format!("{}:/config.toml:ro", path_str(&bib_config)?),
+        BIB_IMAGE,
+        "--type",
+        "qcow2",
+        "--local",
+        tag,
+    ])?;
+    Ok(())
+}
+
+/// Disk-image config: a login user so the VM is actually reachable.
+/// Password login on the console, plus the user's ssh key when one exists.
+fn bib_config_toml() -> String {
+    let mut out = String::from(
+        "[[customizations.user]]\nname = \"kuma\"\npassword = \"kuma\"\ngroups = [\"wheel\"]\n",
+    );
+    if let Some(key) = find_ssh_pubkey() {
+        out.push_str(&format!("key = \"{}\"\n", key.trim()));
+    }
+    out
+}
+
+fn find_ssh_pubkey() -> Option<String> {
+    let home = std::env::var_os("HOME")?;
+    for name in ["id_ed25519.pub", "id_rsa.pub", "id_ecdsa.pub"] {
+        let path = Path::new(&home).join(".ssh").join(name);
+        if let Ok(key) = std::fs::read_to_string(&path) {
+            return Some(key);
+        }
+    }
+    None
+}
+
+fn boot_disk(disk: &Path) -> Result<()> {
+    println!("Booting VM (user: kuma, password: kuma; ssh: `ssh -p 2222 kuma@localhost`)...");
+    run_host(&[
+        "qemu-system-x86_64",
+        "-enable-kvm",
+        "-cpu",
+        "host",
+        "-smp",
+        "4",
+        "-m",
+        "4096",
+        "-drive",
+        &format!("file={},if=virtio", path_str(disk)?),
+        "-nic",
+        "user,model=virtio-net-pci,hostfwd=tcp::2222-:22",
+    ])
+}
+
+fn path_str(path: &Path) -> Result<&str> {
+    path.to_str().context("non-UTF-8 path")
+}
+
 /// Run a command on the host, escaping the container if kuma itself is
 /// running inside one (e.g. a distrobox dev environment).
-fn run_host(args: &[&str]) -> Result<()> {
-    let in_container = std::path::Path::new("/run/.containerenv").exists()
-        || std::path::Path::new("/.dockerenv").exists();
+fn run_host<S: AsRef<str>>(args: &[S]) -> Result<()> {
+    let status = host_command(args)?
+        .status()
+        .with_context(|| format!("failed to run {}", args[0].as_ref()))?;
+    if !status.success() {
+        let shown: Vec<&str> = args.iter().map(|s| s.as_ref()).collect();
+        bail!("{} exited with {status}", shown.join(" "));
+    }
+    Ok(())
+}
+
+/// Like run_host, but a failed or missing command is just `false`.
+fn host_ok<S: AsRef<str>>(args: &[S]) -> bool {
+    host_command(args)
+        .and_then(|mut cmd| {
+            cmd.stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            Ok(cmd.status()?)
+        })
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn host_command<S: AsRef<str>>(args: &[S]) -> Result<Command> {
+    let in_container = Path::new("/run/.containerenv").exists()
+        || Path::new("/.dockerenv").exists();
     let mut full: Vec<&str> = Vec::new();
     if in_container {
         full.extend(["flatpak-spawn", "--host"]);
     }
-    full.extend(args);
+    full.extend(args.iter().map(|s| s.as_ref()));
 
-    let status = Command::new(full[0])
-        .args(&full[1..])
-        .status()
-        .with_context(|| format!("failed to run {}", full[0]))?;
-    if !status.success() {
-        bail!("{} exited with {status}", args.join(" "));
-    }
-    Ok(())
+    let mut cmd = Command::new(full[0]);
+    cmd.args(&full[1..]);
+    Ok(cmd)
 }

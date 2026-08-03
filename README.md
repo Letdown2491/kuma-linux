@@ -54,15 +54,17 @@ enable = ["tailscaled.service"]
   `distrobox create --image localhost/kuma:latest` work fine for poking at
   the userland.
 - **Boot testing** (the real thing — systemd, kernel args, `bootc switch`,
-  rollback) can't happen in a container. Use `bootc-image-builder` to produce
-  a qcow2 and boot it in GNOME Boxes / virt-manager, or run `kuma switch` in
-  a bootc VM.
+  rollback) can't happen in a container. `kuma vm` builds a qcow2 via
+  bootc-image-builder and boots it in QEMU (login `kuma`/`kuma`, or
+  `ssh -p 2222 kuma@localhost` — your ssh key is injected automatically).
+  It needs sudo: bootc-image-builder runs as root.
 
 ## Roadmap
 
 - [x] `kuma.toml` v1 schema: base, rpm packages, services
 - [x] Containerfile generation + local podman build
 - [x] `kuma switch` via containers-storage transport
+- [x] `kuma vm` — qcow2 via bootc-image-builder, booted in QEMU
 - [ ] `kuma diff` — show what an apply would change
 - [ ] `kuma update` — pull newer base, rebuild, apply
 - [ ] `kuma sync` — runtime state: flatpaks, later user config
