@@ -86,6 +86,9 @@ schema_version = 1
 
 [system]
 base = "quay.io/fedora/fedora-bootc:44"
+# Pin an IANA timezone across all machines built from this file. Usually
+# leave unset — timezone is machine state (`timedatectl set-timezone`).
+# timezone = "America/Denver"
 
 [packages]
 rpm = []
@@ -216,6 +219,8 @@ fn build_disk(tag: &str, output: &Path) -> Result<()> {
 
 /// Disk-image config: a login user so the VM is actually reachable.
 /// Password login on the console, plus the user's ssh key when one exists.
+/// The VM mirrors the host's timezone — timezone is machine state, not
+/// system definition, so it's detected here rather than put in kuma.toml.
 fn bib_config_toml() -> String {
     let mut out = String::from(
         "[[customizations.user]]\nname = \"kuma\"\npassword = \"kuma\"\ngroups = [\"wheel\"]\n",
@@ -223,7 +228,20 @@ fn bib_config_toml() -> String {
     if let Some(key) = find_ssh_pubkey() {
         out.push_str(&format!("key = \"{}\"\n", key.trim()));
     }
+    if let Some(tz) = host_timezone() {
+        out.push_str(&format!("\n[customizations.timezone]\ntimezone = \"{tz}\"\n"));
+    }
     out
+}
+
+/// The host's IANA timezone, from the /etc/localtime symlink. None when
+/// the link is absent (host on UTC) or oddly shaped — the guest then just
+/// stays on UTC, which is also what a wrong guess would deserve.
+fn host_timezone() -> Option<String> {
+    let target = std::fs::read_link("/etc/localtime").ok()?;
+    let tz = target.to_str()?.rsplit_once("zoneinfo/")?.1.to_string();
+    let ok = |c: char| c.is_ascii_alphanumeric() || "/_+-".contains(c);
+    (!tz.is_empty() && tz.chars().all(ok)).then_some(tz)
 }
 
 fn find_ssh_pubkey() -> Option<String> {
@@ -240,6 +258,11 @@ fn find_ssh_pubkey() -> Option<String> {
 fn boot_disk(disk: &Path) -> Result<()> {
     println!("Booting VM (user: kuma, password: kuma; ssh: `ssh -p 2222 kuma@localhost`)...");
     run_host(&[
+        // LIBGL_ALWAYS_SOFTWARE: render virgl on llvmpipe so guest GL work
+        // never reaches the host GPU driver — a bad guest submission can
+        // otherwise wedge the real GPU and take the host session down.
+        "env",
+        "LIBGL_ALWAYS_SOFTWARE=1",
         "qemu-system-x86_64",
         "-enable-kvm",
         "-cpu",
