@@ -35,6 +35,7 @@ schema_version = 1
 
 [system]
 base = "quay.io/fedora/fedora-bootc:44"
+desktop = "niri"   # curated desktop set; omit for a headless system
 
 [packages]
 rpm = ["fish", "distrobox", "tailscale"]

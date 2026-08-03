@@ -169,10 +169,15 @@ fn vm(tag: &str, output: &Path, no_run: bool, rebuild: bool) -> Result<()> {
 }
 
 fn build_disk(tag: &str, output: &Path) -> Result<()> {
-    // bootc-image-builder runs as root and reads root's containers-storage,
-    // so a rootless-built image has to be copied over first.
-    if !host_ok(&["sudo", "podman", "image", "exists", tag]) {
-        println!("Copying {tag} into root podman storage (one-time, may take a minute)...");
+    // bootc-image-builder runs as root and reads root's containers-storage.
+    // Sync by image ID, not tag existence: the root-side copy goes stale
+    // every time the rootless image is rebuilt.
+    let local_id = host_output(&["podman", "image", "inspect", "--format", "{{.Id}}", tag])
+        .with_context(|| format!("{tag} not found — run `kuma build` first"))?;
+    let root_id = host_output(&["sudo", "podman", "image", "inspect", "--format", "{{.Id}}", tag])
+        .unwrap_or_default();
+    if local_id != root_id {
+        println!("Syncing {tag} into root podman storage (may take a minute)...");
         let archive = output.join("kuma-image.tar");
         let archive_str = path_str(&archive)?;
         run_host(&["podman", "save", "--format", "oci-archive", "-o", archive_str, tag])?;
@@ -275,16 +280,17 @@ fn run_host<S: AsRef<str>>(args: &[S]) -> Result<()> {
     Ok(())
 }
 
-/// Like run_host, but a failed or missing command is just `false`.
-fn host_ok<S: AsRef<str>>(args: &[S]) -> bool {
-    host_command(args)
-        .and_then(|mut cmd| {
-            cmd.stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null());
-            Ok(cmd.status()?)
-        })
-        .map(|s| s.success())
-        .unwrap_or(false)
+/// Run a host command and capture its trimmed stdout; Err on failure.
+fn host_output<S: AsRef<str>>(args: &[S]) -> Result<String> {
+    let out = host_command(args)?
+        .stderr(std::process::Stdio::null())
+        .output()
+        .with_context(|| format!("failed to run {}", args[0].as_ref()))?;
+    if !out.status.success() {
+        let shown: Vec<&str> = args.iter().map(|s| s.as_ref()).collect();
+        bail!("{} exited with {}", shown.join(" "), out.status);
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 fn host_command<S: AsRef<str>>(args: &[S]) -> Result<Command> {
