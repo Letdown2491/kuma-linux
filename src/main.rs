@@ -214,7 +214,7 @@ fn vm(tag: &str, output: &Path, no_run: bool, rebuild: bool, apply: bool) -> Res
         .with_context(|| format!("cannot create {}", output.display()))?;
     let output = std::fs::canonicalize(output)?;
     if apply {
-        return vm_apply(tag, &output);
+        return vm_apply(tag);
     }
     let disk = output.join("qcow2/disk.qcow2");
 
@@ -315,7 +315,7 @@ const VM_SSH_OPTS: &[&str] = &[
 /// `bootc switch` inside it. Unlike a disk rebuild this keeps /var —
 /// flatpaks, brew, homes — and exercises the real update path (staged
 /// deployment, rollback) instead of the install path.
-fn vm_apply(tag: &str, output: &Path) -> Result<()> {
+fn vm_apply(tag: &str) -> Result<()> {
     host_output(&["podman", "image", "inspect", "--format", "{{.Id}}", tag])
         .with_context(|| format!("{tag} not found — run `kuma build` first"))?;
 
@@ -325,25 +325,28 @@ fn vm_apply(tag: &str, output: &Path) -> Result<()> {
     host_output(&probe)
         .context("no running VM reachable on port 2222 — boot one with `kuma vm` first")?;
 
-    let archive = output.join("kuma-image.tar");
-    let archive_str = path_str(&archive)?;
-    println!("Exporting {tag}...");
-    run_host(&["podman", "save", "--format", "oci-archive", "-o", archive_str, tag])?;
-
+    // Stream straight into the guest's root podman storage: no archive
+    // file on the guest and no untar temp copy — the 10G disk ran out of
+    // space holding three copies of the image at once with oci-archive.
     println!("Streaming image into the VM...");
-    let mut scp = vec!["scp", "-P", "2222"];
-    scp.extend(VM_SSH_OPTS);
-    scp.extend([archive_str, "kuma@localhost:/var/tmp/kuma-image.tar"]);
-    run_host(&scp)?;
-    let _ = std::fs::remove_file(&archive);
+    let ssh_opts = VM_SSH_OPTS.join(" ");
+    run_host(&[
+        "sh",
+        "-c",
+        &format!(
+            "podman save {tag} | ssh -p 2222 {ssh_opts} kuma@localhost 'echo kuma | sudo -S podman load'"
+        ),
+    ])?;
 
     println!("Switching the VM to the new image (staged; applies on reboot)...");
     let mut switch = vec!["ssh", "-p", "2222"];
     switch.extend(VM_SSH_OPTS);
-    switch.extend([
-        "kuma@localhost",
-        "echo kuma | sudo -S sh -c 'bootc switch --transport oci-archive /var/tmp/kuma-image.tar && rm -f /var/tmp/kuma-image.tar'",
-    ]);
+    // rmi after: bootc's ostree import is self-contained, so the podman
+    // copy is dead weight the small disk can't afford to keep.
+    let switch_cmd = format!(
+        "echo kuma | sudo -S sh -c 'bootc switch --transport containers-storage {tag} && podman rmi -f {tag}'"
+    );
+    switch.extend(["kuma@localhost", &switch_cmd]);
     run_host(&switch)?;
 
     println!("Rebooting the VM into it...");
@@ -370,6 +373,9 @@ fn bib_config_toml() -> String {
     if let Some(tz) = host_timezone() {
         out.push_str(&format!("\n[customizations.timezone]\ntimezone = \"{tz}\"\n"));
     }
+    // Headroom for `kuma vm --apply`: image updates transiently need a few
+    // GB in the guest. Sparse qcow2, so the host pays nothing up front.
+    out.push_str("\n[[customizations.filesystem]]\nmountpoint = \"/\"\nminsize = \"20 GiB\"\n");
     out
 }
 
