@@ -65,6 +65,11 @@ enum Cmd {
     Passwd,
     /// Show bootc status for this machine
     Status,
+    /// Print shell completions (e.g. `kuma completions fish | source`)
+    Completions {
+        /// Shell to generate for
+        shell: clap_complete::Shell,
+    },
 }
 
 fn main() -> Result<()> {
@@ -81,6 +86,11 @@ fn main() -> Result<()> {
         Cmd::Vm { tag, output, no_run, rebuild } => vm(&tag, &output, no_run, rebuild),
         Cmd::Passwd => passwd(),
         Cmd::Status => run_host(&["bootc", "status"]),
+        Cmd::Completions { shell } => {
+            use clap::CommandFactory;
+            clap_complete::generate(shell, &mut Cli::command(), "kuma", &mut std::io::stdout());
+            Ok(())
+        }
     }
 }
 
@@ -117,20 +127,6 @@ fn hash_password(password: &str) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("hashing failed: {e:?}"))
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn generated_hash_is_valid_config_material() {
-        let hash = super::hash_password("kuma").unwrap();
-        assert!(hash.starts_with("$6$"));
-        // must survive the [user] password_hash validation round-trip
-        let config: crate::config::Config = toml::from_str(&format!(
-            "schema_version = 1\n[user]\nname = \"m\"\npassword_hash = '{hash}'\n"
-        ))
-        .unwrap();
-        config.validate().unwrap();
-    }
-}
 
 const STARTER: &str = r#"# Kuma system definition
 schema_version = 1
@@ -217,6 +213,17 @@ fn vm(tag: &str, output: &Path, no_run: bool, rebuild: bool) -> Result<()> {
         build_disk(tag, &output)?;
     } else {
         println!("Reusing existing disk {} (use --rebuild to regenerate).", disk.display());
+        // A silently stale disk once cost an hour of "where's my theme":
+        // the image had the changes, the reused disk predated them.
+        let stamped = std::fs::read_to_string(output.join("image-id")).unwrap_or_default();
+        let current =
+            host_output(&["podman", "image", "inspect", "--format", "{{.Id}}", tag])
+                .unwrap_or_default();
+        if !current.is_empty() && stamped.trim() != current {
+            println!(
+                "WARNING: {tag} is newer than this disk — it will NOT have your latest changes. Re-run with --rebuild to pick them up."
+            );
+        }
     }
 
     if no_run {
@@ -276,6 +283,10 @@ fn build_disk(tag: &str, output: &Path) -> Result<()> {
     // user so QEMU (and cleanup) work without privileges.
     let user = std::env::var("USER").context("USER is not set")?;
     run_host(&["sudo", "chown", "-R", &format!("{user}:"), path_str(output)?])?;
+
+    // Stamp which image this disk came from, so a later `kuma vm` can
+    // warn when the image has moved on and the disk is silently stale.
+    std::fs::write(output.join("image-id"), &local_id)?;
     Ok(())
 }
 
@@ -389,4 +400,19 @@ fn host_command<S: AsRef<str>>(args: &[S]) -> Result<Command> {
     let mut cmd = Command::new(full[0]);
     cmd.args(&full[1..]);
     Ok(cmd)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn generated_hash_is_valid_config_material() {
+        let hash = super::hash_password("kuma").unwrap();
+        assert!(hash.starts_with("$6$"));
+        // must survive the [user] password_hash validation round-trip
+        let config: crate::config::Config = toml::from_str(&format!(
+            "schema_version = 1\n[user]\nname = \"m\"\npassword_hash = '{hash}'\n"
+        ))
+        .unwrap();
+        config.validate().unwrap();
+    }
 }

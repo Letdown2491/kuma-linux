@@ -61,9 +61,12 @@ enable = ["tailscaled.service"]
   the userland.
 - **Boot testing** (the real thing — systemd, kernel args, `bootc switch`,
   rollback) can't happen in a container. `kuma vm` builds a qcow2 via
-  bootc-image-builder and boots it in QEMU (login `kuma`/`kuma`, or
-  `ssh -p 2222 kuma@localhost` — your ssh key is injected automatically).
-  It needs sudo: bootc-image-builder runs as root.
+  bootc-image-builder and boots it in QEMU. Log in as your declared
+  `[user]` (created on first boot), or the always-present test user
+  `kuma`/`kuma` (`ssh -p 2222 kuma@localhost` — your ssh key is injected
+  automatically). It needs sudo: bootc-image-builder runs as root.
+  After a rebuild of the image, pass `--rebuild` — kuma warns when the
+  reused disk is older than the image.
 
 ## Roadmap
 
@@ -75,6 +78,7 @@ enable = ["tailscaled.service"]
 - [ ] `kuma update` — pull newer base, rebuild, apply
 - [x] Flatpaks: Flathub remote in-image, declared apps converged on boot
 - [x] Declarative user: created on first boot, converged after (/home is machine state)
+- [x] `kuma passwd` — hash a password for the `[user]` section
 - [ ] `kuma sync` — on-demand runtime state sync (flatpaks without reboot, later user config)
 - [ ] Base images (`kuma-gnome`, `kuma-plasma`) built in CI
 - [ ] Installer ISO via bootc-image-builder
