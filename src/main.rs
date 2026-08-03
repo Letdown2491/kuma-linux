@@ -204,7 +204,10 @@ fn build_disk(tag: &str, output: &Path) -> Result<()> {
         BIB_IMAGE,
         "--type",
         "qcow2",
-        "--local",
+        // fedora-bootc images declare no default root filesystem, so bib
+        // fails with "missing required info: DefaultRootFs" without this.
+        "--rootfs",
+        "xfs",
         tag,
     ])?;
     Ok(())
