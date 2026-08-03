@@ -125,8 +125,12 @@ pub struct Services {
 
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("cannot read {}", path.display()))?;
+        let text = std::fs::read_to_string(path).with_context(|| {
+            format!(
+                "cannot read {} — run `kuma init` to start one here, or point --config at yours",
+                path.display()
+            )
+        })?;
         let config: Config = toml::from_str(&text)
             .with_context(|| format!("invalid config in {}", path.display()))?;
         config.validate()?;
