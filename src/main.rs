@@ -61,6 +61,8 @@ enum Cmd {
         #[arg(long)]
         rebuild: bool,
     },
+    /// Hash a password for the [user] section (prompts; prints the line to paste)
+    Passwd,
     /// Show bootc status for this machine
     Status,
 }
@@ -77,7 +79,56 @@ fn main() -> Result<()> {
         Cmd::Build { tag } => build(&cli.config, &tag),
         Cmd::Switch { tag, yes } => switch(&tag, yes),
         Cmd::Vm { tag, output, no_run, rebuild } => vm(&tag, &output, no_run, rebuild),
+        Cmd::Passwd => passwd(),
         Cmd::Status => run_host(&["bootc", "status"]),
+    }
+}
+
+/// The config wants a hash, not a password — kuma.toml is meant to live in
+/// git. This is the ergonomic path to one; the hash applies only when the
+/// account is first created.
+fn passwd() -> Result<()> {
+    use std::io::IsTerminal;
+    let password = if std::io::stdin().is_terminal() {
+        let password = rpassword::prompt_password("New password for [user]: ")?;
+        let confirm = rpassword::prompt_password("Retype to confirm: ")?;
+        if password != confirm {
+            bail!("passwords don't match");
+        }
+        password
+    } else {
+        // piped stdin: read one line, no prompt — scripting-friendly
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        line.trim_end_matches(['\r', '\n']).to_string()
+    };
+    if password.is_empty() {
+        bail!("empty password");
+    }
+    println!("\npassword_hash = '{}'", hash_password(&password)?);
+    println!("\nPaste that into the [user] section of kuma.toml.");
+    Ok(())
+}
+
+fn hash_password(password: &str) -> Result<String> {
+    let params = sha_crypt::Sha512Params::new(sha_crypt::ROUNDS_DEFAULT)
+        .map_err(|e| anyhow::anyhow!("crypt params: {e:?}"))?;
+    sha_crypt::sha512_simple(password, &params)
+        .map_err(|e| anyhow::anyhow!("hashing failed: {e:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn generated_hash_is_valid_config_material() {
+        let hash = super::hash_password("kuma").unwrap();
+        assert!(hash.starts_with("$6$"));
+        // must survive the [user] password_hash validation round-trip
+        let config: crate::config::Config = toml::from_str(&format!(
+            "schema_version = 1\n[user]\nname = \"m\"\npassword_hash = '{hash}'\n"
+        ))
+        .unwrap();
+        config.validate().unwrap();
     }
 }
 
@@ -92,8 +143,8 @@ base = "quay.io/fedora/fedora-bootc:44"
 # hostname = "kuma-laptop"
 # locale = "en_US.UTF-8"
 
-# Primary account, created on first boot and converged after. The hash
-# (`openssl passwd -6`) only applies at creation; passwords stay yours.
+# Primary account, created on first boot and converged after. Get the
+# hash from `kuma passwd`; it only applies at creation.
 # [user]
 # name = "me"
 # shell = "fish"

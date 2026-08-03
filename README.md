@@ -40,7 +40,7 @@ desktop = "niri"   # curated desktop set; omit for a headless system
 [user]
 name = "me"
 shell = "fish"
-password_hash = '...'   # openssl passwd -6; applies only at creation
+password_hash = '...'   # from `kuma passwd`; applies only at creation
 
 [packages]
 rpm = ["fish", "distrobox", "tailscale"]
