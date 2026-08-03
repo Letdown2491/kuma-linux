@@ -33,6 +33,11 @@ command = "tuigreet --time --remember --cmd niri-session"
 user = "greetd"
 "#;
 
+/// Desktop kernel args. The minimal base ships no auditd, so kernel audit
+/// records spray onto the console; `quiet` keeps the console clean without
+/// disabling auditing (records still reach the journal).
+const DESKTOP_KARGS: &str = "kargs = [\"quiet\"]\n";
+
 /// Compile a kuma config into a Containerfile for a bootc image build.
 pub fn generate(config: &Config) -> String {
     let mut out = String::new();
@@ -47,6 +52,7 @@ pub fn generate(config: &Config) -> String {
             NIRI_PACKAGES.join(" ")
         ));
         out.push_str("COPY greetd-config.toml /etc/greetd/config.toml\n");
+        out.push_str("COPY kargs-desktop.toml /usr/lib/bootc/kargs.d/10-kuma-desktop.toml\n");
         out.push_str(
             "RUN systemctl set-default graphical.target && systemctl enable greetd.service\n",
         );
@@ -85,6 +91,7 @@ pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
     std::fs::write(dir.join("Containerfile"), generate(config))?;
     if config.system.desktop == Desktop::Niri {
         std::fs::write(dir.join("greetd-config.toml"), GREETD_CONFIG)?;
+        std::fs::write(dir.join("kargs-desktop.toml"), DESKTOP_KARGS)?;
     }
     Ok(())
 }
@@ -167,5 +174,7 @@ mod tests {
         assert!(dir.path().join("Containerfile").exists());
         let greetd = std::fs::read_to_string(dir.path().join("greetd-config.toml")).unwrap();
         assert!(greetd.contains("niri-session"));
+        let kargs = std::fs::read_to_string(dir.path().join("kargs-desktop.toml")).unwrap();
+        assert!(kargs.contains("quiet"));
     }
 }

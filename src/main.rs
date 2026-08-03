@@ -256,8 +256,13 @@ fn boot_disk(disk: &Path) -> Result<()> {
         "4096",
         "-drive",
         &format!("file={},if=virtio", path_str(disk)?),
-        "-vga",
-        "virtio",
+        // virtio-vga-gl + gl=on (virgl): niri's GBM allocator needs a real
+        // 3D-capable device; plain -vga virtio is display-only and leaves
+        // the compositor with no output.
+        "-device",
+        "virtio-vga-gl",
+        "-display",
+        "gtk,gl=on",
         "-nic",
         "user,model=virtio-net-pci,hostfwd=tcp::2222-:22",
     ])
