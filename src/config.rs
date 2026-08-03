@@ -28,11 +28,21 @@ pub struct System {
     /// updates and need no reboot. Installed by a first-boot service.
     #[serde(default)]
     pub brew: bool,
+    /// Pin an IANA timezone (e.g. "America/Denver") in the image. Usually
+    /// unset: timezone is machine state, set once via timedatectl and kept
+    /// across image updates; `kuma vm` mirrors the host.
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 impl Default for System {
     fn default() -> Self {
-        Self { base: default_base(), desktop: Desktop::default(), brew: false }
+        Self {
+            base: default_base(),
+            desktop: Desktop::default(),
+            brew: false,
+            timezone: None,
+        }
     }
 }
 
@@ -89,6 +99,9 @@ impl Config {
             );
         }
         validate_name(&self.system.base, "system.base", &['/', ':', '.', '-', '_', '@'])?;
+        if let Some(tz) = &self.system.timezone {
+            validate_name(tz, "system.timezone", &['/', '-', '_', '+'])?;
+        }
         for pkg in &self.packages.rpm {
             validate_name(pkg, "packages.rpm", &['.', '-', '_', '+', ':'])?;
         }

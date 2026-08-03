@@ -1,0 +1,74 @@
+/* Kuma waybar theme — night navy sky, aurora green accents. */
+
+* {
+    font-family: "Noto Sans", "Font Awesome 6 Free", "Font Awesome 6 Free Solid", sans-serif;
+    font-size: 13px;
+    min-height: 0;
+}
+
+window#waybar {
+    background: rgba(12, 19, 30, 0.88);
+    color: #dce7f0;
+    border: 1px solid rgba(126, 224, 168, 0.22);
+    border-radius: 12px;
+}
+
+#workspaces button {
+    padding: 0 8px;
+    margin: 3px 2px;
+    border-radius: 8px;
+    color: #7f93a8;
+    background: transparent;
+}
+
+#workspaces button.active,
+#workspaces button.focused {
+    background: rgba(126, 224, 168, 0.15);
+    color: #7ee0a8;
+}
+
+#workspaces button:hover {
+    background: rgba(215, 225, 236, 0.10);
+    color: #dce7f0;
+}
+
+#window {
+    color: #a9b8c6;
+    margin-left: 8px;
+}
+
+#clock {
+    color: #d7e1ec;
+    font-weight: 600;
+}
+
+#clock,
+#pulseaudio,
+#network,
+#battery,
+#tray {
+    padding: 0 10px;
+}
+
+#pulseaudio.muted,
+#network.disconnected {
+    color: #7f93a8;
+}
+
+#battery.warning {
+    color: #e8c47c;
+}
+
+#battery.critical {
+    color: #e06c75;
+}
+
+tooltip {
+    background: #101a28;
+    border: 1px solid rgba(126, 224, 168, 0.25);
+    border-radius: 8px;
+}
+
+tooltip label {
+    color: #dce7f0;
+}

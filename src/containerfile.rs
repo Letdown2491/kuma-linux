@@ -19,11 +19,13 @@ const NIRI_PACKAGES: &[&str] = &[
     "wireplumber",
     "xdg-desktop-portal-gtk",
     "xdg-desktop-portal-gnome",
+    "dconf",
     "gnome-keyring",
     "polkit",
     "mesa-dri-drivers",
     "default-fonts-core-sans",
     "default-fonts-core-mono",
+    "fontawesome-6-free-fonts",
     // hardware enablement — the minimal base targets servers
     "NetworkManager-wifi",
     "wpa_supplicant",
@@ -44,7 +46,7 @@ const GREETD_CONFIG: &str = r#"[terminal]
 vt = 1
 
 [default_session]
-command = "tuigreet --time --remember --cmd niri-session"
+command = "tuigreet --time --remember --greeting 'Welcome to Kuma' --cmd niri-session"
 user = "greetd"
 "#;
 
@@ -77,9 +79,58 @@ const NIRI_EXTRAS: &str = r##"
 
 // Kuma session services
 spawn-at-startup "/usr/libexec/polkit-mate-authentication-agent-1"
-spawn-at-startup "swaybg" "-c" "#16161e"
-spawn-at-startup "swayidle" "-w" "timeout" "900" "swaylock -f -c 16161e" "before-sleep" "swaylock -f -c 16161e"
+spawn-at-startup "waybar"
+spawn-at-startup "swaybg" "-i" "/usr/share/backgrounds/kuma/kuma-wallpaper.png" "-m" "fill"
+spawn-at-startup "swayidle" "-w" "timeout" "900" "swaylock -f -i /usr/share/backgrounds/kuma/kuma-wallpaper.png -s fill" "before-sleep" "swaylock -f -i /usr/share/backgrounds/kuma/kuma-wallpaper.png -s fill"
+
+// Kuma look: rounded windows, quiet neutral focus ring. Window rules are
+// additive, so this themes every window without touching the stock layout.
+window-rule {
+    geometry-corner-radius 8
+    clip-to-geometry true
+    focus-ring {
+        active-color "#b8bec8"
+        inactive-color "#333940"
+    }
+}
 "##;
+
+/// Dark by default. Apps learn the preference from the settings portal,
+/// which reads org.gnome.desktop.interface from dconf; without it every
+/// CSD titlebar and GTK app falls back to light. color-scheme covers
+/// GTK4/libadwaita/portal clients, gtk-theme covers GTK3 apps that
+/// predate it. A system db sets the default; user settings still win.
+const DCONF_PROFILE: &str = "user-db:user\nsystem-db:local\n";
+const DCONF_DARK: &str = r#"[org/gnome/desktop/interface]
+color-scheme='prefer-dark'
+gtk-theme='Adwaita-dark'
+"#;
+
+/// Theme files for the curated desktop, drawn from the Kuma wallpaper palette.
+/// Waybar reads /etc/xdg system-wide; the rest are seeded via /etc/skel so
+/// users start themed but can override freely in their own dotfiles.
+const WALLPAPER: &[u8] = include_bytes!("../assets/kuma-wallpaper.png");
+const WAYBAR_CONFIG: &str = include_str!("../assets/waybar.jsonc");
+const WAYBAR_STYLE: &str = include_str!("../assets/waybar.css");
+const FUZZEL_CONFIG: &str = include_str!("../assets/fuzzel.ini");
+const MAKO_CONFIG: &str = include_str!("../assets/mako.conf");
+const ALACRITTY_CONFIG: &str = include_str!("../assets/alacritty.toml");
+
+/// Rebrand the OS identity: Kuma, not Fedora. ID_LIKE=fedora keeps tools
+/// that sniff os-release (toolbox, distrobox, dnf COPR, …) working. Runs
+/// last so every dnf layer before it still sees stock Fedora metadata.
+const BRANDING: &str = r#"
+RUN . /usr/lib/os-release \
+    && sed -i \
+        -e 's|^NAME=.*|NAME="Kuma"|' \
+        -e "s|^PRETTY_NAME=.*|PRETTY_NAME=\"Kuma ${VERSION_ID}\"|" \
+        -e 's|^ID=.*|ID=kuma|' \
+        -e 's|^DEFAULT_HOSTNAME=.*|DEFAULT_HOSTNAME="kuma"|' \
+        -e 's|^ANSI_COLOR=.*|ANSI_COLOR="0;38;2;126;224;168"|' \
+        /usr/lib/os-release \
+    && { grep -q '^ID_LIKE=' /usr/lib/os-release || echo 'ID_LIKE="fedora"' >> /usr/lib/os-release; } \
+    && { [ ! -f /usr/lib/fedora-release ] || echo "Kuma release ${VERSION_ID}" > /usr/lib/fedora-release; }
+"#;
 
 /// Homebrew lives in /home/linuxbrew — machine-local mutable state, so it
 /// can't be image content. First boot installs it; the tarball is the
@@ -134,10 +185,21 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY greetd-config.toml /etc/greetd/config.toml\n");
         out.push_str("COPY kargs-desktop.toml /usr/lib/bootc/kargs.d/10-kuma-desktop.toml\n");
         out.push_str("COPY niri-extras.kdl /usr/lib/kuma/niri-extras.kdl\n");
+        out.push_str("COPY kuma-wallpaper.png /usr/share/backgrounds/kuma/kuma-wallpaper.png\n");
+        out.push_str("COPY waybar-config.jsonc /etc/xdg/waybar/config.jsonc\n");
+        out.push_str("COPY waybar-style.css /etc/xdg/waybar/style.css\n");
+        out.push_str("COPY fuzzel.ini /etc/skel/.config/fuzzel/fuzzel.ini\n");
+        out.push_str("COPY mako.conf /etc/skel/.config/mako/config\n");
+        out.push_str("COPY alacritty.toml /etc/skel/.config/alacritty/alacritty.toml\n");
+        out.push_str("COPY dconf-profile /etc/dconf/profile/user\n");
+        out.push_str("COPY dconf-kuma-dark /etc/dconf/db/local.d/10-kuma-dark\n");
+        out.push_str("RUN dconf update\n");
         // The packaged default config is complete (all keybindings); Kuma's
         // config is that plus our session extras, validated at build time.
+        // Fedora's default config already spawns waybar — drop that line (and
+        // its comment) or the bar starts twice; Kuma's extras spawn it.
         out.push_str(
-            "RUN mkdir -p /etc/niri \\\n    && cp /usr/share/doc/niri/default-config.kdl /etc/niri/config.kdl \\\n    && cat /usr/lib/kuma/niri-extras.kdl >> /etc/niri/config.kdl \\\n    && niri validate --config /etc/niri/config.kdl\n",
+            "RUN mkdir -p /etc/niri \\\n    && sed -e '/starts waybar/d' -e '/^spawn-at-startup \"waybar\"$/d' /usr/share/doc/niri/default-config.kdl > /etc/niri/config.kdl \\\n    && cat /usr/lib/kuma/niri-extras.kdl >> /etc/niri/config.kdl \\\n    && niri validate --config /etc/niri/config.kdl\n",
         );
         out.push_str(
             "RUN systemctl set-default graphical.target && systemctl enable greetd.service firewalld.service power-profiles-daemon.service\n",
@@ -203,6 +265,16 @@ pub fn generate(config: &Config) -> String {
         out.push_str(&format!("\nRUN {}\n", services.join(" && ")));
     }
 
+    if let Some(tz) = &config.system.timezone {
+        // test -e first so a typo'd zone fails the build instead of
+        // silently producing a dangling /etc/localtime symlink.
+        out.push_str(&format!(
+            "\nRUN test -e /usr/share/zoneinfo/{tz} && ln -sfn /usr/share/zoneinfo/{tz} /etc/localtime\n"
+        ));
+    }
+
+    out.push_str(BRANDING);
+
     out.push_str("\nRUN bootc container lint\n");
     out
 }
@@ -214,6 +286,14 @@ pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
         std::fs::write(dir.join("greetd-config.toml"), GREETD_CONFIG)?;
         std::fs::write(dir.join("kargs-desktop.toml"), DESKTOP_KARGS)?;
         std::fs::write(dir.join("niri-extras.kdl"), NIRI_EXTRAS)?;
+        std::fs::write(dir.join("kuma-wallpaper.png"), WALLPAPER)?;
+        std::fs::write(dir.join("waybar-config.jsonc"), WAYBAR_CONFIG)?;
+        std::fs::write(dir.join("waybar-style.css"), WAYBAR_STYLE)?;
+        std::fs::write(dir.join("fuzzel.ini"), FUZZEL_CONFIG)?;
+        std::fs::write(dir.join("mako.conf"), MAKO_CONFIG)?;
+        std::fs::write(dir.join("alacritty.toml"), ALACRITTY_CONFIG)?;
+        std::fs::write(dir.join("dconf-profile"), DCONF_PROFILE)?;
+        std::fs::write(dir.join("dconf-kuma-dark"), DCONF_DARK)?;
     }
     if !config.packages.flatpak.is_empty() {
         let mut list = config.packages.flatpak.join("\n");
@@ -281,6 +361,86 @@ mod tests {
         assert!(out.contains("systemctl set-default graphical.target"));
         assert!(out.contains("greetd.service firewalld.service power-profiles-daemon.service"));
         assert!(out.contains("mask flatpak-add-fedora-repos.service"));
+    }
+
+    #[test]
+    fn branding_always_applied() {
+        let out = generate(&config("schema_version = 1"));
+        assert!(out.contains("NAME=\"Kuma\""));
+        assert!(out.contains("ID=kuma"));
+        assert!(out.contains("ID_LIKE=\\\"fedora\\\"") || out.contains("ID_LIKE=\"fedora\""));
+        // branding must come after every dnf layer
+        let brand_at = out.find("NAME=\"Kuma\"").unwrap();
+        assert!(out.rfind("dnf -y install").is_none_or(|dnf_at| dnf_at < brand_at));
+    }
+
+    #[test]
+    fn niri_desktop_ships_theme_and_wallpaper() {
+        let out = generate(&config(
+            "schema_version = 1\n[system]\ndesktop = \"niri\"\n",
+        ));
+        assert!(out.contains("COPY kuma-wallpaper.png /usr/share/backgrounds/kuma/kuma-wallpaper.png"));
+        assert!(out.contains("COPY waybar-config.jsonc /etc/xdg/waybar/config.jsonc"));
+        assert!(out.contains("COPY waybar-style.css /etc/xdg/waybar/style.css"));
+        assert!(out.contains("COPY fuzzel.ini /etc/skel/.config/fuzzel/fuzzel.ini"));
+        assert!(out.contains("COPY mako.conf /etc/skel/.config/mako/config"));
+        assert!(out.contains("COPY alacritty.toml /etc/skel/.config/alacritty/alacritty.toml"));
+        assert!(out.contains("COPY dconf-profile /etc/dconf/profile/user"));
+        assert!(out.contains("COPY dconf-kuma-dark /etc/dconf/db/local.d/10-kuma-dark"));
+        assert!(out.contains("RUN dconf update"));
+    }
+
+    #[test]
+    fn desktop_defaults_to_dark_and_bare_terminal() {
+        assert!(DCONF_DARK.contains("color-scheme='prefer-dark'"));
+        // a titlebar in a tiling compositor renders light Adwaita chrome
+        assert!(ALACRITTY_CONFIG.contains("decorations = \"None\""));
+    }
+
+    #[test]
+    fn timezone_links_localtime() {
+        let out = generate(&config(
+            "schema_version = 1\n[system]\ntimezone = \"America/Denver\"\n",
+        ));
+        assert!(out.contains(
+            "test -e /usr/share/zoneinfo/America/Denver && ln -sfn /usr/share/zoneinfo/America/Denver /etc/localtime"
+        ));
+        // unset means UTC: no localtime layer at all
+        let out = generate(&config("schema_version = 1"));
+        assert!(!out.contains("/etc/localtime"));
+    }
+
+    #[test]
+    fn stock_waybar_spawn_is_deduped() {
+        let out = generate(&config(
+            "schema_version = 1\n[system]\ndesktop = \"niri\"\n",
+        ));
+        // Fedora's default config spawns waybar; the merge must drop it so
+        // only the Kuma extras spawn remains (two spawns = two bars).
+        assert!(out.contains("-e '/^spawn-at-startup \"waybar\"$/d'"));
+        assert_eq!(NIRI_EXTRAS.matches("spawn-at-startup \"waybar\"").count(), 1);
+    }
+
+    #[test]
+    fn context_includes_theme_files_for_niri() {
+        let dir = tempfile::tempdir().unwrap();
+        write_context(
+            &config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"),
+            dir.path(),
+        )
+        .unwrap();
+        let wallpaper = std::fs::read(dir.path().join("kuma-wallpaper.png")).unwrap();
+        assert!(!wallpaper.is_empty());
+        let extras = std::fs::read_to_string(dir.path().join("niri-extras.kdl")).unwrap();
+        assert!(extras.contains("/usr/share/backgrounds/kuma/kuma-wallpaper.png"));
+        assert!(extras.contains("spawn-at-startup \"waybar\""));
+        let greetd = std::fs::read_to_string(dir.path().join("greetd-config.toml")).unwrap();
+        assert!(greetd.contains("Welcome to Kuma"));
+        assert!(dir.path().join("waybar-config.jsonc").exists());
+        assert!(dir.path().join("waybar-style.css").exists());
+        assert!(dir.path().join("fuzzel.ini").exists());
+        assert!(dir.path().join("mako.conf").exists());
+        assert!(dir.path().join("alacritty.toml").exists());
     }
 
     #[test]

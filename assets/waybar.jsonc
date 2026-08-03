@@ -1,0 +1,43 @@
+// Kuma waybar — palette drawn from the Kuma wallpaper (night navy / aurora).
+{
+    "layer": "top",
+    "position": "top",
+    "height": 32,
+    "margin-top": 6,
+    "margin-left": 10,
+    "margin-right": 10,
+    "spacing": 4,
+    "modules-left": ["niri/workspaces", "niri/window"],
+    "modules-center": ["clock"],
+    "modules-right": ["tray", "pulseaudio", "network", "battery"],
+
+    "niri/window": {
+        "max-length": 60,
+        "separate-outputs": true
+    },
+    "clock": {
+        "format": "{:%a %b %d   %H:%M}",
+        "tooltip-format": "<tt>{calendar}</tt>"
+    },
+    "pulseaudio": {
+        "format": "{icon}  {volume}%",
+        "format-muted": "  muted",
+        "format-icons": { "default": ["", "", ""] },
+        "on-click": "pactl set-sink-mute @DEFAULT_SINK@ toggle"
+    },
+    "network": {
+        "format-wifi": "  {essid}",
+        "format-ethernet": "  wired",
+        "format-disconnected": "offline",
+        "tooltip-format": "{ifname}: {ipaddr}"
+    },
+    "battery": {
+        "format": "{icon}  {capacity}%",
+        "format-icons": ["", "", "", "", ""],
+        "states": { "warning": 25, "critical": 10 }
+    },
+    "tray": {
+        "icon-size": 16,
+        "spacing": 8
+    }
+}
