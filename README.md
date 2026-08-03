@@ -37,6 +37,11 @@ schema_version = 1
 base = "quay.io/fedora/fedora-bootc:44"
 desktop = "niri"   # curated desktop set; omit for a headless system
 
+[user]
+name = "me"
+shell = "fish"
+password_hash = '...'   # openssl passwd -6; applies only at creation
+
 [packages]
 rpm = ["fish", "distrobox", "tailscale"]
 flatpak = ["org.mozilla.firefox"]   # from Flathub, synced on boot
@@ -68,7 +73,8 @@ enable = ["tailscaled.service"]
 - [x] `kuma vm` — qcow2 via bootc-image-builder, booted in QEMU
 - [ ] `kuma diff` — show what an apply would change
 - [ ] `kuma update` — pull newer base, rebuild, apply
-- [x] Flatpaks: Flathub remote in-image, declared apps synced on boot
+- [x] Flatpaks: Flathub remote in-image, declared apps converged on boot
+- [x] Declarative user: created on first boot, converged after (/home is machine state)
 - [ ] `kuma sync` — on-demand runtime state sync (flatpaks without reboot, later user config)
 - [ ] Base images (`kuma-gnome`, `kuma-plasma`) built in CI
 - [ ] Installer ISO via bootc-image-builder

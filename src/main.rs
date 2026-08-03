@@ -92,6 +92,14 @@ base = "quay.io/fedora/fedora-bootc:44"
 # hostname = "kuma-laptop"
 # locale = "en_US.UTF-8"
 
+# Primary account, created on first boot and converged after. The hash
+# (`openssl passwd -6`) only applies at creation; passwords stay yours.
+# [user]
+# name = "me"
+# shell = "fish"
+# password_hash = '...'
+# ssh_keys = ["ssh-ed25519 AAAA..."]
+
 [packages]
 rpm = []
 # Flathub system apps, converged on boot: additions install, removals

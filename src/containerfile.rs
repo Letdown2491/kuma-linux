@@ -88,6 +88,49 @@ flatpak uninstall --system --unused --assumeyes --noninteractive
 
 const FLATHUB_URL: &str = "https://dl.flathub.org/repo/flathub.flatpakrepo";
 
+/// Runs before any login (console, greeter, ssh) so the declared account
+/// exists the first time a login prompt appears.
+const USER_SYNC_SERVICE: &str = r#"[Unit]
+Description=Converge the declared user account
+Before=systemd-user-sessions.service greetd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/kuma-user-sync
+
+[Install]
+WantedBy=multi-user.target
+"#;
+
+/// Creation happens at boot, not image build: /home is machine state
+/// (/var/home), so an image-built home directory would exist only on
+/// disk-image installs and be missing after a `bootc switch`. The
+/// password hash applies only at creation — passwords are machine state.
+/// Groups converge additively so imperative grants (docker, libvirt)
+/// made on the machine survive.
+const USER_SYNC_SCRIPT: &str = r#"#!/usr/bin/bash
+set -euo pipefail
+. /usr/lib/kuma/user
+if ! id -u "$KUMA_USER" &>/dev/null; then
+    args=(-m)
+    [ -n "${KUMA_SHELL:-}" ] && args+=(-s "$KUMA_SHELL")
+    useradd "${args[@]}" "$KUMA_USER"
+    if [ -n "${KUMA_PASSWORD_HASH:-}" ]; then
+        echo "$KUMA_USER:$KUMA_PASSWORD_HASH" | chpasswd -e
+    fi
+fi
+[ -n "${KUMA_SHELL:-}" ] && usermod -s "$KUMA_SHELL" "$KUMA_USER"
+for group in ${KUMA_GROUPS:-}; do
+    usermod -aG "$group" "$KUMA_USER"
+done
+"#;
+
+/// Declared keys live in root-owned image content, consulted alongside —
+/// never instead of — the user's own ~/.ssh/authorized_keys.
+const SSHD_KUMA_KEYS: &str = r#"# Kuma-declared keys, alongside the user's own.
+AuthorizedKeysFile .ssh/authorized_keys /etc/kuma/keys/%u
+"#;
+
 /// Appended to niri's full default config (copied from the package) so the
 /// stock keybindings survive; niri configs replace defaults entirely.
 const NIRI_EXTRAS: &str = r##"
@@ -290,6 +333,26 @@ pub fn generate(config: &Config) -> String {
             "\nRUN test -e /usr/share/zoneinfo/{tz} && ln -sfn /usr/share/zoneinfo/{tz} /etc/localtime\n"
         ));
     }
+    if let Some(user) = &config.user {
+        out.push_str("\nCOPY kuma-user /usr/lib/kuma/user\n");
+        out.push_str("COPY --chmod=755 kuma-user-sync /usr/libexec/kuma-user-sync\n");
+        out.push_str(
+            "COPY kuma-user-sync.service /usr/lib/systemd/system/kuma-user-sync.service\n",
+        );
+        if let Some(shell) = &user.shell {
+            // after the rpm layer, so a shell the config forgot to install
+            // fails the build instead of locking the account out at login
+            out.push_str(&format!("RUN test -x /usr/bin/{shell}\n"));
+        }
+        out.push_str("RUN systemctl enable kuma-user-sync.service\n");
+        if !user.ssh_keys.is_empty() {
+            out.push_str(&format!("COPY kuma-user-keys /etc/kuma/keys/{}\n", user.name));
+            out.push_str(
+                "COPY kuma-sshd-keys.conf /etc/ssh/sshd_config.d/40-kuma-keys.conf\n",
+            );
+        }
+    }
+
     if let Some(hostname) = &config.system.hostname {
         out.push_str(&format!("\nRUN echo '{hostname}' > /etc/hostname\n"));
     }
@@ -344,6 +407,27 @@ pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
         std::fs::write(dir.join("flatpaks"), list)?;
         std::fs::write(dir.join("kuma-flatpak-sync"), FLATPAK_SYNC_SCRIPT)?;
         std::fs::write(dir.join("kuma-flatpak-sync.service"), FLATPAK_SYNC_SERVICE)?;
+    }
+    if let Some(user) = &config.user {
+        let mut decl = format!("KUMA_USER='{}'\n", user.name);
+        if let Some(shell) = &user.shell {
+            decl.push_str(&format!("KUMA_SHELL='/usr/bin/{shell}'\n"));
+        }
+        if !user.groups.is_empty() {
+            decl.push_str(&format!("KUMA_GROUPS='{}'\n", user.groups.join(" ")));
+        }
+        if let Some(hash) = &user.password_hash {
+            decl.push_str(&format!("KUMA_PASSWORD_HASH='{hash}'\n"));
+        }
+        std::fs::write(dir.join("kuma-user"), decl)?;
+        std::fs::write(dir.join("kuma-user-sync"), USER_SYNC_SCRIPT)?;
+        std::fs::write(dir.join("kuma-user-sync.service"), USER_SYNC_SERVICE)?;
+        if !user.ssh_keys.is_empty() {
+            let mut keys = user.ssh_keys.join("\n");
+            keys.push('\n');
+            std::fs::write(dir.join("kuma-user-keys"), keys)?;
+            std::fs::write(dir.join("kuma-sshd-keys.conf"), SSHD_KUMA_KEYS)?;
+        }
     }
     if config.system.brew {
         std::fs::write(dir.join("kuma-brew-setup"), BREW_SETUP_SCRIPT)?;
@@ -544,6 +628,50 @@ mod tests {
             ""
         );
         assert!(dir.path().join("kuma-flatpak-sync").exists());
+    }
+
+    #[test]
+    fn user_generates_boot_sync_not_build_time_useradd() {
+        let out = generate(&config(
+            "schema_version = 1\n[user]\nname = \"mira\"\nshell = \"fish\"\nssh_keys = [\"ssh-ed25519 AAAA m@kuma\"]\n[packages]\nrpm = [\"fish\"]\n",
+        ));
+        assert!(out.contains("COPY kuma-user /usr/lib/kuma/user"));
+        assert!(out.contains("RUN systemctl enable kuma-user-sync.service"));
+        assert!(out.contains("COPY kuma-user-keys /etc/kuma/keys/mira"));
+        assert!(out.contains("sshd_config.d/40-kuma-keys.conf"));
+        // /home is machine state — the account must be created at boot
+        assert!(!out.contains("useradd"));
+        // the shell check comes after the rpm layer that installs it
+        let rpm_at = out.find("dnf -y install fish").unwrap();
+        let check_at = out.find("RUN test -x /usr/bin/fish").unwrap();
+        assert!(rpm_at < check_at);
+
+        let out = generate(&config("schema_version = 1"));
+        assert!(!out.contains("kuma-user"));
+    }
+
+    #[test]
+    fn context_writes_user_declaration() {
+        let dir = tempfile::tempdir().unwrap();
+        write_context(
+            &config(
+                "schema_version = 1\n[user]\nname = \"mira\"\nshell = \"fish\"\npassword_hash = \"$6$ab$cd\"\nssh_keys = [\"ssh-ed25519 AAAA m@kuma\"]\n",
+            ),
+            dir.path(),
+        )
+        .unwrap();
+        let decl = std::fs::read_to_string(dir.path().join("kuma-user")).unwrap();
+        assert_eq!(
+            decl,
+            "KUMA_USER='mira'\nKUMA_SHELL='/usr/bin/fish'\nKUMA_GROUPS='wheel'\nKUMA_PASSWORD_HASH='$6$ab$cd'\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("kuma-user-keys")).unwrap(),
+            "ssh-ed25519 AAAA m@kuma\n"
+        );
+        let script = std::fs::read_to_string(dir.path().join("kuma-user-sync")).unwrap();
+        assert!(script.contains("chpasswd -e"));
+        assert!(script.contains("usermod -aG"));
     }
 
     #[test]

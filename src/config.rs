@@ -12,9 +12,40 @@ pub struct Config {
     #[serde(default)]
     pub system: System,
     #[serde(default)]
+    pub user: Option<User>,
+    #[serde(default)]
     pub packages: Packages,
     #[serde(default)]
     pub services: Services,
+}
+
+/// The primary account, created and converged by a boot service — not at
+/// image build time, because /home is machine state (/var/home) and an
+/// image-built home directory never materializes on `bootc switch`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct User {
+    pub name: String,
+    /// Login shell by name ("fish"); the binary must exist in the image,
+    /// checked at build time.
+    #[serde(default)]
+    pub shell: Option<String>,
+    /// Converged additively: declared groups are ensured, groups granted
+    /// imperatively on the machine are left alone.
+    #[serde(default = "default_groups")]
+    pub groups: Vec<String>,
+    /// crypt(5) hash (e.g. `openssl passwd -6`), applied only when the
+    /// account is first created — after that the password is machine state.
+    #[serde(default)]
+    pub password_hash: Option<String>,
+    /// OpenSSH public keys, served from /etc/kuma/keys/<name> alongside
+    /// the user's own ~/.ssh/authorized_keys (never overwriting it).
+    #[serde(default)]
+    pub ssh_keys: Vec<String>,
+}
+
+fn default_groups() -> Vec<String> {
+    vec!["wheel".to_string()]
 }
 
 #[derive(Debug, Deserialize)]
@@ -120,6 +151,30 @@ impl Config {
         if let Some(locale) = &self.system.locale {
             validate_name(locale, "system.locale", &['_', '.', '-', '@'])?;
         }
+        if let Some(user) = &self.user {
+            validate_name(&user.name, "user.name", &['-', '_'])?;
+            if let Some(shell) = &user.shell {
+                validate_name(shell, "user.shell", &['-'])?;
+            }
+            for group in &user.groups {
+                validate_name(group, "user.groups", &['-', '_'])?;
+            }
+            if let Some(hash) = &user.password_hash {
+                // crypt(5) alphabet; also keeps the hash safe inside the
+                // single-quoted declaration file the sync script sources
+                validate_name(hash, "user.password_hash", &['$', '.', '/'])?;
+            }
+            for key in &user.ssh_keys {
+                let looks_like_key = ["ssh-", "ecdsa-", "sk-"]
+                    .iter()
+                    .any(|p| key.starts_with(p));
+                if !looks_like_key || key.contains('\n') {
+                    bail!(
+                        "user.ssh_keys entry doesn't look like a single-line OpenSSH public key"
+                    );
+                }
+            }
+        }
         for pkg in &self.packages.rpm {
             validate_name(pkg, "packages.rpm", &['.', '-', '_', '+', ':'])?;
         }
@@ -179,5 +234,27 @@ mod tests {
         let result: Result<Config, _> =
             toml::from_str("schema_version = 1\n[packages]\ndnf = [\"fish\"]\n");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn user_defaults_and_validation() {
+        let config: Config =
+            toml::from_str("schema_version = 1\n[user]\nname = \"mira\"\n").unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.user.unwrap().groups, vec!["wheel"]);
+
+        // hash outside the crypt(5) alphabet (it gets single-quoted into a
+        // sourced shell file) is rejected
+        let config: Config = toml::from_str(
+            "schema_version = 1\n[user]\nname = \"m\"\npassword_hash = \"$6$a b\"\n",
+        )
+        .unwrap();
+        assert!(config.validate().is_err());
+
+        let config: Config = toml::from_str(
+            "schema_version = 1\n[user]\nname = \"m\"\nssh_keys = [\"not-a-key\"]\n",
+        )
+        .unwrap();
+        assert!(config.validate().is_err());
     }
 }
