@@ -9,7 +9,7 @@
     "spacing": 4,
     "modules-left": ["niri/workspaces", "niri/window"],
     "modules-center": ["clock"],
-    "modules-right": ["tray", "pulseaudio", "network", "battery"],
+    "modules-right": ["tray", "pulseaudio", "bluetooth", "network", "battery"],
 
     "niri/window": {
         "max-length": 60,
@@ -23,13 +23,21 @@
         "format": "{icon}  {volume}%",
         "format-muted": "  muted",
         "format-icons": { "default": ["", "", ""] },
-        "on-click": "pactl set-sink-mute @DEFAULT_SINK@ toggle"
+        "on-click": "pavucontrol",
+        "on-click-right": "pactl set-sink-mute @DEFAULT_SINK@ toggle"
+    },
+    "bluetooth": {
+        "format": "",
+        "format-connected": " {num_connections}",
+        "format-disabled": "",
+        "on-click": "blueman-manager"
     },
     "network": {
         "format-wifi": "  {essid}",
         "format-ethernet": "  wired",
         "format-disconnected": "offline",
-        "tooltip-format": "{ifname}: {ipaddr}"
+        "tooltip-format": "{ifname}: {ipaddr}",
+        "on-click": "nm-connection-editor"
     },
     "battery": {
         "format": "{icon}  {capacity}%",

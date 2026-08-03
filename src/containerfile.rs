@@ -31,6 +31,19 @@ const NIRI_PACKAGES: &[&str] = &[
     "wpa_supplicant",
     "brightnessctl",
     "power-profiles-daemon",
+    // device-level settings: the config file covers system definition,
+    // but wifi picking, pairing, mixers, and mounts are machine state
+    "pavucontrol",
+    "nm-connection-editor",
+    "bluez",
+    "blueman",
+    "thunar",
+    "gvfs",
+    "gvfs-mtp",
+    // (nwg-look would fit here for GTK theme tweaks, but it's COPR-only)
+    "wlsunset",
+    "cups",
+    "system-config-printer",
     // session essentials
     "wl-clipboard",
     "spice-vdagent",
@@ -165,6 +178,9 @@ const NIRI_EXTRAS: &str = r##"
 // Kuma session services
 spawn-at-startup "/usr/libexec/polkit-mate-authentication-agent-1"
 spawn-at-startup "/usr/libexec/kuma-clipboard-bridge"
+spawn-at-startup "blueman-applet"
+// Time-based night light: no location needed, unlike solar mode.
+spawn-at-startup "wlsunset" "-S" "07:00" "-s" "20:00"
 spawn-at-startup "waybar"
 spawn-at-startup "swaybg" "-i" "/usr/share/backgrounds/kuma/kuma-wallpaper.png" "-m" "fill"
 spawn-at-startup "swayidle" "-w" "timeout" "900" "swaylock -f -i /usr/share/backgrounds/kuma/kuma-wallpaper.png -s fill" "before-sleep" "swaylock -f -i /usr/share/backgrounds/kuma/kuma-wallpaper.png -s fill"
@@ -306,7 +322,7 @@ pub fn generate(config: &Config) -> String {
             "RUN mkdir -p /etc/niri \\\n    && sed -e '/starts waybar/d' -e '/^spawn-at-startup \"waybar\"$/d' /usr/share/doc/niri/default-config.kdl > /etc/niri/config.kdl \\\n    && cat /usr/lib/kuma/niri-extras.kdl >> /etc/niri/config.kdl \\\n    && niri validate --config /etc/niri/config.kdl\n",
         );
         out.push_str(
-            "RUN systemctl set-default graphical.target && systemctl enable greetd.service firewalld.service power-profiles-daemon.service\n",
+            "RUN systemctl set-default graphical.target && systemctl enable greetd.service firewalld.service power-profiles-daemon.service bluetooth.service cups.service\n",
         );
     }
 

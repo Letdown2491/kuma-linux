@@ -44,6 +44,7 @@ window#waybar {
 
 #clock,
 #pulseaudio,
+#bluetooth,
 #network,
 #battery,
 #tray {
@@ -51,6 +52,7 @@ window#waybar {
 }
 
 #pulseaudio.muted,
+#bluetooth.disabled,
 #network.disconnected {
     color: #7f93a8;
 }
