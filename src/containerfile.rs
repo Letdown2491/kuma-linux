@@ -59,16 +59,31 @@ const DESKTOP_KARGS: &str = "kargs = [\"quiet\"]\n";
 /// converges the machine to it on boot. The declaration is atomic image
 /// content — only the app installs are runtime state.
 const FLATPAK_SYNC_SERVICE: &str = r#"[Unit]
-Description=Sync declared Flatpak applications
+Description=Converge Flatpak applications to the declared list
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/bash -c 'xargs -r -a /usr/lib/kuma/flatpaks flatpak install --system --assumeyes --noninteractive --or-update flathub'
+ExecStart=/usr/libexec/kuma-flatpak-sync
 
 [Install]
 WantedBy=multi-user.target
+"#;
+
+/// Convergence, not just installation: system apps missing from the
+/// declaration are removed, so deleting a line in kuma.toml has the same
+/// authority as adding one. User installs (`flatpak install --user`) are
+/// personal machine state and are never touched.
+const FLATPAK_SYNC_SCRIPT: &str = r#"#!/usr/bin/bash
+set -euo pipefail
+declared=/usr/lib/kuma/flatpaks
+xargs -r -a "$declared" flatpak install --system --assumeyes --noninteractive --or-update flathub
+flatpak list --system --app --columns=application | while read -r app; do
+    grep -qxF "$app" "$declared" \
+        || flatpak uninstall --system --assumeyes --noninteractive "$app"
+done
+flatpak uninstall --system --unused --assumeyes --noninteractive
 "#;
 
 const FLATHUB_URL: &str = "https://dl.flathub.org/repo/flathub.flatpakrepo";
@@ -221,8 +236,11 @@ pub fn generate(config: &Config) -> String {
             "RUN curl --fail -Lo /etc/flatpak/remotes.d/flathub.flatpakrepo {FLATHUB_URL} \\\n    && systemctl mask flatpak-add-fedora-repos.service\n"
         ));
     }
-    if !config.packages.flatpak.is_empty() {
+    if wants_flatpak {
+        // Ship the declaration and sync even when the list is empty:
+        // convergence means an emptied list removes the apps too.
         out.push_str("COPY flatpaks /usr/lib/kuma/flatpaks\n");
+        out.push_str("COPY --chmod=755 kuma-flatpak-sync /usr/libexec/kuma-flatpak-sync\n");
         out.push_str(
             "COPY kuma-flatpak-sync.service /usr/lib/systemd/system/kuma-flatpak-sync.service\n",
         );
@@ -272,6 +290,19 @@ pub fn generate(config: &Config) -> String {
             "\nRUN test -e /usr/share/zoneinfo/{tz} && ln -sfn /usr/share/zoneinfo/{tz} /etc/localtime\n"
         ));
     }
+    if let Some(hostname) = &config.system.hostname {
+        out.push_str(&format!("\nRUN echo '{hostname}' > /etc/hostname\n"));
+    }
+    if let Some(locale) = &config.system.locale {
+        // The langpack makes the locale actually exist; without it glibc
+        // silently falls back and every app renders C.UTF-8.
+        if let Some(lang) = langpack(locale) {
+            out.push_str(&format!(
+                "\nRUN dnf -y install glibc-langpack-{lang} && dnf clean all\n"
+            ));
+        }
+        out.push_str(&format!("RUN echo 'LANG={locale}' > /etc/locale.conf\n"));
+    }
 
     out.push_str(BRANDING);
 
@@ -280,6 +311,16 @@ pub fn generate(config: &Config) -> String {
 }
 
 /// Write the full build context: the Containerfile plus any files it COPYs.
+/// "de_DE.UTF-8" → "de": the glibc langpack that provides the locale.
+/// Locales without a territory part (C, POSIX, C.UTF-8) need none.
+fn langpack(locale: &str) -> Option<&str> {
+    let lang = locale.split('_').next()?;
+    (locale.contains('_')
+        && (2..=3).contains(&lang.len())
+        && lang.chars().all(|c| c.is_ascii_lowercase()))
+    .then_some(lang)
+}
+
 pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
     std::fs::write(dir.join("Containerfile"), generate(config))?;
     if config.system.desktop == Desktop::Niri {
@@ -295,10 +336,13 @@ pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
         std::fs::write(dir.join("dconf-profile"), DCONF_PROFILE)?;
         std::fs::write(dir.join("dconf-kuma-dark"), DCONF_DARK)?;
     }
-    if !config.packages.flatpak.is_empty() {
+    if config.system.desktop == Desktop::Niri || !config.packages.flatpak.is_empty() {
         let mut list = config.packages.flatpak.join("\n");
-        list.push('\n');
+        if !list.is_empty() {
+            list.push('\n');
+        }
         std::fs::write(dir.join("flatpaks"), list)?;
+        std::fs::write(dir.join("kuma-flatpak-sync"), FLATPAK_SYNC_SCRIPT)?;
         std::fs::write(dir.join("kuma-flatpak-sync.service"), FLATPAK_SYNC_SERVICE)?;
     }
     if config.system.brew {
@@ -472,14 +516,50 @@ mod tests {
     }
 
     #[test]
-    fn niri_includes_flathub_but_no_sync_without_declared_apps() {
+    fn niri_ships_sync_even_without_declared_apps() {
         let out = generate(&config(
             "schema_version = 1\n[system]\ndesktop = \"niri\"\n",
         ));
         assert!(out.contains("flathub.flatpakrepo"));
         // flatpak comes from the desktop set; no second install layer
         assert!(!out.contains("\nRUN dnf -y install flatpak && dnf clean all"));
-        assert!(!out.contains("kuma-flatpak-sync"));
+        // convergence: the empty declaration still syncs, removing strays
+        assert!(out.contains("systemctl enable kuma-flatpak-sync.service"));
+    }
+
+    #[test]
+    fn flatpak_sync_converges_removals() {
+        assert!(FLATPAK_SYNC_SCRIPT.contains("flatpak uninstall --system"));
+        // user-level installs are personal state — never touched
+        assert!(!FLATPAK_SYNC_SCRIPT.contains("--user"));
+        let dir = tempfile::tempdir().unwrap();
+        write_context(
+            &config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"),
+            dir.path(),
+        )
+        .unwrap();
+        // empty declaration is real content: converge to "no system apps"
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("flatpaks")).unwrap(),
+            ""
+        );
+        assert!(dir.path().join("kuma-flatpak-sync").exists());
+    }
+
+    #[test]
+    fn hostname_and_locale_pins() {
+        let out = generate(&config(
+            "schema_version = 1\n[system]\nhostname = \"kuma-laptop\"\nlocale = \"de_DE.UTF-8\"\n",
+        ));
+        assert!(out.contains("RUN echo 'kuma-laptop' > /etc/hostname"));
+        assert!(out.contains("dnf -y install glibc-langpack-de"));
+        assert!(out.contains("RUN echo 'LANG=de_DE.UTF-8' > /etc/locale.conf"));
+        // C.UTF-8 has no territory, so no langpack layer
+        let out = generate(&config(
+            "schema_version = 1\n[system]\nlocale = \"C.UTF-8\"\n",
+        ));
+        assert!(!out.contains("glibc-langpack"));
+        assert!(out.contains("LANG=C.UTF-8"));
     }
 
     #[test]
@@ -492,11 +572,10 @@ mod tests {
         .unwrap();
         let list = std::fs::read_to_string(dir.path().join("flatpaks")).unwrap();
         assert_eq!(list, "org.mozilla.firefox\norg.gnome.Loupe\n");
-        let service =
-            std::fs::read_to_string(dir.path().join("kuma-flatpak-sync.service")).unwrap();
+        let script = std::fs::read_to_string(dir.path().join("kuma-flatpak-sync")).unwrap();
         // remote pinned: multiple remotes offering the same ref would make
         // non-interactive installs fail
-        assert!(service.contains("--or-update flathub"));
+        assert!(script.contains("--or-update flathub"));
     }
 
     #[test]

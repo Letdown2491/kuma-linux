@@ -89,10 +89,13 @@ base = "quay.io/fedora/fedora-bootc:44"
 # Pin an IANA timezone across all machines built from this file. Usually
 # leave unset — timezone is machine state (`timedatectl set-timezone`).
 # timezone = "America/Denver"
+# hostname = "kuma-laptop"
+# locale = "en_US.UTF-8"
 
 [packages]
 rpm = []
-# Installed from Flathub on boot by kuma-flatpak-sync.service
+# Flathub system apps, converged on boot: additions install, removals
+# uninstall. `flatpak install --user` stays yours.
 flatpak = []
 
 [services]

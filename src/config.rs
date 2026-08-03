@@ -33,6 +33,16 @@ pub struct System {
     /// across image updates; `kuma vm` mirrors the host.
     #[serde(default)]
     pub timezone: Option<String>,
+    /// Pin /etc/hostname. Usually unset: hostname is machine state
+    /// (`hostnamectl set-hostname` persists), and os-release branding
+    /// already makes unset default to "kuma".
+    #[serde(default)]
+    pub hostname: Option<String>,
+    /// System locale, e.g. "en_US.UTF-8". Installs the matching glibc
+    /// langpack and sets /etc/locale.conf. Unset keeps the base default
+    /// (C.UTF-8).
+    #[serde(default)]
+    pub locale: Option<String>,
 }
 
 impl Default for System {
@@ -42,6 +52,8 @@ impl Default for System {
             desktop: Desktop::default(),
             brew: false,
             timezone: None,
+            hostname: None,
+            locale: None,
         }
     }
 }
@@ -101,6 +113,12 @@ impl Config {
         validate_name(&self.system.base, "system.base", &['/', ':', '.', '-', '_', '@'])?;
         if let Some(tz) = &self.system.timezone {
             validate_name(tz, "system.timezone", &['/', '-', '_', '+'])?;
+        }
+        if let Some(hostname) = &self.system.hostname {
+            validate_name(hostname, "system.hostname", &['-', '.'])?;
+        }
+        if let Some(locale) = &self.system.locale {
+            validate_name(locale, "system.locale", &['_', '.', '-', '@'])?;
         }
         for pkg in &self.packages.rpm {
             validate_name(pkg, "packages.rpm", &['.', '-', '_', '+', ':'])?;
