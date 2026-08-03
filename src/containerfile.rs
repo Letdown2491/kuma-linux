@@ -176,6 +176,13 @@ AuthorizedKeysFile .ssh/authorized_keys /etc/kuma/keys/%u
 /// stock keybindings survive; niri configs replace defaults entirely.
 const NIRI_EXTRAS: &str = r##"
 
+// GTK_THEME=Adwaita:dark is the empirically reliable dark switch for
+// GTK3: the settings-layer name "Adwaita-dark" loads as a (nonexistent)
+// directory theme and silently falls back to light.
+environment {
+    GTK_THEME "Adwaita:dark"
+}
+
 // Kuma session services
 spawn-at-startup "/usr/libexec/polkit-mate-authentication-agent-1"
 spawn-at-startup "/usr/libexec/kuma-clipboard-bridge"
@@ -207,14 +214,14 @@ window-rule {
 const DCONF_PROFILE: &str = "user-db:user\nsystem-db:local\n";
 const DCONF_DARK: &str = r#"[org/gnome/desktop/interface]
 color-scheme='prefer-dark'
-gtk-theme='Adwaita-dark'
+gtk-theme='Adwaita'
 "#;
 
 /// GTK theme settings travel two roads: Wayland-native apps read
 /// gsettings (the dconf defaults cover those), but X11/XWayland GTK apps
 /// only listen to an XSettings daemon — without one they render stock
 /// light Adwaita. xsettingsd broadcasts the same dark values there.
-const XSETTINGSD_CONF: &str = r#"Net/ThemeName "Adwaita-dark"
+const XSETTINGSD_CONF: &str = r#"Net/ThemeName "Adwaita"
 Net/IconThemeName "Adwaita"
 Gtk/ApplicationPreferDarkTheme 1
 Gtk/CursorThemeName "Adwaita"
@@ -227,7 +234,7 @@ Xft/DPI 98304
 /// compute one from XWayland's bogus virtual-monitor physical size and
 /// render enormous.
 const GTK3_SETTINGS_INI: &str = r#"[Settings]
-gtk-theme-name = Adwaita-dark
+gtk-theme-name = Adwaita
 gtk-application-prefer-dark-theme = true
 gtk-icon-theme-name = Adwaita
 "#;
