@@ -22,12 +22,24 @@ pub struct Config {
 pub struct System {
     #[serde(default = "default_base")]
     pub base: String,
+    #[serde(default)]
+    pub desktop: Desktop,
 }
 
 impl Default for System {
     fn default() -> Self {
-        Self { base: default_base() }
+        Self { base: default_base(), desktop: Desktop::default() }
     }
+}
+
+/// A desktop is a curated set (compositor, greeter, portals, audio, fonts),
+/// not a package list — the curation is Kuma's job.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Desktop {
+    #[default]
+    None,
+    Niri,
 }
 
 fn default_base() -> String {

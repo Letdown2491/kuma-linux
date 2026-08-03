@@ -116,16 +116,13 @@ fn build(config_path: &Path, tag: &str) -> Result<()> {
         );
     }
     let dir = tempfile::tempdir().context("cannot create build directory")?;
-    let containerfile = dir.path().join("Containerfile");
-    std::fs::write(&containerfile, containerfile::generate(&config))?;
+    containerfile::write_context(&config, dir.path())?;
 
     run_host(&[
         "podman",
         "build",
         "--tag",
         tag,
-        "--file",
-        containerfile.to_str().context("non-UTF-8 temp path")?,
         dir.path().to_str().context("non-UTF-8 temp path")?,
     ])?;
     println!("\nBuilt {tag}. Apply it with `kuma switch`, or boot it with `kuma vm`.");
@@ -254,6 +251,8 @@ fn boot_disk(disk: &Path) -> Result<()> {
         "4096",
         "-drive",
         &format!("file={},if=virtio", path_str(disk)?),
+        "-vga",
+        "virtio",
         "-nic",
         "user,model=virtio-net-pci,hostfwd=tcp::2222-:22",
     ])
