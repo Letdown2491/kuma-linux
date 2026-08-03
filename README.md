@@ -39,7 +39,7 @@ desktop = "niri"   # curated desktop set; omit for a headless system
 
 [packages]
 rpm = ["fish", "distrobox", "tailscale"]
-flatpak = ["org.mozilla.firefox"]   # runtime state; `kuma sync` (planned)
+flatpak = ["org.mozilla.firefox"]   # from Flathub, synced on boot
 
 [services]
 enable = ["tailscaled.service"]
@@ -68,6 +68,7 @@ enable = ["tailscaled.service"]
 - [x] `kuma vm` — qcow2 via bootc-image-builder, booted in QEMU
 - [ ] `kuma diff` — show what an apply would change
 - [ ] `kuma update` — pull newer base, rebuild, apply
-- [ ] `kuma sync` — runtime state: flatpaks, later user config
+- [x] Flatpaks: Flathub remote in-image, declared apps synced on boot
+- [ ] `kuma sync` — on-demand runtime state sync (flatpaks without reboot, later user config)
 - [ ] Base images (`kuma-gnome`, `kuma-plasma`) built in CI
 - [ ] Installer ISO via bootc-image-builder

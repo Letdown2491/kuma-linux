@@ -89,7 +89,7 @@ base = "quay.io/fedora/fedora-bootc:44"
 
 [packages]
 rpm = []
-# Flatpaks are recorded here but applied at runtime (`kuma sync`, not yet implemented)
+# Installed from Flathub on boot by kuma-flatpak-sync.service
 flatpak = []
 
 [services]
@@ -109,12 +109,6 @@ fn init(force: bool) -> Result<()> {
 
 fn build(config_path: &Path, tag: &str) -> Result<()> {
     let config = Config::load(config_path)?;
-    if !config.packages.flatpak.is_empty() {
-        eprintln!(
-            "note: {} flatpak(s) declared; runtime apply is not implemented yet",
-            config.packages.flatpak.len()
-        );
-    }
     let dir = tempfile::tempdir().context("cannot create build directory")?;
     containerfile::write_context(&config, dir.path())?;
 

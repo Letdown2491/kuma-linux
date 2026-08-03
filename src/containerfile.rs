@@ -5,6 +5,7 @@ use std::path::Path;
 /// The curated niri desktop: compositor, greeter, launcher, bar,
 /// notifications, terminal, audio, portals, fonts.
 const NIRI_PACKAGES: &[&str] = &[
+    "flatpak",
     "niri",
     "xwayland-satellite",
     "greetd",
@@ -38,6 +39,24 @@ user = "greetd"
 /// disabling auditing (records still reach the journal).
 const DESKTOP_KARGS: &str = "kargs = [\"quiet\"]\n";
 
+/// Declared flatpaks are baked into the image as a list; this oneshot
+/// converges the machine to it on boot. The declaration is atomic image
+/// content — only the app installs are runtime state.
+const FLATPAK_SYNC_SERVICE: &str = r#"[Unit]
+Description=Sync declared Flatpak applications
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash -c 'xargs -r -a /usr/lib/kuma/flatpaks flatpak install --system --assumeyes --noninteractive --or-update'
+
+[Install]
+WantedBy=multi-user.target
+"#;
+
+const FLATHUB_URL: &str = "https://dl.flathub.org/repo/flathub.flatpakrepo";
+
 /// Compile a kuma config into a Containerfile for a bootc image build.
 pub fn generate(config: &Config) -> String {
     let mut out = String::new();
@@ -56,6 +75,26 @@ pub fn generate(config: &Config) -> String {
         out.push_str(
             "RUN systemctl set-default graphical.target && systemctl enable greetd.service\n",
         );
+    }
+
+    let wants_flatpak = config.system.desktop == Desktop::Niri
+        || !config.packages.flatpak.is_empty();
+    if wants_flatpak {
+        if config.system.desktop == Desktop::None {
+            out.push_str("\nRUN dnf -y install flatpak && dnf clean all\n");
+        }
+        // Preconfigured-remote mechanism: flatpak reads /etc/flatpak/remotes.d,
+        // so Flathub (with its GPG key) ships as image content.
+        out.push_str(&format!(
+            "RUN curl --fail -Lo /etc/flatpak/remotes.d/flathub.flatpakrepo {FLATHUB_URL}\n"
+        ));
+    }
+    if !config.packages.flatpak.is_empty() {
+        out.push_str("COPY flatpaks /usr/lib/kuma/flatpaks\n");
+        out.push_str(
+            "COPY kuma-flatpak-sync.service /usr/lib/systemd/system/kuma-flatpak-sync.service\n",
+        );
+        out.push_str("RUN systemctl enable kuma-flatpak-sync.service\n");
     }
 
     if !config.packages.rpm.is_empty() {
@@ -92,6 +131,12 @@ pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
     if config.system.desktop == Desktop::Niri {
         std::fs::write(dir.join("greetd-config.toml"), GREETD_CONFIG)?;
         std::fs::write(dir.join("kargs-desktop.toml"), DESKTOP_KARGS)?;
+    }
+    if !config.packages.flatpak.is_empty() {
+        let mut list = config.packages.flatpak.join("\n");
+        list.push('\n');
+        std::fs::write(dir.join("flatpaks"), list)?;
+        std::fs::write(dir.join("kuma-flatpak-sync.service"), FLATPAK_SYNC_SERVICE)?;
     }
     Ok(())
 }
@@ -161,6 +206,41 @@ mod tests {
         let desktop_at = out.find("niri").unwrap();
         let user_at = out.find("htop").unwrap();
         assert!(desktop_at < user_at);
+    }
+
+    #[test]
+    fn flatpaks_generate_remote_list_and_sync_service() {
+        let out = generate(&config(
+            "schema_version = 1\n[packages]\nflatpak = [\"org.mozilla.firefox\"]\n",
+        ));
+        assert!(out.contains("dnf -y install flatpak"));
+        assert!(out.contains("/etc/flatpak/remotes.d/flathub.flatpakrepo"));
+        assert!(out.contains("COPY flatpaks /usr/lib/kuma/flatpaks"));
+        assert!(out.contains("systemctl enable kuma-flatpak-sync.service"));
+    }
+
+    #[test]
+    fn niri_includes_flathub_but_no_sync_without_declared_apps() {
+        let out = generate(&config(
+            "schema_version = 1\n[system]\ndesktop = \"niri\"\n",
+        ));
+        assert!(out.contains("flathub.flatpakrepo"));
+        // flatpak comes from the desktop set; no second install layer
+        assert!(!out.contains("\nRUN dnf -y install flatpak && dnf clean all"));
+        assert!(!out.contains("kuma-flatpak-sync"));
+    }
+
+    #[test]
+    fn context_includes_flatpak_list() {
+        let dir = tempfile::tempdir().unwrap();
+        write_context(
+            &config("schema_version = 1\n[packages]\nflatpak = [\"org.mozilla.firefox\", \"org.gnome.Loupe\"]\n"),
+            dir.path(),
+        )
+        .unwrap();
+        let list = std::fs::read_to_string(dir.path().join("flatpaks")).unwrap();
+        assert_eq!(list, "org.mozilla.firefox\norg.gnome.Loupe\n");
+        assert!(dir.path().join("kuma-flatpak-sync.service").exists());
     }
 
     #[test]
