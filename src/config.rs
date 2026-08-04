@@ -42,6 +42,10 @@ pub struct User {
     /// the user's own ~/.ssh/authorized_keys (never overwriting it).
     #[serde(default)]
     pub ssh_keys: Vec<String>,
+    /// Log this user straight into the desktop at boot (greetd
+    /// initial_session). The greeter still appears after logout.
+    #[serde(default)]
+    pub autologin: bool,
 }
 
 fn default_groups() -> Vec<String> {

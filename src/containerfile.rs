@@ -42,6 +42,7 @@ const NIRI_PACKAGES: &[&str] = &[
     "gvfs-mtp",
     // (nwg-look would fit here for GTK theme tweaks, but it's COPR-only)
     "wob",
+    "libnotify",
     "wlsunset",
     "cups",
     "system-config-printer",
@@ -65,6 +66,21 @@ vt = 1
 command = "tuigreet --time --remember --greeting 'Welcome to Kuma' --cmd niri-session"
 user = "greetd"
 "#;
+
+/// greetd's initial_session is exactly autologin semantics: straight
+/// into the desktop at boot, greeter on logout.
+fn greetd_config(config: &Config) -> String {
+    let mut out = GREETD_CONFIG.to_string();
+    if let Some(user) = &config.user {
+        if user.autologin {
+            out.push_str(&format!(
+                "\n[initial_session]\ncommand = \"niri-session\"\nuser = \"{}\"\n",
+                user.name
+            ));
+        }
+    }
+    out
+}
 
 /// Desktop kernel args. The minimal base ships no auditd, so kernel audit
 /// records spray onto the console; `quiet` keeps the console clean without
@@ -194,7 +210,9 @@ spawn-at-startup "blueman-applet"
 spawn-at-startup "wlsunset" "-S" "07:00" "-s" "20:00"
 spawn-at-startup "waybar"
 spawn-at-startup "swaybg" "-i" "/usr/share/backgrounds/kuma/kuma-wallpaper.png" "-m" "fill"
-spawn-at-startup "swayidle" "-w" "timeout" "900" "swaylock -f -i /usr/share/backgrounds/kuma/kuma-wallpaper.png -s fill" "before-sleep" "swaylock -f -i /usr/share/backgrounds/kuma/kuma-wallpaper.png -s fill"
+// Lock at 15 min, screen off a minute later (any input wakes it).
+spawn-at-startup "swayidle" "-w" "timeout" "900" "swaylock -f -i /usr/share/backgrounds/kuma/kuma-wallpaper.png -s fill" "timeout" "960" "niri msg action power-off-monitors" "before-sleep" "swaylock -f -i /usr/share/backgrounds/kuma/kuma-wallpaper.png -s fill"
+spawn-at-startup "/usr/libexec/kuma-battery-watch"
 
 // Kuma look: rounded windows, quiet neutral focus ring. Window rules are
 // additive, so this themes every window without touching the stock layout.
@@ -260,6 +278,28 @@ case "$1" in
     brightness-up)   brightnessctl -q set +5%; feed "$(brightnessctl -m | cut -d, -f4 | tr -d %)" ;;
     brightness-down) brightnessctl -q set 5%-; feed "$(brightnessctl -m | cut -d, -f4 | tr -d %)" ;;
 esac
+"#;
+
+/// Battery warnings through mako. Polls sysfs — upower-notifier tools
+/// (poweralertd) aren't in Fedora's repos. No battery (desktops, VMs)
+/// means the loop just idles cheaply.
+const BATTERY_WATCH: &str = r#"#!/usr/bin/bash
+set -u
+warned=""
+while sleep 60; do
+    bat=$(ls /sys/class/power_supply 2>/dev/null | grep -m1 "^BAT" || true)
+    [ -n "$bat" ] || continue
+    cap=$(cat "/sys/class/power_supply/$bat/capacity" 2>/dev/null || echo 100)
+    status=$(cat "/sys/class/power_supply/$bat/status" 2>/dev/null || echo Unknown)
+    if [ "$status" != "Discharging" ]; then warned=""; continue; fi
+    if [ "$cap" -le 5 ] && [ "$warned" != "critical" ]; then
+        warned="critical"
+        notify-send -u critical "Battery critical: ${cap}%" "Plug in now."
+    elif [ "$cap" -le 15 ] && [ -z "$warned" ]; then
+        warned="low"
+        notify-send "Battery low: ${cap}%"
+    fi
+done
 "#;
 
 /// Media-key binds routed through kuma-osd, spliced INTO the stock
@@ -417,6 +457,7 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY --chmod=755 kuma-xsettings /usr/libexec/kuma-xsettings\n");
         out.push_str("COPY xsettingsd.conf /usr/lib/kuma/xsettingsd.conf\n");
         out.push_str("COPY niri-binds.kdl /usr/lib/kuma/niri-binds.kdl\n");
+        out.push_str("COPY --chmod=755 kuma-battery-watch /usr/libexec/kuma-battery-watch\n");
         out.push_str("COPY --chmod=755 kuma-wob /usr/libexec/kuma-wob\n");
         out.push_str("COPY --chmod=755 kuma-osd /usr/libexec/kuma-osd\n");
         out.push_str("COPY wob.ini /usr/lib/kuma/wob.ini\n");
@@ -569,7 +610,7 @@ pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
     std::fs::write(dir.join("kuma-vm-timezone"), VM_TZ_SCRIPT)?;
     std::fs::write(dir.join("kuma-vm-timezone.service"), VM_TZ_SERVICE)?;
     if config.system.desktop == Desktop::Niri {
-        std::fs::write(dir.join("greetd-config.toml"), GREETD_CONFIG)?;
+        std::fs::write(dir.join("greetd-config.toml"), greetd_config(config))?;
         std::fs::write(dir.join("kargs-desktop.toml"), DESKTOP_KARGS)?;
         std::fs::write(dir.join("niri-extras.kdl"), NIRI_EXTRAS)?;
         std::fs::write(dir.join("kuma-wallpaper.png"), WALLPAPER)?;
@@ -582,6 +623,7 @@ pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
         std::fs::write(dir.join("kuma-xsettings"), XSETTINGS_LAUNCHER)?;
         std::fs::write(dir.join("xsettingsd.conf"), XSETTINGSD_CONF)?;
         std::fs::write(dir.join("niri-binds.kdl"), NIRI_MEDIA_BINDS)?;
+        std::fs::write(dir.join("kuma-battery-watch"), BATTERY_WATCH)?;
         std::fs::write(dir.join("kuma-wob"), WOB_LAUNCHER)?;
         std::fs::write(dir.join("kuma-osd"), OSD_SCRIPT)?;
         std::fs::write(dir.join("wob.ini"), WOB_INI)?;
@@ -850,6 +892,34 @@ mod tests {
 
         let out = generate(&config("schema_version = 1"));
         assert!(!out.contains("kuma-user"));
+    }
+
+    #[test]
+    fn autologin_adds_initial_session() {
+        let with = greetd_config(&config(
+            "schema_version = 1\n[user]\nname = \"mira\"\nautologin = true\n",
+        ));
+        assert!(with.contains("[initial_session]"));
+        assert!(with.contains("user = \"mira\""));
+        // greeter remains the fallback for logout
+        assert!(with.contains("[default_session]"));
+
+        let without = greetd_config(&config("schema_version = 1\n[user]\nname = \"mira\"\n"));
+        assert!(!without.contains("[initial_session]"));
+    }
+
+    #[test]
+    fn session_polish_ships_osd_and_battery_watch() {
+        assert!(NIRI_EXTRAS.contains("power-off-monitors"));
+        assert!(NIRI_EXTRAS.contains("kuma-battery-watch"));
+        assert!(NIRI_EXTRAS.contains("kuma-wob"));
+        // media keys route through the OSD helper, spliced into stock binds
+        assert!(NIRI_MEDIA_BINDS.contains("kuma-osd"));
+        let out = generate(&config(
+            "schema_version = 1\n[system]\ndesktop = \"niri\"\n",
+        ));
+        assert!(out.contains("-e '/XF86Audio/d'"));
+        assert!(out.contains("r /usr/lib/kuma/niri-binds.kdl"));
     }
 
     #[test]
