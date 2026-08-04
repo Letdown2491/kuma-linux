@@ -43,6 +43,14 @@ const NIRI_PACKAGES: &[&str] = &[
     "gvfs",
     "gvfs-mtp",
     "cliphist",
+    "wf-recorder",
+    // base ships zram-generator but not the defaults that activate it:
+    // without this the desktop has zero swap and the OOM killer eats
+    // windows under memory pressure
+    "zram-generator-defaults",
+    // avahi is in the base; nss-mdns makes .local names and driverless
+    // printer discovery actually resolve
+    "nss-mdns",
     // (nwg-look would fit here for GTK theme tweaks, but it's COPR-only)
     "wob",
     "libnotify",
@@ -104,6 +112,37 @@ ExecStart=/usr/libexec/kuma-flatpak-sync
 
 [Install]
 WantedBy=multi-user.target
+"#;
+
+/// Boot-only convergence goes stale on machines that stay up: a
+/// two-week uptime means a two-week-old browser. Daily, with catch-up
+/// for machines that were asleep at the appointed hour.
+const FLATPAK_SYNC_TIMER: &str = r#"[Unit]
+Description=Daily Flatpak convergence
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target
+"#;
+
+/// Toggle screen recording: wf-recorder to ~/Videos, notifications on
+/// both edges. SIGINT lets wf-recorder finalize the file properly.
+const RECORD_SCRIPT: &str = r#"#!/usr/bin/bash
+set -u
+if pgrep -x wf-recorder >/dev/null; then
+    pkill -INT -x wf-recorder
+    notify-send "Recording stopped" "Saved in ~/Videos"
+else
+    dir="$HOME/Videos"
+    mkdir -p "$dir"
+    f="$dir/recording-$(date +%Y%m%d-%H%M%S).mp4"
+    notify-send "Recording started" "Mod+Alt+R stops it."
+    exec wf-recorder -f "$f"
+fi
 "#;
 
 /// Convergence, not just installation: system apps missing from the
@@ -343,6 +382,8 @@ const NIRI_MEDIA_BINDS: &str = r#"    XF86AudioRaiseVolume allow-when-locked=tru
     XF86MonBrightnessUp allow-when-locked=true { spawn "/usr/libexec/kuma-osd" "brightness-up"; }
     XF86MonBrightnessDown allow-when-locked=true { spawn "/usr/libexec/kuma-osd" "brightness-down"; }
     Mod+Ctrl+V { spawn "sh" "-c" "cliphist list | fuzzel --dmenu | cliphist decode | wl-copy"; }
+    Mod+Shift+N { spawn "makoctl" "mode" "-t" "do-not-disturb"; }
+    Mod+Alt+R { spawn "/usr/libexec/kuma-record"; }
 "#;
 
 /// GTK theme settings travel two roads: Wayland-native apps read
@@ -489,6 +530,7 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY --chmod=755 kuma-xsettings /usr/libexec/kuma-xsettings\n");
         out.push_str("COPY xsettingsd.conf /usr/lib/kuma/xsettingsd.conf\n");
         out.push_str("COPY niri-binds.kdl /usr/lib/kuma/niri-binds.kdl\n");
+        out.push_str("COPY --chmod=755 kuma-record /usr/libexec/kuma-record\n");
         out.push_str("COPY --chmod=755 kuma-battery-watch /usr/libexec/kuma-battery-watch\n");
         out.push_str("COPY --chmod=755 kuma-wob /usr/libexec/kuma-wob\n");
         out.push_str("COPY --chmod=755 kuma-osd /usr/libexec/kuma-osd\n");
@@ -512,7 +554,7 @@ pub fn generate(config: &Config) -> String {
             "RUN mkdir -p /etc/niri \\\n    && sed -e '/starts waybar/d' -e '/^spawn-at-startup \"waybar\"$/d' -e '/XF86Audio/d' -e '/XF86MonBrightness/d' -e '/^binds {/r /usr/lib/kuma/niri-binds.kdl' /usr/share/doc/niri/default-config.kdl > /etc/niri/config.kdl \\\n    && cat /usr/lib/kuma/niri-extras.kdl >> /etc/niri/config.kdl \\\n    && niri validate --config /etc/niri/config.kdl\n",
         );
         out.push_str(
-            "RUN systemctl set-default graphical.target && systemctl enable greetd.service firewalld.service power-profiles-daemon.service bluetooth.service cups.service\n",
+            "RUN systemctl set-default graphical.target && systemctl enable greetd.service firewalld.service power-profiles-daemon.service bluetooth.service cups.service avahi-daemon.service chronyd.service\n",
         );
     }
 
@@ -539,7 +581,10 @@ pub fn generate(config: &Config) -> String {
         out.push_str(
             "COPY kuma-flatpak-sync.service /usr/lib/systemd/system/kuma-flatpak-sync.service\n",
         );
-        out.push_str("RUN systemctl enable kuma-flatpak-sync.service\n");
+        out.push_str(
+            "COPY kuma-flatpak-sync.timer /usr/lib/systemd/system/kuma-flatpak-sync.timer\n",
+        );
+        out.push_str("RUN systemctl enable kuma-flatpak-sync.service kuma-flatpak-sync.timer\n");
     }
 
     if config.system.brew {
@@ -662,6 +707,7 @@ pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
         std::fs::write(dir.join("xsettingsd.conf"), XSETTINGSD_CONF)?;
         std::fs::write(dir.join("niri-binds.kdl"), NIRI_MEDIA_BINDS)?;
         std::fs::write(dir.join("mimeapps.list"), MIMEAPPS)?;
+        std::fs::write(dir.join("kuma-record"), RECORD_SCRIPT)?;
         std::fs::write(dir.join("kuma-battery-watch"), BATTERY_WATCH)?;
         std::fs::write(dir.join("kuma-wob"), WOB_LAUNCHER)?;
         std::fs::write(dir.join("kuma-osd"), OSD_SCRIPT)?;
@@ -679,6 +725,7 @@ pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
         std::fs::write(dir.join("flatpaks"), list)?;
         std::fs::write(dir.join("kuma-flatpak-sync"), FLATPAK_SYNC_SCRIPT)?;
         std::fs::write(dir.join("kuma-flatpak-sync.service"), FLATPAK_SYNC_SERVICE)?;
+        std::fs::write(dir.join("kuma-flatpak-sync.timer"), FLATPAK_SYNC_TIMER)?;
     }
     if let Some(user) = &config.user {
         let mut decl = format!("KUMA_USER='{}'\n", user.name);
@@ -971,6 +1018,19 @@ mod tests {
         ));
         assert!(out.contains("COPY mimeapps.list /etc/xdg/mimeapps.list"));
         assert!(out.contains("pam_gnome_keyring"));
+    }
+
+    #[test]
+    fn infra_round_swap_discovery_updates() {
+        let out = generate(&config(
+            "schema_version = 1\n[system]\ndesktop = \"niri\"\n[packages]\nflatpak = [\"org.gnome.Loupe\"]\n",
+        ));
+        assert!(out.contains("zram-generator-defaults"));
+        assert!(out.contains("avahi-daemon.service chronyd.service"));
+        assert!(out.contains("kuma-flatpak-sync.service kuma-flatpak-sync.timer"));
+        assert!(FLATPAK_SYNC_TIMER.contains("Persistent=true"));
+        assert!(NIRI_MEDIA_BINDS.contains("do-not-disturb"));
+        assert!(NIRI_MEDIA_BINDS.contains("kuma-record"));
     }
 
     #[test]
