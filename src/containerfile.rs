@@ -38,8 +38,11 @@ const NIRI_PACKAGES: &[&str] = &[
     "bluez",
     "blueman",
     "thunar",
+    "thunar-archive-plugin",
+    "file-roller",
     "gvfs",
     "gvfs-mtp",
+    "cliphist",
     // (nwg-look would fit here for GTK theme tweaks, but it's COPR-only)
     "wob",
     "libnotify",
@@ -198,6 +201,8 @@ const NIRI_EXTRAS: &str = r##"
 // directory theme and silently falls back to light.
 environment {
     GTK_THEME "Adwaita:dark"
+    XCURSOR_THEME "Adwaita"
+    XCURSOR_SIZE "24"
 }
 
 // Kuma session services
@@ -213,6 +218,9 @@ spawn-at-startup "swaybg" "-i" "/usr/share/backgrounds/kuma/kuma-wallpaper.png" 
 // Lock at 15 min, screen off a minute later (any input wakes it).
 spawn-at-startup "swayidle" "-w" "timeout" "900" "swaylock -f -i /usr/share/backgrounds/kuma/kuma-wallpaper.png -s fill" "timeout" "960" "niri msg action power-off-monitors" "before-sleep" "swaylock -f -i /usr/share/backgrounds/kuma/kuma-wallpaper.png -s fill"
 spawn-at-startup "/usr/libexec/kuma-battery-watch"
+// Wayland clipboards can die with their window; cliphist keeps history
+// (paste picker on Mod+Ctrl+V, spliced into the stock binds).
+spawn-at-startup "wl-paste" "--watch" "cliphist" "store"
 
 // Kuma look: rounded windows, quiet neutral focus ring. Window rules are
 // additive, so this themes every window without touching the stock layout.
@@ -280,6 +288,29 @@ case "$1" in
 esac
 "#;
 
+/// System-wide default apps: without associations, opening a PDF or a
+/// link from Thunar is app-picker roulette. Flatpak-exported desktop
+/// ids for the declared apps, native ids for the in-image tools.
+const MIMEAPPS: &str = r#"[Default Applications]
+x-scheme-handler/http=org.chromium.Chromium.desktop
+x-scheme-handler/https=org.chromium.Chromium.desktop
+text/html=org.chromium.Chromium.desktop
+application/pdf=org.gnome.Papers.desktop
+text/plain=org.gnome.TextEditor.desktop
+inode/directory=thunar.desktop
+image/png=org.gnome.Loupe.desktop
+image/jpeg=org.gnome.Loupe.desktop
+image/webp=org.gnome.Loupe.desktop
+image/gif=org.gnome.Loupe.desktop
+image/svg+xml=org.gnome.Loupe.desktop
+video/mp4=io.github.celluloid_player.Celluloid.desktop
+video/webm=io.github.celluloid_player.Celluloid.desktop
+video/x-matroska=io.github.celluloid_player.Celluloid.desktop
+audio/mpeg=io.github.celluloid_player.Celluloid.desktop
+audio/flac=io.github.celluloid_player.Celluloid.desktop
+application/zip=org.gnome.FileRoller.desktop
+"#;
+
 /// Battery warnings through mako. Polls sysfs — upower-notifier tools
 /// (poweralertd) aren't in Fedora's repos. No battery (desktops, VMs)
 /// means the loop just idles cheaply.
@@ -311,6 +342,7 @@ const NIRI_MEDIA_BINDS: &str = r#"    XF86AudioRaiseVolume allow-when-locked=tru
     XF86AudioMicMute allow-when-locked=true { spawn "wpctl" "set-mute" "@DEFAULT_AUDIO_SOURCE@" "toggle"; }
     XF86MonBrightnessUp allow-when-locked=true { spawn "/usr/libexec/kuma-osd" "brightness-up"; }
     XF86MonBrightnessDown allow-when-locked=true { spawn "/usr/libexec/kuma-osd" "brightness-down"; }
+    Mod+Ctrl+V { spawn "sh" "-c" "cliphist list | fuzzel --dmenu | cliphist decode | wl-copy"; }
 "#;
 
 /// GTK theme settings travel two roads: Wayland-native apps read
@@ -463,7 +495,13 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY wob.ini /usr/lib/kuma/wob.ini\n");
         out.push_str("COPY gtk3-settings.ini /etc/gtk-3.0/settings.ini\n");
         out.push_str("COPY gtk4-settings.ini /etc/gtk-4.0/settings.ini\n");
+        out.push_str("COPY mimeapps.list /etc/xdg/mimeapps.list\n");
         out.push_str("COPY dconf-profile /etc/dconf/profile/user\n");
+        // Unlock the keyring with the login password, or every Chromium
+        // launch nags for it. (Autologin skips this: no password typed.)
+        out.push_str(
+            "RUN grep -q pam_gnome_keyring /etc/pam.d/greetd 2>/dev/null \\\n    || printf 'auth        optional    pam_gnome_keyring.so\\nsession     optional    pam_gnome_keyring.so auto_start\\n' >> /etc/pam.d/greetd\n",
+        );
         out.push_str("COPY dconf-kuma-dark /etc/dconf/db/local.d/10-kuma-dark\n");
         out.push_str("RUN dconf update\n");
         // The packaged default config is complete (all keybindings); Kuma's
@@ -623,6 +661,7 @@ pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
         std::fs::write(dir.join("kuma-xsettings"), XSETTINGS_LAUNCHER)?;
         std::fs::write(dir.join("xsettingsd.conf"), XSETTINGSD_CONF)?;
         std::fs::write(dir.join("niri-binds.kdl"), NIRI_MEDIA_BINDS)?;
+        std::fs::write(dir.join("mimeapps.list"), MIMEAPPS)?;
         std::fs::write(dir.join("kuma-battery-watch"), BATTERY_WATCH)?;
         std::fs::write(dir.join("kuma-wob"), WOB_LAUNCHER)?;
         std::fs::write(dir.join("kuma-osd"), OSD_SCRIPT)?;
@@ -920,6 +959,18 @@ mod tests {
         ));
         assert!(out.contains("-e '/XF86Audio/d'"));
         assert!(out.contains("r /usr/lib/kuma/niri-binds.kdl"));
+    }
+
+    #[test]
+    fn daily_driver_glue() {
+        assert!(NIRI_MEDIA_BINDS.contains("cliphist list"));
+        assert!(MIMEAPPS.contains("application/pdf=org.gnome.Papers.desktop"));
+        assert!(MIMEAPPS.contains("inode/directory=thunar.desktop"));
+        let out = generate(&config(
+            "schema_version = 1\n[system]\ndesktop = \"niri\"\n",
+        ));
+        assert!(out.contains("COPY mimeapps.list /etc/xdg/mimeapps.list"));
+        assert!(out.contains("pam_gnome_keyring"));
     }
 
     #[test]
