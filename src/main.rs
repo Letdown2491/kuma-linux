@@ -372,8 +372,13 @@ fn vm_apply(tag: &str) -> Result<()> {
 /// The VM mirrors the host's timezone — timezone is machine state, not
 /// system definition, so it's detected here rather than put in kuma.toml.
 fn bib_config_toml() -> String {
+    // hostname first: bare keys must precede the sub-tables to stay under
+    // [customizations]. Written to /etc/hostname at install time — the
+    // os-release DEFAULT_HOSTNAME branding loses at boot because the
+    // initrd (prebuilt by the Fedora base) sets the hostname before our
+    // root is visible.
     let mut out = String::from(
-        "[[customizations.user]]\nname = \"kuma\"\npassword = \"kuma\"\ngroups = [\"wheel\"]\n",
+        "[customizations]\nhostname = \"kuma\"\n\n[[customizations.user]]\nname = \"kuma\"\npassword = \"kuma\"\ngroups = [\"wheel\"]\n",
     );
     if let Some(key) = find_ssh_pubkey() {
         out.push_str(&format!("key = \"{}\"\n", key.trim()));
