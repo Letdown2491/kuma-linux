@@ -23,9 +23,17 @@ const NIRI_PACKAGES: &[&str] = &[
     "gnome-keyring",
     "polkit",
     "mesa-dri-drivers",
+    // OpenGL alone strands Vulkan apps on lavapipe software rendering
+    "mesa-vulkan-drivers",
+    "vulkan-loader",
     "default-fonts-core-sans",
     "default-fonts-core-mono",
     "fontawesome-6-free-fonts",
+    // the bluetooth glyph lives in the Brands face, not Free
+    "fontawesome-6-brands-fonts",
+    // base ships glibc-minimal-langpack only; without real locale data
+    // en_US.UTF-8 fails to resolve and waybar's clock disables itself
+    "glibc-langpack-en",
     // hardware enablement — the minimal base targets servers
     "NetworkManager-wifi",
     "wpa_supplicant",
@@ -599,6 +607,13 @@ pub fn generate(config: &Config) -> String {
             "\nRUN dnf -y install {} && dnf clean all\n",
             NIRI_PACKAGES.join(" ")
         ));
+        // Fedora's mesa VA-API driver ships with H.264/H.265/VC-1 decode
+        // stripped (patents), so video silently falls back to CPU. RPM
+        // Fusion's freeworld build restores it; --allowerasing swaps out
+        // the gutted driver if a dependency dragged it in.
+        out.push_str(
+            "RUN dnf -y install \"https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm\" \\\n    && dnf -y install --allowerasing mesa-va-drivers-freeworld \\\n    && dnf clean all\n",
+        );
         out.push_str("COPY greetd-config.toml /etc/greetd/config.toml\n");
         out.push_str("COPY kargs-desktop.toml /usr/lib/bootc/kargs.d/10-kuma-desktop.toml\n");
         out.push_str("COPY niri-extras.kdl /usr/lib/kuma/niri-extras.kdl\n");
@@ -923,6 +938,11 @@ mod tests {
         assert!(out.contains("niri"));
         assert!(out.contains("greetd"));
         assert!(out.contains("NetworkManager-wifi"));
+        // full GPU acceleration: RADV for Vulkan, freeworld VA-API for
+        // the codecs Fedora's build strips
+        assert!(out.contains("mesa-vulkan-drivers"));
+        assert!(out.contains("rpmfusion-free-release"));
+        assert!(out.contains("--allowerasing mesa-va-drivers-freeworld"));
         assert!(out.contains("COPY greetd-config.toml /etc/greetd/config.toml"));
         assert!(out.contains("niri validate --config /etc/niri/config.kdl"));
         assert!(out.contains("systemctl set-default graphical.target"));
