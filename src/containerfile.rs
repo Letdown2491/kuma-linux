@@ -611,6 +611,15 @@ pub fn generate(config: &Config) -> String {
         out.push_str(
             "RUN mkdir -p /etc/niri \\\n    && sed -e '/starts waybar/d' -e '/^spawn-at-startup \"waybar\"$/d' -e '/XF86Audio/d' -e '/XF86MonBrightness/d' -e '/^binds {/r /usr/lib/kuma/niri-binds.kdl' /usr/share/doc/niri/default-config.kdl > /etc/niri/config.kdl \\\n    && cat /usr/lib/kuma/niri-extras.kdl >> /etc/niri/config.kdl \\\n    && niri validate --config /etc/niri/config.kdl\n",
         );
+        // Upstream niri-session imports the ENTIRE greeter environment into
+        // the systemd user manager — deprecated (warns in the journal every
+        // login) and indiscriminate. Scope it: the XDG_* trio is how
+        // niri.service finds the logind session; PATH carries the login
+        // shell's profile.d additions (brew) into everything niri spawns.
+        // grep first so the build fails if a niri update rewords the script.
+        out.push_str(
+            "RUN grep -qx '    systemctl --user import-environment' /usr/bin/niri-session \\\n    && sed -i 's/^    systemctl --user import-environment$/    systemctl --user import-environment PATH XDG_SESSION_ID XDG_SEAT XDG_VTNR/' /usr/bin/niri-session\n",
+        );
         out.push_str(
             "RUN systemctl set-default graphical.target && systemctl enable greetd.service firewalld.service power-profiles-daemon.service bluetooth.service cups.service avahi-daemon.service chronyd.service\n",
         );
@@ -884,6 +893,9 @@ mod tests {
         assert!(out.contains("systemctl set-default graphical.target"));
         assert!(out.contains("greetd.service firewalld.service power-profiles-daemon.service"));
         assert!(out.contains("mask flatpak-add-fedora-repos.service"));
+        // bare import-environment is deprecated; the patched call must keep
+        // the session vars niri.service needs to claim the logind seat
+        assert!(out.contains("import-environment PATH XDG_SESSION_ID XDG_SEAT XDG_VTNR"));
     }
 
     #[test]
