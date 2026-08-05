@@ -442,14 +442,38 @@ exec spice-vdagent -x
 "#;
 
 /// Theme files for the curated desktop, drawn from the Kuma wallpaper palette.
-/// Waybar reads /etc/xdg system-wide; the rest are seeded via /etc/skel so
-/// users start themed but can override freely in their own dotfiles.
+/// All system-wide (never /etc/skel): skel only reaches homes created after
+/// the image ships, so it strands existing users on stale copies — image
+/// updates must retheme every account. User dotfiles still win everywhere:
+/// waybar and fuzzel search /etc/xdg after ~/.config, alacritty checks
+/// /etc/alacritty last, and mako (no system path at all) goes through a
+/// launcher that prefers the user's config.
 const WALLPAPER: &[u8] = include_bytes!("../assets/kuma-wallpaper.png");
 const WAYBAR_CONFIG: &str = include_str!("../assets/waybar.jsonc");
 const WAYBAR_STYLE: &str = include_str!("../assets/waybar.css");
 const FUZZEL_CONFIG: &str = include_str!("../assets/fuzzel.ini");
 const MAKO_CONFIG: &str = include_str!("../assets/mako.conf");
 const ALACRITTY_CONFIG: &str = include_str!("../assets/alacritty.toml");
+
+/// mako is dbus-activated (org.freedesktop.Notifications), so this wrapper
+/// is wired in via its dbus service file rather than spawn-at-startup.
+/// The service file names SystemdService=mako.service, and under a systemd
+/// user session THAT is what actually runs (Exec= is only the fallback) —
+/// so the user unit gets a drop-in pointing at the wrapper too.
+const MAKO_LAUNCHER: &str = r#"#!/usr/bin/bash
+conf="${XDG_CONFIG_HOME:-$HOME/.config}/mako/config"
+if [ -f "$conf" ]; then
+    exec mako
+fi
+exec mako --config /usr/lib/kuma/mako.conf
+"#;
+
+/// Empty ExecStart= first: it clears the unit's own ExecStart, which a
+/// drop-in otherwise appends to (two ExecStarts is a hard unit error).
+const MAKO_DROPIN: &str = r#"[Service]
+ExecStart=
+ExecStart=/usr/libexec/kuma-mako
+"#;
 
 /// Rebrand the OS identity: Kuma, not Fedora. ID_LIKE=fedora keeps tools
 /// that sniff os-release (toolbox, distrobox, dnf COPR, …) working. Runs
@@ -581,9 +605,18 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY kuma-wallpaper.png /usr/share/backgrounds/kuma/kuma-wallpaper.png\n");
         out.push_str("COPY waybar-config.jsonc /etc/xdg/waybar/config.jsonc\n");
         out.push_str("COPY waybar-style.css /etc/xdg/waybar/style.css\n");
-        out.push_str("COPY fuzzel.ini /etc/skel/.config/fuzzel/fuzzel.ini\n");
-        out.push_str("COPY mako.conf /etc/skel/.config/mako/config\n");
-        out.push_str("COPY alacritty.toml /etc/skel/.config/alacritty/alacritty.toml\n");
+        out.push_str("COPY fuzzel.ini /etc/xdg/fuzzel/fuzzel.ini\n");
+        out.push_str("COPY mako.conf /usr/lib/kuma/mako.conf\n");
+        out.push_str("COPY --chmod=755 kuma-mako /usr/libexec/kuma-mako\n");
+        out.push_str(
+            "COPY mako-dropin.conf /usr/lib/systemd/user/mako.service.d/kuma.conf\n",
+        );
+        // grep first: if a mako update moves or rewords the service file,
+        // fail the build instead of silently shipping unthemed notifications
+        out.push_str(
+            "RUN grep -qx 'Exec=/usr/bin/mako' /usr/share/dbus-1/services/fr.emersion.mako.service \\\n    && sed -i 's|^Exec=/usr/bin/mako$|Exec=/usr/libexec/kuma-mako|' /usr/share/dbus-1/services/fr.emersion.mako.service\n",
+        );
+        out.push_str("COPY alacritty.toml /etc/alacritty/alacritty.toml\n");
         out.push_str("COPY --chmod=755 kuma-clipboard-bridge /usr/libexec/kuma-clipboard-bridge\n");
         out.push_str("COPY --chmod=755 kuma-xsettings /usr/libexec/kuma-xsettings\n");
         out.push_str("COPY xsettingsd.conf /usr/lib/kuma/xsettingsd.conf\n");
@@ -778,6 +811,8 @@ pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
         std::fs::write(dir.join("waybar-style.css"), WAYBAR_STYLE)?;
         std::fs::write(dir.join("fuzzel.ini"), FUZZEL_CONFIG)?;
         std::fs::write(dir.join("mako.conf"), MAKO_CONFIG)?;
+        std::fs::write(dir.join("kuma-mako"), MAKO_LAUNCHER)?;
+        std::fs::write(dir.join("mako-dropin.conf"), MAKO_DROPIN)?;
         std::fs::write(dir.join("alacritty.toml"), ALACRITTY_CONFIG)?;
         std::fs::write(dir.join("kuma-clipboard-bridge"), CLIPBOARD_BRIDGE)?;
         std::fs::write(dir.join("kuma-xsettings"), XSETTINGS_LAUNCHER)?;
@@ -917,9 +952,16 @@ mod tests {
         assert!(out.contains("COPY kuma-wallpaper.png /usr/share/backgrounds/kuma/kuma-wallpaper.png"));
         assert!(out.contains("COPY waybar-config.jsonc /etc/xdg/waybar/config.jsonc"));
         assert!(out.contains("COPY waybar-style.css /etc/xdg/waybar/style.css"));
-        assert!(out.contains("COPY fuzzel.ini /etc/skel/.config/fuzzel/fuzzel.ini"));
-        assert!(out.contains("COPY mako.conf /etc/skel/.config/mako/config"));
-        assert!(out.contains("COPY alacritty.toml /etc/skel/.config/alacritty/alacritty.toml"));
+        // system-wide, never /etc/skel — skel strands existing homes on
+        // stale copies (the fuzzel-DPI lesson)
+        assert!(!out.contains("/etc/skel"));
+        assert!(out.contains("COPY fuzzel.ini /etc/xdg/fuzzel/fuzzel.ini"));
+        assert!(out.contains("COPY mako.conf /usr/lib/kuma/mako.conf"));
+        assert!(out.contains("Exec=/usr/libexec/kuma-mako"));
+        // systemd user sessions activate via SystemdService, not Exec —
+        // without the drop-in the wrapper never runs where it matters
+        assert!(out.contains("/usr/lib/systemd/user/mako.service.d/kuma.conf"));
+        assert!(out.contains("COPY alacritty.toml /etc/alacritty/alacritty.toml"));
         assert!(out.contains("COPY dconf-profile /etc/dconf/profile/user"));
         assert!(out.contains("COPY dconf-kuma-dark /etc/dconf/db/local.d/10-kuma-dark"));
         assert!(out.contains("RUN dconf update"));
