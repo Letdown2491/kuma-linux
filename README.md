@@ -74,6 +74,12 @@ enable = ["tailscaled.service"]
   survive, so nothing re-downloads. It's also the real update path (staged
   deployment; `bootc rollback` inside the VM undoes it). Use `--rebuild`
   only when you want a factory-fresh machine.
+- **Installer media**: `kuma iso` builds an Anaconda installer ISO from the
+  image (`iso/bootiso/install.iso`) — bootable in GNOME Boxes or `dd`'d to a
+  USB stick. The install is interactive (language, disk), but kuma-owned
+  choices are preseeded: hostname, no initial-setup, and — when kuma.toml
+  declares a `[user]` — no Anaconda user screen, since the declared account
+  is created on first boot. Unlike `kuma vm` disks, ISOs carry no test user.
 
 ## Roadmap
 
@@ -81,6 +87,7 @@ enable = ["tailscaled.service"]
 - [x] Containerfile generation + local podman build
 - [x] `kuma switch` via containers-storage transport
 - [x] `kuma vm` — qcow2 via bootc-image-builder, booted in QEMU
+- [x] `kuma iso` — Anaconda installer ISO for real hardware and Boxes
 - [ ] `kuma diff` — show what an apply would change
 - [ ] `kuma update` — pull newer base, rebuild, apply
 - [x] Flatpaks: Flathub remote in-image, declared apps converged on boot

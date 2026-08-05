@@ -65,6 +65,15 @@ enum Cmd {
         #[arg(long, conflicts_with_all = ["no_run", "rebuild"])]
         apply: bool,
     },
+    /// Build an Anaconda installer ISO from the image (USB stick, GNOME Boxes)
+    Iso {
+        /// Image tag to build the installer from
+        #[arg(long, default_value = DEFAULT_TAG)]
+        tag: String,
+        /// Directory for the generated ISO
+        #[arg(long, default_value = "iso")]
+        output: PathBuf,
+    },
     /// Hash a password for the [user] section (prompts; prints the line to paste)
     Passwd,
     /// Show bootc status for this machine
@@ -90,6 +99,7 @@ fn main() -> Result<()> {
         Cmd::Vm { tag, output, no_run, rebuild, apply } => {
             vm(&tag, &output, no_run, rebuild, apply)
         }
+        Cmd::Iso { tag, output } => iso(&cli.config, &tag, &output),
         Cmd::Passwd => passwd(),
         Cmd::Status => run_host(&["bootc", "status"]),
         Cmd::Completions { shell } => {
@@ -203,11 +213,16 @@ fn switch(tag: &str, yes: bool) -> Result<()> {
         tag,
     ];
     if !yes {
-        println!("Would run (as root):\n\n  {}\n", args.join(" "));
+        println!("Would sync {tag} into root podman storage, then run (as root):\n\n  {}\n", args.join(" "));
         println!("Re-run with --yes to apply. The change takes effect on next boot;");
         println!("the previous deployment stays available for rollback.");
         return Ok(());
     }
+    // bootc runs as root and resolves containers-storage against ROOT's
+    // storage; without this sync it would deploy whatever stale copy the
+    // last `kuma vm` left there — silently.
+    let scratch = tempfile::tempdir().context("cannot create scratch directory")?;
+    sync_image_to_root(tag, scratch.path())?;
     let mut sudo_args = vec!["sudo"];
     sudo_args.extend(args);
     run_host(&sudo_args)
@@ -248,27 +263,92 @@ fn vm(tag: &str, output: &Path, no_run: bool, rebuild: bool, apply: bool) -> Res
 }
 
 fn build_disk(tag: &str, output: &Path) -> Result<()> {
-    // bootc-image-builder runs as root and reads root's containers-storage.
-    // Sync by image ID, not tag existence: the root-side copy goes stale
-    // every time the rootless image is rebuilt.
+    let local_id = sync_image_to_root(tag, output)?;
+    let bib_config = output.join("config.toml");
+    std::fs::write(&bib_config, bib_config_toml())?;
+    println!("Building qcow2 with bootc-image-builder (this takes a few minutes)...");
+    run_bib(output, &bib_config, "qcow2", tag, &[])?;
+    // Stamp which image this disk came from, so a later `kuma vm` can
+    // warn when the image has moved on and the disk is silently stale.
+    std::fs::write(output.join("image-id"), &local_id)?;
+    Ok(())
+}
+
+/// Installer media: the same bib pipeline as the VM disk, different
+/// output type. Unlike `kuma vm` nothing risky is preseeded — media
+/// meant for hardware gets no baked-in test user and no disk-wiping
+/// kickstart; Anaconda runs interactively.
+fn iso(config_path: &Path, tag: &str, output: &Path) -> Result<()> {
+    let config = Config::load(config_path)?;
+    std::fs::create_dir_all(output)
+        .with_context(|| format!("cannot create {}", output.display()))?;
+    let output = std::fs::canonicalize(output)?;
+    let local_id = sync_image_to_root(tag, &output)?;
+    let bib_config = output.join("iso-config.toml");
+    std::fs::write(&bib_config, iso_config_toml(&config))?;
+
+    // bib picks the Anaconda environment's package set from a def file
+    // keyed by the image's os-release "ID-VERSION_ID" — kuma's branding
+    // makes that "kuma-44", which bib has never heard of (it ships defs
+    // for fedora, bluefin, bazzite, ...). Kuma's installer environment IS
+    // Fedora's, so lift the newest fedora def out of the bib image and
+    // mount it back in under kuma's name.
+    let distro = host_output(&[
+        "podman", "run", "--rm", tag, "sh", "-c",
+        ". /usr/lib/os-release && echo \"$ID-$VERSION_ID\"",
+    ])
+    .context("cannot read os-release from the image")?;
+    let mut def = host_output(&[
+        "sudo", "podman", "run", "--rm", "--entrypoint", "/bin/sh", BIB_IMAGE, "-c",
+        "cat \"$(ls /usr/share/bootc-image-builder/defs/fedora-*.yaml | sort -V | tail -1)\"",
+    ])
+    .context("cannot extract a fedora installer def from bootc-image-builder")?;
+    def.push('\n');
+    let def_path = output.join("installer-def.yaml");
+    std::fs::write(&def_path, def)?;
+    let def_mount = format!(
+        "{}:/usr/share/bootc-image-builder/defs/{distro}.yaml:ro",
+        path_str(&def_path)?
+    );
+
+    println!("Building installer ISO with bootc-image-builder (this takes a while — it assembles a full Anaconda environment)...");
+    run_bib(&output, &bib_config, "anaconda-iso", tag, &[def_mount])?;
+    std::fs::write(output.join("image-id"), &local_id)?;
+    let iso_path = output.join("bootiso/install.iso");
+    println!("ISO ready: {}", iso_path.display());
+    println!("Boot it in GNOME Boxes, or write it to a USB stick with e.g. `sudo dd if={} of=/dev/sdX bs=4M status=progress`.", iso_path.display());
+    Ok(())
+}
+
+/// bootc-image-builder runs as root and reads root's containers-storage.
+/// Sync by image ID, not tag existence: the root-side copy goes stale
+/// every time the rootless image is rebuilt. Returns the image ID.
+fn sync_image_to_root(tag: &str, scratch: &Path) -> Result<String> {
     let local_id = host_output(&["podman", "image", "inspect", "--format", "{{.Id}}", tag])
         .with_context(|| format!("{tag} not found — run `kuma build` first"))?;
     let root_id = host_output(&["sudo", "podman", "image", "inspect", "--format", "{{.Id}}", tag])
         .unwrap_or_default();
     if local_id != root_id {
         println!("Syncing {tag} into root podman storage (may take a minute)...");
-        let archive = output.join("kuma-image.tar");
+        let archive = scratch.join("kuma-image.tar");
         let archive_str = path_str(&archive)?;
         run_host(&["podman", "save", "--format", "oci-archive", "-o", archive_str, tag])?;
         run_host(&["sudo", "podman", "load", "-i", archive_str])?;
         let _ = std::fs::remove_file(&archive);
     }
+    Ok(local_id)
+}
 
-    let bib_config = output.join("config.toml");
-    std::fs::write(&bib_config, bib_config_toml())?;
-
-    println!("Building qcow2 with bootc-image-builder (this takes a few minutes)...");
-    run_host(&[
+fn run_bib(
+    output: &Path,
+    bib_config: &Path,
+    image_type: &str,
+    tag: &str,
+    extra_mounts: &[String],
+) -> Result<()> {
+    let out_mount = format!("{}:/output", path_str(output)?);
+    let config_mount = format!("{}:/config.toml:ro", path_str(bib_config)?);
+    let mut args = vec![
         "sudo",
         "podman",
         "run",
@@ -277,30 +357,30 @@ fn build_disk(tag: &str, output: &Path) -> Result<()> {
         "--security-opt",
         "label=type:unconfined_t",
         "-v",
-        &format!("{}:/output", path_str(output)?),
+        &out_mount,
         "-v",
         "/var/lib/containers/storage:/var/lib/containers/storage",
         "-v",
-        &format!("{}:/config.toml:ro", path_str(&bib_config)?),
+        &config_mount,
+    ];
+    for mount in extra_mounts {
+        args.extend(["-v", mount.as_str()]);
+    }
+    args.extend([
         BIB_IMAGE,
         "--type",
-        "qcow2",
+        image_type,
         // fedora-bootc images declare no default root filesystem, so bib
         // fails with "missing required info: DefaultRootFs" without this.
         "--rootfs",
         "xfs",
         tag,
-    ])?;
-
+    ]);
+    run_host(&args)?;
     // bib ran as root, so its output is root-owned; hand it back to the
     // user so QEMU (and cleanup) work without privileges.
     let user = std::env::var("USER").context("USER is not set")?;
-    run_host(&["sudo", "chown", "-R", &format!("{user}:"), path_str(output)?])?;
-
-    // Stamp which image this disk came from, so a later `kuma vm` can
-    // warn when the image has moved on and the disk is silently stale.
-    std::fs::write(output.join("image-id"), &local_id)?;
-    Ok(())
+    run_host(&["sudo", "chown", "-R", &format!("{user}:"), path_str(output)?])
 }
 
 const VM_SSH_OPTS: &[&str] = &[
@@ -375,6 +455,32 @@ fn vm_apply(tag: &str) -> Result<()> {
 /// Password login on the console, plus the user's ssh key when one exists.
 /// The VM mirrors the host's timezone — timezone is machine state, not
 /// system definition, so it's detected here rather than put in kuma.toml.
+/// bib config for the installer ISO. The install stays interactive —
+/// language, keyboard, and destination disk are the machine owner's
+/// call — but everything kuma already speaks for is preseeded away.
+fn iso_config_toml(config: &Config) -> String {
+    let mut ks = String::new();
+    if config.system.hostname.is_none() {
+        // Anaconda writes /etc/hostname; left empty, the initrd's
+        // "localhost" beats os-release DEFAULT_HOSTNAME (same story the
+        // VM disks hit) — stamp the brand default at install time.
+        ks.push_str("network --hostname=kuma\n");
+    }
+    // kuma images ship no initial-setup; don't let installs wait on one
+    ks.push_str("firstboot --disable\n");
+    let mut out = format!("[customizations.installer.kickstart]\ncontents = \"\"\"\n{ks}\"\"\"\n");
+    if config.user.is_some() {
+        // kuma-user-sync creates the declared account on first boot, so
+        // Anaconda's user screen would only mint a duplicate. Dropping
+        // the module removes the screen and its create-a-user completion
+        // requirement in one move.
+        out.push_str(
+            "\n[customizations.installer.modules]\ndisable = [\"org.fedoraproject.Anaconda.Modules.Users\"]\n",
+        );
+    }
+    out
+}
+
 fn bib_config_toml() -> String {
     // hostname first: bare keys must precede the sub-tables to stay under
     // [customizations]. Written to /etc/hostname at install time — the
@@ -510,6 +616,28 @@ fn host_command<S: AsRef<str>>(args: &[S]) -> Result<Command> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn iso_config_reflects_declaration() {
+        let with_user: crate::config::Config =
+            toml::from_str("schema_version = 1\n[user]\nname = \"m\"\n").unwrap();
+        let out = super::iso_config_toml(&with_user);
+        // must be valid TOML — the kickstart rides in a multiline string
+        toml::from_str::<toml::Value>(&out).unwrap();
+        assert!(out.contains("network --hostname=kuma"));
+        assert!(out.contains("firstboot --disable"));
+        // declared user → Anaconda's user screen is dropped
+        assert!(out.contains("org.fedoraproject.Anaconda.Modules.Users"));
+
+        let bare: crate::config::Config =
+            toml::from_str("schema_version = 1\n[system]\nhostname = \"pine\"\n").unwrap();
+        let out = super::iso_config_toml(&bare);
+        toml::from_str::<toml::Value>(&out).unwrap();
+        // image already pins /etc/hostname; no user declared → Anaconda
+        // keeps its user screen so installs aren't left with no account
+        assert!(!out.contains("--hostname"));
+        assert!(!out.contains("Modules.Users"));
+    }
+
     #[test]
     fn generated_hash_is_valid_config_material() {
         let hash = super::hash_password("kuma").unwrap();
