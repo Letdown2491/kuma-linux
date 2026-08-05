@@ -184,7 +184,22 @@ pub fn doctor() -> Result<()> {
         Ok(out) => {
             let names: Vec<&str> =
                 out.lines().filter_map(|l| l.split_whitespace().next()).collect();
-            report(Grade::Fail, "units", format!("failed: {}", names.join(", ")));
+            // Anaconda writes a `/` line into fstab that composefs can't
+            // remount, so this one fails on every boot of an installed
+            // system — real, but cosmetic; don't bury real failures in it.
+            let (benign, real): (Vec<&str>, Vec<&str>) = names.iter().partition(|n| {
+                **n == "systemd-remount-fs.service" && Path::new("/run/ostree-booted").exists()
+            });
+            if !real.is_empty() {
+                report(Grade::Fail, "units", format!("failed: {}", real.join(", ")));
+            }
+            if !benign.is_empty() {
+                report(
+                    Grade::Warn,
+                    "units",
+                    "systemd-remount-fs failed — known-benign: Anaconda's fstab `/` line can't be remounted over composefs".into(),
+                );
+            }
         }
         Err(_) => report(Grade::Warn, "units", "systemctl unavailable".into()),
     }
@@ -196,6 +211,7 @@ pub fn doctor() -> Result<()> {
     }
 
     check_gpu(&mut report);
+    check_build_leftovers(&mut report);
 
     match host_output(&["df", "-h", "--output=pcent,avail", "/sysroot"])
         .or_else(|_| host_output(&["df", "-h", "--output=pcent,avail", "/"]))
@@ -341,6 +357,40 @@ fn check_convergence(report: &mut impl FnMut(Grade, &str, String)) {
                 report(Grade::Ok, "flathub", "remote configured".into())
             }
             _ => report(Grade::Fail, "flathub", "remote missing — flatpak convergence cannot install".into()),
+        }
+    }
+}
+
+/// Build leftovers eat disk quietly: rebuilds strand dangling images
+/// (~3.5 GB each), and interrupted builds abandon buildah working
+/// containers that pin their layers while being invisible to
+/// `podman images` — one was once found holding 68 GB.
+fn check_build_leftovers(report: &mut impl FnMut(Grade, &str, String)) {
+    let dangling = host_output(&["podman", "images", "-f", "dangling=true", "-q"])
+        .map(|out| out.lines().filter(|l| !l.trim().is_empty()).count());
+    let abandoned = host_output_any(&[
+        "podman", "ps", "-a", "--external", "--format", "{{.Names}} {{.Status}}",
+    ])
+    .map(|out| {
+        out.lines()
+            .filter(|l| l.contains("-working-container") && l.ends_with(" Storage"))
+            .count()
+    });
+    match (dangling, abandoned) {
+        (Err(_), Err(_)) => {} // no podman here — nothing to check
+        (dangling, abandoned) => {
+            let (dangling, abandoned) = (dangling.unwrap_or(0), abandoned.unwrap_or(0));
+            if dangling == 0 && abandoned == 0 {
+                report(Grade::Ok, "storage", "no build leftovers".into());
+            } else {
+                report(
+                    Grade::Warn,
+                    "storage",
+                    format!(
+                        "{dangling} dangling image(s), {abandoned} abandoned build container(s) — `kuma clean` reclaims them"
+                    ),
+                );
+            }
         }
     }
 }

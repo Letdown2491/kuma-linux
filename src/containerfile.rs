@@ -109,14 +109,21 @@ const DESKTOP_KARGS: &str = "kargs = [\"quiet\"]\n";
 /// Declared flatpaks are baked into the image as a list; this oneshot
 /// converges the machine to it on boot. The declaration is atomic image
 /// content — only the app installs are runtime state.
+///
+/// The retries cover the timer's Persistent=true catch-up, which fires on
+/// resume before Wi-Fi is back — network-online.target only orders boot.
 const FLATPAK_SYNC_SERVICE: &str = r#"[Unit]
 Description=Converge Flatpak applications to the declared list
 Wants=network-online.target
 After=network-online.target
+StartLimitIntervalSec=1h
+StartLimitBurst=6
 
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/kuma-flatpak-sync
+Restart=on-failure
+RestartSec=2min
 
 [Install]
 WantedBy=multi-user.target
@@ -560,12 +567,16 @@ const BREW_SYNC_SERVICE: &str = r#"[Unit]
 Description=Converge Homebrew formulae to the declared list
 Wants=network-online.target
 After=network-online.target kuma-brew-setup.service
+StartLimitIntervalSec=1h
+StartLimitBurst=6
 
 [Service]
 Type=oneshot
 User=1000
 Environment=HOME=/home/linuxbrew
 ExecStart=/usr/libexec/kuma-brew-sync
+Restart=on-failure
+RestartSec=2min
 
 [Install]
 WantedBy=multi-user.target
@@ -797,6 +808,10 @@ pub fn generate(config: &Config) -> String {
     }
 
     out.push_str(BRANDING);
+
+    // What `kuma build` prunes by: each rebuild strands the previous
+    // image as a dangling <none>, and only kuma's own should be reclaimed.
+    out.push_str("\nLABEL io.kuma.image=\"1\"\n");
 
     out.push_str("\nRUN bootc container lint\n");
     out

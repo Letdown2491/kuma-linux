@@ -7,7 +7,7 @@ mod inspect;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use config::Config;
-use host::{host_output, run_host};
+use host::{host_output, host_output_any, run_host};
 use std::path::{Path, PathBuf};
 
 const DEFAULT_TAG: &str = "localhost/kuma:latest";
@@ -88,6 +88,8 @@ enum Cmd {
     },
     /// Converge flatpaks and brew to the declaration now, not at next boot
     Sync,
+    /// Reclaim build leftovers: dangling images, abandoned build containers
+    Clean,
     /// Declare packages in kuma.toml (pick the list: --rpm, --flatpak, --brew)
     Add {
         /// Package names, Flathub app IDs, or brew formulae
@@ -110,7 +112,7 @@ enum Cmd {
     },
     /// Show drift between kuma.toml and this machine (read-only)
     Diff,
-    /// Check this machine: deployment, convergence, GPU, disk (read-only)
+    /// Check this machine: deployment, convergence, GPU, storage, disk (read-only)
     Doctor,
     /// Hash a password for the [user] section (prompts; prints the line to paste)
     Passwd,
@@ -140,6 +142,7 @@ fn main() -> Result<()> {
         Cmd::Iso { tag, output } => iso(&cli.config, &tag, &output),
         Cmd::Update { tag, yes } => update(&cli.config, &tag, yes),
         Cmd::Sync => sync(),
+        Cmd::Clean => clean(),
         Cmd::Add { names, rpm, flatpak, brew } => {
             let list = match (rpm, flatpak, brew) {
                 (true, false, false) => "rpm",
@@ -261,7 +264,21 @@ fn build_image(config_path: &Path, tag: &str) -> Result<()> {
         "--tag",
         tag,
         dir.path().to_str().context("non-UTF-8 temp path")?,
+    ])?;
+
+    // The tag just moved, stranding the previous build as a dangling
+    // <none> (~3.5 GB each — they once piled up to 150 GB). The label
+    // filter keeps this to kuma's own images; a prune failure is not a
+    // build failure.
+    let pruned = host_output(&[
+        "podman", "image", "prune", "-f", "--filter", "label=io.kuma.image",
     ])
+    .map(|out| out.lines().filter(|l| !l.trim().is_empty()).count())
+    .unwrap_or(0);
+    if pruned > 0 {
+        println!("Reclaimed {pruned} stale build image(s).");
+    }
+    Ok(())
 }
 
 fn switch(tag: &str, yes: bool) -> Result<()> {
@@ -340,6 +357,88 @@ fn sync() -> Result<()> {
     run_host(&args)?;
     println!("Converged: {}", units.join(", "));
     Ok(())
+}
+
+/// Two kinds of leftovers accumulate in podman storage. Every rebuild
+/// strands the previous image as a dangling <none>; worse, an interrupted
+/// build abandons its buildah "working container", which pins its layers
+/// while being invisible to `podman images` — one was found holding 68 GB.
+/// `kuma build` self-cleans its own label; this reclaims everything.
+fn clean() -> Result<()> {
+    // An in-flight build's working container looks identical to an
+    // abandoned one — don't yank the layers out from under it. The [ ]
+    // keeps the pattern from matching kuma's own pgrep invocation.
+    if host_output(&["pgrep", "-f", "podman[ ].*build|^buildah"]).is_ok() {
+        bail!("a build appears to be running — retry when it finishes");
+    }
+    let before = avail_bytes();
+
+    let external = host_output_any(&[
+        "podman", "ps", "-a", "--external", "--format", "{{.ID}} {{.Names}} {{.Status}}",
+    ])
+    .unwrap_or_default();
+    let abandoned: Vec<&str> = external
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let (id, name, status) = (fields.next()?, fields.next()?, fields.next()?);
+            (status == "Storage" && name.contains("-working-container")).then_some(id)
+        })
+        .collect();
+    if !abandoned.is_empty() {
+        let mut args = vec!["podman", "rm", "--force"];
+        args.extend(&abandoned);
+        host_output(&args)?; // capture the ID-per-line chatter
+        println!("Removed {} abandoned build container(s).", abandoned.len());
+    }
+
+    let pruned = prune_dangling(&["podman", "image", "prune", "-f"])?;
+    if pruned > 0 {
+        println!("Removed {pruned} dangling image(s).");
+    }
+
+    // `kuma switch` copies each image into root storage, where the same
+    // stranding happens. Only on a bootc machine — elsewhere root storage
+    // isn't part of kuma's flow. bootc's own image store is untouched.
+    let mut root_pruned = 0;
+    if Path::new("/run/ostree-booted").exists() {
+        match prune_dangling(&["sudo", "podman", "image", "prune", "-f"]) {
+            Ok(n) if n > 0 => {
+                root_pruned = n;
+                println!("Removed {n} dangling image(s) from root storage.");
+            }
+            Ok(_) => {}
+            Err(_) => println!("Root storage skipped (sudo declined)."),
+        }
+    }
+
+    if abandoned.is_empty() && pruned == 0 && root_pruned == 0 {
+        println!("Nothing to reclaim.");
+    } else if let (Some(before), Some(after)) = (before, avail_bytes()) {
+        if after > before {
+            println!("Freed {}.", human_size(after - before));
+        }
+    }
+    Ok(())
+}
+
+fn prune_dangling(cmd: &[&str]) -> Result<usize> {
+    Ok(host_output(cmd)?.lines().filter(|l| !l.trim().is_empty()).count())
+}
+
+/// Free space on the filesystem holding the user's podman storage.
+fn avail_bytes() -> Option<u64> {
+    let home = std::env::var("HOME").ok()?;
+    let out = host_output(&["df", "--output=avail", "-B1", &home]).ok()?;
+    out.lines().nth(1)?.trim().parse().ok()
+}
+
+fn human_size(bytes: u64) -> String {
+    match bytes {
+        b if b >= 1 << 30 => format!("{:.1} GiB", b as f64 / (1u64 << 30) as f64),
+        b if b >= 1 << 20 => format!("{:.0} MiB", b as f64 / (1u64 << 20) as f64),
+        b => format!("{b} bytes"),
+    }
 }
 
 fn vm(tag: &str, output: &Path, no_run: bool, rebuild: bool, apply: bool) -> Result<()> {

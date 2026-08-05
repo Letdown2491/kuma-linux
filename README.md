@@ -34,9 +34,10 @@ Day 2, the file stays the interface — these edit or read it for you:
 $ kuma add --flatpak org.mozilla.firefox   # declare in kuma.toml (--rpm/--brew too)
 $ kuma remove org.mozilla.firefox          # drop from whichever list declares it
 $ kuma diff                                # drift: kuma.toml vs image vs machine
-$ kuma doctor                              # machine health: deployment, convergence, GPU, disk
+$ kuma doctor                              # machine health: deployment, convergence, GPU, storage, disk
 $ kuma sync                                # converge flatpaks/brew now, not at next boot
 $ kuma update --yes                        # pull newer base, rebuild, stage for next boot
+$ kuma clean                               # reclaim dangling images and abandoned build containers
 ```
 
 `add` and `remove` preserve your comments and formatting; `diff` and
