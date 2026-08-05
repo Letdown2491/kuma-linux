@@ -28,6 +28,20 @@ $ kuma switch --yes  # bootc switch; takes effect on next boot
 
 `kuma switch` without `--yes` only prints what it would do.
 
+Day 2, the file stays the interface — these edit or read it for you:
+
+```console
+$ kuma add --flatpak org.mozilla.firefox   # declare in kuma.toml (--rpm/--brew too)
+$ kuma remove org.mozilla.firefox          # drop from whichever list declares it
+$ kuma diff                                # drift: kuma.toml vs image vs machine
+$ kuma doctor                              # machine health: deployment, convergence, GPU, disk
+$ kuma sync                                # converge flatpaks/brew now, not at next boot
+$ kuma update --yes                        # pull newer base, rebuild, stage for next boot
+```
+
+`add` and `remove` preserve your comments and formatting; `diff` and
+`doctor` are read-only.
+
 ## Example config
 
 ```toml
@@ -88,11 +102,13 @@ enable = ["tailscaled.service"]
 - [x] `kuma switch` via containers-storage transport
 - [x] `kuma vm` — qcow2 via bootc-image-builder, booted in QEMU
 - [x] `kuma iso` — Anaconda installer ISO for real hardware and Boxes
-- [ ] `kuma diff` — show what an apply would change
-- [ ] `kuma update` — pull newer base, rebuild, apply
+- [x] `kuma diff` — drift between the declaration, the image, and the machine
+- [x] `kuma add` / `kuma remove` — edit the declaration in place, comments intact
+- [x] `kuma doctor` — deployment, convergence, GPU, and disk health checks
+- [x] `kuma update` — pull the newer base, rebuild, stage in one step
 - [x] Flatpaks: Flathub remote in-image, declared apps converged on boot
 - [x] Declarative user: created on first boot, converged after (/home is machine state)
 - [x] `kuma passwd` — hash a password for the `[user]` section
-- [ ] `kuma sync` — on-demand runtime state sync (flatpaks without reboot, later user config)
+- [x] `kuma sync` — converge flatpaks and brew on demand (user config later)
 - [ ] Base images (`kuma-gnome`, `kuma-plasma`) built in CI
 - [ ] Installer ISO via bootc-image-builder

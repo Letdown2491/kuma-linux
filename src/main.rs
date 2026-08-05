@@ -1,11 +1,14 @@
 mod config;
 mod containerfile;
+mod edit;
+mod host;
+mod inspect;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use config::Config;
+use host::{host_output, run_host};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const DEFAULT_TAG: &str = "localhost/kuma:latest";
 const BIB_IMAGE: &str = "quay.io/centos-bootc/bootc-image-builder:latest";
@@ -74,6 +77,41 @@ enum Cmd {
         #[arg(long, default_value = "iso")]
         output: PathBuf,
     },
+    /// Pull the newer base image, rebuild, and stage the result
+    Update {
+        /// Image tag to build and stage
+        #[arg(long, default_value = DEFAULT_TAG)]
+        tag: String,
+        /// Actually stage the rebuilt image (requires root; applies on reboot)
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Converge flatpaks and brew to the declaration now, not at next boot
+    Sync,
+    /// Declare packages in kuma.toml (pick the list: --rpm, --flatpak, --brew)
+    Add {
+        /// Package names, Flathub app IDs, or brew formulae
+        #[arg(required = true)]
+        names: Vec<String>,
+        /// Add to [packages].rpm (baked into the image)
+        #[arg(long)]
+        rpm: bool,
+        /// Add to [packages].flatpak (Flathub system apps)
+        #[arg(long)]
+        flatpak: bool,
+        /// Add to [packages].brew (Homebrew formulae)
+        #[arg(long)]
+        brew: bool,
+    },
+    /// Drop declared packages from kuma.toml (searches every [packages] list)
+    Remove {
+        #[arg(required = true)]
+        names: Vec<String>,
+    },
+    /// Show drift between kuma.toml and this machine (read-only)
+    Diff,
+    /// Check this machine: deployment, convergence, GPU, disk (read-only)
+    Doctor,
     /// Hash a password for the [user] section (prompts; prints the line to paste)
     Passwd,
     /// Show bootc status for this machine
@@ -100,8 +138,26 @@ fn main() -> Result<()> {
             vm(&tag, &output, no_run, rebuild, apply)
         }
         Cmd::Iso { tag, output } => iso(&cli.config, &tag, &output),
+        Cmd::Update { tag, yes } => update(&cli.config, &tag, yes),
+        Cmd::Sync => sync(),
+        Cmd::Add { names, rpm, flatpak, brew } => {
+            let list = match (rpm, flatpak, brew) {
+                (true, false, false) => "rpm",
+                (false, true, false) => "flatpak",
+                (false, false, true) => "brew",
+                _ => bail!("pick exactly one of --rpm, --flatpak, --brew"),
+            };
+            edit::add(&cli.config, list, &names)
+        }
+        Cmd::Remove { names } => edit::remove(&cli.config, &names),
+        Cmd::Diff => {
+            let config = Config::load(&cli.config)?;
+            inspect::diff(&config, &cli.config)
+        }
+        Cmd::Doctor => inspect::doctor(),
         Cmd::Passwd => passwd(),
-        Cmd::Status => run_host(&["bootc", "status"]),
+        // bootc requires root even for a read-only status
+        Cmd::Status => run_host(&["sudo", "bootc", "status"]),
         Cmd::Completions { shell } => {
             use clap::CommandFactory;
             clap_complete::generate(shell, &mut Cli::command(), "kuma", &mut std::io::stdout());
@@ -189,6 +245,12 @@ fn init(force: bool) -> Result<()> {
 }
 
 fn build(config_path: &Path, tag: &str) -> Result<()> {
+    build_image(config_path, tag)?;
+    println!("\nBuilt {tag}. Apply it with `kuma switch`, or boot it with `kuma vm`.");
+    Ok(())
+}
+
+fn build_image(config_path: &Path, tag: &str) -> Result<()> {
     let config = Config::load(config_path)?;
     let dir = tempfile::tempdir().context("cannot create build directory")?;
     containerfile::write_context(&config, dir.path())?;
@@ -199,33 +261,85 @@ fn build(config_path: &Path, tag: &str) -> Result<()> {
         "--tag",
         tag,
         dir.path().to_str().context("non-UTF-8 temp path")?,
-    ])?;
-    println!("\nBuilt {tag}. Apply it with `kuma switch`, or boot it with `kuma vm`.");
-    Ok(())
+    ])
 }
 
 fn switch(tag: &str, yes: bool) -> Result<()> {
-    let args = [
-        "bootc",
-        "switch",
-        "--transport",
-        "containers-storage",
-        tag,
-    ];
     if !yes {
-        println!("Would sync {tag} into root podman storage, then run (as root):\n\n  {}\n", args.join(" "));
+        println!(
+            "Would sync {tag} into root podman storage, then run (as root):\n\n  bootc switch --transport containers-storage {tag}\n"
+        );
         println!("Re-run with --yes to apply. The change takes effect on next boot;");
         println!("the previous deployment stays available for rollback.");
         return Ok(());
     }
+    if !stage(tag)? {
+        bail!("nothing staged — the system already runs this image (did `kuma build` succeed?)");
+    }
+    println!("\nStaged. Reboot to apply; the previous deployment stays available for rollback.");
+    Ok(())
+}
+
+/// Sync the image into root storage and stage it with bootc. False when
+/// nothing new was staged — the system already runs this image.
+fn stage(tag: &str) -> Result<bool> {
     // bootc runs as root and resolves containers-storage against ROOT's
     // storage; without this sync it would deploy whatever stale copy the
     // last `kuma vm` left there — silently.
     let scratch = tempfile::tempdir().context("cannot create scratch directory")?;
     sync_image_to_root(tag, scratch.path())?;
-    let mut sudo_args = vec!["sudo"];
-    sudo_args.extend(args);
-    run_host(&sudo_args)
+    run_host(&["sudo", "bootc", "switch", "--transport", "containers-storage", tag])?;
+    // switch is a no-op when the origin spec is unchanged (every switch
+    // after the first!) — bootc upgrade is what re-pulls the origin and
+    // stages new content. Then verify something IS staged: without the
+    // check a no-op switch reboots into the same deployment looking like
+    // success.
+    run_host(&["sudo", "bootc", "upgrade"])?;
+    let status = host_output(&["sudo", "bootc", "status"])?;
+    Ok(status.lines().any(|l| l.trim_start().to_lowercase().starts_with("staged")))
+}
+
+/// The full update loop. The pull is the point: `kuma build` alone reuses
+/// the cached base, so a same-tag base (fedora-bootc:44) never moves
+/// without it. Unlike `kuma switch`, an unchanged system is a normal
+/// outcome here, not an error.
+fn update(config_path: &Path, tag: &str, yes: bool) -> Result<()> {
+    let config = Config::load(config_path)?;
+    run_host(&["podman", "pull", &config.system.base])?;
+    build_image(config_path, tag)?;
+    if !yes {
+        println!("\nBuilt {tag}. Re-run with --yes to stage it; it applies on reboot,");
+        println!("and the previous deployment stays available for rollback.");
+        return Ok(());
+    }
+    if stage(tag)? {
+        println!("\nStaged. Reboot to apply; the previous deployment stays available for rollback.");
+        println!("After the reboot, `kuma diff` shows drift and `kuma doctor` checks health.");
+    } else {
+        println!("\nAlready up to date — the system runs this image.");
+    }
+    Ok(())
+}
+
+/// On-demand convergence: start the same units boot and the daily timer
+/// run, so there stays exactly one convergence path. systemctl blocks
+/// until each oneshot finishes, so success here means converged.
+fn sync() -> Result<()> {
+    let mut units: Vec<&str> = Vec::new();
+    if Path::new("/usr/lib/kuma/flatpaks").exists() {
+        units.push("kuma-flatpak-sync.service");
+    }
+    if Path::new("/usr/lib/kuma/brews").exists() {
+        units.push("kuma-brew-sync.service");
+    }
+    if units.is_empty() {
+        bail!("no baked declarations under /usr/lib/kuma — is this machine running a kuma image?");
+    }
+    let mut args = vec!["sudo", "systemctl", "start"];
+    args.extend(&units);
+    run_host(&args)?;
+    println!("Converged: {}", units.join(", "));
+    Ok(())
 }
 
 fn vm(tag: &str, output: &Path, no_run: bool, rebuild: bool, apply: bool) -> Result<()> {
@@ -572,46 +686,6 @@ fn boot_disk(disk: &Path) -> Result<()> {
 
 fn path_str(path: &Path) -> Result<&str> {
     path.to_str().context("non-UTF-8 path")
-}
-
-/// Run a command on the host, escaping the container if kuma itself is
-/// running inside one (e.g. a distrobox dev environment).
-fn run_host<S: AsRef<str>>(args: &[S]) -> Result<()> {
-    let status = host_command(args)?
-        .status()
-        .with_context(|| format!("failed to run {}", args[0].as_ref()))?;
-    if !status.success() {
-        let shown: Vec<&str> = args.iter().map(|s| s.as_ref()).collect();
-        bail!("{} exited with {status}", shown.join(" "));
-    }
-    Ok(())
-}
-
-/// Run a host command and capture its trimmed stdout; Err on failure.
-fn host_output<S: AsRef<str>>(args: &[S]) -> Result<String> {
-    let out = host_command(args)?
-        .stderr(std::process::Stdio::null())
-        .output()
-        .with_context(|| format!("failed to run {}", args[0].as_ref()))?;
-    if !out.status.success() {
-        let shown: Vec<&str> = args.iter().map(|s| s.as_ref()).collect();
-        bail!("{} exited with {}", shown.join(" "), out.status);
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
-fn host_command<S: AsRef<str>>(args: &[S]) -> Result<Command> {
-    let in_container = Path::new("/run/.containerenv").exists()
-        || Path::new("/.dockerenv").exists();
-    let mut full: Vec<&str> = Vec::new();
-    if in_container {
-        full.extend(["flatpak-spawn", "--host"]);
-    }
-    full.extend(args.iter().map(|s| s.as_ref()));
-
-    let mut cmd = Command::new(full[0]);
-    cmd.args(&full[1..]);
-    Ok(cmd)
 }
 
 #[cfg(test)]
