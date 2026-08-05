@@ -383,12 +383,20 @@ fn check_build_leftovers(report: &mut impl FnMut(Grade, &str, String)) {
             if dangling == 0 && abandoned == 0 {
                 report(Grade::Ok, "storage", "no build leftovers".into());
             } else {
+                // `kuma clean` reports every image object the prune cascade
+                // deletes, so counting the same way needs a dry run podman
+                // doesn't have — name the stranded builds instead.
+                let mut parts = Vec::new();
+                if dangling > 0 {
+                    parts.push(format!("{dangling} stranded build image(s) plus their cached layers"));
+                }
+                if abandoned > 0 {
+                    parts.push(format!("{abandoned} abandoned build container(s)"));
+                }
                 report(
                     Grade::Warn,
                     "storage",
-                    format!(
-                        "{dangling} dangling image(s), {abandoned} abandoned build container(s) — `kuma clean` reclaims them"
-                    ),
+                    format!("{} — `kuma clean` reclaims them", parts.join(", ")),
                 );
             }
         }
