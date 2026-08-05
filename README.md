@@ -45,6 +45,7 @@ password_hash = '...'   # from `kuma passwd`; applies only at creation
 [packages]
 rpm = ["fish", "distrobox", "tailscale"]
 flatpak = ["org.mozilla.firefox"]   # from Flathub, synced on boot
+brew = ["ripgrep", "gh"]            # CLI tools, no rebuild needed
 
 [services]
 enable = ["tailscaled.service"]

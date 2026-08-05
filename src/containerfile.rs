@@ -495,6 +495,64 @@ ExecStart=/usr/libexec/kuma-brew-setup
 WantedBy=multi-user.target
 "#;
 
+/// Converge installed formulae to the declared list. Unlike the flatpak
+/// sync there is no system/user scope split to lean on — brew is
+/// single-prefix — so authority is tracked explicitly: a state file
+/// remembers what the declaration installed, and only ever-declared
+/// formulae are removal candidates. Ad-hoc `brew install` is untouched.
+const BREW_SYNC_SCRIPT: &str = r#"#!/usr/bin/bash
+set -euo pipefail
+brew=/home/linuxbrew/.linuxbrew/bin/brew
+[ -x "$brew" ] || exit 0
+declared=/usr/lib/kuma/brews
+state=/home/linuxbrew/.linuxbrew/.kuma-brews
+[ -f "$state" ] || : > "$state"
+if [ -s "$declared" ]; then
+    xargs -a "$declared" "$brew" install
+    xargs -a "$declared" "$brew" upgrade
+fi
+while read -r formula; do
+    grep -qxF "$formula" "$declared" && continue
+    "$brew" uninstall "$formula" || true
+done < "$state"
+"$brew" autoremove
+cp "$declared" "$state"
+"#;
+
+/// brew refuses to run as root; uid 1000 owns the prefix (brew's
+/// single-user model). Numeric User= needs no passwd entry, so this
+/// works on first boot even before kuma-user-sync creates the account.
+/// HOME points inside the prefix so brew's cache lands somewhere the
+/// uid can write regardless of which human account exists.
+const BREW_SYNC_SERVICE: &str = r#"[Unit]
+Description=Converge Homebrew formulae to the declared list
+Wants=network-online.target
+After=network-online.target kuma-brew-setup.service
+
+[Service]
+Type=oneshot
+User=1000
+Environment=HOME=/home/linuxbrew
+ExecStart=/usr/libexec/kuma-brew-sync
+
+[Install]
+WantedBy=multi-user.target
+"#;
+
+/// Same rationale as the flatpak timer: boot-only convergence goes
+/// stale on machines that stay up.
+const BREW_SYNC_TIMER: &str = r#"[Unit]
+Description=Daily Homebrew convergence
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target
+"#;
+
 const BREW_PROFILE_SH: &str = r#"[ -x /home/linuxbrew/.linuxbrew/bin/brew ] \
     && eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
 "#;
@@ -587,7 +645,7 @@ pub fn generate(config: &Config) -> String {
         out.push_str("RUN systemctl enable kuma-flatpak-sync.service kuma-flatpak-sync.timer\n");
     }
 
-    if config.system.brew {
+    if config.system.brew || !config.packages.brew.is_empty() {
         // git-core: brew needs git at runtime to update itself
         out.push_str("\nRUN dnf -y install git-core && dnf clean all\n");
         out.push_str("COPY --chmod=755 kuma-brew-setup /usr/libexec/kuma-brew-setup\n");
@@ -596,7 +654,17 @@ pub fn generate(config: &Config) -> String {
         );
         out.push_str("COPY brew-profile.sh /etc/profile.d/kuma-brew.sh\n");
         out.push_str("COPY brew-profile.fish /etc/fish/conf.d/kuma-brew.fish\n");
-        out.push_str("RUN systemctl enable kuma-brew-setup.service\n");
+        // Declaration and sync ship even when the list is empty, same as
+        // flatpaks: an emptied list must still remove what it installed.
+        out.push_str("COPY brews /usr/lib/kuma/brews\n");
+        out.push_str("COPY --chmod=755 kuma-brew-sync /usr/libexec/kuma-brew-sync\n");
+        out.push_str(
+            "COPY kuma-brew-sync.service /usr/lib/systemd/system/kuma-brew-sync.service\n",
+        );
+        out.push_str("COPY kuma-brew-sync.timer /usr/lib/systemd/system/kuma-brew-sync.timer\n");
+        out.push_str(
+            "RUN systemctl enable kuma-brew-setup.service kuma-brew-sync.service kuma-brew-sync.timer\n",
+        );
     }
 
     if !config.packages.rpm.is_empty() {
@@ -748,11 +816,19 @@ pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
             std::fs::write(dir.join("kuma-sshd-keys.conf"), SSHD_KUMA_KEYS)?;
         }
     }
-    if config.system.brew {
+    if config.system.brew || !config.packages.brew.is_empty() {
         std::fs::write(dir.join("kuma-brew-setup"), BREW_SETUP_SCRIPT)?;
         std::fs::write(dir.join("kuma-brew-setup.service"), BREW_SETUP_SERVICE)?;
         std::fs::write(dir.join("brew-profile.sh"), BREW_PROFILE_SH)?;
         std::fs::write(dir.join("brew-profile.fish"), BREW_PROFILE_FISH)?;
+        let mut list = config.packages.brew.join("\n");
+        if !list.is_empty() {
+            list.push('\n');
+        }
+        std::fs::write(dir.join("brews"), list)?;
+        std::fs::write(dir.join("kuma-brew-sync"), BREW_SYNC_SCRIPT)?;
+        std::fs::write(dir.join("kuma-brew-sync.service"), BREW_SYNC_SERVICE)?;
+        std::fs::write(dir.join("kuma-brew-sync.timer"), BREW_SYNC_TIMER)?;
     }
     Ok(())
 }
@@ -1106,6 +1182,26 @@ mod tests {
         let script = std::fs::read_to_string(dir.path().join("kuma-brew-setup")).unwrap();
         assert!(script.contains("/home/linuxbrew/.linuxbrew"));
         assert!(dir.path().join("kuma-brew-setup.service").exists());
+    }
+
+    #[test]
+    fn declared_brews_imply_bootstrap_and_converge() {
+        // no system.brew = true needed: the list alone pulls in the bootstrap
+        let toml = "schema_version = 1\n[packages]\nbrew = [\"ripgrep\", \"node@22\"]\n";
+        let out = generate(&config(toml));
+        assert!(out.contains("kuma-brew-setup.service kuma-brew-sync.service kuma-brew-sync.timer"));
+        assert!(out.contains("COPY brews /usr/lib/kuma/brews"));
+
+        let dir = tempfile::tempdir().unwrap();
+        write_context(&config(toml), dir.path()).unwrap();
+        let list = std::fs::read_to_string(dir.path().join("brews")).unwrap();
+        assert_eq!(list, "ripgrep\nnode@22\n");
+        let script = std::fs::read_to_string(dir.path().join("kuma-brew-sync")).unwrap();
+        // removal authority is scoped to the state file, never `brew list`:
+        // ad-hoc installs on the machine must survive convergence
+        assert!(script.contains(".kuma-brews"));
+        assert!(BREW_SYNC_SERVICE.contains("User=1000"));
+        assert!(BREW_SYNC_TIMER.contains("Persistent=true"));
     }
 
     #[test]

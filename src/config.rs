@@ -116,6 +116,12 @@ pub struct Packages {
     /// now so configs don't break later; applied by a future `kuma sync`.
     #[serde(default)]
     pub flatpak: Vec<String>,
+    /// Homebrew formulae, converged like flatpaks: additions install,
+    /// removals uninstall. Only formulae this list ever named are removal
+    /// candidates — ad-hoc `brew install` on the machine stays yours.
+    /// A non-empty list implies system.brew.
+    #[serde(default)]
+    pub brew: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -189,6 +195,10 @@ impl Config {
         for app in &self.packages.flatpak {
             validate_name(app, "packages.flatpak", &['.', '-', '_'])?;
         }
+        for formula in &self.packages.brew {
+            // '@' for versioned formulae (node@22), '/' for taps (owner/tap/tool)
+            validate_name(formula, "packages.brew", &['.', '-', '_', '+', '@', '/'])?;
+        }
         for svc in self.services.enable.iter().chain(&self.services.disable) {
             validate_name(svc, "services", &['.', '-', '_', '@'])?;
         }
@@ -234,6 +244,19 @@ mod tests {
             "schema_version = 1\n[packages]\nrpm = [\"fish; rm -rf /\"]\n",
         )
         .unwrap();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn brew_formula_names_validated() {
+        let config: Config = toml::from_str(
+            "schema_version = 1\n[packages]\nbrew = [\"node@22\", \"oven-sh/bun/bun\"]\n",
+        )
+        .unwrap();
+        config.validate().unwrap();
+
+        let config: Config =
+            toml::from_str("schema_version = 1\n[packages]\nbrew = [\"rg $(id)\"]\n").unwrap();
         assert!(config.validate().is_err());
     }
 

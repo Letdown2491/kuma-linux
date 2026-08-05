@@ -158,6 +158,10 @@ rpm = []
 # Flathub system apps, converged on boot: additions install, removals
 # uninstall. `flatpak install --user` stays yours.
 flatpak = []
+# Homebrew CLI tools, converged the same way — good for fast-moving dev
+# tools that shouldn't need an image rebuild. Ad-hoc `brew install` on
+# the machine stays yours.
+# brew = ["ripgrep", "fd", "jq"]
 
 [services]
 enable = []
