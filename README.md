@@ -58,6 +58,10 @@ Without `--config`, kuma uses `./kuma.toml`, falling back to
 project checkout. Neither is ever created implicitly; `kuma init` is how a
 declaration comes to exist, and on a kuma machine it writes a copy of the
 machine's own baked declaration (`--starter` for the generic template).
+With no working copy at all, the read-only commands (`update`, `diff`,
+`generate`) fall back to the baked declaration itself — a machine installed
+from an ISO can `kuma update --yes` without ever creating a file. Editing
+(`add`, `remove`, `build`) is what requires one.
 
 ## Example config
 

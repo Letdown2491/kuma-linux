@@ -140,6 +140,7 @@ enum Cmd {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let explicit = cli.config.is_some();
     let config_path = resolve_config(cli.config);
     let Some(command) = cli.command else {
         return state::root(&config_path, cli.json);
@@ -147,7 +148,8 @@ fn main() -> Result<()> {
     match command {
         Cmd::Init { force, starter } => init(force, starter),
         Cmd::Generate => {
-            let config = Config::load(&config_path)?;
+            // quiet fallback: stdout is the artifact, keep it clean
+            let config = Config::load(&read_config_path(&config_path, explicit, false))?;
             print!("{}", containerfile::generate(&config));
             Ok(())
         }
@@ -157,7 +159,9 @@ fn main() -> Result<()> {
             vm(&tag, &output, no_run, rebuild, apply)
         }
         Cmd::Iso { tag, output } => iso(&config_path, &tag, &output),
-        Cmd::Update { tag, yes } => update(&config_path, &tag, yes),
+        Cmd::Update { tag, yes } => {
+            update(&read_config_path(&config_path, explicit, true), &tag, yes)
+        }
         Cmd::Sync => sync(),
         Cmd::Clean => clean(),
         Cmd::Add { names, rpm, flatpak, brew } => {
@@ -171,8 +175,9 @@ fn main() -> Result<()> {
         }
         Cmd::Remove { names } => edit::remove(&config_path, &names),
         Cmd::Diff => {
-            let config = Config::load(&config_path)?;
-            inspect::diff(&config, &config_path)
+            let path = read_config_path(&config_path, explicit, true);
+            let config = Config::load(&path)?;
+            inspect::diff(&config, &path)
         }
         Cmd::Doctor => inspect::doctor(),
         Cmd::Passwd => passwd(),
@@ -277,6 +282,25 @@ fn resolve_config(explicit: Option<PathBuf>) -> PathBuf {
         }
     }
     local
+}
+
+/// Read-only consumers (generate, diff, update) can work straight from
+/// the machine's own baked declaration when no working copy resolves —
+/// "rebuild what this machine already is" needs no file of yours. Write
+/// paths (init/add/remove/build-your-edits) still require a real file,
+/// and an explicit --config that doesn't exist stays an error rather
+/// than silently meaning something else.
+fn read_config_path(resolved: &Path, explicit: bool, announce: bool) -> PathBuf {
+    if !explicit && !resolved.exists() {
+        let baked = Path::new(state::BAKED_CONFIG);
+        if baked.exists() {
+            if announce {
+                println!("No local kuma.toml — using this machine's baked declaration ({}).\n", baked.display());
+            }
+            return baked.to_path_buf();
+        }
+    }
+    resolved.to_path_buf()
 }
 
 fn init(force: bool, starter: bool) -> Result<()> {
