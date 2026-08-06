@@ -15,6 +15,13 @@ Design principles, in order:
    new image and switches to it on next boot. Rollback is always available.
 3. **Local-first** — `kuma build` works with nothing but podman. No forge
    account, no CI pipeline, no registry required (all optional later).
+4. **Self-describing** — hypermedia as the engine of system state: every
+   output names where you are and ends at the legal next commands, never a
+   dead end. Bare `kuma` is the root resource — it reports the machine's
+   state (edited, staged, drifted, in sync, ...) and its next moves,
+   computed from the machine rather than hand-written; `kuma --json`
+   serves the same map to scripts and agents. Doctor findings carry their
+   fix the same way.
 
 ## Quick start
 
@@ -31,6 +38,7 @@ $ kuma switch --yes  # bootc switch; takes effect on next boot
 Day 2, the file stays the interface — these edit or read it for you:
 
 ```console
+$ kuma                                     # bare: current state + next actions (--json for agents)
 $ kuma add --flatpak org.mozilla.firefox   # declare in kuma.toml (--rpm/--brew too)
 $ kuma remove org.mozilla.firefox          # drop from whichever list declares it
 $ kuma diff                                # drift: kuma.toml vs image vs machine
@@ -111,5 +119,6 @@ enable = ["tailscaled.service"]
 - [x] Declarative user: created on first boot, converged after (/home is machine state)
 - [x] `kuma passwd` — hash a password for the `[user]` section
 - [x] `kuma sync` — converge flatpaks and brew on demand (user config later)
+- [x] Bare `kuma` — the state machine as hypermedia: state + next actions, human and JSON
 - [ ] Base images (`kuma-gnome`, `kuma-plasma`) built in CI
 - [ ] Installer ISO via bootc-image-builder

@@ -3,14 +3,16 @@ mod containerfile;
 mod edit;
 mod host;
 mod inspect;
+mod state;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use config::Config;
 use host::{host_output, host_output_any, run_host};
+use state::{print_actions, Action};
 use std::path::{Path, PathBuf};
 
-const DEFAULT_TAG: &str = "localhost/kuma:latest";
+pub(crate) const DEFAULT_TAG: &str = "localhost/kuma:latest";
 const BIB_IMAGE: &str = "quay.io/centos-bootc/bootc-image-builder:latest";
 
 #[derive(Parser)]
@@ -20,8 +22,14 @@ struct Cli {
     #[arg(long, global = true, default_value = "kuma.toml")]
     config: PathBuf,
 
+    /// With no command: emit the state and next actions as JSON
+    #[arg(long)]
+    json: bool,
+
+    /// With no command, kuma reports where this machine is in its
+    /// lifecycle and what the sensible next commands are.
     #[command(subcommand)]
-    command: Cmd,
+    command: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -127,7 +135,10 @@ enum Cmd {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    match cli.command {
+    let Some(command) = cli.command else {
+        return state::root(&cli.config, cli.json);
+    };
+    match command {
         Cmd::Init { force } => init(force),
         Cmd::Generate => {
             let config = Config::load(&cli.config)?;
@@ -243,13 +254,26 @@ fn init(force: bool) -> Result<()> {
         bail!("kuma.toml already exists (use --force to overwrite)");
     }
     std::fs::write(&path, STARTER).context("cannot write kuma.toml")?;
-    println!("Wrote kuma.toml — edit it, then run `kuma build`.");
+    println!("Wrote kuma.toml.");
+    print_actions(&[Action::new(
+        "build",
+        "kuma build",
+        "edit the file, then build it into a system image",
+    )]);
     Ok(())
 }
 
 fn build(config_path: &Path, tag: &str) -> Result<()> {
     build_image(config_path, tag)?;
-    println!("\nBuilt {tag}. Apply it with `kuma switch`, or boot it with `kuma vm`.");
+    println!("\nBuilt {tag}.");
+    // The edges out of "built" depend on where we are: only a bootc
+    // machine can switch to the image; anywhere else a VM is the way in.
+    let mut actions = Vec::new();
+    if Path::new("/run/ostree-booted").exists() {
+        actions.push(Action::new("switch", "kuma switch", "stage it onto this machine (applies on reboot)"));
+    }
+    actions.push(Action::new("vm", "kuma vm", "boot it in a disposable VM"));
+    print_actions(&actions);
     Ok(())
 }
 
@@ -293,7 +317,12 @@ fn switch(tag: &str, yes: bool) -> Result<()> {
     if !stage(tag)? {
         bail!("nothing staged — the system already runs this image (did `kuma build` succeed?)");
     }
-    println!("\nStaged. Reboot to apply; the previous deployment stays available for rollback.");
+    println!("\nStaged.");
+    print_actions(&[Action::new(
+        "reboot",
+        "sudo systemctl reboot",
+        "boot the staged deployment; the previous one stays for rollback",
+    )]);
     Ok(())
 }
 
@@ -304,7 +333,7 @@ fn stage(tag: &str) -> Result<bool> {
     // storage; without this sync it would deploy whatever stale copy the
     // last `kuma vm` left there — silently.
     let scratch = tempfile::tempdir().context("cannot create scratch directory")?;
-    sync_image_to_root(tag, scratch.path())?;
+    let local_id = sync_image_to_root(tag, scratch.path())?;
     run_host(&["sudo", "bootc", "switch", "--transport", "containers-storage", tag])?;
     // switch is a no-op when the origin spec is unchanged (every switch
     // after the first!) — bootc upgrade is what re-pulls the origin and
@@ -312,6 +341,19 @@ fn stage(tag: &str) -> Result<bool> {
     // check a no-op switch reboots into the same deployment looking like
     // success.
     run_host(&["sudo", "bootc", "upgrade"])?;
+    // Root is warm — stamp which image the deployment now corresponds to
+    // (staged here, or already booted when nothing staged), so the
+    // passwordless bare-`kuma` probe can spot a future build outrunning
+    // it. Best-effort: a missing stamp just skips that check, and doctor
+    // rewrites it from the truth.
+    let stamp = scratch.path().join("deployed-image-id");
+    if std::fs::write(&stamp, format!("{local_id}\n")).is_ok() {
+        if let Ok(stamp) = path_str(&stamp) {
+            let _ = host_output(&[
+                "sudo", "install", "-D", "-m", "0644", stamp, state::DEPLOYED_ID_FILE,
+            ]);
+        }
+    }
     let status = host_output(&["sudo", "bootc", "status"])?;
     Ok(status.lines().any(|l| l.trim_start().to_lowercase().starts_with("staged")))
 }
@@ -330,8 +372,12 @@ fn update(config_path: &Path, tag: &str, yes: bool) -> Result<()> {
         return Ok(());
     }
     if stage(tag)? {
-        println!("\nStaged. Reboot to apply; the previous deployment stays available for rollback.");
-        println!("After the reboot, `kuma diff` shows drift and `kuma doctor` checks health.");
+        println!("\nStaged.");
+        print_actions(&[Action::new(
+            "reboot",
+            "sudo systemctl reboot",
+            "boot the staged deployment; the previous one stays for rollback",
+        )]);
     } else {
         println!("\nAlready up to date — the system runs this image.");
     }
