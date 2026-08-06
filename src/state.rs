@@ -43,6 +43,17 @@ impl Action {
     }
 }
 
+/// The one edge out of "staged" — shared by everything that stages
+/// (switch, update, the bare-kuma classifier), so the promise it makes
+/// about rollback can never fork.
+pub fn reboot_action() -> Action {
+    Action::new(
+        "reboot",
+        "sudo systemctl reboot",
+        "boot the staged deployment; kuma rollback returns to the previous one",
+    )
+}
+
 /// The JSON twin of print_actions: one shape for affordances everywhere
 /// --json is spoken (bare kuma, doctor, diff).
 pub fn action_json(action: &Action) -> serde_json::Value {
@@ -259,11 +270,7 @@ fn classify(obs: &Observed) -> Snapshot {
     }
     if let MachineFact::Kuma { staged: true, .. } = &obs.machine {
         claim("staged", "a new deployment is staged — reboot to apply".into());
-        actions.push(Action::new(
-            "reboot",
-            "sudo systemctl reboot",
-            "boot the staged deployment; kuma rollback returns to the previous one",
-        ));
+        actions.push(reboot_action());
     }
     if let (ConfigFact::Loaded { .. }, None) = (&obs.config, &obs.image) {
         claim("not-built", format!("{} has never been built here", obs.config_path));

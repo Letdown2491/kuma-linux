@@ -9,7 +9,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use config::Config;
 use host::{host_output, host_output_any, note, run_host};
-use state::{action_json, print_actions, Action};
+use state::{action_json, print_actions, reboot_action, Action};
 use std::path::{Path, PathBuf};
 
 pub(crate) const DEFAULT_TAG: &str = "localhost/kuma:latest";
@@ -288,6 +288,12 @@ fn run(
     }
 }
 
+/// Rootless podman's image ID for a tag — the question the probe, the
+/// dry runs, the stale checks, and the root-storage sync all ask.
+pub(crate) fn image_id(tag: &str) -> Result<String> {
+    host_output(&["podman", "image", "inspect", "--format", "{{.Id}}", tag])
+}
+
 /// The GET for the write path: is this declaration one `kuma build` would
 /// accept? Agents validate an edit before proposing it; humans get the
 /// verdict with its next move.
@@ -377,7 +383,12 @@ fn passwd() -> Result<()> {
 }
 
 fn hash_password(password: &str) -> Result<String> {
-    let params = sha_crypt::Sha512Params::new(sha_crypt::ROUNDS_DEFAULT)
+    // The hash is world-readable on a kuma machine (baked kuma.toml) and
+    // often committed to git, unlike /etc/shadow's mode-0 protection —
+    // so the default 5000 rounds is not enough. 656k (passlib's sha512
+    // calibration) makes offline guessing ~130x costlier; glibc reads the
+    // rounds= prefix, and login-time cost stays well under a second.
+    let params = sha_crypt::Sha512Params::new(656_000)
         .map_err(|e| anyhow::anyhow!("crypt params: {e:?}"))?;
     sha_crypt::sha512_simple(password, &params)
         .map_err(|e| anyhow::anyhow!("hashing failed: {e:?}"))
@@ -548,8 +559,7 @@ fn switch(tag: &str, yes: bool, json: bool) -> Result<()> {
         // The dry run must tell the truth: with nothing built, the switch
         // it describes could only fail. Same passwordless check the bare
         // `kuma` probe uses; the --yes path gets its error from stage().
-        let built =
-            host_output(&["podman", "image", "inspect", "--format", "{{.Id}}", tag]).is_ok();
+        let built = image_id(tag).is_ok();
         let actions = if built {
             vec![Action::new(
                 "apply",
@@ -584,11 +594,7 @@ fn switch(tag: &str, yes: bool, json: bool) -> Result<()> {
     if !stage(tag)? {
         bail!("nothing staged — the system already runs this image (did `kuma build` succeed?)");
     }
-    let reboot = Action::new(
-        "reboot",
-        "sudo systemctl reboot",
-        "boot the staged deployment; kuma rollback returns to the previous one",
-    );
+    let reboot = reboot_action();
     if json {
         println!(
             "{}",
@@ -665,11 +671,7 @@ fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
         return Ok(());
     }
     let staged = stage(tag)?;
-    let reboot = Action::new(
-        "reboot",
-        "sudo systemctl reboot",
-        "boot the staged deployment; kuma rollback returns to the previous one",
-    );
+    let reboot = reboot_action();
     if json {
         let actions: Vec<_> = if staged { vec![action_json(&reboot)] } else { vec![] };
         println!(
@@ -909,9 +911,7 @@ fn vm(tag: &str, output: &Path, no_run: bool, rebuild: bool, apply: bool) -> Res
         // A silently stale disk once cost an hour of "where's my theme":
         // the image had the changes, the reused disk predated them.
         let stamped = std::fs::read_to_string(output.join("image-id")).unwrap_or_default();
-        let current =
-            host_output(&["podman", "image", "inspect", "--format", "{{.Id}}", tag])
-                .unwrap_or_default();
+        let current = image_id(tag).unwrap_or_default();
         if !current.is_empty() && stamped.trim() != current {
             println!(
                 "WARNING: {tag} is newer than this disk — it will NOT have your latest changes. Re-run with --rebuild to pick them up."
@@ -997,8 +997,8 @@ fn iso(config_path: &Path, tag: &str, output: &Path) -> Result<()> {
 /// Sync by image ID, not tag existence: the root-side copy goes stale
 /// every time the rootless image is rebuilt. Returns the image ID.
 fn sync_image_to_root(tag: &str, scratch: &Path) -> Result<String> {
-    let local_id = host_output(&["podman", "image", "inspect", "--format", "{{.Id}}", tag])
-        .with_context(|| format!("{tag} not found — run `kuma build` first"))?;
+    let local_id =
+        image_id(tag).with_context(|| format!("{tag} not found — run `kuma build` first"))?;
     let root_id = host_output(&["sudo", "podman", "image", "inspect", "--format", "{{.Id}}", tag])
         .unwrap_or_default();
     if local_id != root_id {
@@ -1073,8 +1073,7 @@ const VM_SSH_OPTS: &[&str] = &[
 /// flatpaks, brew, homes — and exercises the real update path (staged
 /// deployment, rollback) instead of the install path.
 fn vm_apply(tag: &str) -> Result<()> {
-    host_output(&["podman", "image", "inspect", "--format", "{{.Id}}", tag])
-        .with_context(|| format!("{tag} not found — run `kuma build` first"))?;
+    image_id(tag).with_context(|| format!("{tag} not found — run `kuma build` first"))?;
 
     let mut probe = vec!["ssh", "-p", "2222", "-o", "ConnectTimeout=4"];
     probe.extend(VM_SSH_OPTS);
@@ -1222,8 +1221,10 @@ fn boot_disk(disk: &Path) -> Result<()> {
         "virtio-vga-gl",
         "-display",
         "gtk,gl=on",
+        // 127.0.0.1 bind: without it qemu listens on every interface and
+        // the whole LAN can ssh into the default-credential test user.
         "-nic",
-        "user,model=virtio-net-pci,hostfwd=tcp::2222-:22",
+        "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:2222-:22",
         // Host<->guest clipboard: qemu speaks the spice vdagent protocol
         // itself (no SPICE server needed); the guest's spice-vdagent picks
         // it up on the virtio-serial port named com.redhat.spice.0.
@@ -1313,13 +1314,19 @@ mod tests {
 
     #[test]
     fn generated_hash_is_valid_config_material() {
-        let hash = super::hash_password("kuma").unwrap();
-        assert!(hash.starts_with("$6$"));
-        // must survive the [user] password_hash validation round-trip
-        let config: crate::config::Config = toml::from_str(&format!(
-            "schema_version = 1\n[user]\nname = \"m\"\npassword_hash = '{hash}'\n"
-        ))
-        .unwrap();
-        config.validate().unwrap();
+        // hash_password's 656k rounds take ~13s in a debug build — hash at
+        // the spec minimum instead (still a real rounds= hash, so the '='
+        // path is exercised) and validate the production shape statically.
+        let params = sha_crypt::Sha512Params::new(1_000).unwrap();
+        let real = sha_crypt::sha512_simple("kuma", &params).unwrap();
+        assert!(real.starts_with("$6$"));
+        for hash in [real.as_str(), "$6$rounds=656000$0aQ8mNcQ$abc./XYZ"] {
+            // must survive the [user] password_hash validation round-trip
+            let config: crate::config::Config = toml::from_str(&format!(
+                "schema_version = 1\n[user]\nname = \"m\"\npassword_hash = '{hash}'\n"
+            ))
+            .unwrap();
+            config.validate().unwrap();
+        }
     }
 }

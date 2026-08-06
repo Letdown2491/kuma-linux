@@ -43,18 +43,26 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
     let mut adhoc: Vec<String> = Vec::new();
 
     // rpm lives in the image itself; missing means the declaration was
-    // never built (or the build was never switched to).
-    let entries = config
-        .packages
-        .rpm
-        .iter()
-        .filter(|pkg| host_output(&["rpm", "-q", pkg]).is_err())
-        .map(|pkg| DiffEntry {
-            change: "add",
-            item: pkg.to_string(),
-            note: "declared, missing from the running image".into(),
-        })
-        .collect();
+    // never built (or the build was never switched to). One rpm -qa beats
+    // a spawn per declared package, and rpm being absent reads as
+    // "nothing to check" rather than "everything is missing".
+    let mut entries = Vec::new();
+    if !config.packages.rpm.is_empty() {
+        if let Ok(out) = host_output(&["rpm", "-qa", "--qf", "%{NAME}\n"]) {
+            let installed = to_set(&out);
+            entries = config
+                .packages
+                .rpm
+                .iter()
+                .filter(|pkg| !installed.contains(pkg.as_str()))
+                .map(|pkg| DiffEntry {
+                    change: "add",
+                    item: pkg.to_string(),
+                    note: "declared, missing from the running image".into(),
+                })
+                .collect();
+        }
+    }
     sections.push(DiffSection { name: "packages.rpm", entries, skipped: None });
 
     let declared: BTreeSet<&str> = config.packages.flatpak.iter().map(String::as_str).collect();
@@ -468,13 +476,10 @@ fn check_deployment(report: &mut impl FnMut(Grade, &str, String, Option<Action>)
     // bootc actually deploys. Manifest digests don't survive the
     // save/load sync between them — only image IDs (config digests) do —
     // so compare IDs across storages and digests only within root's.
-    let local_id = host_output(&[
-        "podman", "image", "inspect", "--format", "{{.Id}}", "localhost/kuma:latest",
-    ]);
-    if let Ok(local_id) = local_id {
+    if let Ok(local_id) = crate::image_id(crate::DEFAULT_TAG) {
         let root = host_output(&[
             "sudo", "podman", "image", "inspect", "--format", "{{.Id}} {{.Digest}}",
-            "localhost/kuma:latest",
+            crate::DEFAULT_TAG,
         ])
         .unwrap_or_default();
         let (root_id, root_digest) = root.split_once(' ').unwrap_or(("", ""));

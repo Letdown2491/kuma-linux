@@ -871,7 +871,9 @@ pub fn generate(config: &Config) -> String {
         ));
     }
     if let Some(user) = &config.user {
-        out.push_str("\nCOPY kuma-user /usr/lib/kuma/user\n");
+        // 600: only the root-run sync service reads this, and it can carry
+        // the password hash — no reason to hand that to every local user.
+        out.push_str("\nCOPY --chmod=600 kuma-user /usr/lib/kuma/user\n");
         out.push_str("COPY --chmod=755 kuma-user-sync /usr/libexec/kuma-user-sync\n");
         out.push_str(
             "COPY kuma-user-sync.service /usr/lib/systemd/system/kuma-user-sync.service\n",
@@ -1257,7 +1259,8 @@ mod tests {
         let out = generate(&config(
             "schema_version = 1\n[user]\nname = \"mira\"\nshell = \"fish\"\nssh_keys = [\"ssh-ed25519 AAAA m@kuma\"]\n[packages]\nrpm = [\"fish\"]\n",
         ));
-        assert!(out.contains("COPY kuma-user /usr/lib/kuma/user"));
+        // 600: the declaration can carry a password hash — root-only
+        assert!(out.contains("COPY --chmod=600 kuma-user /usr/lib/kuma/user"));
         assert!(out.contains("RUN systemctl enable kuma-user-sync.service"));
         assert!(out.contains("COPY kuma-user-keys /etc/kuma/keys/mira"));
         assert!(out.contains("sshd_config.d/40-kuma-keys.conf"));

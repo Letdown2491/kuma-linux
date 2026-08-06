@@ -176,9 +176,10 @@ impl Config {
                 validate_name(group, "user.groups", &['-', '_'])?;
             }
             if let Some(hash) = &user.password_hash {
-                // crypt(5) alphabet; also keeps the hash safe inside the
-                // single-quoted declaration file the sync script sources
-                validate_name(hash, "user.password_hash", &['$', '.', '/'])?;
+                // crypt(5) alphabet plus '=' for rounds= parameters; all
+                // inert inside the single-quoted declaration file the
+                // sync script sources
+                validate_name(hash, "user.password_hash", &['$', '.', '/', '='])?;
             }
             for key in &user.ssh_keys {
                 let looks_like_key = ["ssh-", "ecdsa-", "sk-"]
@@ -213,6 +214,12 @@ impl Config {
 fn validate_name(value: &str, field: &str, extra: &[char]) -> Result<()> {
     if value.is_empty() {
         bail!("{field} contains an empty entry");
+    }
+    // A leading dash turns a "name" into a flag for whatever command the
+    // list feeds — dnf, systemctl, flatpak install (as root, every boot).
+    // No real package, service, zone, or locale starts with one.
+    if value.starts_with('-') {
+        bail!("{field} entry {value:?} starts with '-' — names cannot be options");
     }
     for ch in value.chars() {
         if !ch.is_ascii_alphanumeric() && !extra.contains(&ch) {
@@ -253,6 +260,20 @@ mod tests {
     fn wrong_schema_version_rejected() {
         let config: Config = toml::from_str("schema_version = 2").unwrap();
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn leading_dash_option_injection_rejected() {
+        // "--nogpgcheck" would ride into `dnf -y install` as a flag; the
+        // flatpak list feeds root-run `flatpak install` on every boot
+        for toml in [
+            "schema_version = 1\n[packages]\nrpm = [\"--nogpgcheck\"]\n",
+            "schema_version = 1\n[packages]\nflatpak = [\"--reinstall\"]\n",
+            "schema_version = 1\n[services]\nenable = [\"--global\"]\n",
+        ] {
+            let config: Config = toml::from_str(toml).unwrap();
+            assert!(config.validate().is_err(), "should reject: {toml}");
+        }
     }
 
     #[test]
