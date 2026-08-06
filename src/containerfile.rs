@@ -76,6 +76,24 @@ const NIRI_PACKAGES: &[&str] = &[
     "swayidle",
     "swaylock",
     "firewalld",
+    // niri's built-in screenshot UI covers the Print keys; grim+slurp are
+    // the wlr-screencopy tools everything scriptable builds on
+    "grim",
+    "slurp",
+    // Mod+Print: annotate before sharing (satty is COPR-only)
+    "swappy",
+    // the XF86Audio sed that makes room for kuma-osd also drops niri's
+    // stock playerctl binds; kuma re-adds them, and though waybar already
+    // pulls playerctl in, naming it keeps the binds from ever dangling
+    "playerctl",
+    // plug-in automount: thunar only mounts on click, and thunar-volman
+    // needs the thunar daemon plus xfconf toggles to do its job
+    "udiskie",
+    // file-roller alone can't open 7z/rar downloads
+    "7zip",
+    "unar",
+    // default-fonts-core-sans is latin-only: CJK pages render as tofu
+    "google-noto-sans-cjk-vf-fonts",
     // quiet identity: baked and configured, never run at shell startup
     "fastfetch",
 ];
@@ -267,6 +285,8 @@ spawn-at-startup "/usr/libexec/kuma-clipboard-bridge"
 spawn-at-startup "/usr/libexec/kuma-xsettings"
 spawn-at-startup "/usr/libexec/kuma-wob"
 spawn-at-startup "blueman-applet"
+// Automount removable media at the session level; notifies via mako.
+spawn-at-startup "udiskie"
 // Time-based night light: no location needed, unlike solar mode.
 spawn-at-startup "wlsunset" "-S" "07:00" "-s" "20:00"
 spawn-at-startup "waybar"
@@ -398,9 +418,14 @@ const NIRI_MEDIA_BINDS: &str = r#"    XF86AudioRaiseVolume allow-when-locked=tru
     XF86AudioMicMute allow-when-locked=true { spawn "wpctl" "set-mute" "@DEFAULT_AUDIO_SOURCE@" "toggle"; }
     XF86MonBrightnessUp allow-when-locked=true { spawn "/usr/libexec/kuma-osd" "brightness-up"; }
     XF86MonBrightnessDown allow-when-locked=true { spawn "/usr/libexec/kuma-osd" "brightness-down"; }
+    XF86AudioPlay allow-when-locked=true { spawn "playerctl" "play-pause"; }
+    XF86AudioStop allow-when-locked=true { spawn "playerctl" "stop"; }
+    XF86AudioNext allow-when-locked=true { spawn "playerctl" "next"; }
+    XF86AudioPrev allow-when-locked=true { spawn "playerctl" "previous"; }
     Mod+Ctrl+V { spawn "sh" "-c" "cliphist list | fuzzel --dmenu | cliphist decode | wl-copy"; }
     Mod+Shift+N { spawn "makoctl" "mode" "-t" "do-not-disturb"; }
     Mod+Alt+R { spawn "/usr/libexec/kuma-record"; }
+    Mod+Print { spawn "sh" "-c" "grim -g \"$(slurp)\" - | swappy -f -"; }
 "#;
 
 /// GTK theme settings travel two roads: Wayland-native apps read
@@ -1282,6 +1307,11 @@ mod tests {
         assert!(FLATPAK_SYNC_TIMER.contains("Persistent=true"));
         assert!(NIRI_MEDIA_BINDS.contains("do-not-disturb"));
         assert!(NIRI_MEDIA_BINDS.contains("kuma-record"));
+        // the XF86Audio sed deletes niri's stock playerctl binds; these
+        // re-additions ride the bind-splice file, immune to that sed
+        assert!(NIRI_MEDIA_BINDS.contains("play-pause"));
+        assert!(NIRI_MEDIA_BINDS.contains("swappy"));
+        assert!(NIRI_EXTRAS.contains("spawn-at-startup \"udiskie\""));
     }
 
     #[test]
