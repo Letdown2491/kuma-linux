@@ -82,6 +82,10 @@ brew = ["ripgrep", "gh"]            # CLI tools, no rebuild needed
 enable = ["tailscaled.service"]
 ```
 
+A fuller, commented example lives at
+[`examples/kuma.toml.example`](examples/kuma.toml.example); a test keeps it
+valid against the current schema.
+
 ## Developing and testing
 
 - **CLI development** works anywhere Rust does, including a distrobox. When
@@ -128,5 +132,5 @@ enable = ["tailscaled.service"]
 - [x] `kuma passwd` — hash a password for the `[user]` section
 - [x] `kuma sync` — converge flatpaks and brew on demand (user config later)
 - [x] Bare `kuma` — the state machine as hypermedia: state + next actions, human and JSON
-- [ ] Base images (`kuma-gnome`, `kuma-plasma`) built in CI
-- [ ] Installer ISO via bootc-image-builder
+- [ ] Registry publishing + CI builds (`bootc switch`-able from anywhere)
+- [ ] `kuma.lock` — pin base digest and package versions; `kuma update` moves pins deliberately

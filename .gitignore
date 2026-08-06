@@ -1,6 +1,7 @@
 /target
 /Containerfile
 /vm
+/.claude
 
 # Build outputs and the real declaration stay local — kuma.toml.example
 # is the committed one.

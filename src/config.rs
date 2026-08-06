@@ -225,6 +225,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn committed_example_stays_valid() {
+        // The example is documentation that can rot; this keeps it honest.
+        let text = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/kuma.toml.example"
+        ));
+        let config: Config = toml::from_str(text).unwrap();
+        config.validate().unwrap();
+        // and it must stay generic — no real identity in the committed face
+        let user = config.user.expect("example should document [user]");
+        assert_eq!(user.name, "me");
+        assert_eq!(user.password_hash.as_deref(), Some("..."));
+    }
+
+    #[test]
     fn minimal_config_parses_with_defaults() {
         let config: Config = toml::from_str("schema_version = 1").unwrap();
         config.validate().unwrap();

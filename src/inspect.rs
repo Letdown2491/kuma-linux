@@ -342,7 +342,7 @@ fn check_deployment(report: &mut impl FnMut(Grade, &str, String, Option<Action>)
         let deployed: Vec<String> = [Some(&booted), staged.as_ref()]
             .into_iter()
             .flatten()
-            .filter_map(|s| digest_of(s))
+            .filter_map(digest_of)
             .collect();
         let deployment_current =
             !root_digest.is_empty() && deployed.iter().any(|d| d == root_digest);
