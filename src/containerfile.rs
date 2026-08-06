@@ -98,6 +98,54 @@ const NIRI_PACKAGES: &[&str] = &[
     "fastfetch",
 ];
 
+/// The curated COSMIC desktop. Unlike niri's hand-assembled set, COSMIC
+/// curates itself: cosmic-session hard-requires the whole coherent
+/// desktop (compositor, panel, applets, settings, files, terminal,
+/// notifications, OSD, screenshot, portal, fonts), so this list is the
+/// session plus the hardware enablement a desktop lives on. pipewire is
+/// explicit because nothing in the session requires the daemon, only
+/// its client library. cosmic-store is deliberately absent: it installs
+/// system flatpaks imperatively, which the next convergence run would
+/// remove — in kuma the store is `kuma add --flatpak`.
+const COSMIC_PACKAGES: &[&str] = &[
+    "cosmic-session",
+    "flatpak",
+    "fastfetch",
+    // unlocked with the login password via PAM, same as the niri set
+    "gnome-keyring",
+    "pipewire",
+    "pipewire-pulseaudio",
+    "wireplumber",
+    "mesa-dri-drivers",
+    "mesa-vulkan-drivers",
+    "vulkan-loader",
+    "glibc-langpack-en",
+    "NetworkManager-wifi",
+    "wpa_supplicant",
+    "power-profiles-daemon",
+    "bluez",
+    "firewalld",
+    "zram-generator-defaults",
+    "nss-mdns",
+    "cups",
+    "system-config-printer",
+    "spice-vdagent",
+    // cosmic-files mounts removable media through udisks2 directly
+    "udisks2",
+    "default-fonts-core-emoji",
+    "google-noto-sans-cjk-vf-fonts",
+];
+
+/// Fedora's mesa VA-API driver ships with H.264/H.265/VC-1 decode
+/// stripped (patents), so video silently falls back to CPU. RPM
+/// Fusion's freeworld build restores it; --allowerasing swaps out
+/// the gutted driver if a dependency dragged it in.
+const MESA_FREEWORLD: &str = "RUN dnf -y install \"https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm\" \\\n    && dnf -y install --allowerasing mesa-va-drivers-freeworld \\\n    && dnf clean all\n";
+
+/// Unlock the keyring with the login password, or every Chromium
+/// launch nags for it. (Autologin skips this: no password typed.)
+const KEYRING_PAM: &str = "RUN grep -q pam_gnome_keyring /etc/pam.d/greetd 2>/dev/null \\\n    || printf 'auth        optional    pam_gnome_keyring.so\\nsession     optional    pam_gnome_keyring.so auto_start\\n' >> /etc/pam.d/greetd\n";
+
 const GREETD_CONFIG: &str = r#"[terminal]
 vt = 1
 
@@ -713,13 +761,7 @@ pub fn generate(config: &Config) -> String {
             "\nRUN dnf -y install {} && dnf clean all\n",
             NIRI_PACKAGES.join(" ")
         ));
-        // Fedora's mesa VA-API driver ships with H.264/H.265/VC-1 decode
-        // stripped (patents), so video silently falls back to CPU. RPM
-        // Fusion's freeworld build restores it; --allowerasing swaps out
-        // the gutted driver if a dependency dragged it in.
-        out.push_str(
-            "RUN dnf -y install \"https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm\" \\\n    && dnf -y install --allowerasing mesa-va-drivers-freeworld \\\n    && dnf clean all\n",
-        );
+        out.push_str(MESA_FREEWORLD);
         out.push_str("COPY greetd-config.toml /etc/greetd/config.toml\n");
         out.push_str("COPY kargs-desktop.toml /usr/lib/bootc/kargs.d/10-kuma-desktop.toml\n");
         out.push_str("COPY niri-extras.kdl /usr/lib/kuma/niri-extras.kdl\n");
@@ -753,11 +795,7 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY gtk4-settings.ini /etc/gtk-4.0/settings.ini\n");
         out.push_str("COPY mimeapps.list /etc/xdg/mimeapps.list\n");
         out.push_str("COPY dconf-profile /etc/dconf/profile/user\n");
-        // Unlock the keyring with the login password, or every Chromium
-        // launch nags for it. (Autologin skips this: no password typed.)
-        out.push_str(
-            "RUN grep -q pam_gnome_keyring /etc/pam.d/greetd 2>/dev/null \\\n    || printf 'auth        optional    pam_gnome_keyring.so\\nsession     optional    pam_gnome_keyring.so auto_start\\n' >> /etc/pam.d/greetd\n",
-        );
+        out.push_str(KEYRING_PAM);
         out.push_str("COPY dconf-kuma-dark /etc/dconf/db/local.d/10-kuma-dark\n");
         out.push_str("RUN dconf update\n");
         // The packaged default config is complete (all keybindings); Kuma's
@@ -781,7 +819,50 @@ pub fn generate(config: &Config) -> String {
         );
     }
 
-    let wants_flatpak = config.system.desktop == Desktop::Niri
+    if config.system.desktop == Desktop::Cosmic {
+        out.push_str(&format!(
+            "\nRUN dnf -y install {} && dnf clean all\n",
+            COSMIC_PACKAGES.join(" ")
+        ));
+        out.push_str(MESA_FREEWORLD);
+        // Fedora ships cosmic-greeter.service (preset-enabled, aliased as
+        // display-manager.service) running `greetd --config
+        // /etc/greetd/cosmic-greeter.toml` — kuma writes no greeter config
+        // of its own here, unlike the niri arm.
+        if let Some(user) = &config.user {
+            if user.autologin {
+                // same greetd initial_session semantics as the niri arm
+                // (straight into the desktop at boot, greeter on logout),
+                // appended to the config cosmic-greeter.service reads.
+                // test -f first so a moved config fails the build instead
+                // of autologin silently not happening.
+                out.push_str(&format!(
+                    "RUN test -f /etc/greetd/cosmic-greeter.toml && printf '\\n[initial_session]\\ncommand = \"start-cosmic\"\\nuser = \"{}\"\\n' >> /etc/greetd/cosmic-greeter.toml\n",
+                    user.name
+                ));
+            }
+        }
+        // kuma declares the user and its look is settings, not a wizard —
+        // the first-boot setup must not fire. Plain rm so the build fails
+        // if COSMIC ever moves the autostart file, instead of the wizard
+        // silently resurfacing.
+        out.push_str(
+            "RUN rm /etc/xdg/autostart/com.system76.CosmicInitialSetup.desktop\n",
+        );
+        out.push_str(KEYRING_PAM);
+        out.push_str("COPY kargs-desktop.toml /usr/lib/bootc/kargs.d/10-kuma-desktop.toml\n");
+        out.push_str("COPY fastfetch-config.jsonc /etc/xdg/fastfetch/config.jsonc\n");
+        out.push_str("COPY fastfetch-logo.txt /usr/lib/kuma/fastfetch-logo.txt\n");
+        // cosmic-greeter.service, not greetd.service: it already owns the
+        // display-manager alias via preset — enabling greetd would fight
+        // it (and did, failing the first prototype build). Explicit enable
+        // is idempotent with the preset and keeps intent visible.
+        out.push_str(
+            "RUN systemctl set-default graphical.target && systemctl enable cosmic-greeter.service firewalld.service power-profiles-daemon.service bluetooth.service cups.service avahi-daemon.service chronyd.service\n",
+        );
+    }
+
+    let wants_flatpak = config.system.desktop != Desktop::None
         || !config.packages.flatpak.is_empty();
     if wants_flatpak {
         if config.system.desktop == Desktop::None {
@@ -941,9 +1022,15 @@ pub fn write_context(config: &Config, config_text: &str, dir: &Path) -> Result<(
     std::fs::write(dir.join("Containerfile"), generate(config))?;
     std::fs::write(dir.join("kuma-vm-timezone"), VM_TZ_SCRIPT)?;
     std::fs::write(dir.join("kuma-vm-timezone.service"), VM_TZ_SERVICE)?;
+    // Identity and kargs ship with every desktop; the rest of the niri
+    // block is glue COSMIC provides natively.
+    if config.system.desktop != Desktop::None {
+        std::fs::write(dir.join("kargs-desktop.toml"), DESKTOP_KARGS)?;
+        std::fs::write(dir.join("fastfetch-config.jsonc"), FASTFETCH_CONFIG)?;
+        std::fs::write(dir.join("fastfetch-logo.txt"), FASTFETCH_LOGO)?;
+    }
     if config.system.desktop == Desktop::Niri {
         std::fs::write(dir.join("greetd-config.toml"), greetd_config(config))?;
-        std::fs::write(dir.join("kargs-desktop.toml"), DESKTOP_KARGS)?;
         std::fs::write(dir.join("niri-extras.kdl"), NIRI_EXTRAS)?;
         std::fs::write(dir.join("kuma-wallpaper.png"), WALLPAPER)?;
         std::fs::write(dir.join("waybar-config.jsonc"), WAYBAR_CONFIG)?;
@@ -954,8 +1041,6 @@ pub fn write_context(config: &Config, config_text: &str, dir: &Path) -> Result<(
         std::fs::write(dir.join("mako-dropin.conf"), MAKO_DROPIN)?;
         std::fs::write(dir.join("alacritty.toml"), ALACRITTY_CONFIG)?;
         std::fs::write(dir.join("kuma-clipboard-bridge"), CLIPBOARD_BRIDGE)?;
-        std::fs::write(dir.join("fastfetch-config.jsonc"), FASTFETCH_CONFIG)?;
-        std::fs::write(dir.join("fastfetch-logo.txt"), FASTFETCH_LOGO)?;
         std::fs::write(dir.join("kuma-xsettings"), XSETTINGS_LAUNCHER)?;
         std::fs::write(dir.join("xsettingsd.conf"), XSETTINGSD_CONF)?;
         std::fs::write(dir.join("niri-binds.kdl"), NIRI_MEDIA_BINDS)?;
@@ -970,7 +1055,7 @@ pub fn write_context(config: &Config, config_text: &str, dir: &Path) -> Result<(
         std::fs::write(dir.join("dconf-profile"), DCONF_PROFILE)?;
         std::fs::write(dir.join("dconf-kuma-dark"), DCONF_DARK)?;
     }
-    if config.system.desktop == Desktop::Niri || !config.packages.flatpak.is_empty() {
+    if config.system.desktop != Desktop::None || !config.packages.flatpak.is_empty() {
         let mut list = config.packages.flatpak.join("\n");
         if !list.is_empty() {
             list.push('\n');
@@ -1432,5 +1517,58 @@ mod tests {
         assert!(greetd.contains("niri-session"));
         let kargs = std::fs::read_to_string(dir.path().join("kargs-desktop.toml")).unwrap();
         assert!(kargs.contains("quiet"));
+    }
+
+    #[test]
+    fn cosmic_desktop_composes_from_the_session() {
+        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"cosmic\"\n"));
+        assert!(out.contains("dnf -y install cosmic-session"));
+        // Fedora's cosmic-greeter.service owns the display-manager alias;
+        // enabling greetd.service alongside it fails the build
+        assert!(out.contains("systemctl enable cosmic-greeter.service"));
+        assert!(!out.contains("enable greetd.service"));
+        // kuma declares the user — the first-boot wizard must not fire
+        assert!(out.contains("rm /etc/xdg/autostart/com.system76.CosmicInitialSetup.desktop"));
+        // the session pulls only the pipewire library; the daemon is on us
+        assert!(out.contains("pipewire"));
+        // the store would fight convergence — its installs get removed daily
+        assert!(!out.contains("cosmic-store"));
+        // flathub remote ships in-image, same as the niri desktop
+        assert!(out.contains("flathub.flatpakrepo"));
+        assert!(out.contains("set-default graphical.target"));
+        // codec restoration applies to every desktop, not just niri
+        assert!(out.contains("mesa-va-drivers-freeworld"));
+    }
+
+    #[test]
+    fn cosmic_autologin_appends_initial_session() {
+        let with = generate(&config(
+            "schema_version = 1\n[system]\ndesktop = \"cosmic\"\n[user]\nname = \"mira\"\nautologin = true\n",
+        ));
+        assert!(with.contains("[initial_session]"));
+        assert!(with.contains("command = \"start-cosmic\""));
+        assert!(with.contains("user = \"mira\""));
+        // appended to the config cosmic-greeter.service actually reads
+        assert!(with.contains(">> /etc/greetd/cosmic-greeter.toml"));
+        let without = generate(&config(
+            "schema_version = 1\n[system]\ndesktop = \"cosmic\"\n[user]\nname = \"mira\"\n",
+        ));
+        assert!(!without.contains("initial_session"));
+    }
+
+    #[test]
+    fn cosmic_context_ships_identity_not_niri_glue() {
+        let dir = tempfile::tempdir().unwrap();
+        context("schema_version = 1\n[system]\ndesktop = \"cosmic\"\n", dir.path());
+        // identity and kargs travel with every desktop
+        assert!(dir.path().join("fastfetch-logo.txt").exists());
+        assert!(dir.path().join("kargs-desktop.toml").exists());
+        // flatpak convergence ships even with an empty list
+        assert!(dir.path().join("flatpaks").exists());
+        // the niri glue stays home: COSMIC provides all of it natively
+        assert!(!dir.path().join("greetd-config.toml").exists());
+        assert!(!dir.path().join("kuma-osd").exists());
+        assert!(!dir.path().join("mako.conf").exists());
+        assert!(!dir.path().join("xsettingsd.conf").exists());
     }
 }

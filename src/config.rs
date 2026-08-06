@@ -96,13 +96,16 @@ impl Default for System {
 }
 
 /// A desktop is a curated set (compositor, greeter, portals, audio, fonts),
-/// not a package list — the curation is Kuma's job.
+/// not a package list — the curation is Kuma's job. Niri is hand-assembled
+/// (a compositor needs a desktop built around it); COSMIC curates itself
+/// and kuma adds only hardware enablement and identity.
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Desktop {
     #[default]
     None,
     Niri,
+    Cosmic,
 }
 
 fn default_base() -> String {
@@ -234,18 +237,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn committed_example_stays_valid() {
-        // The example is documentation that can rot; this keeps it honest.
-        let text = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/examples/kuma.toml.example"
-        ));
-        let config: Config = toml::from_str(text).unwrap();
-        config.validate().unwrap();
-        // and it must stay generic — no real identity in the committed face
-        let user = config.user.expect("example should document [user]");
-        assert_eq!(user.name, "me");
-        assert_eq!(user.password_hash.as_deref(), Some("..."));
+    fn committed_examples_stay_valid() {
+        // The examples are documentation that can rot; this keeps every
+        // one honest: schema-valid, no real identity in any committed face.
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/examples");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if !path.extension().is_some_and(|e| e == "example") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let config: Config = toml::from_str(&text)
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            config.validate().unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            if let Some(user) = &config.user {
+                assert_eq!(user.name, "me", "{}", path.display());
+                assert_eq!(user.password_hash.as_deref(), Some("..."), "{}", path.display());
+            }
+            checked += 1;
+        }
+        assert!(checked >= 2, "expected the committed examples, found {checked}");
     }
 
     #[test]

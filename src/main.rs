@@ -400,6 +400,8 @@ schema_version = 1
 
 [system]
 base = "quay.io/fedora/fedora-bootc:44"
+# A desktop is a curated set kuma maintains: "niri" or "cosmic".
+# desktop = "niri"
 # Pin an IANA timezone across all machines built from this file. Usually
 # leave unset — timezone is machine state (`timedatectl set-timezone`).
 # timezone = "America/Denver"

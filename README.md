@@ -95,7 +95,7 @@ schema_version = 1
 
 [system]
 base = "quay.io/fedora/fedora-bootc:44"
-desktop = "niri"   # curated desktop set; omit for a headless system
+desktop = "niri"   # curated desktop sets: "niri" or "cosmic"; omit for headless
 
 [user]
 name = "me"
@@ -169,6 +169,7 @@ valid against the current schema.
 - [x] Bare `kuma` — the state machine as hypermedia: state + next actions, human and JSON
 - [x] `--json` across the read surface — bare `kuma`, `doctor`, `diff` speak the same map to agents
 - [x] Agent surface — `kuma schema` + `kuma check`, `--json` on every mutating verb, structured errors
+- [x] `desktop = "cosmic"` — second curated desktop; COSMIC curates itself, kuma adds enablement + identity
 - [x] Self-describing images — the baked declaration, seeded `kuma init`, config search path
 - [ ] Registry publishing + CI builds (`bootc switch`-able from anywhere)
 - [ ] `kuma.lock` — pin base digest and package versions; `kuma update` moves pins deliberately

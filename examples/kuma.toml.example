@@ -4,7 +4,8 @@ schema_version = 1
 [system]
 base = "quay.io/fedora/fedora-bootc:44"
 # A desktop is a curated set kuma maintains, not a package list you assemble.
-# Supported: "niri" (scrollable-tiling Wayland compositor). Omit for headless.
+# Supported: "niri" (scrollable-tiling Wayland compositor), "cosmic"
+# (System76's full desktop — see cosmic.toml.example). Omit for headless.
 desktop = "niri"
 # Timezone is machine state, so usually leave this unset: machines keep
 # whatever `timedatectl set-timezone` chose (it survives image updates),
