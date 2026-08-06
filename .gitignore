@@ -1,6 +1,7 @@
 /target
 /Containerfile
-/vm
+# vm, vm-cosmic, and any future per-desktop disk directories
+/vm*
 /.claude
 
 # Build outputs and the real declaration stay local — kuma.toml.example
