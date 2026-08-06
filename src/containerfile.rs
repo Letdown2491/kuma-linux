@@ -76,6 +76,8 @@ const NIRI_PACKAGES: &[&str] = &[
     "swayidle",
     "swaylock",
     "firewalld",
+    // quiet identity: baked and configured, never run at shell startup
+    "fastfetch",
 ];
 
 const GREETD_CONFIG: &str = r#"[terminal]
@@ -456,6 +458,53 @@ done
 exec spice-vdagent -x
 "#;
 
+/// Joan G. Stark's classic ASCII bear (her "jgs" signature moved here so
+/// it doesn't render on every run), wallpaper-bear warm brown ($1) with
+/// the wordmark in kuma green ($2). Identity you invoke: fastfetch is
+/// baked but nothing runs it at shell startup.
+const FASTFETCH_LOGO: &str = r#"$1 .--.              .--.
+$1: (\ ". _......_ ." /) :
+$1 '.    `        `    .'
+$1  /'   _        _   `\
+$1 /     0}      {0     \
+$1|       /      \       |
+$1|     /'        `\     |
+$1 \   | .  .==.  . |   /
+$1  '._ \.' \__/ './ _.'
+$1  /  ``'._-''-_.'``  \
+$1          `--`
+$2     k   u   m   a
+"#;
+
+/// System-wide default via XDG_CONFIG_DIRS; a user config in
+/// ~/.config/fastfetch still wins, same as waybar and fuzzel.
+const FASTFETCH_CONFIG: &str = r#"{
+    "logo": {
+        "type": "file",
+        "source": "/usr/lib/kuma/fastfetch-logo.txt",
+        "color": { "1": "38;2;226;190;146", "2": "38;2;126;224;168" },
+        "padding": { "top": 1, "right": 3 }
+    },
+    "modules": [
+        "title",
+        "separator",
+        "os",
+        "kernel",
+        "uptime",
+        "packages",
+        "shell",
+        "wm",
+        "terminal",
+        "cpu",
+        "gpu",
+        "memory",
+        "disk",
+        "break",
+        "colors"
+    ]
+}
+"#;
+
 /// Theme files for the curated desktop, drawn from the Kuma wallpaper palette.
 /// All system-wide (never /etc/skel): skel only reaches homes created after
 /// the image ships, so it strands existing users on stale copies — image
@@ -493,17 +542,31 @@ ExecStart=/usr/libexec/kuma-mako
 /// Rebrand the OS identity: Kuma, not Fedora. ID_LIKE=fedora keeps tools
 /// that sniff os-release (toolbox, distrobox, dnf COPR, …) working. Runs
 /// last so every dnf layer before it still sees stock Fedora metadata.
+///
+/// Releases carry bear names (species or fiction), one per Fedora base,
+/// keyed by VERSION_ID below. PRETTY_NAME drops the number — kuma has no
+/// version of its own, just a continuously rebuilt base — while VERSION_ID
+/// stays Fedora's so toolbox/dnf/bib keep resolving. An unlisted base
+/// falls back to plain "Kuma" and Fedora's own VERSION string.
 const BRANDING: &str = r#"
 RUN . /usr/lib/os-release \
+    && case "${VERSION_ID}" in \
+        44) CODENAME="Beorn" ;; \
+        *) CODENAME="" ;; \
+    esac \
     && sed -i \
         -e 's|^NAME=.*|NAME="Kuma"|' \
-        -e "s|^PRETTY_NAME=.*|PRETTY_NAME=\"Kuma ${VERSION_ID}\"|" \
+        -e "s|^PRETTY_NAME=.*|PRETTY_NAME=\"Kuma${CODENAME:+ ($CODENAME)}\"|" \
         -e 's|^ID=.*|ID=kuma|' \
         -e 's|^DEFAULT_HOSTNAME=.*|DEFAULT_HOSTNAME="kuma"|' \
         -e 's|^ANSI_COLOR=.*|ANSI_COLOR="0;38;2;126;224;168"|' \
         /usr/lib/os-release \
+    && if [ -n "$CODENAME" ]; then sed -i \
+        -e "s|^VERSION=.*|VERSION=\"${VERSION_ID} ($CODENAME)\"|" \
+        -e "s|^VERSION_CODENAME=.*|VERSION_CODENAME=$(printf %s "$CODENAME" | tr '[:upper:]' '[:lower:]')|" \
+        /usr/lib/os-release; fi \
     && { grep -q '^ID_LIKE=' /usr/lib/os-release || echo 'ID_LIKE="fedora"' >> /usr/lib/os-release; } \
-    && { [ ! -f /usr/lib/fedora-release ] || echo "Kuma release ${VERSION_ID}" > /usr/lib/fedora-release; }
+    && { [ ! -f /usr/lib/fedora-release ] || echo "Kuma release ${VERSION_ID}${CODENAME:+ ($CODENAME)}" > /usr/lib/fedora-release; }
 "#;
 
 /// Homebrew lives in /home/linuxbrew — machine-local mutable state, so it
@@ -644,6 +707,8 @@ pub fn generate(config: &Config) -> String {
         );
         out.push_str("COPY alacritty.toml /etc/alacritty/alacritty.toml\n");
         out.push_str("COPY --chmod=755 kuma-clipboard-bridge /usr/libexec/kuma-clipboard-bridge\n");
+        out.push_str("COPY fastfetch-config.jsonc /etc/xdg/fastfetch/config.jsonc\n");
+        out.push_str("COPY fastfetch-logo.txt /usr/lib/kuma/fastfetch-logo.txt\n");
         out.push_str("COPY --chmod=755 kuma-xsettings /usr/libexec/kuma-xsettings\n");
         out.push_str("COPY xsettingsd.conf /usr/lib/kuma/xsettingsd.conf\n");
         out.push_str("COPY niri-binds.kdl /usr/lib/kuma/niri-binds.kdl\n");
@@ -845,6 +910,8 @@ pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
         std::fs::write(dir.join("mako-dropin.conf"), MAKO_DROPIN)?;
         std::fs::write(dir.join("alacritty.toml"), ALACRITTY_CONFIG)?;
         std::fs::write(dir.join("kuma-clipboard-bridge"), CLIPBOARD_BRIDGE)?;
+        std::fs::write(dir.join("fastfetch-config.jsonc"), FASTFETCH_CONFIG)?;
+        std::fs::write(dir.join("fastfetch-logo.txt"), FASTFETCH_LOGO)?;
         std::fs::write(dir.join("kuma-xsettings"), XSETTINGS_LAUNCHER)?;
         std::fs::write(dir.join("xsettingsd.conf"), XSETTINGSD_CONF)?;
         std::fs::write(dir.join("niri-binds.kdl"), NIRI_MEDIA_BINDS)?;
@@ -1064,6 +1131,18 @@ mod tests {
         assert!(dir.path().join("fuzzel.ini").exists());
         assert!(dir.path().join("mako.conf").exists());
         assert!(dir.path().join("alacritty.toml").exists());
+        let ff = std::fs::read_to_string(dir.path().join("fastfetch-config.jsonc")).unwrap();
+        assert!(ff.contains("/usr/lib/kuma/fastfetch-logo.txt"));
+        assert!(dir.path().join("fastfetch-logo.txt").exists());
+    }
+
+    #[test]
+    fn branding_names_the_release() {
+        let out = generate(&config("schema_version = 1\n"));
+        // 44 is Beorn; an unlisted base must fall back to plain "Kuma".
+        assert!(out.contains(r#"44) CODENAME="Beorn""#));
+        assert!(out.contains(r#"*) CODENAME="""#));
+        assert!(out.contains(r#"PRETTY_NAME=\"Kuma${CODENAME:+ ($CODENAME)}\""#));
     }
 
     #[test]
