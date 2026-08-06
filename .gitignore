@@ -1,3 +1,8 @@
 /target
 /Containerfile
 /vm
+
+# Build outputs and the real declaration stay local — kuma.toml.example
+# is the committed one.
+/iso
+/examples/kuma.toml

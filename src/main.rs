@@ -584,6 +584,14 @@ fn build_disk(tag: &str, output: &Path) -> Result<()> {
 /// kickstart; Anaconda runs interactively.
 fn iso(config_path: &Path, tag: &str, output: &Path) -> Result<()> {
     let config = Config::load(config_path)?;
+    // Installer media outlives the machine it was meant for — surface
+    // what identity it carries at the moment it's being baked in.
+    if let Some(user) = &config.user {
+        println!(
+            "note: this installer bakes the declared user '{}' (account and password hash,\ncreated at first boot). For media you'll share, build from a declaration\nwithout [user] — Anaconda's create-a-user screen comes back automatically.\n",
+            user.name
+        );
+    }
     std::fs::create_dir_all(output)
         .with_context(|| format!("cannot create {}", output.display()))?;
     let output = std::fs::canonicalize(output)?;

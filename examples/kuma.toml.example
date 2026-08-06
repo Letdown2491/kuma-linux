@@ -1,0 +1,51 @@
+# A fuller example of a Kuma system definition.
+schema_version = 1
+
+[system]
+base = "quay.io/fedora/fedora-bootc:44"
+# A desktop is a curated set kuma maintains, not a package list you assemble.
+# Supported: "niri" (scrollable-tiling Wayland compositor). Omit for headless.
+desktop = "niri"
+# Timezone is machine state, so usually leave this unset: machines keep
+# whatever `timedatectl set-timezone` chose (it survives image updates),
+# and `kuma vm` mirrors the host. Set it only to pin every machine built
+# from this file to one IANA zone.
+# timezone = "America/Denver"
+# Hostname is machine state too (`hostnamectl set-hostname`); unset machines
+# default to "kuma". Locale installs its glibc langpack and sets LANG.
+# hostname = "kuma-laptop"
+# locale = "en_US.UTF-8"
+
+# The primary account: created on first boot, then converged (shell,
+# declared groups, kuma-managed ssh keys) on every boot. Get the hash
+# from `kuma passwd`; it applies only at creation — change it freely on
+# the machine afterward.
+[user]
+name = "me"
+shell = "fish"
+password_hash = '...'   # from `kuma passwd`
+
+# groups = ["wheel"]                # the default
+# ssh_keys = ["ssh-ed25519 AAAA..."]
+# autologin = true                   # straight to the desktop at boot
+
+[packages]
+rpm = ["fish", "distrobox", "tailscale", "htop"]
+# Dev tools ride Homebrew, not the image: they move too fast for a
+# rebuild-and-reboot cycle. Declaring any formula bootstraps brew itself
+# (system.brew = true does the same without a list, for ad-hoc use).
+# Converged like flatpaks; ad-hoc `brew install` stays yours.
+brew = ["ripgrep", "fd", "jq", "gh", "lazygit"]
+flatpak = [
+    "org.chromium.Chromium",
+    "org.gnome.Loupe",
+    "org.gnome.Calculator",
+    "io.github.celluloid_player.Celluloid",
+    "org.gnome.Papers",
+    "org.gnome.TextEditor",
+]
+
+# Note: enable/disable fail the build if the unit doesn't exist in the image —
+# strict on purpose, so typos surface at build time instead of being ignored.
+[services]
+enable = ["tailscaled.service"]
