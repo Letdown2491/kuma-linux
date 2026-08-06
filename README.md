@@ -44,6 +44,7 @@ Day 2, the file stays the interface — these edit or read it for you:
 $ kuma                                     # bare: current state + next actions (--json for agents)
 $ kuma add --flatpak org.mozilla.firefox   # declare in kuma.toml (--rpm/--brew too)
 $ kuma remove org.mozilla.firefox          # drop from whichever list declares it
+$ kuma check                               # validate the declaration without building anything
 $ kuma diff                                # drift: kuma.toml vs image vs machine
 $ kuma doctor                              # machine health: deployment, convergence, GPU, storage, disk
 $ kuma sync                                # converge flatpaks/brew now, not at next boot
@@ -52,8 +53,30 @@ $ kuma rollback --yes                      # the update's undo: boot order back 
 $ kuma clean                               # reclaim dangling images and abandoned build containers
 ```
 
-`add` and `remove` preserve your comments and formatting; `diff` and
-`doctor` are read-only, and both speak `--json` like bare `kuma` does.
+`add` and `remove` preserve your comments and formatting; `check`, `diff`,
+and `doctor` are read-only, and everything speaks `--json` (see below).
+
+## For agents
+
+The self-describing principle is also an API: an agent with a shell can
+operate a kuma machine without kuma-specific knowledge, because every
+response names the legal next commands.
+
+- **Probe**: `kuma --json` is the root resource — state, facts, and
+  `actions` as `{rel, cmd, why}` objects. Execute an action's `cmd`
+  verbatim, then re-probe. `kuma doctor --json` (machine health) and
+  `kuma diff --json` (drift) carry findings with their fixes in the same
+  action shape.
+- **Write**: `kuma schema` prints the JSON Schema for `kuma.toml`,
+  generated from the same types that parse it — field docs included, so
+  it cannot drift from reality. `kuma check [--json]` validates a
+  declaration without building anything.
+- **Mutate**: `build`, `switch`, `update`, `rollback`, `sync`, `add`, and
+  `remove` accept `--json`: stdout carries exactly one JSON document —
+  `{"ok": true, ...}` with result fields and next `actions`, or
+  `{"ok": false, "error": ...}` with a non-zero exit. Progress and
+  subprocess output move to stderr. Mutations gate on `--yes` and never
+  touch the running system: they build and stage; a reboot applies.
 
 Without `--config`, kuma uses `./kuma.toml`, falling back to
 `~/.config/kuma/kuma.toml` — a home for declarations that don't live in a
@@ -145,6 +168,7 @@ valid against the current schema.
 - [x] `kuma rollback` — the update's undo: boot order back to the previous deployment
 - [x] Bare `kuma` — the state machine as hypermedia: state + next actions, human and JSON
 - [x] `--json` across the read surface — bare `kuma`, `doctor`, `diff` speak the same map to agents
+- [x] Agent surface — `kuma schema` + `kuma check`, `--json` on every mutating verb, structured errors
 - [x] Self-describing images — the baked declaration, seeded `kuma init`, config search path
 - [ ] Registry publishing + CI builds (`bootc switch`-able from anywhere)
 - [ ] `kuma.lock` — pin base digest and package versions; `kuma update` moves pins deliberately

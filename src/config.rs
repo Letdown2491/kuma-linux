@@ -1,11 +1,13 @@
 use anyhow::{bail, Context, Result};
+use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::Path;
 
 pub const CURRENT_SCHEMA: u32 = 1;
 pub const DEFAULT_BASE: &str = "quay.io/fedora/fedora-bootc:44";
 
-#[derive(Debug, Deserialize)]
+/// A kuma system declaration — the one file that describes a machine.
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub schema_version: u32,
@@ -22,7 +24,7 @@ pub struct Config {
 /// The primary account, created and converged by a boot service — not at
 /// image build time, because /home is machine state (/var/home) and an
 /// image-built home directory never materializes on `bootc switch`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct User {
     pub name: String,
@@ -52,7 +54,7 @@ fn default_groups() -> Vec<String> {
     vec!["wheel".to_string()]
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct System {
     #[serde(default = "default_base")]
@@ -95,7 +97,7 @@ impl Default for System {
 
 /// A desktop is a curated set (compositor, greeter, portals, audio, fonts),
 /// not a package list — the curation is Kuma's job.
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Desktop {
     #[default]
@@ -107,7 +109,7 @@ fn default_base() -> String {
     DEFAULT_BASE.to_string()
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Packages {
     #[serde(default)]
@@ -124,7 +126,7 @@ pub struct Packages {
     pub brew: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Services {
     #[serde(default)]

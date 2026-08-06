@@ -8,8 +8,8 @@ mod state;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use config::Config;
-use host::{host_output, host_output_any, run_host};
-use state::{print_actions, Action};
+use host::{host_output, host_output_any, note, run_host};
+use state::{action_json, print_actions, Action};
 use std::path::{Path, PathBuf};
 
 pub(crate) const DEFAULT_TAG: &str = "localhost/kuma:latest";
@@ -53,6 +53,9 @@ enum Cmd {
         /// Image tag to build
         #[arg(long, default_value = DEFAULT_TAG)]
         tag: String,
+        /// Report the result as JSON (progress moves to stderr)
+        #[arg(long)]
+        json: bool,
     },
     /// Point bootc at the built image (prints the command unless --yes)
     Switch {
@@ -62,6 +65,9 @@ enum Cmd {
         /// Actually run `bootc switch` (requires root; reboots take effect later)
         #[arg(long)]
         yes: bool,
+        /// Report the result as JSON (progress moves to stderr)
+        #[arg(long)]
+        json: bool,
     },
     /// Build a bootable qcow2 disk from the image and boot it in QEMU
     Vm {
@@ -99,15 +105,25 @@ enum Cmd {
         /// Actually stage the rebuilt image (requires root; applies on reboot)
         #[arg(long)]
         yes: bool,
+        /// Report the result as JSON (progress moves to stderr)
+        #[arg(long)]
+        json: bool,
     },
     /// Swap the boot order back to the previous deployment (prints unless --yes)
     Rollback {
         /// Actually run `bootc rollback` (requires root; takes effect on next boot)
         #[arg(long)]
         yes: bool,
+        /// Report the result as JSON (progress moves to stderr)
+        #[arg(long)]
+        json: bool,
     },
     /// Converge flatpaks and brew to the declaration now, not at next boot
-    Sync,
+    Sync {
+        /// Report the result as JSON (progress moves to stderr)
+        #[arg(long)]
+        json: bool,
+    },
     /// Reclaim build leftovers: dangling images, abandoned build containers
     Clean,
     /// Declare packages in kuma.toml (pick the list: --rpm, --flatpak, --brew)
@@ -124,11 +140,17 @@ enum Cmd {
         /// Add to [packages].brew (Homebrew formulae)
         #[arg(long)]
         brew: bool,
+        /// Report the result as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Drop declared packages from kuma.toml (searches every [packages] list)
     Remove {
         #[arg(required = true)]
         names: Vec<String>,
+        /// Report the result as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Show drift between kuma.toml and this machine (read-only)
     Diff {
@@ -142,6 +164,14 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Validate the declaration without building anything (read-only)
+    Check {
+        /// Emit the verdict as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the JSON Schema for kuma.toml, generated from the parser's own types
+    Schema,
     /// Hash a password for the [user] section (prompts; prints the line to paste)
     Passwd,
     /// Print shell completions (e.g. `kuma completions fish | source`)
@@ -159,44 +189,96 @@ fn main() -> Result<()> {
     let Some(command) = cli.command else {
         return state::root(&config_path, root_json);
     };
+    // Mutating verbs in JSON mode promise exactly one JSON document on
+    // stdout — success or failure. Progress and subprocess output move to
+    // stderr (host::note / run_host handle the routing). The read verbs
+    // (diff, doctor, check) manage their own JSON and stay out of this.
+    let mutating_json = root_json
+        || match &command {
+            Cmd::Build { json, .. }
+            | Cmd::Switch { json, .. }
+            | Cmd::Update { json, .. }
+            | Cmd::Rollback { json, .. }
+            | Cmd::Sync { json }
+            | Cmd::Add { json, .. }
+            | Cmd::Remove { json, .. } => *json,
+            _ => false,
+        };
+    let mutating = matches!(
+        &command,
+        Cmd::Build { .. }
+            | Cmd::Switch { .. }
+            | Cmd::Update { .. }
+            | Cmd::Rollback { .. }
+            | Cmd::Sync { .. }
+            | Cmd::Add { .. }
+            | Cmd::Remove { .. }
+    );
+    let json_mode = mutating && mutating_json;
+    if json_mode {
+        host::set_json_output();
+    }
+    let result = run(command, &config_path, explicit, root_json, json_mode);
+    if json_mode {
+        if let Err(err) = &result {
+            // even failure ends machine-readably; the Error: line still
+            // rides stderr through main's Result
+            println!("{}", serde_json::json!({ "ok": false, "error": format!("{err:#}") }));
+        }
+    }
+    result
+}
+
+fn run(
+    command: Cmd,
+    config_path: &Path,
+    explicit: bool,
+    root_json: bool,
+    json: bool,
+) -> Result<()> {
     match command {
         Cmd::Init { force, starter } => init(force, starter),
         Cmd::Generate => {
             // quiet fallback: stdout is the artifact, keep it clean
-            let config = Config::load(&read_config_path(&config_path, explicit, false))?;
+            let config = Config::load(&read_config_path(config_path, explicit, false))?;
             print!("{}", containerfile::generate(&config));
             Ok(())
         }
-        Cmd::Build { tag } => build(&config_path, &tag),
-        Cmd::Switch { tag, yes } => switch(&tag, yes),
+        Cmd::Build { tag, json: _ } => build(config_path, &tag, json),
+        Cmd::Switch { tag, yes, json: _ } => switch(&tag, yes, json),
         Cmd::Vm { tag, output, no_run, rebuild, apply } => {
             vm(&tag, &output, no_run, rebuild, apply)
         }
-        Cmd::Iso { tag, output } => iso(&config_path, &tag, &output),
-        Cmd::Update { tag, yes } => {
-            update(&read_config_path(&config_path, explicit, true), &tag, yes)
+        Cmd::Iso { tag, output } => iso(config_path, &tag, &output),
+        Cmd::Update { tag, yes, json: _ } => {
+            update(&read_config_path(config_path, explicit, !json), &tag, yes, json)
         }
-        Cmd::Rollback { yes } => rollback(yes),
-        Cmd::Sync => sync(),
+        Cmd::Rollback { yes, json: _ } => rollback(yes, json),
+        Cmd::Sync { json: _ } => sync(json),
         Cmd::Clean => clean(),
-        Cmd::Add { names, rpm, flatpak, brew } => {
+        Cmd::Add { names, rpm, flatpak, brew, json: _ } => {
             let list = match (rpm, flatpak, brew) {
                 (true, false, false) => "rpm",
                 (false, true, false) => "flatpak",
                 (false, false, true) => "brew",
                 _ => bail!("pick exactly one of --rpm, --flatpak, --brew"),
             };
-            edit::add(&config_path, list, &names)
+            edit::add(config_path, list, &names, json)
         }
-        Cmd::Remove { names } => edit::remove(&config_path, &names),
+        Cmd::Remove { names, json: _ } => edit::remove(config_path, &names, json),
         Cmd::Diff { json } => {
             let json = json || root_json;
             // announce=false in JSON mode: stdout must stay pure JSON
-            let path = read_config_path(&config_path, explicit, !json);
+            let path = read_config_path(config_path, explicit, !json);
             let config = Config::load(&path)?;
             inspect::diff(&config, &path, json)
         }
         Cmd::Doctor { json } => inspect::doctor(json || root_json),
+        Cmd::Check { json } => {
+            let json = json || root_json;
+            check(&read_config_path(config_path, explicit, !json), json)
+        }
+        Cmd::Schema => schema(),
         Cmd::Passwd => passwd(),
         Cmd::Completions { shell } => {
             use clap::CommandFactory;
@@ -204,6 +286,68 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// The GET for the write path: is this declaration one `kuma build` would
+/// accept? Agents validate an edit before proposing it; humans get the
+/// verdict with its next move.
+fn check(config_path: &Path, json: bool) -> Result<()> {
+    let shown = config_path.display().to_string();
+    match Config::load(config_path) {
+        Ok(config) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "valid": true,
+                        "config": shown,
+                        "declares": {
+                            "rpm": config.packages.rpm.len(),
+                            "flatpak": config.packages.flatpak.len(),
+                            "brew": config.packages.brew.len(),
+                        },
+                    }))?
+                );
+            } else {
+                println!(
+                    "{shown} is a valid declaration — {} rpm, {} flatpak, {} brew.",
+                    config.packages.rpm.len(),
+                    config.packages.flatpak.len(),
+                    config.packages.brew.len()
+                );
+            }
+            Ok(())
+        }
+        Err(err) => {
+            let action =
+                Action::new("edit", format!("$EDITOR {shown}"), format!("{err:#}"));
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "valid": false,
+                        "config": shown,
+                        "error": format!("{err:#}"),
+                        "actions": [state::action_json(&action)],
+                    }))?
+                );
+            } else {
+                println!("{shown} is not a valid declaration.\n");
+                print_actions(&[action]);
+            }
+            // non-zero exit either way; details are already on stdout
+            bail!("declaration invalid")
+        }
+    }
+}
+
+/// The schema is generated from the same types that parse the file, so it
+/// cannot drift — and the structs' doc comments ride along as field
+/// descriptions. Quiet like `generate`: stdout is the artifact.
+fn schema() -> Result<()> {
+    let schema = schemars::schema_for!(Config);
+    println!("{}", serde_json::to_string_pretty(&schema)?);
+    Ok(())
 }
 
 /// The config wants a hash, not a password — kuma.toml is meant to live in
@@ -345,9 +489,8 @@ fn init(force: bool, starter: bool) -> Result<()> {
     Ok(())
 }
 
-fn build(config_path: &Path, tag: &str) -> Result<()> {
+fn build(config_path: &Path, tag: &str, json: bool) -> Result<()> {
     build_image(config_path, tag)?;
-    println!("\nBuilt {tag}.");
     // The edges out of "built" depend on where we are: only a bootc
     // machine can switch to the image; anywhere else a VM is the way in.
     let mut actions = Vec::new();
@@ -355,7 +498,18 @@ fn build(config_path: &Path, tag: &str) -> Result<()> {
         actions.push(Action::new("switch", "kuma switch", "stage it onto this machine (applies on reboot)"));
     }
     actions.push(Action::new("vm", "kuma vm", "boot it in a disposable VM"));
-    print_actions(&actions);
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true, "built": true, "tag": tag,
+                "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
+            })
+        );
+    } else {
+        println!("\nBuilt {tag}.");
+        print_actions(&actions);
+    }
     Ok(())
 }
 
@@ -384,24 +538,40 @@ fn build_image(config_path: &Path, tag: &str) -> Result<()> {
     .map(|out| out.lines().filter(|l| !l.trim().is_empty()).count())
     .unwrap_or(0);
     if pruned > 0 {
-        println!("Reclaimed {pruned} stale build image(s).");
+        note(&format!("Reclaimed {pruned} stale build image(s)."));
     }
     Ok(())
 }
 
-fn switch(tag: &str, yes: bool) -> Result<()> {
+fn switch(tag: &str, yes: bool, json: bool) -> Result<()> {
     if !yes {
         // The dry run must tell the truth: with nothing built, the switch
         // it describes could only fail. Same passwordless check the bare
         // `kuma` probe uses; the --yes path gets its error from stage().
-        if host_output(&["podman", "image", "inspect", "--format", "{{.Id}}", tag]).is_err()
-        {
+        let built =
+            host_output(&["podman", "image", "inspect", "--format", "{{.Id}}", tag]).is_ok();
+        let actions = if built {
+            vec![Action::new(
+                "apply",
+                "kuma switch --yes",
+                "sync into root storage and stage via bootc (applies on reboot)",
+            )]
+        } else {
+            vec![Action::new("build", "kuma build", "build the system image from the declaration")]
+        };
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": true, "dry_run": true, "tag": tag, "image_built": built,
+                    "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
+                })
+            );
+            return Ok(());
+        }
+        if !built {
             println!("{tag} is not built — there is nothing to switch to yet.\n");
-            print_actions(&[Action::new(
-                "build",
-                "kuma build",
-                "build the system image from the declaration",
-            )]);
+            print_actions(&actions);
             return Ok(());
         }
         println!(
@@ -414,12 +584,23 @@ fn switch(tag: &str, yes: bool) -> Result<()> {
     if !stage(tag)? {
         bail!("nothing staged — the system already runs this image (did `kuma build` succeed?)");
     }
-    println!("\nStaged.");
-    print_actions(&[Action::new(
+    let reboot = Action::new(
         "reboot",
         "sudo systemctl reboot",
         "boot the staged deployment; kuma rollback returns to the previous one",
-    )]);
+    );
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true, "staged": true, "tag": tag,
+                "actions": [action_json(&reboot)],
+            })
+        );
+    } else {
+        println!("\nStaged.");
+        print_actions(&[reboot]);
+    }
     Ok(())
 }
 
@@ -459,26 +640,48 @@ fn stage(tag: &str) -> Result<bool> {
 /// the cached base, so a same-tag base (fedora-bootc:44) never moves
 /// without it. Unlike `kuma switch`, an unchanged system is a normal
 /// outcome here, not an error.
-fn update(config_path: &Path, tag: &str, yes: bool) -> Result<()> {
+fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
     let config = Config::load(config_path)?;
     run_host(&["podman", "pull", &config.system.base])?;
     build_image(config_path, tag)?;
     if !yes {
-        println!("\nBuilt {tag}.");
-        print_actions(&[Action::new(
+        let stage_hint = Action::new(
             "stage",
             "kuma update --yes",
             "stage it — applies on reboot; the previous deployment stays for kuma rollback",
-        )]);
+        );
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": true, "built": true, "staged": false, "tag": tag,
+                    "actions": [action_json(&stage_hint)],
+                })
+            );
+        } else {
+            println!("\nBuilt {tag}.");
+            print_actions(&[stage_hint]);
+        }
         return Ok(());
     }
-    if stage(tag)? {
+    let staged = stage(tag)?;
+    let reboot = Action::new(
+        "reboot",
+        "sudo systemctl reboot",
+        "boot the staged deployment; kuma rollback returns to the previous one",
+    );
+    if json {
+        let actions: Vec<_> = if staged { vec![action_json(&reboot)] } else { vec![] };
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true, "staged": staged, "up_to_date": !staged, "tag": tag,
+                "actions": actions,
+            })
+        );
+    } else if staged {
         println!("\nStaged.");
-        print_actions(&[Action::new(
-            "reboot",
-            "sudo systemctl reboot",
-            "boot the staged deployment; kuma rollback returns to the previous one",
-        )]);
+        print_actions(&[reboot]);
     } else {
         println!("\nAlready up to date — the system runs this image.");
     }
@@ -490,8 +693,23 @@ fn update(config_path: &Path, tag: &str, yes: bool) -> Result<()> {
 /// target (so the failure is kuma-flavored, not bootc's), name what the
 /// next boot lands on, and surface the one sharp edge: a staged-but-
 /// never-booted deployment is discarded by the swap.
-fn rollback(yes: bool) -> Result<()> {
+fn rollback(yes: bool, json: bool) -> Result<()> {
     if !yes {
+        if json {
+            let apply = Action::new(
+                "apply",
+                "kuma rollback --yes",
+                "swap the boot order to the previous deployment (applies on reboot; discards any staged deployment)",
+            );
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": true, "dry_run": true, "would_run": "bootc rollback",
+                    "actions": [action_json(&apply)],
+                })
+            );
+            return Ok(());
+        }
         println!("Would run (as root):\n\n  bootc rollback\n");
         println!("Re-run with --yes to apply. The boot order swaps to the previous");
         println!("deployment and takes effect on next boot; rolling back again before");
@@ -501,13 +719,13 @@ fn rollback(yes: bool) -> Result<()> {
     }
     let status = host_output(&["sudo", "bootc", "status", "--format", "json"])
         .context("cannot read bootc status — is this a bootc machine?")?;
-    let json: serde_json::Value =
+    let status_json: serde_json::Value =
         serde_json::from_str(&status).context("cannot parse bootc status")?;
-    let Some((target, staged)) = rollback_facts(&json) else {
+    let Some((target, staged)) = rollback_facts(&status_json) else {
         bail!("no rollback deployment on this machine — nothing to roll back to");
     };
     if staged {
-        println!("note: discarding the staged (never booted) deployment.\n");
+        note("note: discarding the staged (never booted) deployment.\n");
     }
     run_host(&["sudo", "bootc", "rollback"])?;
     // The deployment stamp names the image we just rolled back FROM, and
@@ -515,12 +733,23 @@ fn rollback(yes: bool) -> Result<()> {
     // stamp so the passwordless probe skips its freshness check; the next
     // doctor run rewrites it from the truth.
     let _ = host_output(&["sudo", "rm", "-f", state::DEPLOYED_ID_FILE]);
-    println!("\nBoot order swapped — next boot lands on {target}.");
-    print_actions(&[Action::new(
+    let reboot = Action::new(
         "reboot",
         "sudo systemctl reboot",
         "boot the previous deployment now; kuma rollback again undoes the swap",
-    )]);
+    );
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true, "target": target, "staged_discarded": staged,
+                "actions": [action_json(&reboot)],
+            })
+        );
+    } else {
+        println!("\nBoot order swapped — next boot lands on {target}.");
+        print_actions(&[reboot]);
+    }
     Ok(())
 }
 
@@ -547,7 +776,7 @@ fn rollback_facts(json: &serde_json::Value) -> Option<(String, bool)> {
 /// On-demand convergence: start the same units boot and the daily timer
 /// run, so there stays exactly one convergence path. systemctl blocks
 /// until each oneshot finishes, so success here means converged.
-fn sync() -> Result<()> {
+fn sync(json: bool) -> Result<()> {
     let mut units: Vec<&str> = Vec::new();
     if Path::new("/usr/lib/kuma/flatpaks").exists() {
         units.push("kuma-flatpak-sync.service");
@@ -559,7 +788,11 @@ fn sync() -> Result<()> {
         // Three different truths hide behind "nothing to start" — name the
         // one that holds here, with its next move.
         if Path::new("/usr/lib/kuma").is_dir() {
-            println!("Nothing to converge — this image declares no flatpaks or brew formulae.");
+            if json {
+                println!("{}", serde_json::json!({ "ok": true, "converged": [] }));
+            } else {
+                println!("Nothing to converge — this image declares no flatpaks or brew formulae.");
+            }
             return Ok(());
         }
         if Path::new("/run/ostree-booted").exists() {
@@ -570,7 +803,11 @@ fn sync() -> Result<()> {
     let mut args = vec!["sudo", "systemctl", "start"];
     args.extend(&units);
     run_host(&args)?;
-    println!("Converged: {}", units.join(", "));
+    if json {
+        println!("{}", serde_json::json!({ "ok": true, "converged": units }));
+    } else {
+        println!("Converged: {}", units.join(", "));
+    }
     Ok(())
 }
 
@@ -765,7 +1002,7 @@ fn sync_image_to_root(tag: &str, scratch: &Path) -> Result<String> {
     let root_id = host_output(&["sudo", "podman", "image", "inspect", "--format", "{{.Id}}", tag])
         .unwrap_or_default();
     if local_id != root_id {
-        println!("Syncing {tag} into root podman storage (may take a minute)...");
+        note(&format!("Syncing {tag} into root podman storage (may take a minute)..."));
         let archive = scratch.join("kuma-image.tar");
         let archive_str = path_str(&archive)?;
         run_host(&["podman", "save", "--format", "oci-archive", "-o", archive_str, tag])?;
@@ -1032,6 +1269,19 @@ mod tests {
         // keeps its user screen so installs aren't left with no account
         assert!(!out.contains("--hostname"));
         assert!(!out.contains("Modules.Users"));
+    }
+
+    #[test]
+    fn schema_reflects_the_parser_types() {
+        let schema = serde_json::to_value(schemars::schema_for!(crate::config::Config)).unwrap();
+        // unknown keys rejected at the root, same as serde does
+        assert_eq!(schema["additionalProperties"], false);
+        assert!(schema["properties"]["packages"].is_object());
+        let text = serde_json::to_string(&schema).unwrap();
+        // enum variants and field docs ride along for agents
+        assert!(text.contains("\"niri\""));
+        assert!(text.contains("password_hash"));
+        assert!(text.contains("crypt(5)"));
     }
 
     #[test]

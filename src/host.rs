@@ -1,11 +1,41 @@
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Set when the verb's stdout is a JSON document: everything else —
+/// progress notes, subprocess chatter — must land on stderr instead, so
+/// an agent can parse stdout without sifting.
+static JSON_OUTPUT: AtomicBool = AtomicBool::new(false);
+
+pub fn set_json_output() {
+    JSON_OUTPUT.store(true, Ordering::Relaxed);
+}
+
+/// A progress note: stdout for humans, stderr when stdout carries JSON.
+pub fn note(msg: &str) {
+    if JSON_OUTPUT.load(Ordering::Relaxed) {
+        eprintln!("{msg}");
+    } else {
+        println!("{msg}");
+    }
+}
 
 /// Run a command on the host, escaping the container if kuma itself is
 /// running inside one (e.g. a distrobox dev environment).
 pub fn run_host<S: AsRef<str>>(args: &[S]) -> Result<()> {
-    let status = host_command(args)?
+    let mut cmd = host_command(args)?;
+    if JSON_OUTPUT.load(Ordering::Relaxed) {
+        // The child's stream (podman build output, bootc progress) stays
+        // visible — just not where the JSON goes.
+        use std::os::fd::AsFd;
+        let stderr = std::io::stderr()
+            .as_fd()
+            .try_clone_to_owned()
+            .context("cannot redirect subprocess output to stderr")?;
+        cmd.stdout(std::process::Stdio::from(stderr));
+    }
+    let status = cmd
         .status()
         .with_context(|| format!("failed to run {}", args[0].as_ref()))?;
     if !status.success() {
