@@ -20,8 +20,9 @@ Design principles, in order:
    dead end. Bare `kuma` is the root resource — it reports the machine's
    state (edited, staged, drifted, in sync, ...) and its next moves,
    computed from the machine rather than hand-written; `kuma --json`
-   serves the same map to scripts and agents. Doctor findings carry their
-   fix the same way. The image carries the kuma.toml it was built from
+   serves the same map to scripts and agents, and `doctor --json` /
+   `diff --json` extend it to machine health and drift. Doctor findings
+   carry their fix the same way. The image carries the kuma.toml it was built from
    (`/usr/lib/kuma/kuma.toml`), so a machine can always speak for itself —
    and `kuma init` on a kuma machine seeds from that copy, not a template.
 
@@ -46,12 +47,13 @@ $ kuma remove org.mozilla.firefox          # drop from whichever list declares i
 $ kuma diff                                # drift: kuma.toml vs image vs machine
 $ kuma doctor                              # machine health: deployment, convergence, GPU, storage, disk
 $ kuma sync                                # converge flatpaks/brew now, not at next boot
-$ kuma update --yes                        # pull newer base, rebuild, stage for next boot
+$ kuma update --yes                        # pull latest base, rebuild, stage for next boot
+$ kuma rollback --yes                      # the update's undo: boot order back to the previous deployment
 $ kuma clean                               # reclaim dangling images and abandoned build containers
 ```
 
 `add` and `remove` preserve your comments and formatting; `diff` and
-`doctor` are read-only.
+`doctor` are read-only, and both speak `--json` like bare `kuma` does.
 
 Without `--config`, kuma uses `./kuma.toml`, falling back to
 `~/.config/kuma/kuma.toml` — a home for declarations that don't live in a
@@ -133,14 +135,16 @@ valid against the current schema.
 - [x] `kuma diff` — drift between the declaration, the image, and the machine
 - [x] `kuma add` / `kuma remove` — edit the declaration in place, comments intact
 - [x] `kuma doctor` — deployment, convergence, GPU, and disk health checks
-- [x] `kuma update` — pull the newer base, rebuild, stage in one step
+- [x] `kuma update` — pull the latest base, rebuild, stage in one step
 - [x] Flatpaks: Flathub remote in-image, declared apps converged on boot
 - [x] Declarative user: created on first boot, converged after (/home is machine state)
 - [x] `kuma passwd` — hash a password for the `[user]` section
 - [x] `kuma sync` — converge flatpaks and brew on demand (user config later)
 - [x] `kuma vm --apply` — update the running VM in place, `/var` intact
 - [x] `kuma clean` — reclaim stranded build images and abandoned build containers
+- [x] `kuma rollback` — the update's undo: boot order back to the previous deployment
 - [x] Bare `kuma` — the state machine as hypermedia: state + next actions, human and JSON
+- [x] `--json` across the read surface — bare `kuma`, `doctor`, `diff` speak the same map to agents
 - [x] Self-describing images — the baked declaration, seeded `kuma init`, config search path
 - [ ] Registry publishing + CI builds (`bootc switch`-able from anywhere)
 - [ ] `kuma.lock` — pin base digest and package versions; `kuma update` moves pins deliberately

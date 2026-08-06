@@ -4,6 +4,7 @@
 //! re-serialize that would flatten the whole document.
 
 use crate::config::Config;
+use crate::state::{print_actions, Action};
 use anyhow::{Context, Result};
 use std::path::Path;
 use toml_edit::{Array, DocumentMut, Item, Table, Value};
@@ -120,11 +121,24 @@ fn push_matching_style(arr: &mut Array, name: &str) {
 
 /// Every list lives in the image (flatpak and brew declarations are baked
 /// at /usr/lib/kuma), so the apply path is always a rebuild; the flatpak
-/// and brew installs then converge on the machine after the switch.
+/// and brew installs then converge on the machine after the switch. Where
+/// the build goes next depends on the machine — same edges as build()'s.
 fn print_apply_hint(rpm: bool) {
-    println!("\nApply with `kuma build`, then `kuma switch` (takes effect on reboot).");
+    let mut actions =
+        vec![Action::new("build", "kuma build", "bake the edit into a new image")];
+    if Path::new("/run/ostree-booted").exists() {
+        actions.push(Action::new(
+            "switch",
+            "kuma switch",
+            "stage it onto this machine (applies on reboot)",
+        ));
+    } else {
+        actions.push(Action::new("vm", "kuma vm", "boot the result in a QEMU VM"));
+    }
+    println!();
+    print_actions(&actions);
     if !rpm {
-        println!("Flatpak and brew changes converge at boot and daily after that.");
+        println!("\nFlatpak and brew changes converge on the machine at boot and daily.");
     }
 }
 

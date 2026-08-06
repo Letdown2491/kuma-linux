@@ -7,7 +7,7 @@
 
 use crate::config::Config;
 use crate::host::{host_output, host_output_any};
-use crate::state::{print_actions, Action};
+use crate::state::{action_json, print_actions, Action};
 use anyhow::{bail, Result};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -15,48 +15,77 @@ use std::path::Path;
 const BREW: &str = "/home/linuxbrew/.linuxbrew/bin/brew";
 const BREW_STATE: &str = "/home/linuxbrew/.linuxbrew/.kuma-brews";
 
+/// One drift observation: what would change ("add"/"remove"/"mismatch"),
+/// which item, and the note that carries its consequence or cure.
+struct DiffEntry {
+    change: &'static str,
+    item: String,
+    note: String,
+}
+
+/// A [packages]/[services] section of the diff. `skipped` is a section-
+/// level caveat ("flatpak unavailable") — while one is present, "no
+/// drift" would be a claim the observation can't back.
+struct DiffSection {
+    name: &'static str,
+    entries: Vec<DiffEntry>,
+    skipped: Option<String>,
+}
+
 /// Three-way, because that's how changes actually flow: kuma.toml is the
 /// truth, the image carries a baked copy of the declaration, and the
 /// machine converges to the IMAGE's copy — so config edits that were never
 /// built show up here as "image declaration behind kuma.toml", not as
 /// drift the next convergence run would fix.
-pub fn diff(config: &Config, config_path: &Path) -> Result<()> {
-    let mut drift = false;
+pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
+    let mut sections: Vec<DiffSection> = Vec::new();
     let mut stale_image = false;
-    let mut converge_hint = false;
+    let mut adhoc: Vec<String> = Vec::new();
 
     // rpm lives in the image itself; missing means the declaration was
     // never built (or the build was never switched to).
-    let lines: Vec<String> = config
+    let entries = config
         .packages
         .rpm
         .iter()
         .filter(|pkg| host_output(&["rpm", "-q", pkg]).is_err())
-        .map(|pkg| format!("  + {pkg}  declared, missing from the running image"))
+        .map(|pkg| DiffEntry {
+            change: "add",
+            item: pkg.to_string(),
+            note: "declared, missing from the running image".into(),
+        })
         .collect();
-    print_section("packages.rpm", &lines, &mut drift);
+    sections.push(DiffSection { name: "packages.rpm", entries, skipped: None });
 
     let declared: BTreeSet<&str> = config.packages.flatpak.iter().map(String::as_str).collect();
-    let mut lines = Vec::new();
+    let mut entries = Vec::new();
+    let mut skipped = None;
     match host_output(&["flatpak", "list", "--system", "--app", "--columns=application"]) {
         Ok(out) => {
             let installed = to_set(&out);
             for app in declared.difference(&installed) {
-                lines.push(format!("  + {app}  declared, not installed (convergence installs it)"));
+                entries.push(DiffEntry {
+                    change: "add",
+                    item: app.to_string(),
+                    note: "declared, not installed (convergence installs it)".into(),
+                });
             }
             for app in installed.difference(&declared) {
-                lines.push(format!("  - {app}  installed, not declared (convergence removes it)"));
+                entries.push(DiffEntry {
+                    change: "remove",
+                    item: app.to_string(),
+                    note: "installed, not declared (convergence removes it)".into(),
+                });
             }
-            converge_hint |= !lines.is_empty();
         }
-        Err(_) => lines.push("  (flatpak unavailable — skipped)".into()),
+        Err(_) => skipped = Some("flatpak unavailable — skipped".to_string()),
     }
     stale_image |= image_list_stale("/usr/lib/kuma/flatpaks", &declared);
-    print_section("packages.flatpak", &lines, &mut drift);
+    sections.push(DiffSection { name: "packages.flatpak", entries, skipped });
 
     let declared: BTreeSet<&str> = config.packages.brew.iter().map(String::as_str).collect();
-    let mut lines = Vec::new();
-    let mut adhoc = String::new();
+    let mut entries = Vec::new();
+    let mut skipped = None;
     if !declared.is_empty() || Path::new(BREW).exists() {
         match host_output(&[BREW, "list", "--formula", "-1"]) {
             Ok(out) => {
@@ -66,68 +95,158 @@ pub fn diff(config: &Config, config_path: &Path) -> Result<()> {
                 let state_text = std::fs::read_to_string(BREW_STATE).unwrap_or_default();
                 let state = to_set(&state_text);
                 for f in declared.difference(&installed) {
-                    lines.push(format!("  + {f}  declared, not installed (convergence installs it)"));
+                    entries.push(DiffEntry {
+                        change: "add",
+                        item: f.to_string(),
+                        note: "declared, not installed (convergence installs it)".into(),
+                    });
                 }
                 for f in installed.difference(&declared) {
                     if state.contains(f) {
-                        lines.push(format!("  - {f}  no longer declared (convergence removes it)"));
+                        entries.push(DiffEntry {
+                            change: "remove",
+                            item: f.to_string(),
+                            note: "no longer declared (convergence removes it)".into(),
+                        });
                     }
                 }
-                converge_hint |= !lines.is_empty();
                 // Leaves, not the full list — dependencies aren't the
                 // owner's installs, just baggage that came with them.
                 let leaves_text = host_output(&[BREW, "leaves"]).unwrap_or_default();
-                let yours: Vec<&str> = to_set(&leaves_text)
+                adhoc = to_set(&leaves_text)
                     .difference(&declared)
                     .filter(|f| !state.contains(**f))
-                    .copied()
+                    .map(|f| f.to_string())
                     .collect();
-                if !yours.is_empty() {
-                    adhoc = format!("Ad-hoc brews, kept as yours: {}", yours.join(", "));
-                }
             }
-            Err(_) => lines.push("  (brew not bootstrapped yet — first boot installs it)".into()),
+            Err(_) => skipped = Some("brew not bootstrapped yet — first boot installs it".to_string()),
         }
     }
     stale_image |= image_list_stale("/usr/lib/kuma/brews", &declared);
-    print_section("packages.brew", &lines, &mut drift);
+    sections.push(DiffSection { name: "packages.brew", entries, skipped });
 
-    let mut lines = Vec::new();
+    // Service state is machine state (an /etc overlay change survives image
+    // updates), so the cure is systemctl, not a rebuild — name it when it
+    // plainly applies.
+    let mut entries = Vec::new();
     for svc in &config.services.enable {
         let state = unit_state(svc);
         if state != "enabled" && state != "alias" {
-            lines.push(format!("  ! {svc}  declared enable, currently {state}"));
+            let cure = if state == "disabled" {
+                format!(" — `sudo systemctl enable {svc}` reconciles")
+            } else {
+                String::new()
+            };
+            entries.push(DiffEntry {
+                change: "mismatch",
+                item: svc.clone(),
+                note: format!("declared enable, currently {state}{cure}"),
+            });
         }
     }
     for svc in &config.services.disable {
         if unit_state(svc) == "enabled" {
-            lines.push(format!("  ! {svc}  declared disable, currently enabled"));
+            entries.push(DiffEntry {
+                change: "mismatch",
+                item: svc.clone(),
+                note: format!("declared disable, currently enabled — `sudo systemctl disable {svc}` reconciles"),
+            });
         }
     }
-    print_section("services", &lines, &mut drift);
+    sections.push(DiffSection { name: "services", entries, skipped: None });
 
-    if !adhoc.is_empty() {
-        println!("{adhoc}");
-    }
+    let drift = sections.iter().any(|s| !s.entries.is_empty());
+    let converge_hint = sections
+        .iter()
+        .any(|s| s.name != "packages.rpm" && s.name != "services" && !s.entries.is_empty());
+    let mut actions: Vec<Action> = Vec::new();
     if stale_image {
-        println!("\nThe image's baked declaration is behind {}.", config_path.display());
-        print_actions(&[Action::new(
+        actions.push(Action::new(
             "build",
             "kuma build",
             "bake the edit — then `kuma switch` and reboot carry it to the machine",
-        )]);
+        ));
     } else if converge_hint {
-        println!();
-        print_actions(&[Action::new(
+        actions.push(Action::new(
             "sync",
             "kuma sync",
             "converge now — otherwise the boot/daily run picks this up",
-        )]);
+        ));
     }
-    if !drift && !stale_image {
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&diff_json(
+                config_path,
+                &sections,
+                &adhoc,
+                stale_image,
+                drift,
+                &actions
+            ))?
+        );
+        return Ok(());
+    }
+
+    let observed_all = sections.iter().all(|s| s.skipped.is_none());
+    for section in &sections {
+        if section.entries.is_empty() && section.skipped.is_none() {
+            continue;
+        }
+        println!("{}", section.name);
+        for e in &section.entries {
+            let mark = match e.change {
+                "add" => '+',
+                "remove" => '-',
+                _ => '!',
+            };
+            println!("  {mark} {}  {}", e.item, e.note);
+        }
+        if let Some(reason) = &section.skipped {
+            println!("  ({reason})");
+        }
+    }
+    if !adhoc.is_empty() {
+        println!("Ad-hoc brews, kept as yours: {}", adhoc.join(", "));
+    }
+    if stale_image {
+        println!("\nThe image's baked declaration is behind {}.", config_path.display());
+        print_actions(&actions);
+    } else if converge_hint {
+        println!();
+        print_actions(&actions);
+    }
+    if !drift && !stale_image && observed_all {
         println!("No drift — this machine matches {}.", config_path.display());
     }
     Ok(())
+}
+
+fn diff_json(
+    config_path: &Path,
+    sections: &[DiffSection],
+    adhoc: &[String],
+    stale_image: bool,
+    drift: bool,
+    actions: &[Action],
+) -> serde_json::Value {
+    serde_json::json!({
+        "config": config_path.display().to_string(),
+        "drift": drift,
+        "image_declaration_stale": stale_image,
+        "sections": sections.iter()
+            .filter(|s| !s.entries.is_empty() || s.skipped.is_some())
+            .map(|s| serde_json::json!({
+                "name": s.name,
+                "skipped": s.skipped,
+                "entries": s.entries.iter().map(|e| serde_json::json!({
+                    "change": e.change, "item": e.item, "note": e.note,
+                })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+        "adhoc_brews": adhoc,
+        "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
+    })
 }
 
 pub(crate) fn to_set(text: &str) -> BTreeSet<&str> {
@@ -150,46 +269,29 @@ fn unit_state(unit: &str) -> String {
     if state.is_empty() { "not found".into() } else { state }
 }
 
-fn print_section(title: &str, lines: &[String], drift: &mut bool) {
-    if lines.is_empty() {
-        return;
-    }
-    println!("{title}");
-    for line in lines {
-        println!("{line}");
-    }
-    *drift = true;
-}
-
 enum Grade {
     Ok,
     Warn,
     Fail,
 }
 
+/// One doctor check's verdict, held rather than printed so the same run
+/// can render as text or as JSON for agents.
+struct Finding {
+    grade: Grade,
+    name: String,
+    detail: String,
+    fix: Option<Action>,
+}
+
 /// Machine health, no config needed: the deployment, the convergence
 /// machinery, and the hardware basics a desktop lives on. Read-only.
 /// A finding that has a cure carries it as an action — a diagnosis
 /// without its next command is a dead end.
-pub fn doctor() -> Result<()> {
-    let mut warns = 0u32;
-    let mut fails = 0u32;
+pub fn doctor(json: bool) -> Result<()> {
+    let mut findings: Vec<Finding> = Vec::new();
     let mut report = |grade: Grade, name: &str, detail: String, fix: Option<Action>| {
-        let mark = match grade {
-            Grade::Ok => "ok  ",
-            Grade::Warn => {
-                warns += 1;
-                "warn"
-            }
-            Grade::Fail => {
-                fails += 1;
-                "FAIL"
-            }
-        };
-        println!("{mark}  {name}: {detail}");
-        if let Some(fix) = fix {
-            println!("      → {}   {}", fix.cmd, fix.why);
-        }
+        findings.push(Finding { grade, name: name.to_string(), detail, fix });
     };
 
     check_deployment(&mut report);
@@ -263,18 +365,55 @@ pub fn doctor() -> Result<()> {
         Err(_) => report(Grade::Warn, "disk", "df unavailable".into(), None),
     }
 
-    println!();
-    match (fails, warns) {
-        (0, 0) => {
-            println!("All checks passed.");
-            Ok(())
+    let fails = findings.iter().filter(|f| matches!(f.grade, Grade::Fail)).count();
+    let warns = findings.iter().filter(|f| matches!(f.grade, Grade::Warn)).count();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&doctor_json(&findings))?);
+    } else {
+        for f in &findings {
+            let mark = match f.grade {
+                Grade::Ok => "ok  ",
+                Grade::Warn => "warn",
+                Grade::Fail => "FAIL",
+            };
+            println!("{mark}  {}: {}", f.name, f.detail);
+            if let Some(fix) = &f.fix {
+                println!("      → {}   {}", fix.cmd, fix.why);
+            }
         }
-        (0, _) => {
-            println!("{warns} warning(s).");
-            Ok(())
+        println!();
+        match (fails, warns) {
+            (0, 0) => println!("All checks passed."),
+            (0, _) => println!("{warns} warning(s)."),
+            _ => {}
         }
-        _ => bail!("{fails} check(s) failed, {warns} warning(s)"),
     }
+    // Non-zero exit on failed checks either way; the JSON stays on stdout
+    // and the summary rides the error, so scripts get both signals.
+    if fails > 0 {
+        bail!("{fails} check(s) failed, {warns} warning(s)");
+    }
+    Ok(())
+}
+
+fn doctor_json(findings: &[Finding]) -> serde_json::Value {
+    let grade = |g: &Grade| match g {
+        Grade::Ok => "ok",
+        Grade::Warn => "warn",
+        Grade::Fail => "fail",
+    };
+    serde_json::json!({
+        "checks": findings.iter().map(|f| serde_json::json!({
+            "grade": grade(&f.grade),
+            "name": f.name,
+            "detail": f.detail,
+            "fix": f.fix.as_ref().map(action_json),
+        })).collect::<Vec<_>>(),
+        "summary": {
+            "fails": findings.iter().filter(|f| matches!(f.grade, Grade::Fail)).count(),
+            "warns": findings.iter().filter(|f| matches!(f.grade, Grade::Warn)).count(),
+        },
+    })
 }
 
 /// bootc status needs root; a sudo prompt out of `kuma doctor` is the
@@ -320,7 +459,7 @@ fn check_deployment(report: &mut impl FnMut(Grade, &str, String, Option<Action>)
         fix = Some(Action::new("reboot", "sudo systemctl reboot", "boot the staged deployment"));
     }
     if rollback.is_some() {
-        detail.push_str("; rollback available");
+        detail.push_str("; rollback available (kuma rollback)");
     }
     report(Grade::Ok, "deployment", detail, fix);
 
@@ -506,5 +645,67 @@ fn check_gpu(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
         (false, true) => report(Grade::Ok, "gpu", format!("{} bound, render node present", drivers.join(", ")), None),
         (false, false) => report(Grade::Warn, "gpu", format!("{} bound, but no render node — software rendering likely", drivers.join(", ")), None),
         (true, _) => report(Grade::Warn, "gpu", "no GPU driver bound (VM or headless?)".into(), None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn doctor_json_carries_findings_and_fixes() {
+        let findings = vec![
+            Finding {
+                grade: Grade::Ok,
+                name: "disk".into(),
+                detail: "41% used, 280G free".into(),
+                fix: None,
+            },
+            Finding {
+                grade: Grade::Fail,
+                name: "flathub".into(),
+                detail: "remote missing".into(),
+                fix: Some(Action::new("add-remote", "sudo flatpak remote-add flathub", "restore the remote")),
+            },
+        ];
+        let json = doctor_json(&findings);
+        assert_eq!(json["checks"][0]["grade"], "ok");
+        assert_eq!(json["checks"][0]["fix"], serde_json::Value::Null);
+        assert_eq!(json["checks"][1]["grade"], "fail");
+        assert_eq!(json["checks"][1]["fix"]["cmd"], "sudo flatpak remote-add flathub");
+        assert!(json["checks"][1]["fix"]["why"].is_string());
+        assert_eq!(json["summary"]["fails"], 1);
+        assert_eq!(json["summary"]["warns"], 0);
+    }
+
+    #[test]
+    fn diff_json_shape_is_stable_for_agents() {
+        let sections = vec![
+            DiffSection { name: "packages.rpm", entries: vec![], skipped: None },
+            DiffSection {
+                name: "packages.flatpak",
+                entries: vec![DiffEntry {
+                    change: "add",
+                    item: "org.gnome.Loupe".into(),
+                    note: "declared, not installed (convergence installs it)".into(),
+                }],
+                skipped: None,
+            },
+            DiffSection {
+                name: "packages.brew",
+                entries: vec![],
+                skipped: Some("brew not bootstrapped yet — first boot installs it".into()),
+            },
+        ];
+        let actions = [Action::new("sync", "kuma sync", "converge now")];
+        let json = diff_json(Path::new("kuma.toml"), &sections, &[], false, true, &actions);
+        assert_eq!(json["config"], "kuma.toml");
+        assert_eq!(json["drift"], true);
+        // the empty, unskipped section is elided; the skipped one is kept
+        assert_eq!(json["sections"].as_array().unwrap().len(), 2);
+        assert_eq!(json["sections"][0]["entries"][0]["change"], "add");
+        assert_eq!(json["sections"][0]["entries"][0]["item"], "org.gnome.Loupe");
+        assert!(json["sections"][1]["skipped"].is_string());
+        assert_eq!(json["actions"][0]["cmd"], "kuma sync");
     }
 }

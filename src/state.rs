@@ -20,9 +20,10 @@ use std::path::Path;
 /// Written (as root) whenever `kuma switch`/`update` stage an image, and
 /// refreshed by doctor, which holds root and the truth. It exists so the
 /// passwordless probe can see the one state that otherwise needs root:
-/// a build newer than the deployment. A hint, not an authority — paths
-/// that bypass kuma (`bootc rollback`, raw `bootc switch`) go stale
-/// until the next doctor run.
+/// a build newer than the deployment. A hint, not an authority — raw
+/// bootc paths (`bootc rollback`, `bootc switch`) go stale until the
+/// next doctor run; `kuma rollback` drops the stamp instead, since the
+/// rollback target's image ID is unknowable from podman storage.
 pub const DEPLOYED_ID_FILE: &str = "/var/lib/kuma/deployed-image-id";
 
 /// Every kuma image carries the declaration it was built from — the
@@ -40,6 +41,12 @@ impl Action {
     pub fn new(rel: &'static str, cmd: impl Into<String>, why: impl Into<String>) -> Self {
         Self { rel, cmd: cmd.into(), why: why.into() }
     }
+}
+
+/// The JSON twin of print_actions: one shape for affordances everywhere
+/// --json is spoken (bare kuma, doctor, diff).
+pub fn action_json(action: &Action) -> serde_json::Value {
+    serde_json::json!({ "rel": action.rel, "cmd": action.cmd, "why": action.why })
 }
 
 /// The one rendering every affordance uses: aligned `→ cmd   why` lines.
@@ -123,9 +130,7 @@ fn json_of(snapshot: &Snapshot) -> serde_json::Value {
             "image": snapshot.facts[1].1,
             "machine": snapshot.facts[2].1,
         },
-        "actions": snapshot.actions.iter().map(|a| serde_json::json!({
-            "rel": a.rel, "cmd": a.cmd, "why": a.why,
-        })).collect::<Vec<_>>(),
+        "actions": snapshot.actions.iter().map(action_json).collect::<Vec<_>>(),
     })
 }
 
@@ -257,7 +262,7 @@ fn classify(obs: &Observed) -> Snapshot {
         actions.push(Action::new(
             "reboot",
             "sudo systemctl reboot",
-            "boot the staged deployment; the previous one stays for rollback",
+            "boot the staged deployment; kuma rollback returns to the previous one",
         ));
     }
     if let (ConfigFact::Loaded { .. }, None) = (&obs.config, &obs.image) {
@@ -310,7 +315,7 @@ fn classify(obs: &Observed) -> Snapshot {
     }
     if matches!(&obs.machine, MachineFact::Kuma { .. }) && actions.is_empty() {
         claim("in-sync", "machine matches its declaration; nothing pending".into());
-        actions.push(Action::new("update", "kuma update", "pull the newer base image and rebuild"));
+        actions.push(Action::new("update", "kuma update", "pull the latest base image and rebuild"));
         actions.push(Action::new("doctor", "kuma doctor", "deeper machine health checks"));
     }
     match &obs.config {

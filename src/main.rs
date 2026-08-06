@@ -23,7 +23,8 @@ struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
-    /// With no command: emit the state and next actions as JSON
+    /// Emit JSON on the read surface: the state map (no command), doctor
+    /// findings, or the diff
     #[arg(long)]
     json: bool,
 
@@ -90,12 +91,18 @@ enum Cmd {
         #[arg(long, default_value = "iso")]
         output: PathBuf,
     },
-    /// Pull the newer base image, rebuild, and stage the result
+    /// Pull the latest base image, rebuild, and stage the result
     Update {
         /// Image tag to build and stage
         #[arg(long, default_value = DEFAULT_TAG)]
         tag: String,
         /// Actually stage the rebuilt image (requires root; applies on reboot)
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Swap the boot order back to the previous deployment (prints unless --yes)
+    Rollback {
+        /// Actually run `bootc rollback` (requires root; takes effect on next boot)
         #[arg(long)]
         yes: bool,
     },
@@ -124,13 +131,19 @@ enum Cmd {
         names: Vec<String>,
     },
     /// Show drift between kuma.toml and this machine (read-only)
-    Diff,
+    Diff {
+        /// Emit the drift as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Check this machine: deployment, convergence, GPU, storage, disk (read-only)
-    Doctor,
+    Doctor {
+        /// Emit the findings as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Hash a password for the [user] section (prompts; prints the line to paste)
     Passwd,
-    /// Show bootc status for this machine
-    Status,
     /// Print shell completions (e.g. `kuma completions fish | source`)
     Completions {
         /// Shell to generate for
@@ -141,9 +154,10 @@ enum Cmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let explicit = cli.config.is_some();
+    let root_json = cli.json;
     let config_path = resolve_config(cli.config);
     let Some(command) = cli.command else {
-        return state::root(&config_path, cli.json);
+        return state::root(&config_path, root_json);
     };
     match command {
         Cmd::Init { force, starter } => init(force, starter),
@@ -162,6 +176,7 @@ fn main() -> Result<()> {
         Cmd::Update { tag, yes } => {
             update(&read_config_path(&config_path, explicit, true), &tag, yes)
         }
+        Cmd::Rollback { yes } => rollback(yes),
         Cmd::Sync => sync(),
         Cmd::Clean => clean(),
         Cmd::Add { names, rpm, flatpak, brew } => {
@@ -174,15 +189,15 @@ fn main() -> Result<()> {
             edit::add(&config_path, list, &names)
         }
         Cmd::Remove { names } => edit::remove(&config_path, &names),
-        Cmd::Diff => {
-            let path = read_config_path(&config_path, explicit, true);
+        Cmd::Diff { json } => {
+            let json = json || root_json;
+            // announce=false in JSON mode: stdout must stay pure JSON
+            let path = read_config_path(&config_path, explicit, !json);
             let config = Config::load(&path)?;
-            inspect::diff(&config, &path)
+            inspect::diff(&config, &path, json)
         }
-        Cmd::Doctor => inspect::doctor(),
+        Cmd::Doctor { json } => inspect::doctor(json || root_json),
         Cmd::Passwd => passwd(),
-        // bootc requires root even for a read-only status
-        Cmd::Status => run_host(&["sudo", "bootc", "status"]),
         Cmd::Completions { shell } => {
             use clap::CommandFactory;
             clap_complete::generate(shell, &mut Cli::command(), "kuma", &mut std::io::stdout());
@@ -376,11 +391,24 @@ fn build_image(config_path: &Path, tag: &str) -> Result<()> {
 
 fn switch(tag: &str, yes: bool) -> Result<()> {
     if !yes {
+        // The dry run must tell the truth: with nothing built, the switch
+        // it describes could only fail. Same passwordless check the bare
+        // `kuma` probe uses; the --yes path gets its error from stage().
+        if host_output(&["podman", "image", "inspect", "--format", "{{.Id}}", tag]).is_err()
+        {
+            println!("{tag} is not built — there is nothing to switch to yet.\n");
+            print_actions(&[Action::new(
+                "build",
+                "kuma build",
+                "build the system image from the declaration",
+            )]);
+            return Ok(());
+        }
         println!(
             "Would sync {tag} into root podman storage, then run (as root):\n\n  bootc switch --transport containers-storage {tag}\n"
         );
         println!("Re-run with --yes to apply. The change takes effect on next boot;");
-        println!("the previous deployment stays available for rollback.");
+        println!("the previous deployment stays available for `kuma rollback`.");
         return Ok(());
     }
     if !stage(tag)? {
@@ -390,7 +418,7 @@ fn switch(tag: &str, yes: bool) -> Result<()> {
     print_actions(&[Action::new(
         "reboot",
         "sudo systemctl reboot",
-        "boot the staged deployment; the previous one stays for rollback",
+        "boot the staged deployment; kuma rollback returns to the previous one",
     )]);
     Ok(())
 }
@@ -436,8 +464,12 @@ fn update(config_path: &Path, tag: &str, yes: bool) -> Result<()> {
     run_host(&["podman", "pull", &config.system.base])?;
     build_image(config_path, tag)?;
     if !yes {
-        println!("\nBuilt {tag}. Re-run with --yes to stage it; it applies on reboot,");
-        println!("and the previous deployment stays available for rollback.");
+        println!("\nBuilt {tag}.");
+        print_actions(&[Action::new(
+            "stage",
+            "kuma update --yes",
+            "stage it — applies on reboot; the previous deployment stays for kuma rollback",
+        )]);
         return Ok(());
     }
     if stage(tag)? {
@@ -445,12 +477,71 @@ fn update(config_path: &Path, tag: &str, yes: bool) -> Result<()> {
         print_actions(&[Action::new(
             "reboot",
             "sudo systemctl reboot",
-            "boot the staged deployment; the previous one stays for rollback",
+            "boot the staged deployment; kuma rollback returns to the previous one",
         )]);
     } else {
         println!("\nAlready up to date — the system runs this image.");
     }
     Ok(())
+}
+
+/// The update's undo. bootc keeps the previous deployment around exactly
+/// for this; the command is thin on purpose — verify there IS a rollback
+/// target (so the failure is kuma-flavored, not bootc's), name what the
+/// next boot lands on, and surface the one sharp edge: a staged-but-
+/// never-booted deployment is discarded by the swap.
+fn rollback(yes: bool) -> Result<()> {
+    if !yes {
+        println!("Would run (as root):\n\n  bootc rollback\n");
+        println!("Re-run with --yes to apply. The boot order swaps to the previous");
+        println!("deployment and takes effect on next boot; rolling back again before");
+        println!("that reboot swaps the order back. A staged (never booted) deployment,");
+        println!("if present, is discarded.");
+        return Ok(());
+    }
+    let status = host_output(&["sudo", "bootc", "status", "--format", "json"])
+        .context("cannot read bootc status — is this a bootc machine?")?;
+    let json: serde_json::Value =
+        serde_json::from_str(&status).context("cannot parse bootc status")?;
+    let Some((target, staged)) = rollback_facts(&json) else {
+        bail!("no rollback deployment on this machine — nothing to roll back to");
+    };
+    if staged {
+        println!("note: discarding the staged (never booted) deployment.\n");
+    }
+    run_host(&["sudo", "bootc", "rollback"])?;
+    // The deployment stamp names the image we just rolled back FROM, and
+    // the rollback target's podman image ID is unknowable here — drop the
+    // stamp so the passwordless probe skips its freshness check; the next
+    // doctor run rewrites it from the truth.
+    let _ = host_output(&["sudo", "rm", "-f", state::DEPLOYED_ID_FILE]);
+    println!("\nBoot order swapped — next boot lands on {target}.");
+    print_actions(&[Action::new(
+        "reboot",
+        "sudo systemctl reboot",
+        "boot the previous deployment now; kuma rollback again undoes the swap",
+    )]);
+    Ok(())
+}
+
+/// What a rollback would land on, from `bootc status --format json`: the
+/// rollback slot's image (digest-pinned when possible — the tag alone is
+/// ambiguous, since booted and rollback usually share it), plus whether a
+/// staged deployment would be discarded. None when there is no rollback
+/// deployment to land on.
+fn rollback_facts(json: &serde_json::Value) -> Option<(String, bool)> {
+    let slot = |name: &str| json.pointer(&format!("/status/{name}")).filter(|v| !v.is_null());
+    let rollback = slot("rollback")?;
+    let image = rollback
+        .pointer("/image/image/image")
+        .and_then(|v| v.as_str())
+        .unwrap_or("the previous deployment");
+    let digest = rollback.pointer("/image/imageDigest").and_then(|v| v.as_str()).unwrap_or("");
+    let target = match digest.strip_prefix("sha256:") {
+        Some(d) if d.len() >= 12 => format!("{image} ({})", &d[..12]),
+        _ => image.to_string(),
+    };
+    Some((target, slot("staged").is_some()))
 }
 
 /// On-demand convergence: start the same units boot and the daily timer
@@ -465,7 +556,16 @@ fn sync() -> Result<()> {
         units.push("kuma-brew-sync.service");
     }
     if units.is_empty() {
-        bail!("no baked declarations under /usr/lib/kuma — is this machine running a kuma image?");
+        // Three different truths hide behind "nothing to start" — name the
+        // one that holds here, with its next move.
+        if Path::new("/usr/lib/kuma").is_dir() {
+            println!("Nothing to converge — this image declares no flatpaks or brew formulae.");
+            return Ok(());
+        }
+        if Path::new("/run/ostree-booted").exists() {
+            bail!("this bootc machine isn't running a kuma image — `kuma build` then `kuma switch` adopt one");
+        }
+        bail!("not a kuma machine — sync converges a machine booted into a kuma image (`kuma vm` boots one)");
     }
     let mut args = vec!["sudo", "systemctl", "start"];
     args.extend(&units);
@@ -932,6 +1032,33 @@ mod tests {
         // keeps its user screen so installs aren't left with no account
         assert!(!out.contains("--hostname"));
         assert!(!out.contains("Modules.Users"));
+    }
+
+    #[test]
+    fn rollback_facts_read_the_slots() {
+        // no rollback slot (fresh install): nothing to land on
+        let json = serde_json::json!({"status": {"booted": {"image": {}}, "rollback": null}});
+        assert!(super::rollback_facts(&json).is_none());
+
+        // rollback present, digest-pinned target; staged would be discarded
+        let json = serde_json::json!({"status": {
+            "staged": {"image": {}},
+            "rollback": {"image": {
+                "image": {"image": "localhost/kuma:latest"},
+                "imageDigest": "sha256:0123456789abcdef0123456789abcdef",
+            }},
+        }});
+        let (target, staged) = super::rollback_facts(&json).unwrap();
+        assert_eq!(target, "localhost/kuma:latest (0123456789ab)");
+        assert!(staged);
+
+        // digest missing or odd: the tag alone still names the target
+        let json = serde_json::json!({"status": {
+            "rollback": {"image": {"image": {"image": "localhost/kuma:latest"}}},
+        }});
+        let (target, staged) = super::rollback_facts(&json).unwrap();
+        assert_eq!(target, "localhost/kuma:latest");
+        assert!(!staged);
     }
 
     #[test]
