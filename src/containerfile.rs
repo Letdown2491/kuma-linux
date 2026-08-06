@@ -548,6 +548,12 @@ ExecStart=/usr/libexec/kuma-mako
 /// version of its own, just a continuously rebuilt base — while VERSION_ID
 /// stays Fedora's so toolbox/dnf/bib keep resolving. An unlisted base
 /// falls back to plain "Kuma" and Fedora's own VERSION string.
+///
+/// /etc/hostname ships "kuma" because DEFAULT_HOSTNAME can't win: the
+/// initrd's dracut-built os-release still says "fedora", its systemd sets
+/// the kernel hostname first, and the real root won't override a hostname
+/// that's already set. Image /etc is only the ostree merge default, so a
+/// machine whose admin set a hostname keeps it.
 const BRANDING: &str = r#"
 RUN . /usr/lib/os-release \
     && case "${VERSION_ID}" in \
@@ -566,7 +572,8 @@ RUN . /usr/lib/os-release \
         -e "s|^VERSION_CODENAME=.*|VERSION_CODENAME=$(printf %s "$CODENAME" | tr '[:upper:]' '[:lower:]')|" \
         /usr/lib/os-release; fi \
     && { grep -q '^ID_LIKE=' /usr/lib/os-release || echo 'ID_LIKE="fedora"' >> /usr/lib/os-release; } \
-    && { [ ! -f /usr/lib/fedora-release ] || echo "Kuma release ${VERSION_ID}${CODENAME:+ ($CODENAME)}" > /usr/lib/fedora-release; }
+    && { [ ! -f /usr/lib/fedora-release ] || echo "Kuma release ${VERSION_ID}${CODENAME:+ ($CODENAME)}" > /usr/lib/fedora-release; } \
+    && echo kuma > /etc/hostname
 "#;
 
 /// Homebrew lives in /home/linuxbrew — machine-local mutable state, so it
