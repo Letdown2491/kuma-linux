@@ -25,6 +25,11 @@ use std::path::Path;
 /// until the next doctor run.
 pub const DEPLOYED_ID_FILE: &str = "/var/lib/kuma/deployed-image-id";
 
+/// Every kuma image carries the declaration it was built from — the
+/// machine is self-describing even when no working copy is around. The
+/// probe falls back to it, and `kuma init` seeds from it.
+pub const BAKED_CONFIG: &str = "/usr/lib/kuma/kuma.toml";
+
 pub struct Action {
     pub rel: &'static str,
     pub cmd: String,
@@ -49,6 +54,9 @@ enum ConfigFact {
     Missing,
     Invalid(String),
     Loaded { rpm: usize, flatpak: usize, brew: usize },
+    /// No working copy around; the machine's own baked declaration
+    /// (BAKED_CONFIG) speaks for it.
+    Baked { rpm: usize, flatpak: usize, brew: usize },
 }
 
 struct ImageFact {
@@ -122,9 +130,7 @@ fn json_of(snapshot: &Snapshot) -> serde_json::Value {
 }
 
 fn observe(config_path: &Path) -> Observed {
-    let config = if !config_path.exists() {
-        ConfigFact::Missing
-    } else {
+    let config = if config_path.exists() {
         match Config::load(config_path) {
             Ok(config) => ConfigFact::Loaded {
                 rpm: config.packages.rpm.len(),
@@ -133,6 +139,14 @@ fn observe(config_path: &Path) -> Observed {
             },
             Err(e) => ConfigFact::Invalid(format!("{e:#}")),
         }
+    } else if let Ok(config) = Config::load(Path::new(BAKED_CONFIG)) {
+        ConfigFact::Baked {
+            rpm: config.packages.rpm.len(),
+            flatpak: config.packages.flatpak.len(),
+            brew: config.packages.brew.len(),
+        }
+    } else {
+        ConfigFact::Missing
     };
 
     let image = host_output(&[
@@ -299,9 +313,23 @@ fn classify(obs: &Observed) -> Snapshot {
         actions.push(Action::new("update", "kuma update", "pull the newer base image and rebuild"));
         actions.push(Action::new("doctor", "kuma doctor", "deeper machine health checks"));
     }
-    if matches!(&obs.config, ConfigFact::Missing) {
-        claim("no-config", format!("no {} here — nothing declared yet", obs.config_path));
-        actions.push(Action::new("init", "kuma init", "start a system definition in this directory"));
+    match &obs.config {
+        ConfigFact::Missing => {
+            claim("no-config", format!("no {} here — nothing declared yet", obs.config_path));
+            actions.push(Action::new(
+                "init",
+                "kuma init",
+                "start a system definition in this directory",
+            ));
+        }
+        ConfigFact::Baked { .. } => {
+            actions.push(Action::new(
+                "init",
+                "kuma init",
+                "copy this machine's baked declaration here to edit it",
+            ));
+        }
+        _ => {}
     }
 
     let (state, headline) =
@@ -316,6 +344,9 @@ fn facts_of(obs: &Observed) -> [(&'static str, String); 3] {
         ConfigFact::Loaded { rpm, flatpak, brew } => {
             format!("{} — {rpm} rpm, {flatpak} flatpak, {brew} brew declared", obs.config_path)
         }
+        ConfigFact::Baked { rpm, flatpak, brew } => format!(
+            "{BAKED_CONFIG} (this machine's baked declaration) — {rpm} rpm, {flatpak} flatpak, {brew} brew"
+        ),
     };
     let image = match &obs.image {
         None => format!("none built ({} not in podman storage)", crate::DEFAULT_TAG),
@@ -426,6 +457,19 @@ mod tests {
     fn missing_deployed_cache_skips_the_freshness_check() {
         let snap = classify(&workspace(loaded(), image(false), kuma_machine(false, vec![], None)));
         assert_eq!(snap.state, "in-sync");
+    }
+
+    #[test]
+    fn baked_declaration_offers_seeded_init_not_build() {
+        let snap = classify(&workspace(
+            ConfigFact::Baked { rpm: 2, flatpak: 1, brew: 0 },
+            image(false),
+            kuma_machine(false, vec![], Some("sha256:aaa")),
+        ));
+        assert_eq!(snap.state, "in-sync");
+        let init = snap.actions.iter().find(|a| a.rel == "init").unwrap();
+        assert!(init.why.contains("baked"));
+        assert!(!snap.actions.iter().any(|a| a.rel == "build"));
     }
 
     #[test]

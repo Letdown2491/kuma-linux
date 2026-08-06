@@ -906,6 +906,13 @@ pub fn generate(config: &Config) -> String {
 
     out.push_str(BRANDING);
 
+    // The image carries the declaration it was built from, verbatim: the
+    // machine stays self-describing when the original file is gone, and
+    // `kuma init` seeds a working copy from it. No new secret exposure —
+    // password_hash already ships in the kuma-user declaration. Late in
+    // the file because this layer changes on every edit.
+    out.push_str("\nCOPY kuma.toml /usr/lib/kuma/kuma.toml\n");
+
     // What `kuma build` prunes by: each rebuild strands the previous
     // image as a dangling <none>, and only kuma's own should be reclaimed.
     out.push_str("\nLABEL io.kuma.image=\"1\"\n");
@@ -925,7 +932,10 @@ fn langpack(locale: &str) -> Option<&str> {
     .then_some(lang)
 }
 
-pub fn write_context(config: &Config, dir: &Path) -> Result<()> {
+/// `config_text` is the declaration verbatim — comments and formatting
+/// intact — because it gets baked into the image at /usr/lib/kuma/kuma.toml.
+pub fn write_context(config: &Config, config_text: &str, dir: &Path) -> Result<()> {
+    std::fs::write(dir.join("kuma.toml"), config_text)?;
     std::fs::write(dir.join("Containerfile"), generate(config))?;
     std::fs::write(dir.join("kuma-vm-timezone"), VM_TZ_SCRIPT)?;
     std::fs::write(dir.join("kuma-vm-timezone.service"), VM_TZ_SERVICE)?;
@@ -1014,6 +1024,20 @@ mod tests {
         let config: Config = toml::from_str(toml).unwrap();
         config.validate().unwrap();
         config
+    }
+
+    fn context(toml: &str, dir: &Path) {
+        write_context(&config(toml), toml, dir).unwrap();
+    }
+
+    #[test]
+    fn image_carries_its_declaration_verbatim() {
+        let toml = "schema_version = 1\n# a comment worth keeping\n";
+        let out = generate(&config(toml));
+        assert!(out.contains("COPY kuma.toml /usr/lib/kuma/kuma.toml"));
+        let dir = tempfile::tempdir().unwrap();
+        context(toml, dir.path());
+        assert_eq!(std::fs::read_to_string(dir.path().join("kuma.toml")).unwrap(), toml);
     }
 
     #[test]
@@ -1144,11 +1168,7 @@ mod tests {
     #[test]
     fn context_includes_theme_files_for_niri() {
         let dir = tempfile::tempdir().unwrap();
-        write_context(
-            &config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"),
-            dir.path(),
-        )
-        .unwrap();
+        context("schema_version = 1\n[system]\ndesktop = \"niri\"\n", dir.path());
         let wallpaper = std::fs::read(dir.path().join("kuma-wallpaper.png")).unwrap();
         assert!(!wallpaper.is_empty());
         let extras = std::fs::read_to_string(dir.path().join("niri-extras.kdl")).unwrap();
@@ -1223,11 +1243,7 @@ mod tests {
         // user-level installs are personal state — never touched
         assert!(!FLATPAK_SYNC_SCRIPT.contains("--user"));
         let dir = tempfile::tempdir().unwrap();
-        write_context(
-            &config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"),
-            dir.path(),
-        )
-        .unwrap();
+        context("schema_version = 1\n[system]\ndesktop = \"niri\"\n", dir.path());
         // empty declaration is real content: converge to "no system apps"
         assert_eq!(
             std::fs::read_to_string(dir.path().join("flatpaks")).unwrap(),
@@ -1317,13 +1333,7 @@ mod tests {
     #[test]
     fn context_writes_user_declaration() {
         let dir = tempfile::tempdir().unwrap();
-        write_context(
-            &config(
-                "schema_version = 1\n[user]\nname = \"mira\"\nshell = \"fish\"\npassword_hash = \"$6$ab$cd\"\nssh_keys = [\"ssh-ed25519 AAAA m@kuma\"]\n",
-            ),
-            dir.path(),
-        )
-        .unwrap();
+        context("schema_version = 1\n[user]\nname = \"mira\"\nshell = \"fish\"\npassword_hash = \"$6$ab$cd\"\nssh_keys = [\"ssh-ed25519 AAAA m@kuma\"]\n", dir.path());
         let decl = std::fs::read_to_string(dir.path().join("kuma-user")).unwrap();
         assert_eq!(
             decl,
@@ -1357,11 +1367,7 @@ mod tests {
     #[test]
     fn context_includes_flatpak_list() {
         let dir = tempfile::tempdir().unwrap();
-        write_context(
-            &config("schema_version = 1\n[packages]\nflatpak = [\"org.mozilla.firefox\", \"org.gnome.Loupe\"]\n"),
-            dir.path(),
-        )
-        .unwrap();
+        context("schema_version = 1\n[packages]\nflatpak = [\"org.mozilla.firefox\", \"org.gnome.Loupe\"]\n", dir.path());
         let list = std::fs::read_to_string(dir.path().join("flatpaks")).unwrap();
         assert_eq!(list, "org.mozilla.firefox\norg.gnome.Loupe\n");
         let script = std::fs::read_to_string(dir.path().join("kuma-flatpak-sync")).unwrap();
@@ -1382,8 +1388,7 @@ mod tests {
         assert!(out.contains("/etc/fish/conf.d/kuma-brew.fish"));
 
         let dir = tempfile::tempdir().unwrap();
-        write_context(&config("schema_version = 1\n[system]\nbrew = true\n"), dir.path())
-            .unwrap();
+        context("schema_version = 1\n[system]\nbrew = true\n", dir.path());
         let script = std::fs::read_to_string(dir.path().join("kuma-brew-setup")).unwrap();
         assert!(script.contains("/home/linuxbrew/.linuxbrew"));
         assert!(dir.path().join("kuma-brew-setup.service").exists());
@@ -1398,7 +1403,7 @@ mod tests {
         assert!(out.contains("COPY brews /usr/lib/kuma/brews"));
 
         let dir = tempfile::tempdir().unwrap();
-        write_context(&config(toml), dir.path()).unwrap();
+        context(toml, dir.path());
         let list = std::fs::read_to_string(dir.path().join("brews")).unwrap();
         assert_eq!(list, "ripgrep\nnode@22\n");
         let script = std::fs::read_to_string(dir.path().join("kuma-brew-sync")).unwrap();
@@ -1418,11 +1423,7 @@ mod tests {
     #[test]
     fn context_includes_greetd_config_for_niri() {
         let dir = tempfile::tempdir().unwrap();
-        write_context(
-            &config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"),
-            dir.path(),
-        )
-        .unwrap();
+        context("schema_version = 1\n[system]\ndesktop = \"niri\"\n", dir.path());
         assert!(dir.path().join("Containerfile").exists());
         let greetd = std::fs::read_to_string(dir.path().join("greetd-config.toml")).unwrap();
         assert!(greetd.contains("niri-session"));

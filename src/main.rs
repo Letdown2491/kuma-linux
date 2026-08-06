@@ -18,9 +18,10 @@ const BIB_IMAGE: &str = "quay.io/centos-bootc/bootc-image-builder:latest";
 #[derive(Parser)]
 #[command(name = "kuma", version, about = "Your system is one file.")]
 struct Cli {
-    /// Path to the kuma config file
-    #[arg(long, global = true, default_value = "kuma.toml")]
-    config: PathBuf,
+    /// Path to the kuma config file [default: ./kuma.toml, else
+    /// ~/.config/kuma/kuma.toml when the current directory has none]
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
 
     /// With no command: emit the state and next actions as JSON
     #[arg(long)]
@@ -34,11 +35,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Write a starter kuma.toml in the current directory
+    /// Write a kuma.toml in the current directory (on a kuma machine: a
+    /// copy of the machine's own baked declaration)
     Init {
         /// Overwrite an existing kuma.toml
         #[arg(long)]
         force: bool,
+        /// Use the generic starter even on a kuma machine
+        #[arg(long)]
+        starter: bool,
     },
     /// Print the Containerfile compiled from kuma.toml
     Generate,
@@ -135,23 +140,24 @@ enum Cmd {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let config_path = resolve_config(cli.config);
     let Some(command) = cli.command else {
-        return state::root(&cli.config, cli.json);
+        return state::root(&config_path, cli.json);
     };
     match command {
-        Cmd::Init { force } => init(force),
+        Cmd::Init { force, starter } => init(force, starter),
         Cmd::Generate => {
-            let config = Config::load(&cli.config)?;
+            let config = Config::load(&config_path)?;
             print!("{}", containerfile::generate(&config));
             Ok(())
         }
-        Cmd::Build { tag } => build(&cli.config, &tag),
+        Cmd::Build { tag } => build(&config_path, &tag),
         Cmd::Switch { tag, yes } => switch(&tag, yes),
         Cmd::Vm { tag, output, no_run, rebuild, apply } => {
             vm(&tag, &output, no_run, rebuild, apply)
         }
-        Cmd::Iso { tag, output } => iso(&cli.config, &tag, &output),
-        Cmd::Update { tag, yes } => update(&cli.config, &tag, yes),
+        Cmd::Iso { tag, output } => iso(&config_path, &tag, &output),
+        Cmd::Update { tag, yes } => update(&config_path, &tag, yes),
         Cmd::Sync => sync(),
         Cmd::Clean => clean(),
         Cmd::Add { names, rpm, flatpak, brew } => {
@@ -161,12 +167,12 @@ fn main() -> Result<()> {
                 (false, false, true) => "brew",
                 _ => bail!("pick exactly one of --rpm, --flatpak, --brew"),
             };
-            edit::add(&cli.config, list, &names)
+            edit::add(&config_path, list, &names)
         }
-        Cmd::Remove { names } => edit::remove(&cli.config, &names),
+        Cmd::Remove { names } => edit::remove(&config_path, &names),
         Cmd::Diff => {
-            let config = Config::load(&cli.config)?;
-            inspect::diff(&config, &cli.config)
+            let config = Config::load(&config_path)?;
+            inspect::diff(&config, &config_path)
         }
         Cmd::Doctor => inspect::doctor(),
         Cmd::Passwd => passwd(),
@@ -248,13 +254,50 @@ enable = []
 disable = []
 "#;
 
-fn init(force: bool) -> Result<()> {
+/// `--config` wins untouched. Otherwise ./kuma.toml, falling back to the
+/// XDG config dir when the current directory has none — a home for
+/// declarations that don't live in a project checkout. Never creates
+/// anything; when neither exists, the local name is returned so error
+/// messages point somewhere sensible.
+fn resolve_config(explicit: Option<PathBuf>) -> PathBuf {
+    if let Some(path) = explicit {
+        return path;
+    }
+    let local = PathBuf::from("kuma.toml");
+    if local.exists() {
+        return local;
+    }
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
+    if let Some(base) = base {
+        let xdg = base.join("kuma/kuma.toml");
+        if xdg.exists() {
+            return xdg;
+        }
+    }
+    local
+}
+
+fn init(force: bool, starter: bool) -> Result<()> {
     let path = PathBuf::from("kuma.toml");
     if path.exists() && !force {
         bail!("kuma.toml already exists (use --force to overwrite)");
     }
-    std::fs::write(&path, STARTER).context("cannot write kuma.toml")?;
-    println!("Wrote kuma.toml.");
+    // A kuma machine carries the declaration it was built from — a copy
+    // of that beats a generic template, because it's true to this machine.
+    let baked =
+        (!starter).then(|| std::fs::read_to_string(state::BAKED_CONFIG).ok()).flatten();
+    match baked {
+        Some(text) => {
+            std::fs::write(&path, text).context("cannot write kuma.toml")?;
+            println!("Wrote kuma.toml — a copy of this machine's baked declaration.");
+        }
+        None => {
+            std::fs::write(&path, STARTER).context("cannot write kuma.toml")?;
+            println!("Wrote kuma.toml.");
+        }
+    }
     print_actions(&[Action::new(
         "build",
         "kuma build",
@@ -279,8 +322,10 @@ fn build(config_path: &Path, tag: &str) -> Result<()> {
 
 fn build_image(config_path: &Path, tag: &str) -> Result<()> {
     let config = Config::load(config_path)?;
+    let config_text = std::fs::read_to_string(config_path)
+        .with_context(|| format!("cannot read {}", config_path.display()))?;
     let dir = tempfile::tempdir().context("cannot create build directory")?;
-    containerfile::write_context(&config, dir.path())?;
+    containerfile::write_context(&config, &config_text, dir.path())?;
 
     run_host(&[
         "podman",

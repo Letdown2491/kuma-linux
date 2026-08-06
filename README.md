@@ -21,7 +21,9 @@ Design principles, in order:
    state (edited, staged, drifted, in sync, ...) and its next moves,
    computed from the machine rather than hand-written; `kuma --json`
    serves the same map to scripts and agents. Doctor findings carry their
-   fix the same way.
+   fix the same way. The image carries the kuma.toml it was built from
+   (`/usr/lib/kuma/kuma.toml`), so a machine can always speak for itself —
+   and `kuma init` on a kuma machine seeds from that copy, not a template.
 
 ## Quick start
 
@@ -50,6 +52,12 @@ $ kuma clean                               # reclaim dangling images and abandon
 
 `add` and `remove` preserve your comments and formatting; `diff` and
 `doctor` are read-only.
+
+Without `--config`, kuma uses `./kuma.toml`, falling back to
+`~/.config/kuma/kuma.toml` — a home for declarations that don't live in a
+project checkout. Neither is ever created implicitly; `kuma init` is how a
+declaration comes to exist, and on a kuma machine it writes a copy of the
+machine's own baked declaration (`--starter` for the generic template).
 
 ## Example config
 
