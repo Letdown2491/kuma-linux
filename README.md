@@ -28,7 +28,7 @@ Design principles, in order:
 ## Quick start
 
 ```console
-$ kuma init          # writes a starter kuma.toml
+$ kuma init          # starter kuma.toml (on a kuma machine: the machine's own declaration)
 $ vim kuma.toml      # declare your packages and services
 $ kuma generate      # (optional) inspect the compiled Containerfile
 $ kuma build         # podman-builds localhost/kuma:latest
@@ -115,6 +115,9 @@ valid against the current schema.
   choices are preseeded: hostname, no initial-setup, and — when kuma.toml
   declares a `[user]` — no Anaconda user screen, since the declared account
   is created on first boot. Unlike `kuma vm` disks, ISOs carry no test user.
+  A declared `[user]` rides into the installer (account and password hash),
+  and `kuma iso` says so when it happens — build media you'll share from a
+  declaration without `[user]`, and Anaconda's user screen returns.
 
 ## Roadmap
 
@@ -131,6 +134,9 @@ valid against the current schema.
 - [x] Declarative user: created on first boot, converged after (/home is machine state)
 - [x] `kuma passwd` — hash a password for the `[user]` section
 - [x] `kuma sync` — converge flatpaks and brew on demand (user config later)
+- [x] `kuma vm --apply` — update the running VM in place, `/var` intact
+- [x] `kuma clean` — reclaim stranded build images and abandoned build containers
 - [x] Bare `kuma` — the state machine as hypermedia: state + next actions, human and JSON
+- [x] Self-describing images — the baked declaration, seeded `kuma init`, config search path
 - [ ] Registry publishing + CI builds (`bootc switch`-able from anywhere)
 - [ ] `kuma.lock` — pin base digest and package versions; `kuma update` moves pins deliberately
