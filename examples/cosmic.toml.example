@@ -10,7 +10,7 @@ desktop = "cosmic"
 
 # The primary account: created on first boot, then converged on every
 # boot. Get the hash from `kuma passwd`; it applies only at creation.
-# COSMIC's first-boot setup wizard never appears — the account and the
+# COSMIC's first-boot setup wizard never appears; the account and the
 # defaults are declared here instead.
 [user]
 name = "me"
@@ -22,7 +22,7 @@ password_hash = '...'   # from `kuma passwd`
 [packages]
 rpm = ["fish", "distrobox"]
 # Apps come from Flathub and converge on boot: additions install,
-# removals uninstall. COSMIC's app store is deliberately not shipped —
+# removals uninstall. COSMIC's app store is deliberately not shipped:
 # system apps installed through a store would be removed again by the
 # next convergence run. This list is the store, and
 # `kuma add --flatpak <id>` is the install button.

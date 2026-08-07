@@ -9,26 +9,26 @@ the packages come from Fedora; the only thing Kuma adds is the experience.
 
 Design principles, in order:
 
-1. **Simple** — the config schema stays small and boring. Every field is a
+1. **Simple**: the config schema stays small and boring. Every field is a
    promise maintained forever, so new fields have to earn their place.
-2. **Atomic** — applying a config never mutates the running system; it builds a
-   new image and switches to it on next boot. Rollback is always available —
+2. **Atomic**: applying a config never mutates the running system; it builds a
+   new image and switches to it on next boot. Rollback is always available,
    and automatic when a fresh update can't boot to a healthy system: every
    image bakes [greenboot](https://github.com/fedora-iot/greenboot-rs), a GRUB
    boot counter falls back to the previous deployment after three failed
    attempts, and desktop images count a boot as healthy only once the greeter
    is actually on screen. A bad update costs reboots, not the machine.
-3. **Local-first** — `kuma build` works with nothing but podman. No forge
+3. **Local-first**: `kuma build` works with nothing but podman. No forge
    account, no CI pipeline, no registry required (all optional later).
-4. **Self-describing** — hypermedia as the engine of system state: every
+4. **Self-describing**: hypermedia as the engine of system state: every
    output names where you are and ends at the legal next commands, never a
-   dead end. Bare `kuma` is the root resource — it reports the machine's
+   dead end. Bare `kuma` is the root resource: it reports the machine's
    state (edited, staged, drifted, in sync, ...) and its next moves,
    computed from the machine rather than hand-written; `kuma --json`
    serves the same map to scripts and agents, and `doctor --json` /
    `diff --json` extend it to machine health and drift. Doctor findings
    carry their fix the same way. The image carries the kuma.toml it was built from
-   (`/usr/lib/kuma/kuma.toml`), so a machine can always speak for itself —
+   (`/usr/lib/kuma/kuma.toml`), so a machine can always speak for itself,
    and `kuma init` on a kuma machine seeds from that copy, not a template.
 
 ## Quick start
@@ -43,7 +43,7 @@ $ kuma switch --yes  # bootc switch; takes effect on next boot
 
 `kuma switch` without `--yes` only prints what it would do.
 
-Day 2, the file stays the interface — these edit or read it for you:
+Day 2, the file stays the interface; these edit or read it for you:
 
 ```console
 $ kuma                                     # bare: current state + next actions (--json for agents)
@@ -67,29 +67,29 @@ The self-describing principle is also an API: an agent with a shell can
 operate a kuma machine without kuma-specific knowledge, because every
 response names the legal next commands.
 
-- **Probe**: `kuma --json` is the root resource — state, facts, and
+- **Probe**: `kuma --json` is the root resource: state, facts, and
   `actions` as `{rel, cmd, why}` objects. Execute an action's `cmd`
   verbatim, then re-probe. `kuma doctor --json` (machine health) and
   `kuma diff --json` (drift) carry findings with their fixes in the same
   action shape.
 - **Write**: `kuma schema` prints the JSON Schema for `kuma.toml`,
-  generated from the same types that parse it — field docs included, so
+  generated from the same types that parse it, field docs included, so
   it cannot drift from reality. `kuma check [--json]` validates a
   declaration without building anything.
 - **Mutate**: `build`, `switch`, `update`, `rollback`, `sync`, `add`, and
-  `remove` accept `--json`: stdout carries exactly one JSON document —
+  `remove` accept `--json`: stdout carries exactly one JSON document:
   `{"ok": true, ...}` with result fields and next `actions`, or
   `{"ok": false, "error": ...}` with a non-zero exit. Progress and
   subprocess output move to stderr. Mutations gate on `--yes` and never
   touch the running system: they build and stage; a reboot applies.
 
 Without `--config`, kuma uses `./kuma.toml`, falling back to
-`~/.config/kuma/kuma.toml` — a home for declarations that don't live in a
+`~/.config/kuma/kuma.toml`, a home for declarations that don't live in a
 project checkout. Neither is ever created implicitly; `kuma init` is how a
 declaration comes to exist, and on a kuma machine it writes a copy of the
 machine's own baked declaration (`--starter` for the generic template).
 With no working copy at all, the read-only commands (`update`, `diff`,
-`generate`) fall back to the baked declaration itself — a machine installed
+`generate`) fall back to the baked declaration itself: a machine installed
 from an ISO can `kuma update --yes` without ever creating a file. Editing
 (`add`, `remove`, `build`) is what requires one.
 
@@ -123,7 +123,7 @@ valid against the current schema.
 ## Boot health and automatic rollback
 
 Every image bakes [greenboot](https://github.com/fedora-iot/greenboot-rs).
-There is nothing to configure — a declarative system whose bad update can
+There is nothing to configure: a declarative system whose bad update can
 strand the machine isn't declarative where it counts, so the safety net is
 not opt-in.
 
@@ -132,7 +132,7 @@ trigger. A GRUB boot counter gives the deployment three attempts; a boot
 that never reaches its health checks burns one attempt just the same, so
 even a hang before userspace counts. On a desktop image, a boot is healthy
 only once the greeter is actually on screen (`display-manager.service`
-active within 120 s) — "boots fine into a black screen" is precisely the
+active within 120 s); "boots fine into a black screen" is precisely the
 failure this exists to catch. When the attempts run out, GRUB falls back
 to the previous deployment and greenboot makes it permanent with
 `bootc rollback`. A bad update costs three reboots, not the machine.
@@ -140,12 +140,12 @@ to the previous deployment and greenboot makes it permanent with
 Two deliberate choices:
 
 - **No default health checks.** greenboot's optional check package makes
-  DNS resolution a *required* check — reasonable on an always-networked
+  DNS resolution a *required* check: reasonable on an always-networked
   IoT box, absurd on a laptop that boots offline. Kuma installs the core
   framework plus its own greeter check, nothing else. Drop your own
   scripts into `/etc/greenboot/check/required.d/` if you want more.
 - **Existing machines are retrofitted, not abandoned.** The boot counter
-  is *bootloader* config, written once at install time — a machine
+  is *bootloader* config, written once at install time: a machine
   installed before boot health entered its image would count nothing, and
   a failing update would reboot-loop forever instead of falling back.
   `kuma-boot-health-sync` closes that gap on every boot: if the
@@ -156,11 +156,11 @@ Two deliberate choices:
   first update onto a boot-health image is already protected.
 
 A rollback isn't silent: the failed deployment stays in the rollback
-slot, `kuma` reports it, and `kuma doctor` grades boot health — whether
+slot, `kuma` reports it, and `kuma doctor` grades boot health: whether
 this boot passed its checks, and whether the bootloader can actually
 count attempts. An old, previously-good deployment that starts failing
 (hardware, not the update) reboots three times and then waits for a
-human — rolling back can't fix what an update didn't break.
+human; rolling back can't fix what an update didn't break.
 
 ## Developing and testing
 
@@ -171,28 +171,28 @@ human — rolling back can't fix what an update didn't break.
   `podman run --rm -it localhost/kuma:latest bash` or even
   `distrobox create --image localhost/kuma:latest` work fine for poking at
   the userland.
-- **Boot testing** (the real thing — systemd, kernel args, `bootc switch`,
+- **Boot testing** (the real thing: systemd, kernel args, `bootc switch`,
   rollback) can't happen in a container. `kuma vm` builds a qcow2 via
   bootc-image-builder and boots it in QEMU. Log in as your declared
   `[user]` (created on first boot), or the always-present test user
-  `kuma`/`kuma` (`ssh -p 2222 kuma@localhost` — your ssh key is injected
+  `kuma`/`kuma` (`ssh -p 2222 kuma@localhost`; your ssh key is injected
   automatically). It needs sudo: bootc-image-builder runs as root.
-  After a rebuild of the image, pass `--rebuild` — kuma warns when the
+  After a rebuild of the image, pass `--rebuild`; kuma warns when the
   reused disk is older than the image.
 - **Iterating without losing state**: `kuma vm --apply` streams the freshly
   built image into the *running* VM and `bootc switch`es inside it. The VM
-  reboots into the new image with `/var` intact — flatpaks, brew, and homes
+  reboots into the new image with `/var` intact: flatpaks, brew, and homes
   survive, so nothing re-downloads. It's also the real update path (staged
   deployment; `bootc rollback` inside the VM undoes it). Use `--rebuild`
   only when you want a factory-fresh machine.
 - **Installer media**: `kuma iso` builds an Anaconda installer ISO from the
-  image (`iso/bootiso/install.iso`) — bootable in GNOME Boxes or `dd`'d to a
+  image (`iso/bootiso/install.iso`), bootable in GNOME Boxes or `dd`'d to a
   USB stick. The install is interactive (language, disk), but kuma-owned
-  choices are preseeded: hostname, no initial-setup, and — when kuma.toml
-  declares a `[user]` — no Anaconda user screen, since the declared account
+  choices are preseeded: hostname, no initial-setup, and, when kuma.toml
+  declares a `[user]`, no Anaconda user screen, since the declared account
   is created on first boot. Unlike `kuma vm` disks, ISOs carry no test user.
   A declared `[user]` rides into the installer (account and password hash),
-  and `kuma iso` says so when it happens — build media you'll share from a
+  and `kuma iso` says so when it happens; build media you'll share from a
   declaration without `[user]`, and Anaconda's user screen returns.
 
 ## Roadmap
@@ -200,26 +200,26 @@ human — rolling back can't fix what an update didn't break.
 - [x] `kuma.toml` v1 schema: base, rpm packages, services
 - [x] Containerfile generation + local podman build
 - [x] `kuma switch` via containers-storage transport
-- [x] `kuma vm` — qcow2 via bootc-image-builder, booted in QEMU
-- [x] `kuma iso` — Anaconda installer ISO for real hardware and Boxes
-- [x] `kuma diff` — drift between the declaration, the image, and the machine
-- [x] `kuma add` / `kuma remove` — edit the declaration in place, comments intact
-- [x] `kuma doctor` — deployment, convergence, GPU, and disk health checks
-- [x] `kuma update` — pull the latest base, rebuild, stage in one step
+- [x] `kuma vm`: qcow2 via bootc-image-builder, booted in QEMU
+- [x] `kuma iso`: Anaconda installer ISO for real hardware and Boxes
+- [x] `kuma diff`: drift between the declaration, the image, and the machine
+- [x] `kuma add` / `kuma remove`: edit the declaration in place, comments intact
+- [x] `kuma doctor`: deployment, convergence, GPU, and disk health checks
+- [x] `kuma update`: pull the latest base, rebuild, stage in one step
 - [x] Flatpaks: Flathub remote in-image, declared apps converged on boot
 - [x] Declarative user: created on first boot, converged after (/home is machine state)
-- [x] `kuma passwd` — hash a password for the `[user]` section
-- [x] `kuma sync` — converge flatpaks and brew on demand (user config later)
-- [x] `kuma vm --apply` — update the running VM in place, `/var` intact
-- [x] `kuma clean` — reclaim stranded build images and abandoned build containers
-- [x] `kuma rollback` — the update's undo: boot order back to the previous deployment
-- [x] Bare `kuma` — the state machine as hypermedia: state + next actions, human and JSON
-- [x] `--json` across the read surface — bare `kuma`, `doctor`, `diff` speak the same map to agents
-- [x] Agent surface — `kuma schema` + `kuma check`, `--json` on every mutating verb, structured errors
-- [x] `desktop = "cosmic"` — second curated desktop; COSMIC curates itself, kuma adds enablement + identity
-- [x] Self-describing images — the baked declaration, seeded `kuma init`, config search path
-- [x] Boot health + auto-rollback — greenboot in every image; desktop boots must reach the greeter or fall back
-- [ ] CI build-and-boot smoke tests — every example built against fresh Fedora, booted headless, asserted healthy
-- [ ] `kuma.lock` — pin base digest and package versions; `kuma update` moves pins deliberately
-- [ ] `kuma doctor` drift detection for `/etc` — flag local edits shadowing the image's baked defaults
+- [x] `kuma passwd`: hash a password for the `[user]` section
+- [x] `kuma sync`: converge flatpaks and brew on demand (user config later)
+- [x] `kuma vm --apply`: update the running VM in place, `/var` intact
+- [x] `kuma clean`: reclaim stranded build images and abandoned build containers
+- [x] `kuma rollback`: the update's undo, boot order back to the previous deployment
+- [x] Bare `kuma`: the state machine as hypermedia (state + next actions, human and JSON)
+- [x] `--json` across the read surface: bare `kuma`, `doctor`, `diff` speak the same map to agents
+- [x] Agent surface: `kuma schema` + `kuma check`, `--json` on every mutating verb, structured errors
+- [x] `desktop = "cosmic"`: second curated desktop; COSMIC curates itself, kuma adds enablement + identity
+- [x] Self-describing images: the baked declaration, seeded `kuma init`, config search path
+- [x] Boot health + auto-rollback: greenboot in every image; desktop boots must reach the greeter or fall back
+- [ ] CI build-and-boot smoke tests: every example built against fresh Fedora, booted headless, asserted healthy
+- [ ] `kuma.lock`: pin base digest and package versions; `kuma update` moves pins deliberately
+- [ ] `kuma doctor` drift detection for `/etc`: flag local edits shadowing the image's baked defaults
 - [ ] Registry publishing + CI builds (`bootc switch`-able from anywhere)

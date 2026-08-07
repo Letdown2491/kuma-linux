@@ -6,7 +6,7 @@ use std::path::Path;
 pub const CURRENT_SCHEMA: u32 = 1;
 pub const DEFAULT_BASE: &str = "quay.io/fedora/fedora-bootc:44";
 
-/// A kuma system declaration — the one file that describes a machine.
+/// A kuma system declaration: the one file that describes a machine.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -21,7 +21,7 @@ pub struct Config {
     pub services: Services,
 }
 
-/// The primary account, created and converged by a boot service — not at
+/// The primary account, created and converged by a boot service, not at
 /// image build time, because /home is machine state (/var/home) and an
 /// image-built home directory never materializes on `bootc switch`.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -37,7 +37,7 @@ pub struct User {
     #[serde(default = "default_groups")]
     pub groups: Vec<String>,
     /// crypt(5) hash (e.g. `openssl passwd -6`), applied only when the
-    /// account is first created — after that the password is machine state.
+    /// account is first created; after that the password is machine state.
     #[serde(default)]
     pub password_hash: Option<String>,
     /// OpenSSH public keys, served from /etc/kuma/keys/<name> alongside
@@ -96,7 +96,7 @@ impl Default for System {
 }
 
 /// A desktop is a curated set (compositor, greeter, portals, audio, fonts),
-/// not a package list — the curation is Kuma's job. Niri is hand-assembled
+/// not a package list; the curation is Kuma's job. Niri is hand-assembled
 /// (a compositor needs a desktop built around it); COSMIC curates itself
 /// and kuma adds only hardware enablement and identity.
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
@@ -123,7 +123,7 @@ pub struct Packages {
     pub flatpak: Vec<String>,
     /// Homebrew formulae, converged like flatpaks: additions install,
     /// removals uninstall. Only formulae this list ever named are removal
-    /// candidates — ad-hoc `brew install` on the machine stays yours.
+    /// candidates; ad-hoc `brew install` on the machine stays yours.
     /// A non-empty list implies system.brew.
     #[serde(default)]
     pub brew: Vec<String>,
@@ -142,7 +142,7 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path).with_context(|| {
             format!(
-                "cannot read {} — run `kuma init` to start one here, or point --config at yours",
+                "cannot read {}; run `kuma init` to start one here, or point --config at yours",
                 path.display()
             )
         })?;
@@ -222,7 +222,7 @@ fn validate_name(value: &str, field: &str, extra: &[char]) -> Result<()> {
     // list feeds — dnf, systemctl, flatpak install (as root, every boot).
     // No real package, service, zone, or locale starts with one.
     if value.starts_with('-') {
-        bail!("{field} entry {value:?} starts with '-' — names cannot be options");
+        bail!("{field} entry {value:?} starts with '-': names cannot be options");
     }
     for ch in value.chars() {
         if !ch.is_ascii_alphanumeric() && !extra.contains(&ch) {

@@ -86,7 +86,7 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
                 });
             }
         }
-        Err(_) => skipped = Some("flatpak unavailable — skipped".to_string()),
+        Err(_) => skipped = Some("flatpak unavailable, skipped".to_string()),
     }
     stale_image |= image_list_stale("/usr/lib/kuma/flatpaks", &declared);
     sections.push(DiffSection { name: "packages.flatpak", entries, skipped });
@@ -127,7 +127,7 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
                     .map(|f| f.to_string())
                     .collect();
             }
-            Err(_) => skipped = Some("brew not bootstrapped yet — first boot installs it".to_string()),
+            Err(_) => skipped = Some("brew not bootstrapped yet; first boot installs it".to_string()),
         }
     }
     stale_image |= image_list_stale("/usr/lib/kuma/brews", &declared);
@@ -141,7 +141,7 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
         let state = unit_state(svc);
         if state != "enabled" && state != "alias" {
             let cure = if state == "disabled" {
-                format!(" — `sudo systemctl enable {svc}` reconciles")
+                format!("; `sudo systemctl enable {svc}` reconciles")
             } else {
                 String::new()
             };
@@ -157,7 +157,7 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
             entries.push(DiffEntry {
                 change: "mismatch",
                 item: svc.clone(),
-                note: format!("declared disable, currently enabled — `sudo systemctl disable {svc}` reconciles"),
+                note: format!("declared disable, currently enabled; `sudo systemctl disable {svc}` reconciles"),
             });
         }
     }
@@ -172,13 +172,13 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
         actions.push(Action::new(
             "build",
             "kuma build",
-            "bake the edit — then `kuma switch` and reboot carry it to the machine",
+            "bake the edit; `kuma switch` and reboot carry it to the machine",
         ));
     } else if converge_hint {
         actions.push(Action::new(
             "sync",
             "kuma sync",
-            "converge now — otherwise the boot/daily run picks this up",
+            "converge now; otherwise the boot/daily run picks this up",
         ));
     }
 
@@ -226,7 +226,7 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
         print_actions(&actions);
     }
     if !drift && !stale_image && observed_all {
-        println!("No drift — this machine matches {}.", config_path.display());
+        println!("No drift: this machine matches {}.", config_path.display());
     }
     Ok(())
 }
@@ -329,7 +329,7 @@ pub fn doctor(json: bool) -> Result<()> {
                 report(
                     Grade::Warn,
                     "units",
-                    "systemd-remount-fs failed — known-benign: Anaconda's fstab `/` line can't be remounted over composefs".into(),
+                    "systemd-remount-fs failed, known-benign: Anaconda's fstab `/` line can't be remounted over composefs".into(),
                     None,
                 );
             }
@@ -344,7 +344,7 @@ pub fn doctor(json: bool) -> Result<()> {
         report(
             Grade::Warn,
             "kuma",
-            "not running a kuma image — convergence checks skipped".into(),
+            "not running a kuma image; convergence checks skipped".into(),
             None,
         );
     }
@@ -573,7 +573,7 @@ fn check_convergence(report: &mut impl FnMut(Grade, &str, String, Option<Action>
                 report(
                     Grade::Fail,
                     "flathub",
-                    "remote missing — flatpak convergence cannot install".into(),
+                    "remote missing; flatpak convergence cannot install".into(),
                     Some(fix),
                 );
             }
@@ -590,7 +590,7 @@ fn check_boot_health(report: &mut impl FnMut(Grade, &str, String, Option<Action>
         report(
             Grade::Warn,
             "boot health",
-            "greenboot not in this image — automatic rollback of failed boots arrives with the next rebuild".into(),
+            "greenboot not in this image; automatic rollback of failed boots arrives with the next rebuild".into(),
             Some(Action::new("update", "kuma update", "rebuild on a kuma that bakes boot health")),
         );
         return;
@@ -606,7 +606,7 @@ fn check_boot_health(report: &mut impl FnMut(Grade, &str, String, Option<Action>
         Ok("failed") => report(
             Grade::Fail,
             "boot health",
-            "this boot failed health checks — greenboot may reboot toward rollback".into(),
+            "this boot failed health checks; greenboot may reboot toward rollback".into(),
             Some(Action::new(
                 "inspect",
                 "systemctl status greenboot-healthcheck.service",
@@ -616,7 +616,7 @@ fn check_boot_health(report: &mut impl FnMut(Grade, &str, String, Option<Action>
         Ok(state) => report(
             Grade::Warn,
             "boot health",
-            format!("health check is {state} — boot still settling, or the unit is not enabled"),
+            format!("health check is {state}: boot still settling, or the unit is not enabled"),
             None,
         ),
         Err(_) => report(Grade::Warn, "boot health", "systemctl unavailable".into(), None),
@@ -636,13 +636,13 @@ fn check_boot_health(report: &mut impl FnMut(Grade, &str, String, Option<Action>
         Ok(out) if !out.trim().is_empty() => report(
             Grade::Ok,
             "boot health",
-            "bootloader counts boot attempts — fallback armed".into(),
+            "bootloader counts boot attempts; fallback armed".into(),
             None,
         ),
         Ok(_) => report(
             Grade::Warn,
             "boot health",
-            "bootloader has no boot_counter fallback (config predates greenboot in the image) — without it a failing update reboot-loops instead of rolling back".into(),
+            "bootloader has no boot_counter fallback (config predates greenboot in the image); without it a failing update reboot-loops instead of rolling back".into(),
             Some(Action::new(
                 "converge",
                 "sudo /usr/libexec/kuma-boot-health-sync",
@@ -726,7 +726,7 @@ fn check_gpu(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     });
     match (drivers.is_empty(), render) {
         (false, true) => report(Grade::Ok, "gpu", format!("{} bound, render node present", drivers.join(", ")), None),
-        (false, false) => report(Grade::Warn, "gpu", format!("{} bound, but no render node — software rendering likely", drivers.join(", ")), None),
+        (false, false) => report(Grade::Warn, "gpu", format!("{} bound, but no render node; software rendering likely", drivers.join(", ")), None),
         (true, _) => report(Grade::Warn, "gpu", "no GPU driver bound (VM or headless?)".into(), None),
     }
 }
@@ -777,7 +777,7 @@ mod tests {
             DiffSection {
                 name: "packages.brew",
                 entries: vec![],
-                skipped: Some("brew not bootstrapped yet — first boot installs it".into()),
+                skipped: Some("brew not bootstrapped yet; first boot installs it".into()),
             },
         ];
         let actions = [Action::new("sync", "kuma sync", "converge now")];

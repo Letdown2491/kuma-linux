@@ -1,9 +1,9 @@
-# Kuma alacritty theme — night navy, aurora accents.
+# Kuma alacritty theme: night navy, aurora accents.
 
 [window]
 padding = { x = 12, y = 10 }
 opacity = 0.96
-# No titlebar — niri tiles and closes windows; a bar would just burn a row
+# No titlebar: niri tiles and closes windows; a bar would just burn a row
 # of pixels (and render in light Adwaita, clashing with the theme).
 decorations = "None"
 

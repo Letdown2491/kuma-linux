@@ -21,6 +21,11 @@ const NIRI_PACKAGES: &[&str] = &[
     "xdg-desktop-portal-gnome",
     "dconf",
     "gnome-keyring",
+    // the PAM module that unlocks the login keyring is a subpackage,
+    // and nothing depends on it: without this every keyring-using app
+    // prompts on launch, silently, because the greeter's PAM lines are
+    // '-' prefixed and skip a missing module without a word
+    "gnome-keyring-pam",
     "polkit",
     "mesa-dri-drivers",
     // OpenGL alone strands Vulkan apps on lavapipe software rendering
@@ -114,8 +119,10 @@ const COSMIC_PACKAGES: &[&str] = &[
     "cosmic-edit",
     "flatpak",
     "fastfetch",
-    // unlocked with the login password via PAM, same as the niri set
+    // unlocked with the login password via PAM, same as the niri set,
+    // and the -pam subpackage is the module that does the unlocking
     "gnome-keyring",
+    "gnome-keyring-pam",
     "pipewire",
     "pipewire-pulseaudio",
     "wireplumber",
@@ -174,7 +181,61 @@ const MESA_FREEWORLD: &str = "RUN dnf -y install \"https://mirrors.rpmfusion.org
 
 /// Unlock the keyring with the login password, or every Chromium
 /// launch nags for it. (Autologin skips this: no password typed.)
-const KEYRING_PAM: &str = "RUN grep -q pam_gnome_keyring /etc/pam.d/greetd 2>/dev/null \\\n    || printf 'auth        optional    pam_gnome_keyring.so\\nsession     optional    pam_gnome_keyring.so auto_start\\n' >> /etc/pam.d/greetd\n";
+///
+/// Fedora's greeter PAM stacks already call pam_gnome_keyring, so
+/// there is nothing to append; but every one of those lines carries a
+/// '-' prefix, which tells PAM to skip a missing module in total
+/// silence. The module ships in gnome-keyring-pam, a subpackage of
+/// gnome-keyring that nothing pulls in, so the desktop lists name it
+/// explicitly and this asserts both halves: the module exists on disk,
+/// and the stack that actually authenticates this desktop still calls
+/// it. Without the assert the failure mode is invisible: login
+/// succeeds, nothing is logged, and the keyring is simply never
+/// unlocked (which is exactly how it shipped until 2026-08-07).
+///
+/// `service` is the /etc/pam.d file the greeter authenticates against:
+/// greetd's own for niri, cosmic-greeter's for COSMIC. They are not
+/// interchangeable; asserting the wrong one proves nothing.
+fn keyring_pam(service: &str) -> String {
+    format!(
+        "RUN test -f /usr/lib64/security/pam_gnome_keyring.so \\\n    && grep -q pam_gnome_keyring /etc/pam.d/{service}\n"
+    )
+}
+
+/// bootc's own build-time check that the image is a valid bootable
+/// container. It runs last, and its verdict is the build's verdict.
+///
+/// The wrapper exists for one upstream bug. bootc 1.16.7's var-tmpfiles
+/// lint walks /usr/lib/tmpfiles.d and opens what it finds, and
+/// tpm2-tss-fapi.conf points at securityfs:
+///
+///   z- /sys/kernel/security/ima/binary_runtime_measurements 0440 root tss - -
+///
+/// Inside a build that path is unreadable, so the lint aborts the whole
+/// run with "Unexpected runtime error running lint var-tmpfiles" and no
+/// image is produced. (Note the '-' on 'z-': that is tmpfiles' own
+/// ignore-failures modifier, so systemd tolerates the very path the lint
+/// will not. Same bailout as bootc-dev/bootc#1481, which hits it through
+/// qemu-user instead of securityfs.) It reproduces on the unmodified
+/// fedora-bootc:44 base, so nothing kuma builds can avoid it.
+///
+/// The insult on top: var-tmpfiles is a warning-level lint, so even
+/// when it runs it cannot fail a build. Only its crash can.
+///
+/// Rather than pass --skip var-tmpfiles forever, which would quietly
+/// retire the check the day upstream fixes this, tolerate exactly this
+/// crash and nothing else: any other lint failure still fails the build
+/// (verified against a fatal var-run), warnings still reach the log
+/// either way, and once bootc stops crashing the first run simply
+/// passes and the fallback goes cold on its own.
+const LINT: &str = r#"
+RUN rc=0; bootc container lint 2>/tmp/lint.err || rc=$?; \
+    cat /tmp/lint.err >&2; \
+    if [ $rc -ne 0 ] && grep -q 'var-tmpfiles: I/O error' /tmp/lint.err; then \
+        rc=0; bootc container lint --skip var-tmpfiles || rc=$?; \
+    fi; \
+    rm -f /tmp/lint.err; exit $rc
+"#;
 
 const GREETD_CONFIG: &str = r#"[terminal]
 vt = 1
@@ -442,13 +503,13 @@ WantedBy=multi-user.target
 /// this very check. That deadlock is one comment away, hence the shout.
 const GREETER_CHECK: &str = r#"#!/usr/bin/bash
 # A desktop boot is healthy when the greeter is on screen, not when
-# multi-user is reached — a broken compositor or greeter update boots
+# multi-user is reached: a broken compositor or greeter update boots
 # "fine" into a black screen, and that is exactly the regression this
 # check exists to roll back. display-manager.service is the alias both
 # greetd (niri) and cosmic-greeter carry; it starts in parallel with
 # this check and its Restart= may be mid-retry, so only the deadline
 # decides. DO NOT wait on graphical.target here: it waits for
-# multi-user.target, which waits for this check — instant deadlock.
+# multi-user.target, which waits for this check: instant deadlock.
 set -u
 deadline=$(( SECONDS + 120 ))
 until systemctl --quiet is-active display-manager.service; do
@@ -901,7 +962,7 @@ end
 /// Compile a kuma config into a Containerfile for a bootc image build.
 pub fn generate(config: &Config) -> String {
     let mut out = String::new();
-    out.push_str("# Generated by kuma — edit kuma.toml instead.\n");
+    out.push_str("# Generated by kuma. Edit kuma.toml instead.\n");
     out.push_str(&format!("FROM {}\n", config.system.base));
 
     // Desktop layer first: it is large and changes rarely, so keeping it
@@ -945,7 +1006,7 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY gtk4-settings.ini /etc/gtk-4.0/settings.ini\n");
         out.push_str("COPY mimeapps.list /etc/xdg/mimeapps.list\n");
         out.push_str("COPY dconf-profile /etc/dconf/profile/user\n");
-        out.push_str(KEYRING_PAM);
+        out.push_str(&keyring_pam("greetd"));
         out.push_str("COPY dconf-kuma-dark /etc/dconf/db/local.d/10-kuma-dark\n");
         out.push_str("RUN dconf update\n");
         // The packaged default config is complete (all keybindings); Kuma's
@@ -1013,7 +1074,10 @@ pub fn generate(config: &Config) -> String {
         out.push_str(
             "RUN printf 'COSMIC_DISABLE_OVERLAY_SCANOUT=1\\nCOSMIC_DISABLE_DIRECT_SCANOUT=1\\n' >> /etc/environment\n",
         );
-        out.push_str(KEYRING_PAM);
+        // cosmic-greeter authenticates against its own PAM service, not
+        // greetd's: asserting /etc/pam.d/greetd here would pass while
+        // the stack COSMIC logs in through went unchecked.
+        out.push_str(&keyring_pam("cosmic-greeter"));
         out.push_str("COPY kargs-desktop.toml /usr/lib/bootc/kargs.d/10-kuma-desktop.toml\n");
         out.push_str("COPY fastfetch-config.jsonc /etc/xdg/fastfetch/config.jsonc\n");
         out.push_str("COPY fastfetch-logo.txt /usr/lib/kuma/fastfetch-logo.txt\n");
@@ -1205,7 +1269,7 @@ pub fn generate(config: &Config) -> String {
     // image as a dangling <none>, and only kuma's own should be reclaimed.
     out.push_str("\nLABEL io.kuma.image=\"1\"\n");
 
-    out.push_str("\nRUN bootc container lint\n");
+    out.push_str(LINT);
     out
 }
 
@@ -1348,6 +1412,16 @@ mod tests {
         assert_eq!(out.matches("dnf -y install").count(), 1);
         assert!(out.contains("dnf -y install greenboot"));
         assert!(out.contains("bootc container lint"));
+        // The lint runs unqualified first: the --skip is a fallback for
+        // one upstream crash, never the path a healthy build takes, and
+        // it must not swallow any other lint failure. Pin the shape so a
+        // future edit can't turn it into a blanket skip.
+        assert!(out.contains("RUN rc=0; bootc container lint 2>/tmp/lint.err"));
+        assert!(out.contains("grep -q 'var-tmpfiles: I/O error' /tmp/lint.err"));
+        assert!(out.contains("bootc container lint --skip var-tmpfiles || rc=$?"));
+        // the scratch file is removed in the same layer that made it, and
+        // the build's exit status is still the lint's
+        assert!(out.contains("rm -f /tmp/lint.err; exit $rc"));
     }
 
     #[test]
@@ -1844,6 +1918,32 @@ mod tests {
             "schema_version = 1\n[system]\ndesktop = \"cosmic\"\n[user]\nname = \"mira\"\n",
         ));
         assert!(!without.contains("initial_session"));
+    }
+
+    /// The keyring failed silently on both desktops until 2026-08-07:
+    /// gnome-keyring was installed but gnome-keyring-pam, which carries
+    /// the module, was not, and the greeter's '-' prefixed PAM lines
+    /// skip a missing module without logging a word. Nothing observable
+    /// broke except that every keyring-using app prompted on launch, so
+    /// the package and the assert are pinned here per desktop.
+    #[test]
+    fn keyring_unlocks_with_the_login_password_on_every_desktop() {
+        let niri = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
+        let cosmic = generate(&config("schema_version = 1\n[system]\ndesktop = \"cosmic\"\n"));
+        for out in [&niri, &cosmic] {
+            // the module is a subpackage; nothing else pulls it in
+            assert!(out.contains("gnome-keyring-pam"));
+            // and the build fails if a Fedora update stops shipping it
+            assert!(out.contains("test -f /usr/lib64/security/pam_gnome_keyring.so"));
+        }
+        // each greeter authenticates against its own PAM service, and
+        // asserting the other one would pass while proving nothing
+        assert!(niri.contains("grep -q pam_gnome_keyring /etc/pam.d/greetd\n"));
+        assert!(!niri.contains("/etc/pam.d/cosmic-greeter"));
+        assert!(cosmic.contains("grep -q pam_gnome_keyring /etc/pam.d/cosmic-greeter\n"));
+        // greetd's file exists in the COSMIC image too (cosmic-greeter
+        // pulls greetd in), so a stale assert there would look healthy
+        assert!(!cosmic.contains("pam_gnome_keyring /etc/pam.d/greetd\n"));
     }
 
     #[test]

@@ -5,7 +5,7 @@ schema_version = 1
 base = "quay.io/fedora/fedora-bootc:44"
 # A desktop is a curated set kuma maintains, not a package list you assemble.
 # Supported: "niri" (scrollable-tiling Wayland compositor), "cosmic"
-# (System76's full desktop — see cosmic.toml.example). Omit for headless.
+# (System76's full desktop; see cosmic.toml.example). Omit for headless.
 desktop = "niri"
 # Timezone is machine state, so usually leave this unset: machines keep
 # whatever `timedatectl set-timezone` chose (it survives image updates),
@@ -19,7 +19,7 @@ desktop = "niri"
 
 # The primary account: created on first boot, then converged (shell,
 # declared groups, kuma-managed ssh keys) on every boot. Get the hash
-# from `kuma passwd`; it applies only at creation — change it freely on
+# from `kuma passwd`; it applies only at creation; change it freely on
 # the machine afterward.
 [user]
 name = "me"
@@ -46,7 +46,7 @@ flatpak = [
     "org.gnome.TextEditor",
 ]
 
-# Note: enable/disable fail the build if the unit doesn't exist in the image —
+# Note: enable/disable fail the build if the unit doesn't exist in the image;
 # strict on purpose, so typos surface at build time instead of being ignored.
 [services]
 enable = ["tailscaled.service"]

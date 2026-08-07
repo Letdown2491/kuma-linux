@@ -84,7 +84,7 @@ enum Cmd {
         #[arg(long)]
         rebuild: bool,
         /// Apply the built image to the RUNNING VM (bootc switch inside,
-        /// then reboot) — /var (flatpaks, brew, homes) persists
+        /// then reboot); /var (flatpaks, brew, homes) persists
         #[arg(long, conflicts_with_all = ["no_run", "rebuild"])]
         apply: bool,
     },
@@ -316,7 +316,7 @@ fn check(config_path: &Path, json: bool) -> Result<()> {
                 );
             } else {
                 println!(
-                    "{shown} is a valid declaration — {} rpm, {} flatpak, {} brew.",
+                    "{shown} is a valid declaration: {} rpm, {} flatpak, {} brew.",
                     config.packages.rpm.len(),
                     config.packages.flatpak.len(),
                     config.packages.brew.len()
@@ -403,7 +403,7 @@ base = "quay.io/fedora/fedora-bootc:44"
 # A desktop is a curated set kuma maintains: "niri" or "cosmic".
 # desktop = "niri"
 # Pin an IANA timezone across all machines built from this file. Usually
-# leave unset — timezone is machine state (`timedatectl set-timezone`).
+# leave unset: timezone is machine state (`timedatectl set-timezone`).
 # timezone = "America/Denver"
 # hostname = "kuma-laptop"
 # locale = "en_US.UTF-8"
@@ -421,7 +421,7 @@ rpm = []
 # Flathub system apps, converged on boot: additions install, removals
 # uninstall. `flatpak install --user` stays yours.
 flatpak = []
-# Homebrew CLI tools, converged the same way — good for fast-moving dev
+# Homebrew CLI tools, converged the same way; good for fast-moving dev
 # tools that shouldn't need an image rebuild. Ad-hoc `brew install` on
 # the machine stays yours.
 # brew = ["ripgrep", "fd", "jq"]
@@ -467,7 +467,7 @@ fn read_config_path(resolved: &Path, explicit: bool, announce: bool) -> PathBuf 
         let baked = Path::new(state::BAKED_CONFIG);
         if baked.exists() {
             if announce {
-                println!("No local kuma.toml — using this machine's baked declaration ({}).\n", baked.display());
+                println!("No local kuma.toml; using this machine's baked declaration ({}).\n", baked.display());
             }
             return baked.to_path_buf();
         }
@@ -487,7 +487,7 @@ fn init(force: bool, starter: bool) -> Result<()> {
     match baked {
         Some(text) => {
             std::fs::write(&path, text).context("cannot write kuma.toml")?;
-            println!("Wrote kuma.toml — a copy of this machine's baked declaration.");
+            println!("Wrote kuma.toml, a copy of this machine's baked declaration.");
         }
         None => {
             std::fs::write(&path, STARTER).context("cannot write kuma.toml")?;
@@ -582,7 +582,7 @@ fn switch(tag: &str, yes: bool, json: bool) -> Result<()> {
             return Ok(());
         }
         if !built {
-            println!("{tag} is not built — there is nothing to switch to yet.\n");
+            println!("{tag} is not built; there is nothing to switch to yet.\n");
             print_actions(&actions);
             return Ok(());
         }
@@ -594,7 +594,7 @@ fn switch(tag: &str, yes: bool, json: bool) -> Result<()> {
         return Ok(());
     }
     if !stage(tag)? {
-        bail!("nothing staged — the system already runs this image (did `kuma build` succeed?)");
+        bail!("nothing staged; the system already runs this image (did `kuma build` succeed?)");
     }
     let reboot = reboot_action();
     if json {
@@ -656,7 +656,7 @@ fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
         let stage_hint = Action::new(
             "stage",
             "kuma update --yes",
-            "stage it — applies on reboot; the previous deployment stays for kuma rollback",
+            "stage it: applies on reboot; the previous deployment stays for kuma rollback",
         );
         if json {
             println!(
@@ -687,7 +687,7 @@ fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
         println!("\nStaged.");
         print_actions(&[reboot]);
     } else {
-        println!("\nAlready up to date — the system runs this image.");
+        println!("\nAlready up to date; the system runs this image.");
     }
     Ok(())
 }
@@ -722,11 +722,11 @@ fn rollback(yes: bool, json: bool) -> Result<()> {
         return Ok(());
     }
     let status = host_output(&["sudo", "bootc", "status", "--format", "json"])
-        .context("cannot read bootc status — is this a bootc machine?")?;
+        .context("cannot read bootc status (is this a bootc machine?)")?;
     let status_json: serde_json::Value =
         serde_json::from_str(&status).context("cannot parse bootc status")?;
     let Some((target, staged)) = rollback_facts(&status_json) else {
-        bail!("no rollback deployment on this machine — nothing to roll back to");
+        bail!("no rollback deployment on this machine; nothing to roll back to");
     };
     if staged {
         note("note: discarding the staged (never booted) deployment.\n");
@@ -751,7 +751,7 @@ fn rollback(yes: bool, json: bool) -> Result<()> {
             })
         );
     } else {
-        println!("\nBoot order swapped — next boot lands on {target}.");
+        println!("\nBoot order swapped; next boot lands on {target}.");
         print_actions(&[reboot]);
     }
     Ok(())
@@ -795,14 +795,14 @@ fn sync(json: bool) -> Result<()> {
             if json {
                 println!("{}", serde_json::json!({ "ok": true, "converged": [] }));
             } else {
-                println!("Nothing to converge — this image declares no flatpaks or brew formulae.");
+                println!("Nothing to converge: this image declares no flatpaks or brew formulae.");
             }
             return Ok(());
         }
         if Path::new("/run/ostree-booted").exists() {
-            bail!("this bootc machine isn't running a kuma image — `kuma build` then `kuma switch` adopt one");
+            bail!("this bootc machine isn't running a kuma image; `kuma build` then `kuma switch` adopt one");
         }
-        bail!("not a kuma machine — sync converges a machine booted into a kuma image (`kuma vm` boots one)");
+        bail!("not a kuma machine; sync converges a machine booted into a kuma image (`kuma vm` boots one)");
     }
     let mut args = vec!["sudo", "systemctl", "start"];
     args.extend(&units);
@@ -825,7 +825,7 @@ fn clean() -> Result<()> {
     // abandoned one — don't yank the layers out from under it. The [ ]
     // keeps the pattern from matching kuma's own pgrep invocation.
     if host_output(&["pgrep", "-f", "podman[ ].*build|^buildah"]).is_ok() {
-        bail!("a build appears to be running — retry when it finishes");
+        bail!("a build appears to be running; retry when it finishes");
     }
     let before = avail_bytes();
 
@@ -916,7 +916,7 @@ fn vm(tag: &str, output: &Path, no_run: bool, rebuild: bool, apply: bool) -> Res
         let current = image_id(tag).unwrap_or_default();
         if !current.is_empty() && stamped.trim() != current {
             println!(
-                "WARNING: {tag} is newer than this disk — it will NOT have your latest changes. Re-run with --rebuild to pick them up."
+                "WARNING: {tag} is newer than this disk; it will NOT have your latest changes. Re-run with --rebuild to pick them up."
             );
         }
     }
@@ -951,7 +951,7 @@ fn iso(config_path: &Path, tag: &str, output: &Path) -> Result<()> {
     // what identity it carries at the moment it's being baked in.
     if let Some(user) = &config.user {
         println!(
-            "note: this installer bakes the declared user '{}' (account and password hash,\ncreated at first boot). For media you'll share, build from a declaration\nwithout [user] — Anaconda's create-a-user screen comes back automatically.\n",
+            "note: this installer bakes the declared user '{}' (account and password hash,\ncreated at first boot). For media you'll share, build from a declaration\nwithout [user]; Anaconda's create-a-user screen comes back automatically.\n",
             user.name
         );
     }
@@ -986,7 +986,7 @@ fn iso(config_path: &Path, tag: &str, output: &Path) -> Result<()> {
         path_str(&def_path)?
     );
 
-    println!("Building installer ISO with bootc-image-builder (this takes a while — it assembles a full Anaconda environment)...");
+    println!("Building installer ISO with bootc-image-builder (this takes a while; it assembles a full Anaconda environment)...");
     run_bib(&output, &bib_config, "anaconda-iso", tag, &[def_mount])?;
     std::fs::write(output.join("image-id"), &local_id)?;
     let iso_path = output.join("bootiso/install.iso");
@@ -1000,7 +1000,7 @@ fn iso(config_path: &Path, tag: &str, output: &Path) -> Result<()> {
 /// every time the rootless image is rebuilt. Returns the image ID.
 fn sync_image_to_root(tag: &str, scratch: &Path) -> Result<String> {
     let local_id =
-        image_id(tag).with_context(|| format!("{tag} not found — run `kuma build` first"))?;
+        image_id(tag).with_context(|| format!("{tag} not found; run `kuma build` first"))?;
     let root_id = host_output(&["sudo", "podman", "image", "inspect", "--format", "{{.Id}}", tag])
         .unwrap_or_default();
     if local_id != root_id {
@@ -1075,13 +1075,13 @@ const VM_SSH_OPTS: &[&str] = &[
 /// flatpaks, brew, homes — and exercises the real update path (staged
 /// deployment, rollback) instead of the install path.
 fn vm_apply(tag: &str) -> Result<()> {
-    image_id(tag).with_context(|| format!("{tag} not found — run `kuma build` first"))?;
+    image_id(tag).with_context(|| format!("{tag} not found; run `kuma build` first"))?;
 
     let mut probe = vec!["ssh", "-p", "2222", "-o", "ConnectTimeout=4"];
     probe.extend(VM_SSH_OPTS);
     probe.extend(["kuma@localhost", "true"]);
     host_output(&probe)
-        .context("no running VM reachable on port 2222 — boot one with `kuma vm` first")?;
+        .context("no running VM reachable on port 2222; boot one with `kuma vm` first")?;
 
     // Stream straight into the guest's root podman storage: no archive
     // file on the guest and no untar temp copy — the 10G disk ran out of
@@ -1110,7 +1110,7 @@ fn vm_apply(tag: &str) -> Result<()> {
     // success. rmi after: the ostree import is self-contained and the
     // podman copy is dead weight.
     let switch_cmd = format!(
-        "echo kuma | sudo -S sh -c 'bootc switch --transport containers-storage {tag} && bootc upgrade; podman rmi -f {tag} >/dev/null; bootc status | grep -qiE \"^  Staged|staged image\" || {{ echo \"kuma: nothing staged — the VM already runs this image\" >&2; exit 3; }}'"
+        "echo kuma | sudo -S sh -c 'bootc switch --transport containers-storage {tag} && bootc upgrade; podman rmi -f {tag} >/dev/null; bootc status | grep -qiE \"^  Staged|staged image\" || {{ echo \"kuma: nothing staged; the VM already runs this image\" >&2; exit 3; }}'"
     );
     switch.extend(["kuma@localhost", &switch_cmd]);
     run_host(&switch)?;

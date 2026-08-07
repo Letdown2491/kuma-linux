@@ -119,7 +119,7 @@ pub fn root(config_path: &Path, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&json_of(&snapshot))?);
         return Ok(());
     }
-    println!("state: {} — {}", snapshot.state, snapshot.headline);
+    println!("state: {} - {}", snapshot.state, snapshot.headline);
     println!();
     for (name, detail) in &snapshot.facts {
         println!("{name:<8} {detail}");
@@ -265,11 +265,11 @@ fn classify(obs: &Observed) -> Snapshot {
     };
 
     if let ConfigFact::Invalid(err) = &obs.config {
-        claim("config-invalid", format!("{} is invalid — nothing can build from it", obs.config_path));
+        claim("config-invalid", format!("{} is invalid; nothing can build from it", obs.config_path));
         actions.push(Action::new("edit", format!("$EDITOR {}", obs.config_path), err.clone()));
     }
     if let MachineFact::Kuma { staged: true, .. } = &obs.machine {
-        claim("staged", "a new deployment is staged — reboot to apply".into());
+        claim("staged", "a new deployment is staged; reboot to apply".into());
         actions.push(reboot_action());
     }
     if let (ConfigFact::Loaded { .. }, None) = (&obs.config, &obs.image) {
@@ -296,15 +296,15 @@ fn classify(obs: &Observed) -> Snapshot {
     }
     if let MachineFact::Kuma { drift, .. } = &obs.machine {
         if !drift.is_empty() {
-            claim("drifted", format!("machine drifted from its declaration — {}", drift.join(", ")));
-            actions.push(Action::new("sync", "kuma sync", "converge now — also runs at boot and daily"));
+            claim("drifted", format!("machine drifted from its declaration: {}", drift.join(", ")));
+            actions.push(Action::new("sync", "kuma sync", "converge now (also runs at boot and daily)"));
             actions.push(Action::new("diff", "kuma diff", "see the drift in detail"));
         }
     }
     if obs.image.is_some() && actions.is_empty() {
         match &obs.machine {
             MachineFact::BootcForeign => {
-                claim("built", "image built — this bootc machine could switch to it".into());
+                claim("built", "image built; this bootc machine could switch to it".into());
                 actions.push(Action::new(
                     "switch",
                     "kuma switch",
@@ -313,7 +313,7 @@ fn classify(obs: &Observed) -> Snapshot {
                 actions.push(Action::new("vm", "kuma vm", "boot the image in a disposable VM instead"));
             }
             MachineFact::NotBootc => {
-                claim("built", "image built — this machine can't run it directly".into());
+                claim("built", "image built; this machine can't run it directly".into());
                 actions.push(Action::new("vm", "kuma vm", "boot the image in a QEMU VM"));
                 actions.push(Action::new("iso", "kuma iso", "build an installer ISO for real hardware"));
             }
@@ -327,7 +327,7 @@ fn classify(obs: &Observed) -> Snapshot {
     }
     match &obs.config {
         ConfigFact::Missing => {
-            claim("no-config", format!("no {} here — nothing declared yet", obs.config_path));
+            claim("no-config", format!("no {} here; nothing declared yet", obs.config_path));
             actions.push(Action::new(
                 "init",
                 "kuma init",
@@ -352,23 +352,23 @@ fn classify(obs: &Observed) -> Snapshot {
 fn facts_of(obs: &Observed) -> [(&'static str, String); 3] {
     let config = match &obs.config {
         ConfigFact::Missing => format!("none ({} not found)", obs.config_path),
-        ConfigFact::Invalid(_) => format!("{} — invalid", obs.config_path),
+        ConfigFact::Invalid(_) => format!("{} (invalid)", obs.config_path),
         ConfigFact::Loaded { rpm, flatpak, brew } => {
-            format!("{} — {rpm} rpm, {flatpak} flatpak, {brew} brew declared", obs.config_path)
+            format!("{}: {rpm} rpm, {flatpak} flatpak, {brew} brew declared", obs.config_path)
         }
         ConfigFact::Baked { rpm, flatpak, brew } => format!(
-            "{BAKED_CONFIG} (this machine's baked declaration) — {rpm} rpm, {flatpak} flatpak, {brew} brew"
+            "{BAKED_CONFIG} (this machine's baked declaration): {rpm} rpm, {flatpak} flatpak, {brew} brew"
         ),
     };
     let image = match &obs.image {
         None => format!("none built ({} not in podman storage)", crate::DEFAULT_TAG),
         Some(image) => {
-            let edited = if image.edited_after { " — before the last config edit" } else { "" };
-            format!("{} — built {} ago{edited}", crate::DEFAULT_TAG, human_age(image.age_secs))
+            let edited = if image.edited_after { ", before the last config edit" } else { "" };
+            format!("{}, built {} ago{edited}", crate::DEFAULT_TAG, human_age(image.age_secs))
         }
     };
     let machine = match &obs.machine {
-        MachineFact::NotBootc => "not a bootc machine — build/test workspace".into(),
+        MachineFact::NotBootc => "not a bootc machine (build/test workspace)".into(),
         MachineFact::BootcForeign => "bootc machine, not running a kuma image".into(),
         MachineFact::Kuma { staged, drift, .. } => {
             let mut parts = vec!["running a kuma image".to_string()];
