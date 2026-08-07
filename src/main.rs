@@ -158,7 +158,7 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Check this machine: deployment, convergence, GPU, storage, disk (read-only)
+    /// Check this machine: deployment, boot health, convergence, GPU, storage, disk (read-only)
     Doctor {
         /// Emit the findings as JSON
         #[arg(long)]

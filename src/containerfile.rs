@@ -351,6 +351,115 @@ const SSHD_KUMA_KEYS: &str = r#"# Kuma-declared keys, alongside the user's own.
 AuthorizedKeysFile .ssh/authorized_keys /etc/kuma/keys/%u
 "#;
 
+/// The counter/fallback half of boot health is BOOTLOADER config —
+/// written once at install time and never rewritten by bootupd — so a
+/// machine installed before greenboot entered the image has a grub.cfg
+/// that never decrements boot_counter. greenboot userspace relies on
+/// grub for the countdown, and without it a failing update reboots
+/// forever instead of falling back (observed empirically: the counter
+/// sat at 3 across 40+ consecutive boots). grub sources
+/// $prefix/custom.cfg at the end of bootupd's static config — after
+/// blscfg registers the deployments, before the menu shows — which is
+/// the sanctioned hook for exactly this. Converged, not just written:
+/// if grub.cfg ever gains native boot_counter handling (fresh installs
+/// have it; bootupd may learn to refresh), the block is removed so the
+/// counter is never decremented twice per attempt.
+const BOOT_HEALTH_SYNC_SCRIPT: &str = r#"#!/usr/bin/bash
+set -euo pipefail
+cfg=/boot/grub2/grub.cfg
+custom=/boot/grub2/custom.cfg
+begin='# >>> kuma boot-health >>>'
+end='# <<< kuma boot-health <<<'
+[ -f "$cfg" ] || exit 0
+
+restore=""
+if findmnt -n -o OPTIONS /boot 2>/dev/null | grep -qw ro; then
+    mount -o remount,rw /boot
+    restore="ro"
+fi
+finish() { [ "$restore" = ro ] && mount -o remount,ro /boot || true; }
+trap finish EXIT
+
+if grep -q boot_counter "$cfg"; then
+    # The bootloader counts natively; drop our block if we ever wrote one.
+    if [ -f "$custom" ] && grep -qF "$begin" "$custom"; then
+        sed -i "\|^$begin|,\|^$end|d" "$custom"
+        [ -s "$custom" ] || rm -f "$custom"
+    fi
+    exit 0
+fi
+if [ -f "$custom" ] && grep -qF "$begin" "$custom"; then
+    exit 0
+fi
+cat >> "$custom" <<'EOF'
+# >>> kuma boot-health >>>
+# Managed by kuma-boot-health-sync; do not edit between these markers.
+# Boot-counter fallback for bootloaders installed before greenboot
+# entered the image: decrement boot_counter each attempt, and boot the
+# previous deployment (menu entry 1) when it runs out. Same logic
+# greenboot ships for fresh installs via bootupd's static config.
+insmod increment
+# Check if boot_counter exists and boot_success=0 to activate this behavior.
+if [ -n "${boot_counter}" -a "${boot_success}" = "0" ]; then
+  # if countdown has ended, choose to boot rollback deployment,
+  # i.e. default=1 on OSTree-based systems.
+  if  [ "${boot_counter}" = "0" -o "${boot_counter}" = "-1" ]; then
+    set default=1
+    set boot_counter=-1
+  # otherwise decrement boot_counter
+  else
+    decrement boot_counter
+  fi
+  save_env boot_counter
+fi
+
+# Reset boot_success for current boot
+set boot_success=0
+save_env boot_success
+# <<< kuma boot-health <<<
+EOF
+"#;
+
+/// Before the health check only for tidiness — the hook matters at the
+/// NEXT grub run, so any point in this boot converges in time.
+const BOOT_HEALTH_SYNC_SERVICE: &str = r#"[Unit]
+Description=Converge the bootloader's boot-counter fallback hook
+RequiresMountsFor=/boot
+Before=greenboot-healthcheck.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/kuma-boot-health-sync
+
+[Install]
+WantedBy=multi-user.target
+"#;
+
+/// greenboot required check for desktop images. Runs from greenboot's
+/// health-check oneshot, which blocks multi-user.target completion — so
+/// it must poll display-manager.service directly and must NEVER wait on
+/// graphical.target: graphical waits for multi-user, which waits for
+/// this very check. That deadlock is one comment away, hence the shout.
+const GREETER_CHECK: &str = r#"#!/usr/bin/bash
+# A desktop boot is healthy when the greeter is on screen, not when
+# multi-user is reached — a broken compositor or greeter update boots
+# "fine" into a black screen, and that is exactly the regression this
+# check exists to roll back. display-manager.service is the alias both
+# greetd (niri) and cosmic-greeter carry; it starts in parallel with
+# this check and its Restart= may be mid-retry, so only the deadline
+# decides. DO NOT wait on graphical.target here: it waits for
+# multi-user.target, which waits for this check — instant deadlock.
+set -u
+deadline=$(( SECONDS + 120 ))
+until systemctl --quiet is-active display-manager.service; do
+    if (( SECONDS >= deadline )); then
+        echo "display-manager.service not active after 120s"
+        exit 1
+    fi
+    sleep 3
+done
+"#;
+
 /// Appended to niri's full default config (copied from the package) so the
 /// stock keybindings survive; niri configs replace defaults entirely.
 const NIRI_EXTRAS: &str = r##"
@@ -890,17 +999,19 @@ pub fn generate(config: &Config) -> String {
         out.push_str(
             "RUN rm /etc/xdg/autostart/com.system76.CosmicInitialSetup.desktop\n",
         );
-        // cosmic-comp promotes windows to hardware overlay planes, and on
-        // AMD GFX10+ (seen on Rembrandt/680M) the promoted buffer can carry
-        // a DCC-compressed modifier the scanout path reads as raw pixels —
-        // intermittent bands of static across the panel. niri never shows
-        // it because it only direct-scans fullscreen surfaces. Disabling
-        // overlay scanout costs only overlay-plane power savings; composed
-        // output is unaffected. pam_env applies /etc/environment to the
-        // greetd-spawned session, which is where cosmic-comp lives.
+        // cosmic-comp promotes buffers straight to scanout, and on AMD
+        // GFX10+ (seen on Rembrandt/680M) a promoted buffer can carry a
+        // DCC-compressed modifier the scanout path reads as raw pixels —
+        // intermittent bands of static across the panel. Disabling only
+        // overlay scanout was not enough: the band recurred with that var
+        // verifiably active, because fullscreen direct scanout takes the
+        // same DCC path. Both knobs together are the verified cure on
+        // bare metal; the cost is scanout-bypass power savings only,
+        // composed output is unaffected. pam_env applies /etc/environment
+        // to the greetd-spawned session, which is where cosmic-comp lives.
         // Upstream: pop-os/cosmic-comp#1039, #2152.
         out.push_str(
-            "RUN printf 'COSMIC_DISABLE_OVERLAY_SCANOUT=1\\n' >> /etc/environment\n",
+            "RUN printf 'COSMIC_DISABLE_OVERLAY_SCANOUT=1\\nCOSMIC_DISABLE_DIRECT_SCANOUT=1\\n' >> /etc/environment\n",
         );
         out.push_str(KEYRING_PAM);
         out.push_str("COPY kargs-desktop.toml /usr/lib/bootc/kargs.d/10-kuma-desktop.toml\n");
@@ -1003,6 +1114,34 @@ pub fn generate(config: &Config) -> String {
         out.push_str(&format!("\nRUN {}\n", services.join(" && ")));
     }
 
+    // Boot health, in every image: greenboot arms a GRUB boot counter on
+    // the first boot of each new deployment; a boot that never reaches
+    // the health check leaves the counter counting down, GRUB falls back
+    // to the previous deployment when it hits zero, and greenboot makes
+    // that permanent with `bootc rollback`. A bad update costs reboots,
+    // not the machine. Rollback triggers only for freshly-updated-into
+    // deployments (ConditionNeedsUpdate arms the trigger), so a
+    // previously-good deployment that starts failing demands a human
+    // instead of rolling back pointlessly. Core package only:
+    // greenboot-default-health-checks ships a *required* DNS probe that
+    // assumes an always-networked IoT box — it would roll back a laptop
+    // that happens to boot offline.
+    out.push_str("\nRUN dnf -y install greenboot && dnf clean all\n");
+    if config.system.desktop != Desktop::None {
+        out.push_str(
+            "COPY --chmod=755 kuma-greeter-check /usr/lib/greenboot/check/required.d/50-kuma-greeter.sh\n",
+        );
+    }
+    out.push_str(
+        "COPY --chmod=755 kuma-boot-health-sync /usr/libexec/kuma-boot-health-sync\n",
+    );
+    out.push_str(
+        "COPY kuma-boot-health-sync.service /usr/lib/systemd/system/kuma-boot-health-sync.service\n",
+    );
+    out.push_str(
+        "RUN systemctl enable greenboot-healthcheck.service greenboot-set-rollback-trigger.service greenboot-success.target kuma-boot-health-sync.service\n",
+    );
+
     // Every image can adopt a kuma vm host timezone; no-op on hardware.
     out.push_str("\nCOPY --chmod=755 kuma-vm-timezone /usr/libexec/kuma-vm-timezone\n");
     out.push_str(
@@ -1088,6 +1227,8 @@ pub fn write_context(config: &Config, config_text: &str, dir: &Path) -> Result<(
     std::fs::write(dir.join("Containerfile"), generate(config))?;
     std::fs::write(dir.join("kuma-vm-timezone"), VM_TZ_SCRIPT)?;
     std::fs::write(dir.join("kuma-vm-timezone.service"), VM_TZ_SERVICE)?;
+    std::fs::write(dir.join("kuma-boot-health-sync"), BOOT_HEALTH_SYNC_SCRIPT)?;
+    std::fs::write(dir.join("kuma-boot-health-sync.service"), BOOT_HEALTH_SYNC_SERVICE)?;
     // Identity, wallpaper, and kargs ship with every desktop; the rest
     // of the niri block is glue COSMIC provides natively.
     if config.system.desktop != Desktop::None {
@@ -1095,6 +1236,7 @@ pub fn write_context(config: &Config, config_text: &str, dir: &Path) -> Result<(
         std::fs::write(dir.join("fastfetch-config.jsonc"), FASTFETCH_CONFIG)?;
         std::fs::write(dir.join("fastfetch-logo.txt"), FASTFETCH_LOGO)?;
         std::fs::write(dir.join("kuma-wallpaper.png"), WALLPAPER)?;
+        std::fs::write(dir.join("kuma-greeter-check"), GREETER_CHECK)?;
     }
     if config.system.desktop == Desktop::Cosmic {
         std::fs::write(dir.join("cosmic-favorites"), COSMIC_FAVORITES)?;
@@ -1198,10 +1340,13 @@ mod tests {
     }
 
     #[test]
-    fn minimal_config_is_just_base_and_lint() {
+    fn minimal_config_is_base_boot_health_and_lint() {
         let out = generate(&config("schema_version = 1"));
         assert!(out.contains("FROM quay.io/fedora/fedora-bootc:44"));
-        assert!(!out.contains("dnf"));
+        // Boot health is the one dnf layer even a minimal image carries:
+        // the never-worse-than-before promise is not opt-in.
+        assert_eq!(out.matches("dnf -y install").count(), 1);
+        assert!(out.contains("dnf -y install greenboot"));
         assert!(out.contains("bootc container lint"));
     }
 
@@ -1296,6 +1441,65 @@ mod tests {
         assert!(VM_TZ_SCRIPT.contains("qemu_fw_cfg/by_name/opt/org.kuma.tz"));
         // guard against a garbage or hostile fw_cfg value
         assert!(VM_TZ_SCRIPT.contains("[ -e \"/usr/share/zoneinfo/$tz\" ] || exit 0"));
+    }
+
+    #[test]
+    fn boot_health_ships_in_every_image() {
+        let out = generate(&config("schema_version = 1"));
+        assert!(out.contains("RUN dnf -y install greenboot && dnf clean all"));
+        assert!(out.contains(
+            "RUN systemctl enable greenboot-healthcheck.service greenboot-set-rollback-trigger.service greenboot-success.target kuma-boot-health-sync.service"
+        ));
+        assert!(out.contains(
+            "COPY --chmod=755 kuma-boot-health-sync /usr/libexec/kuma-boot-health-sync"
+        ));
+        // the IoT subpackage's *required* DNS probe would roll back a
+        // laptop that boots offline
+        assert!(!out.contains("greenboot-default-health-checks"));
+        // no desktop, no greeter to check
+        assert!(!out.contains("kuma-greeter-check"));
+    }
+
+    #[test]
+    fn boot_health_sync_converges_the_grub_hook() {
+        // The heredoc block must carry the exact markers the script
+        // greps and strips by — a drifted marker means the sync writes
+        // a block it can never find again (double-append forever).
+        let begin = "# >>> kuma boot-health >>>";
+        let end = "# <<< kuma boot-health <<<";
+        assert!(BOOT_HEALTH_SYNC_SCRIPT.contains(&format!("begin='{begin}'")));
+        assert!(BOOT_HEALTH_SYNC_SCRIPT.contains(&format!("end='{end}'")));
+        assert_eq!(BOOT_HEALTH_SYNC_SCRIPT.matches(begin).count(), 2);
+        assert_eq!(BOOT_HEALTH_SYNC_SCRIPT.matches(end).count(), 2);
+        // the fallback needs grub's increment module and must remove
+        // itself when grub.cfg counts natively (no double decrement)
+        assert!(BOOT_HEALTH_SYNC_SCRIPT.contains("insmod increment"));
+        assert!(BOOT_HEALTH_SYNC_SCRIPT.contains("grep -q boot_counter \"$cfg\""));
+        let dir = tempfile::tempdir().unwrap();
+        context("schema_version = 1\n", dir.path());
+        let script =
+            std::fs::read_to_string(dir.path().join("kuma-boot-health-sync")).unwrap();
+        assert!(script.starts_with("#!/usr/bin/bash"));
+    }
+
+    #[test]
+    fn greeter_check_guards_every_desktop() {
+        for desktop in ["niri", "cosmic"] {
+            let out = generate(&config(&format!(
+                "schema_version = 1\n[system]\ndesktop = \"{desktop}\"\n"
+            )));
+            assert!(out.contains(
+                "COPY --chmod=755 kuma-greeter-check /usr/lib/greenboot/check/required.d/50-kuma-greeter.sh"
+            ));
+        }
+        // the check must poll the greeter unit, never graphical.target —
+        // graphical waits for multi-user, which waits for this check
+        assert!(GREETER_CHECK.contains("is-active display-manager.service"));
+        assert!(!GREETER_CHECK.contains("is-active graphical.target"));
+        let dir = tempfile::tempdir().unwrap();
+        context("schema_version = 1\n[system]\ndesktop = \"cosmic\"\n", dir.path());
+        let script = std::fs::read_to_string(dir.path().join("kuma-greeter-check")).unwrap();
+        assert!(script.starts_with("#!/usr/bin/bash"));
     }
 
     #[test]
@@ -1620,9 +1824,10 @@ mod tests {
         assert!(out.contains("set-default graphical.target"));
         // codec restoration applies to every desktop, not just niri
         assert!(out.contains("mesa-va-drivers-freeworld"));
-        // AMD DCC-on-overlay-scanout static bands: the workaround is baked,
-        // not a hand-edit on the installed machine
+        // AMD DCC-on-scanout static bands: both knobs baked, not a
+        // hand-edit on the installed machine — overlay alone recurred
         assert!(out.contains("COSMIC_DISABLE_OVERLAY_SCANOUT=1"));
+        assert!(out.contains("COSMIC_DISABLE_DIRECT_SCANOUT=1"));
     }
 
     #[test]

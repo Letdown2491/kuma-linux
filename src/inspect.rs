@@ -339,6 +339,7 @@ pub fn doctor(json: bool) -> Result<()> {
 
     if Path::new("/usr/lib/kuma").is_dir() {
         check_convergence(&mut report);
+        check_boot_health(&mut report);
     } else {
         report(
             Grade::Warn,
@@ -577,6 +578,83 @@ fn check_convergence(report: &mut impl FnMut(Grade, &str, String, Option<Action>
                 );
             }
         }
+    }
+}
+
+/// Boot health: is the greenboot auto-rollback machinery in the image,
+/// did THIS boot pass its checks, and does the bootloader actually
+/// consult the boot counter — the part that can silently be missing on
+/// machines whose bootloader config predates greenboot in the image.
+fn check_boot_health(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
+    if !Path::new("/usr/libexec/greenboot/greenboot").exists() {
+        report(
+            Grade::Warn,
+            "boot health",
+            "greenboot not in this image — automatic rollback of failed boots arrives with the next rebuild".into(),
+            Some(Action::new("update", "kuma update", "rebuild on a kuma that bakes boot health")),
+        );
+        return;
+    }
+    // RemainAfterExit keeps the health-check oneshot `active` after
+    // success, so is-active is this boot's green/red verdict.
+    match host_output_any(&["systemctl", "is-active", "greenboot-healthcheck.service"])
+        .as_deref()
+    {
+        Ok("active") => {
+            report(Grade::Ok, "boot health", "this boot passed its health checks".into(), None)
+        }
+        Ok("failed") => report(
+            Grade::Fail,
+            "boot health",
+            "this boot failed health checks — greenboot may reboot toward rollback".into(),
+            Some(Action::new(
+                "inspect",
+                "systemctl status greenboot-healthcheck.service",
+                "see which check failed",
+            )),
+        ),
+        Ok(state) => report(
+            Grade::Warn,
+            "boot health",
+            format!("health check is {state} — boot still settling, or the unit is not enabled"),
+            None,
+        ),
+        Err(_) => report(Grade::Warn, "boot health", "systemctl unavailable".into(), None),
+    }
+    // The counter lives in GRUB: its config must decrement boot_counter
+    // and fall back when it hits zero. Fresh installs carry it in
+    // grub.cfg (bootupd assembles greenboot's snippet); machines
+    // installed before greenboot get it converged into custom.cfg by
+    // kuma-boot-health-sync — grep both, or converged machines warn
+    // forever. /boot/grub2 is 0700 on Fedora, hence sudo; `true` keeps
+    // no-match from reading as sudo-declined.
+    let cfg = host_output(&[
+        "sudo", "sh", "-c",
+        "grep -h boot_counter /boot/grub2/grub.cfg /boot/grub2/custom.cfg /boot/efi/EFI/fedora/grub.cfg 2>/dev/null; true",
+    ]);
+    match cfg {
+        Ok(out) if !out.trim().is_empty() => report(
+            Grade::Ok,
+            "boot health",
+            "bootloader counts boot attempts — fallback armed".into(),
+            None,
+        ),
+        Ok(_) => report(
+            Grade::Warn,
+            "boot health",
+            "bootloader has no boot_counter fallback (config predates greenboot in the image) — without it a failing update reboot-loops instead of rolling back".into(),
+            Some(Action::new(
+                "converge",
+                "sudo /usr/libexec/kuma-boot-health-sync",
+                "install the grub fallback hook now (also runs on every boot)",
+            )),
+        ),
+        Err(_) => report(
+            Grade::Warn,
+            "boot health",
+            "grub.cfg unreadable (sudo declined?)".into(),
+            None,
+        ),
     }
 }
 

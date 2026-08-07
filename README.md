@@ -12,7 +12,12 @@ Design principles, in order:
 1. **Simple** — the config schema stays small and boring. Every field is a
    promise maintained forever, so new fields have to earn their place.
 2. **Atomic** — applying a config never mutates the running system; it builds a
-   new image and switches to it on next boot. Rollback is always available.
+   new image and switches to it on next boot. Rollback is always available —
+   and automatic when a fresh update can't boot to a healthy system: every
+   image bakes [greenboot](https://github.com/fedora-iot/greenboot-rs), a GRUB
+   boot counter falls back to the previous deployment after three failed
+   attempts, and desktop images count a boot as healthy only once the greeter
+   is actually on screen. A bad update costs reboots, not the machine.
 3. **Local-first** — `kuma build` works with nothing but podman. No forge
    account, no CI pipeline, no registry required (all optional later).
 4. **Self-describing** — hypermedia as the engine of system state: every
@@ -46,7 +51,7 @@ $ kuma add --flatpak org.mozilla.firefox   # declare in kuma.toml (--rpm/--brew 
 $ kuma remove org.mozilla.firefox          # drop from whichever list declares it
 $ kuma check                               # validate the declaration without building anything
 $ kuma diff                                # drift: kuma.toml vs image vs machine
-$ kuma doctor                              # machine health: deployment, convergence, GPU, storage, disk
+$ kuma doctor                              # machine health: deployment, boot health, convergence, GPU, storage, disk
 $ kuma sync                                # converge flatpaks/brew now, not at next boot
 $ kuma update --yes                        # pull latest base, rebuild, stage for next boot
 $ kuma rollback --yes                      # the update's undo: boot order back to the previous deployment
@@ -115,6 +120,48 @@ A fuller, commented example lives at
 [`examples/kuma.toml.example`](examples/kuma.toml.example); a test keeps it
 valid against the current schema.
 
+## Boot health and automatic rollback
+
+Every image bakes [greenboot](https://github.com/fedora-iot/greenboot-rs).
+There is nothing to configure — a declarative system whose bad update can
+strand the machine isn't declarative where it counts, so the safety net is
+not opt-in.
+
+How it works: the first boot of every new deployment arms a rollback
+trigger. A GRUB boot counter gives the deployment three attempts; a boot
+that never reaches its health checks burns one attempt just the same, so
+even a hang before userspace counts. On a desktop image, a boot is healthy
+only once the greeter is actually on screen (`display-manager.service`
+active within 120 s) — "boots fine into a black screen" is precisely the
+failure this exists to catch. When the attempts run out, GRUB falls back
+to the previous deployment and greenboot makes it permanent with
+`bootc rollback`. A bad update costs three reboots, not the machine.
+
+Two deliberate choices:
+
+- **No default health checks.** greenboot's optional check package makes
+  DNS resolution a *required* check — reasonable on an always-networked
+  IoT box, absurd on a laptop that boots offline. Kuma installs the core
+  framework plus its own greeter check, nothing else. Drop your own
+  scripts into `/etc/greenboot/check/required.d/` if you want more.
+- **Existing machines are retrofitted, not abandoned.** The boot counter
+  is *bootloader* config, written once at install time — a machine
+  installed before boot health entered its image would count nothing, and
+  a failing update would reboot-loop forever instead of falling back.
+  `kuma-boot-health-sync` closes that gap on every boot: if the
+  bootloader's config predates greenboot, the counter logic is converged
+  into `/boot/grub2/custom.cfg` (the hook GRUB's static config already
+  sources), and removed again if the bootloader ever learns to count
+  natively. It runs before the first health verdict, so even the very
+  first update onto a boot-health image is already protected.
+
+A rollback isn't silent: the failed deployment stays in the rollback
+slot, `kuma` reports it, and `kuma doctor` grades boot health — whether
+this boot passed its checks, and whether the bootloader can actually
+count attempts. An old, previously-good deployment that starts failing
+(hardware, not the update) reboots three times and then waits for a
+human — rolling back can't fix what an update didn't break.
+
 ## Developing and testing
 
 - **CLI development** works anywhere Rust does, including a distrobox. When
@@ -171,5 +218,8 @@ valid against the current schema.
 - [x] Agent surface — `kuma schema` + `kuma check`, `--json` on every mutating verb, structured errors
 - [x] `desktop = "cosmic"` — second curated desktop; COSMIC curates itself, kuma adds enablement + identity
 - [x] Self-describing images — the baked declaration, seeded `kuma init`, config search path
-- [ ] Registry publishing + CI builds (`bootc switch`-able from anywhere)
+- [x] Boot health + auto-rollback — greenboot in every image; desktop boots must reach the greeter or fall back
+- [ ] CI build-and-boot smoke tests — every example built against fresh Fedora, booted headless, asserted healthy
 - [ ] `kuma.lock` — pin base digest and package versions; `kuma update` moves pins deliberately
+- [ ] `kuma doctor` drift detection for `/etc` — flag local edits shadowing the image's baked defaults
+- [ ] Registry publishing + CI builds (`bootc switch`-able from anywhere)
