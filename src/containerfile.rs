@@ -109,6 +109,9 @@ const NIRI_PACKAGES: &[&str] = &[
 /// remove — in kuma the store is `kuma add --flatpak`.
 const COSMIC_PACKAGES: &[&str] = &[
     "cosmic-session",
+    // the session requires files, term, and settings but not the text
+    // editor — which the default dock pins, so ship it or the pin is dead
+    "cosmic-edit",
     "flatpak",
     "fastfetch",
     // unlocked with the login password via PAM, same as the niri set
@@ -135,6 +138,33 @@ const COSMIC_PACKAGES: &[&str] = &[
     "default-fonts-core-emoji",
     "google-noto-sans-cjk-vf-fonts",
 ];
+
+/// COSMIC's packaged dock pins the Firefox flatpak and cosmic-store —
+/// neither of which a kuma image guarantees: the browser is the
+/// declaration's choice, and the store is deliberately absent. The
+/// baked default pins only what the image ships; anything declared is
+/// one right-click from a pin.
+const COSMIC_FAVORITES: &str = r#"[
+    "com.system76.CosmicFiles",
+    "com.system76.CosmicEdit",
+    "com.system76.CosmicTerm",
+    "com.system76.CosmicSettings",
+]
+"#;
+
+/// The packaged default, pointed at the Kuma wallpaper. filter_by_theme
+/// must go false: left on, COSMIC swaps the wallpaper back out for its
+/// own theme-matched set.
+const COSMIC_BACKGROUND: &str = r#"(
+    output: "all",
+    source: Path("/usr/share/backgrounds/kuma/kuma-wallpaper.png"),
+    filter_by_theme: false,
+    rotation_frequency: 3600,
+    filter_method: Lanczos,
+    scaling_mode: Zoom,
+    sampling_method: Alphanumeric,
+)
+"#;
 
 /// Fedora's mesa VA-API driver ships with H.264/H.265/VC-1 decode
 /// stripped (patents), so video silently falls back to CPU. RPM
@@ -180,6 +210,11 @@ const DESKTOP_KARGS: &str = "kargs = [\"quiet\"]\n";
 ///
 /// The retries cover the timer's Persistent=true catch-up, which fires on
 /// resume before Wi-Fi is back — network-online.target only orders boot.
+///
+/// The low CPU/IO weights matter most on first boot, when every declared
+/// app downloads at once while the user logs in for the first time: that
+/// storm once starved cosmic-panel into a session with no panel at all.
+/// Convergence is background work; the session it converges for is not.
 const FLATPAK_SYNC_SERVICE: &str = r#"[Unit]
 Description=Converge Flatpak applications to the declared list
 Wants=network-online.target
@@ -192,6 +227,8 @@ Type=oneshot
 ExecStart=/usr/libexec/kuma-flatpak-sync
 Restart=on-failure
 RestartSec=2min
+CPUWeight=25
+IOWeight=25
 
 [Install]
 WantedBy=multi-user.target
@@ -672,6 +709,8 @@ ConditionPathExists=!/home/linuxbrew/.linuxbrew/bin/brew
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/kuma-brew-setup
+CPUWeight=25
+IOWeight=25
 
 [Install]
 WantedBy=multi-user.target
@@ -720,6 +759,8 @@ Environment=HOME=/home/linuxbrew
 ExecStart=/usr/libexec/kuma-brew-sync
 Restart=on-failure
 RestartSec=2min
+CPUWeight=25
+IOWeight=25
 
 [Install]
 WantedBy=multi-user.target
@@ -849,10 +890,35 @@ pub fn generate(config: &Config) -> String {
         out.push_str(
             "RUN rm /etc/xdg/autostart/com.system76.CosmicInitialSetup.desktop\n",
         );
+        // cosmic-comp promotes windows to hardware overlay planes, and on
+        // AMD GFX10+ (seen on Rembrandt/680M) the promoted buffer can carry
+        // a DCC-compressed modifier the scanout path reads as raw pixels —
+        // intermittent bands of static across the panel. niri never shows
+        // it because it only direct-scans fullscreen surfaces. Disabling
+        // overlay scanout costs only overlay-plane power savings; composed
+        // output is unaffected. pam_env applies /etc/environment to the
+        // greetd-spawned session, which is where cosmic-comp lives.
+        // Upstream: pop-os/cosmic-comp#1039, #2152.
+        out.push_str(
+            "RUN printf 'COSMIC_DISABLE_OVERLAY_SCANOUT=1\\n' >> /etc/environment\n",
+        );
         out.push_str(KEYRING_PAM);
         out.push_str("COPY kargs-desktop.toml /usr/lib/bootc/kargs.d/10-kuma-desktop.toml\n");
         out.push_str("COPY fastfetch-config.jsonc /etc/xdg/fastfetch/config.jsonc\n");
         out.push_str("COPY fastfetch-logo.txt /usr/lib/kuma/fastfetch-logo.txt\n");
+        out.push_str("COPY kuma-wallpaper.png /usr/share/backgrounds/kuma/kuma-wallpaper.png\n");
+        // Overwrite COSMIC's packaged defaults in place, guarded so the
+        // build fails if an update moves them — an override at a path
+        // nothing reads would silently ship the stock look.
+        out.push_str(
+            "RUN test -f /usr/share/cosmic/com.system76.CosmicAppList/v1/favorites \\\n    && test -f /usr/share/cosmic/com.system76.CosmicBackground/v1/all\n",
+        );
+        out.push_str(
+            "COPY cosmic-favorites /usr/share/cosmic/com.system76.CosmicAppList/v1/favorites\n",
+        );
+        out.push_str(
+            "COPY cosmic-background /usr/share/cosmic/com.system76.CosmicBackground/v1/all\n",
+        );
         // cosmic-greeter.service, not greetd.service: it already owns the
         // display-manager alias via preset — enabling greetd would fight
         // it (and did, failing the first prototype build). Explicit enable
@@ -1022,17 +1088,21 @@ pub fn write_context(config: &Config, config_text: &str, dir: &Path) -> Result<(
     std::fs::write(dir.join("Containerfile"), generate(config))?;
     std::fs::write(dir.join("kuma-vm-timezone"), VM_TZ_SCRIPT)?;
     std::fs::write(dir.join("kuma-vm-timezone.service"), VM_TZ_SERVICE)?;
-    // Identity and kargs ship with every desktop; the rest of the niri
-    // block is glue COSMIC provides natively.
+    // Identity, wallpaper, and kargs ship with every desktop; the rest
+    // of the niri block is glue COSMIC provides natively.
     if config.system.desktop != Desktop::None {
         std::fs::write(dir.join("kargs-desktop.toml"), DESKTOP_KARGS)?;
         std::fs::write(dir.join("fastfetch-config.jsonc"), FASTFETCH_CONFIG)?;
         std::fs::write(dir.join("fastfetch-logo.txt"), FASTFETCH_LOGO)?;
+        std::fs::write(dir.join("kuma-wallpaper.png"), WALLPAPER)?;
+    }
+    if config.system.desktop == Desktop::Cosmic {
+        std::fs::write(dir.join("cosmic-favorites"), COSMIC_FAVORITES)?;
+        std::fs::write(dir.join("cosmic-background"), COSMIC_BACKGROUND)?;
     }
     if config.system.desktop == Desktop::Niri {
         std::fs::write(dir.join("greetd-config.toml"), greetd_config(config))?;
         std::fs::write(dir.join("niri-extras.kdl"), NIRI_EXTRAS)?;
-        std::fs::write(dir.join("kuma-wallpaper.png"), WALLPAPER)?;
         std::fs::write(dir.join("waybar-config.jsonc"), WAYBAR_CONFIG)?;
         std::fs::write(dir.join("waybar-style.css"), WAYBAR_STYLE)?;
         std::fs::write(dir.join("fuzzel.ini"), FUZZEL_CONFIG)?;
@@ -1533,11 +1603,26 @@ mod tests {
         assert!(out.contains("pipewire"));
         // the store would fight convergence — its installs get removed daily
         assert!(!out.contains("cosmic-store"));
+        // the default dock pins the editor; the session alone doesn't pull it
+        assert!(out.contains("cosmic-edit"));
+        // wallpaper is identity, and the packaged dock/background defaults
+        // are overwritten in place, guarded so a moved path fails the build
+        assert!(out.contains("COPY kuma-wallpaper.png /usr/share/backgrounds/kuma/kuma-wallpaper.png"));
+        assert!(out.contains("test -f /usr/share/cosmic/com.system76.CosmicAppList/v1/favorites"));
+        assert!(out.contains("COPY cosmic-favorites /usr/share/cosmic/com.system76.CosmicAppList/v1/favorites"));
+        assert!(out.contains("COPY cosmic-background /usr/share/cosmic/com.system76.CosmicBackground/v1/all"));
+        // the baked dock pins only what the image ships: no store, and no
+        // browser — that's the declaration's choice
+        assert!(!COSMIC_FAVORITES.contains("Store"));
+        assert!(!COSMIC_FAVORITES.contains("firefox"));
         // flathub remote ships in-image, same as the niri desktop
         assert!(out.contains("flathub.flatpakrepo"));
         assert!(out.contains("set-default graphical.target"));
         // codec restoration applies to every desktop, not just niri
         assert!(out.contains("mesa-va-drivers-freeworld"));
+        // AMD DCC-on-overlay-scanout static bands: the workaround is baked,
+        // not a hand-edit on the installed machine
+        assert!(out.contains("COSMIC_DISABLE_OVERLAY_SCANOUT=1"));
     }
 
     #[test]
@@ -1563,6 +1648,10 @@ mod tests {
         // identity and kargs travel with every desktop
         assert!(dir.path().join("fastfetch-logo.txt").exists());
         assert!(dir.path().join("kargs-desktop.toml").exists());
+        assert!(dir.path().join("kuma-wallpaper.png").exists());
+        // the dock and background overrides are cosmic-only context
+        assert!(dir.path().join("cosmic-favorites").exists());
+        assert!(dir.path().join("cosmic-background").exists());
         // flatpak convergence ships even with an empty list
         assert!(dir.path().join("flatpaks").exists());
         // the niri glue stays home: COSMIC provides all of it natively

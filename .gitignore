@@ -4,7 +4,8 @@
 /vm*
 /.claude
 
-# Build outputs and the real declaration stay local — kuma.toml.example
-# is the committed one.
+# Build outputs and the real declarations stay local — the *.example
+# files are the committed ones.
 /iso
 /examples/kuma.toml
+/examples/*.kuma.toml

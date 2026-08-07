@@ -31,12 +31,12 @@ password_hash = '...'   # from `kuma passwd`
 # autologin = true                   # straight to the desktop at boot
 
 [packages]
-rpm = ["fish", "distrobox", "tailscale", "htop"]
+rpm = ["fish", "distrobox", "tailscale"]
 # Dev tools ride Homebrew, not the image: they move too fast for a
 # rebuild-and-reboot cycle. Declaring any formula bootstraps brew itself
 # (system.brew = true does the same without a list, for ad-hoc use).
 # Converged like flatpaks; ad-hoc `brew install` stays yours.
-brew = ["ripgrep", "fd", "jq", "gh", "lazygit"]
+brew = ["ripgrep", "fd", "jq", "gh", "lazygit", "btop"]
 flatpak = [
     "org.chromium.Chromium",
     "org.gnome.Loupe",
