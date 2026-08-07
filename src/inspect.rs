@@ -32,61 +32,176 @@ struct DiffSection {
     skipped: Option<String>,
 }
 
+/// What this machine actually has, gathered in one pass. `diff` renders
+/// it as drift and `capture` filters it into declaration edits, and both
+/// read this same observation on purpose: a diff that threatens to remove
+/// something capture won't offer to keep is the worst bug this pair could
+/// have, and sharing the source makes it unrepresentable rather than
+/// merely unlikely.
+///
+/// `None` means "couldn't look" (tool absent, brew not bootstrapped),
+/// which is not the same as "nothing there" and never reads as drift.
+pub(crate) struct Machine {
+    pub rpm: Option<BTreeSet<String>>,
+    pub flatpak_system: Option<BTreeSet<String>>,
+    /// `flatpak --user` installs: the documented imperative escape hatch.
+    /// Convergence never touches these, and capture only takes one when
+    /// it is named.
+    pub flatpak_user: BTreeSet<String>,
+    pub brew_installed: Option<BTreeSet<String>>,
+    /// Explicit installs only. A dependency is baggage that arrived with
+    /// a choice, not a choice.
+    pub brew_leaves: BTreeSet<String>,
+    /// Formulae the sync has ever installed (its state file): the only
+    /// ones convergence considers its own to remove.
+    pub brew_state: BTreeSet<String>,
+}
+
+/// Ask the machine what it has. Read-only, and every query is allowed to
+/// fail: an answer nobody could observe must never turn into a claim.
+pub(crate) fn observe(config: &Config) -> Machine {
+    // One rpm -qa beats a spawn per declared package, and rpm being
+    // absent reads as "nothing to check" rather than "everything is
+    // missing". Nothing declares rpm, nothing to ask.
+    let ask = |args: &[&str]| host_output(args).ok().map(|out| owned_set(&out));
+
+    let rpm = (!config.packages.rpm.is_empty())
+        .then(|| ask(&["rpm", "-qa", "--qf", "%{NAME}\n"]))
+        .flatten();
+    let flatpak_system =
+        ask(&["flatpak", "list", "--system", "--app", "--columns=application"]);
+    let flatpak_user =
+        ask(&["flatpak", "list", "--user", "--app", "--columns=application"]).unwrap_or_default();
+
+    let ask_brew = !config.packages.brew.is_empty() || Path::new(BREW).exists();
+    let brew_installed =
+        ask_brew.then(|| ask(&[BREW, "list", "--formula", "-1"])).flatten();
+    let brew_leaves = ask(&[BREW, "leaves"]).unwrap_or_default();
+    let brew_state = owned_set(&std::fs::read_to_string(BREW_STATE).unwrap_or_default());
+
+    Machine { rpm, flatpak_system, flatpak_user, brew_installed, brew_leaves, brew_state }
+}
+
+/// Something this machine has that the declaration does not name.
+pub(crate) struct Candidate {
+    /// The [packages] list it would join. Only ever "flatpak" or "brew";
+    /// capture.rs carries the reasoning for what can never be here.
+    pub list: &'static str,
+    pub item: String,
+    /// Convergence removes this on its next run, so declaring it is the
+    /// only way to keep it. The rest are merely unreproducible.
+    pub doomed: bool,
+    /// Declaring it changes what it *is* rather than just writing it
+    /// down: a --user flatpak becomes a system one, installed for every
+    /// account and owned by convergence from then on. Never in the
+    /// default set.
+    pub promotes: bool,
+}
+
+/// The undeclared half of the comparison, which `diff` reports and
+/// `capture` offers to keep. Pure over the observation, so the rules for
+/// what counts as a choice are testable without a machine to run on.
+///
+/// rpm is deliberately absent, and not because it is hard: on a bootc
+/// machine you *cannot* imperatively install one, so [packages].rpm is
+/// already declarative by construction and there is nothing to capture.
+/// The mutable edge is exactly flatpak and brew, which is exactly this.
+pub(crate) fn candidates(config: &Config, machine: &Machine) -> Vec<Candidate> {
+    let flatpak: BTreeSet<&str> = config.packages.flatpak.iter().map(String::as_str).collect();
+    let brew: BTreeSet<&str> = config.packages.brew.iter().map(String::as_str).collect();
+    let mut out: Vec<Candidate> = Vec::new();
+
+    if let Some(installed) = &machine.flatpak_system {
+        for app in installed.iter().filter(|a| !flatpak.contains(a.as_str())) {
+            out.push(Candidate {
+                list: "flatpak",
+                item: app.clone(),
+                doomed: true,
+                promotes: false,
+            });
+        }
+    }
+
+    if let Some(installed) = &machine.brew_installed {
+        for f in installed.iter().filter(|f| !brew.contains(f.as_str())) {
+            // Convergence takes back only what it installed; everything
+            // else on the machine is the owner's, declared or not. A
+            // dependency is neither, so it is never offered.
+            let doomed = machine.brew_state.contains(f);
+            if !doomed && !machine.brew_leaves.contains(f) {
+                continue;
+            }
+            out.push(Candidate { list: "brew", item: f.clone(), doomed, promotes: false });
+        }
+    }
+
+    for app in &machine.flatpak_user {
+        if flatpak.contains(app.as_str())
+            || machine.flatpak_system.as_ref().is_some_and(|s| s.contains(app))
+        {
+            continue;
+        }
+        out.push(Candidate { list: "flatpak", item: app.clone(), doomed: false, promotes: true });
+    }
+
+    // Urgent first (declare it or lose it), opt-in last, alphabetical
+    // inside each band so two runs read the same.
+    out.sort_by(|a, b| {
+        (!a.doomed, a.promotes, a.list, &a.item).cmp(&(!b.doomed, b.promotes, b.list, &b.item))
+    });
+    out
+}
+
 /// Three-way, because that's how changes actually flow: kuma.toml is the
 /// truth, the image carries a baked copy of the declaration, and the
 /// machine converges to the IMAGE's copy — so config edits that were never
 /// built show up here as "image declaration behind kuma.toml", not as
 /// drift the next convergence run would fix.
 pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
+    let machine = observe(config);
+    let found = candidates(config, &machine);
     let mut sections: Vec<DiffSection> = Vec::new();
     let mut stale_image = false;
-    let mut adhoc: Vec<String> = Vec::new();
 
     // rpm lives in the image itself; missing means the declaration was
-    // never built (or the build was never switched to). One rpm -qa beats
-    // a spawn per declared package, and rpm being absent reads as
-    // "nothing to check" rather than "everything is missing".
+    // never built (or the build was never switched to).
     let mut entries = Vec::new();
-    if !config.packages.rpm.is_empty() {
-        if let Ok(out) = host_output(&["rpm", "-qa", "--qf", "%{NAME}\n"]) {
-            let installed = to_set(&out);
-            entries = config
-                .packages
-                .rpm
-                .iter()
-                .filter(|pkg| !installed.contains(pkg.as_str()))
-                .map(|pkg| DiffEntry {
-                    change: "add",
-                    item: pkg.to_string(),
-                    note: "declared, missing from the running image".into(),
-                })
-                .collect();
-        }
+    if let Some(installed) = &machine.rpm {
+        entries = config
+            .packages
+            .rpm
+            .iter()
+            .filter(|pkg| !installed.contains(pkg.as_str()))
+            .map(|pkg| DiffEntry {
+                change: "add",
+                item: pkg.to_string(),
+                note: "declared, missing from the running image".into(),
+            })
+            .collect();
     }
     sections.push(DiffSection { name: "packages.rpm", entries, skipped: None });
 
     let declared: BTreeSet<&str> = config.packages.flatpak.iter().map(String::as_str).collect();
     let mut entries = Vec::new();
     let mut skipped = None;
-    match host_output(&["flatpak", "list", "--system", "--app", "--columns=application"]) {
-        Ok(out) => {
-            let installed = to_set(&out);
-            for app in declared.difference(&installed) {
+    match &machine.flatpak_system {
+        Some(installed) => {
+            for app in declared.iter().filter(|a| !installed.contains(**a)) {
                 entries.push(DiffEntry {
                     change: "add",
                     item: app.to_string(),
                     note: "declared, not installed (convergence installs it)".into(),
                 });
             }
-            for app in installed.difference(&declared) {
+            for c in found.iter().filter(|c| c.list == "flatpak" && c.doomed) {
                 entries.push(DiffEntry {
                     change: "remove",
-                    item: app.to_string(),
+                    item: c.item.clone(),
                     note: "installed, not declared (convergence removes it)".into(),
                 });
             }
         }
-        Err(_) => skipped = Some("flatpak unavailable, skipped".to_string()),
+        None => skipped = Some("flatpak unavailable, skipped".to_string()),
     }
     stale_image |= image_list_stale("/usr/lib/kuma/flatpaks", &declared);
     sections.push(DiffSection { name: "packages.flatpak", entries, skipped });
@@ -95,43 +210,34 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
     let mut entries = Vec::new();
     let mut skipped = None;
     if !declared.is_empty() || Path::new(BREW).exists() {
-        match host_output(&[BREW, "list", "--formula", "-1"]) {
-            Ok(out) => {
-                let installed = to_set(&out);
-                // Only ever-declared formulae are removal candidates (the
-                // sync's state file); ad-hoc installs are the owner's.
-                let state_text = std::fs::read_to_string(BREW_STATE).unwrap_or_default();
-                let state = to_set(&state_text);
-                for f in declared.difference(&installed) {
+        match &machine.brew_installed {
+            Some(installed) => {
+                for f in declared.iter().filter(|f| !installed.contains(**f)) {
                     entries.push(DiffEntry {
                         change: "add",
                         item: f.to_string(),
                         note: "declared, not installed (convergence installs it)".into(),
                     });
                 }
-                for f in installed.difference(&declared) {
-                    if state.contains(f) {
-                        entries.push(DiffEntry {
-                            change: "remove",
-                            item: f.to_string(),
-                            note: "no longer declared (convergence removes it)".into(),
-                        });
-                    }
+                for c in found.iter().filter(|c| c.list == "brew" && c.doomed) {
+                    entries.push(DiffEntry {
+                        change: "remove",
+                        item: c.item.clone(),
+                        note: "no longer declared (convergence removes it)".into(),
+                    });
                 }
-                // Leaves, not the full list — dependencies aren't the
-                // owner's installs, just baggage that came with them.
-                let leaves_text = host_output(&[BREW, "leaves"]).unwrap_or_default();
-                adhoc = to_set(&leaves_text)
-                    .difference(&declared)
-                    .filter(|f| !state.contains(**f))
-                    .map(|f| f.to_string())
-                    .collect();
             }
-            Err(_) => skipped = Some("brew not bootstrapped yet; first boot installs it".to_string()),
+            None => skipped = Some("brew not bootstrapped yet; first boot installs it".to_string()),
         }
     }
     stale_image |= image_list_stale("/usr/lib/kuma/brews", &declared);
     sections.push(DiffSection { name: "packages.brew", entries, skipped });
+
+    // Ad-hoc brews are the non-doomed half of the same set: convergence
+    // leaves them alone, so the only thing undeclared costs them is that
+    // a rebuild elsewhere wouldn't reproduce them.
+    let adhoc: Vec<String> =
+        found.iter().filter(|c| c.list == "brew" && !c.doomed).map(|c| c.item.clone()).collect();
 
     // Service state is machine state (an /etc overlay change survives image
     // updates), so the cure is systemctl, not a rebuild — name it when it
@@ -167,7 +273,17 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
     let converge_hint = sections
         .iter()
         .any(|s| s.name != "packages.rpm" && s.name != "services" && !s.entries.is_empty());
+    // Drift is a fork, not an error: everything undeclared can be kept by
+    // writing it down as easily as it can be erased by converging. When
+    // convergence is about to destroy something, the keeping edge goes
+    // first, because that is the one with a deadline.
+    let mut capture = (!found.iter().all(|c| c.promotes)).then(|| {
+        Action::new("capture", "kuma capture", "keep them: declare what this machine already runs")
+    });
     let mut actions: Vec<Action> = Vec::new();
+    if found.iter().any(|c| c.doomed) {
+        actions.extend(capture.take());
+    }
     if stale_image {
         actions.push(Action::new(
             "build",
@@ -181,6 +297,7 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
             "converge now; otherwise the boot/daily run picks this up",
         ));
     }
+    actions.extend(capture);
 
     if json {
         println!(
@@ -220,9 +337,10 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
     }
     if stale_image {
         println!("\nThe image's baked declaration is behind {}.", config_path.display());
-        print_actions(&actions);
-    } else if converge_hint {
+    } else if !actions.is_empty() {
         println!();
+    }
+    if !actions.is_empty() {
         print_actions(&actions);
     }
     if !drift && !stale_image && observed_all {
@@ -259,6 +377,12 @@ fn diff_json(
 
 pub(crate) fn to_set(text: &str) -> BTreeSet<&str> {
     text.lines().map(str::trim).filter(|l| !l.is_empty()).collect()
+}
+
+/// The same, owned: an observation outlives the command output it was
+/// read from, because two verbs consume it.
+fn owned_set(text: &str) -> BTreeSet<String> {
+    to_set(text).into_iter().map(str::to_string).collect()
 }
 
 /// The baked copy at /usr/lib/kuma/<list> is what convergence follows;
@@ -734,6 +858,132 @@ fn check_gpu(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn set(items: &[&str]) -> BTreeSet<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn config(toml: &str) -> Config {
+        toml::from_str(toml).expect("test config parses")
+    }
+
+    /// A machine with nothing on it, to be filled in per test. Every
+    /// observation present means "looked, found this"; the Nones in the
+    /// individual tests mean "couldn't look at all".
+    fn machine() -> Machine {
+        Machine {
+            rpm: None,
+            flatpak_system: Some(BTreeSet::new()),
+            flatpak_user: BTreeSet::new(),
+            brew_installed: Some(BTreeSet::new()),
+            brew_leaves: BTreeSet::new(),
+            brew_state: BTreeSet::new(),
+        }
+    }
+
+    fn items(found: &[Candidate]) -> Vec<&str> {
+        found.iter().map(|c| c.item.as_str()).collect()
+    }
+
+    /// The whole point of the verb: what convergence is about to destroy
+    /// is exactly what capture offers to keep. diff builds its "removes
+    /// it" entries from this same set, so the two cannot disagree.
+    #[test]
+    fn capture_offers_what_convergence_would_destroy() {
+        let config = config("schema_version = 1\n[packages]\nflatpak = [\"org.gnome.Loupe\"]\n");
+        let mut m = machine();
+        m.flatpak_system = Some(set(&["org.gnome.Loupe", "org.gnome.Boxes"]));
+        let found = candidates(&config, &m);
+        assert_eq!(items(&found), ["org.gnome.Boxes"]);
+        assert!(found[0].doomed);
+        assert_eq!(found[0].list, "flatpak");
+        // and the declared one is never offered back to itself
+        assert!(!items(&found).contains(&"org.gnome.Loupe"));
+    }
+
+    /// You cannot imperatively install an rpm on a bootc machine, so
+    /// [packages].rpm is already declarative and there is nothing to
+    /// capture. An observation full of undeclared rpms changes nothing.
+    #[test]
+    fn rpm_is_never_a_capture_candidate() {
+        let config = config("schema_version = 1\n[packages]\nrpm = [\"fish\"]\n");
+        let mut m = machine();
+        m.rpm = Some(set(&["fish", "vim", "gcc", "systemd"]));
+        assert!(candidates(&config, &m).is_empty());
+    }
+
+    /// Leaves, not the full list: a dependency is baggage that arrived
+    /// with a choice, and declaring it would pin someone else's
+    /// implementation detail into your system definition.
+    #[test]
+    fn brew_dependencies_are_not_choices() {
+        let config = config("schema_version = 1\n");
+        let mut m = machine();
+        m.brew_installed = Some(set(&["ripgrep", "pcre2"]));
+        m.brew_leaves = set(&["ripgrep"]);
+        let found = candidates(&config, &m);
+        assert_eq!(items(&found), ["ripgrep"]);
+        // ad-hoc, so convergence isn't coming for it: undeclared costs it
+        // reproducibility, not survival
+        assert!(!found[0].doomed);
+        assert_eq!(found[0].list, "brew");
+    }
+
+    /// A formula the sync installed and the declaration no longer names
+    /// is on convergence's removal list, so it is urgent even though the
+    /// ad-hoc ones next to it are not.
+    #[test]
+    fn brew_convergence_owns_what_it_installed() {
+        let config = config("schema_version = 1\n");
+        let mut m = machine();
+        m.brew_installed = Some(set(&["btop", "jq"]));
+        m.brew_leaves = set(&["btop", "jq"]);
+        m.brew_state = set(&["btop"]);
+        let found = candidates(&config, &m);
+        assert_eq!(items(&found), ["btop", "jq"], "urgent first");
+        assert!(found[0].doomed, "btop was convergence's and is now undeclared");
+        assert!(!found[1].doomed, "jq was always the owner's");
+    }
+
+    /// The escape hatch stays an escape hatch. Capturing a --user flatpak
+    /// installs it system-wide and hands it to convergence, which is a
+    /// change to what it is, not just to where it is written down.
+    #[test]
+    fn user_flatpaks_are_opt_in_only() {
+        let config = config("schema_version = 1\n");
+        let mut m = machine();
+        m.flatpak_user = set(&["org.gnome.Boxes"]);
+        let found = candidates(&config, &m);
+        assert_eq!(items(&found), ["org.gnome.Boxes"]);
+        assert!(found[0].promotes);
+        assert!(!found[0].doomed, "convergence never touches --user installs");
+    }
+
+    /// The same app installed both ways, or already declared, must not
+    /// show up twice or at all.
+    #[test]
+    fn user_flatpaks_already_covered_are_not_offered_again() {
+        let config = config("schema_version = 1\n[packages]\nflatpak = [\"org.gnome.Papers\"]\n");
+        let mut m = machine();
+        m.flatpak_system = Some(set(&["org.gnome.Boxes"]));
+        m.flatpak_user = set(&["org.gnome.Boxes", "org.gnome.Papers"]);
+        let found = candidates(&config, &m);
+        assert_eq!(items(&found), ["org.gnome.Boxes"], "system install already covers it");
+        assert!(!found[0].promotes);
+    }
+
+    /// An observation nobody could make is not evidence of an empty
+    /// machine: flatpak missing must never read as "everything you have
+    /// is undeclared" (or, worse, propose declaring nothing at all).
+    #[test]
+    fn unobservable_lists_yield_no_candidates() {
+        let config = config("schema_version = 1\n");
+        let mut m = machine();
+        m.flatpak_system = None;
+        m.brew_installed = None;
+        m.brew_leaves = set(&["ripgrep"]);
+        assert!(candidates(&config, &m).is_empty());
+    }
 
     #[test]
     fn doctor_json_carries_findings_and_fixes() {

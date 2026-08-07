@@ -49,6 +49,7 @@ Day 2, the file stays the interface; these edit or read it for you:
 $ kuma                                     # bare: current state + next actions (--json for agents)
 $ kuma add --flatpak org.mozilla.firefox   # declare in kuma.toml (--rpm/--brew too)
 $ kuma remove org.mozilla.firefox          # drop from whichever list declares it
+$ kuma capture                             # declare what this machine already runs (--yes to write)
 $ kuma check                               # validate the declaration without building anything
 $ kuma diff                                # drift: kuma.toml vs image vs machine
 $ kuma doctor                              # machine health: deployment, boot health, convergence, GPU, storage, disk
@@ -58,8 +59,52 @@ $ kuma rollback --yes                      # the update's undo: boot order back 
 $ kuma clean                               # reclaim dangling images and abandoned build containers
 ```
 
-`add` and `remove` preserve your comments and formatting; `check`, `diff`,
-and `doctor` are read-only, and everything speaks `--json` (see below).
+`add`, `remove`, and `capture` preserve your comments and formatting;
+`check`, `diff`, and `doctor` are read-only, and everything speaks `--json`
+(see below).
+
+## Drift is a fork, not an error
+
+Declarative systems normally treat drift as failure: the machine deviates,
+the tool corrects it, the deviation is erased. That is why imperative
+escape hatches always feel like cheating, and why the thing you installed
+in a hurry never makes it into the declaration.
+
+kuma gives drift a second exit. Anything this machine has that kuma.toml
+doesn't name is a proposal against your declaration, and `kuma diff` says
+so with both edges:
+
+```console
+$ kuma diff
+packages.flatpak
+  - org.gnome.Boxes  installed, not declared (convergence removes it)
+
+  → kuma capture   keep them: declare what this machine already runs
+  → kuma sync      converge now; otherwise the boot/daily run picks this up
+```
+
+`kuma capture` prints the proposal and writes nothing; `--yes` writes it,
+and naming items captures only those. You review a diff of your
+*declaration*, not of your system. Experiment imperatively, promote
+deliberately.
+
+**Capture never touches the machine.** It reads the machine and writes the
+file, so convergence authority stays exactly where it was and a dry run is
+as safe as `kuma diff`.
+
+What it will and won't take:
+
+- **Flatpaks and brew formulae**, which are the whole mutable edge. Brew
+  offers *leaves* only: a dependency is baggage that arrived with a
+  choice, not a choice.
+- **Not rpm**, because there is nothing to capture. A bootc machine can't
+  install one imperatively, so `[packages].rpm` is already declarative.
+- **`flatpak --user` installs only when named.** Declaring one installs it
+  system-wide and hands it to convergence, which changes what it is rather
+  than just where it's written down.
+- **Never `[user]` or `[system]`.** A password hash and machine state must
+  not walk into a file that gets committed and baked into an image. That
+  boundary is not a TODO.
 
 ## For agents
 
@@ -219,6 +264,7 @@ human; rolling back can't fix what an update didn't break.
 - [x] `desktop = "cosmic"`: second curated desktop; COSMIC curates itself, kuma adds enablement + identity
 - [x] Self-describing images: the baked declaration, seeded `kuma init`, config search path
 - [x] Boot health + auto-rollback: greenboot in every image; desktop boots must reach the greeter or fall back
+- [x] `kuma capture`: drift as a proposal against the declaration, not an error to erase
 - [ ] CI build-and-boot smoke tests: every example built against fresh Fedora, booted headless, asserted healthy
 - [ ] `kuma.lock`: pin base digest and package versions; `kuma update` moves pins deliberately
 - [ ] `kuma doctor` drift detection for `/etc`: flag local edits shadowing the image's baked defaults

@@ -1,3 +1,4 @@
+mod capture;
 mod config;
 mod containerfile;
 mod edit;
@@ -144,6 +145,19 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Declare what this machine already runs but kuma.toml doesn't name
+    /// (prints the proposal unless --yes; never touches the machine)
+    Capture {
+        /// Capture only these (default: everything convergence would
+        /// otherwise remove, plus undeclared ad-hoc brews)
+        names: Vec<String>,
+        /// Actually write them into kuma.toml
+        #[arg(long)]
+        yes: bool,
+        /// Report the proposal or the result as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Drop declared packages from kuma.toml (searches every [packages] list)
     Remove {
         #[arg(required = true)]
@@ -201,6 +215,7 @@ fn main() -> Result<()> {
             | Cmd::Rollback { json, .. }
             | Cmd::Sync { json }
             | Cmd::Add { json, .. }
+            | Cmd::Capture { json, .. }
             | Cmd::Remove { json, .. } => *json,
             _ => false,
         };
@@ -212,6 +227,7 @@ fn main() -> Result<()> {
             | Cmd::Rollback { .. }
             | Cmd::Sync { .. }
             | Cmd::Add { .. }
+            | Cmd::Capture { .. }
             | Cmd::Remove { .. }
     );
     let json_mode = mutating && mutating_json;
@@ -264,6 +280,12 @@ fn run(
                 _ => bail!("pick exactly one of --rpm, --flatpak, --brew"),
             };
             edit::add(config_path, list, &names, json)
+        }
+        Cmd::Capture { names, yes, json: _ } => {
+            // No baked fallback: capture writes, and a write path needs a
+            // real file of yours to write into.
+            let config = Config::load(config_path)?;
+            capture::capture(config_path, &config, &names, yes, json)
         }
         Cmd::Remove { names, json: _ } => edit::remove(config_path, &names, json),
         Cmd::Diff { json } => {

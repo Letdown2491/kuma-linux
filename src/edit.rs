@@ -54,6 +54,22 @@ pub fn add(path: &Path, list: &str, names: &[String], json: bool) -> Result<()> 
     Ok(())
 }
 
+/// Declare items across several lists in one edit, for callers that
+/// already know which list each belongs in (`kuma capture`). One document
+/// write, so `store`'s validation is all-or-nothing across every list at
+/// once; already-declared items are skipped rather than duplicated, and
+/// the count of what actually landed comes back.
+pub(crate) fn declare(path: &Path, items: &[(&str, &str)]) -> Result<()> {
+    let mut doc = load(path)?;
+    for (list, name) in items {
+        let arr = list_array_mut(&mut doc, list)?;
+        if !contains(arr, name) {
+            push_matching_style(arr, name);
+        }
+    }
+    store(path, &doc)
+}
+
 /// All-or-nothing: every name must be found somewhere in [packages] before
 /// anything is written, so a typo in one name can't half-apply the rest.
 pub fn remove(path: &Path, names: &[String], json: bool) -> Result<()> {
@@ -161,7 +177,7 @@ fn push_matching_style(arr: &mut Array, name: &str) {
 /// at /usr/lib/kuma), so the apply path is always a rebuild; the flatpak
 /// and brew installs then converge on the machine after the switch. Where
 /// the build goes next depends on the machine — same edges as build()'s.
-fn apply_edges(rpm: bool) -> (Vec<Action>, Option<&'static str>) {
+pub(crate) fn apply_edges(rpm: bool) -> (Vec<Action>, Option<&'static str>) {
     let mut actions =
         vec![Action::new("build", "kuma build", "bake the edit into a new image")];
     if Path::new("/run/ostree-booted").exists() {
@@ -235,6 +251,44 @@ mod tests {
         assert!(super::add(&path, "rpm", &["fish; rm -rf /".into()], false).is_err());
         // and the file is untouched
         assert_eq!(std::fs::read_to_string(&path).unwrap(), CONFIG);
+    }
+
+    /// Capture spans lists in one go (a flatpak and a brew in the same
+    /// proposal), and that has to be one document write: two would let
+    /// the second fail validation after the first already landed.
+    #[test]
+    fn declare_writes_several_lists_in_one_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(dir.path(), CONFIG);
+        super::declare(&path, &[("flatpak", "org.gnome.Boxes"), ("brew", "ripgrep")]).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(out.contains("\n    \"org.gnome.Boxes\""), "multi-line style kept");
+        assert!(out.contains("brew = [\"ripgrep\"]"), "missing list created");
+        assert!(out.contains("# my system"));
+    }
+
+    /// Capture reads names off the machine, so the file is the last place
+    /// a hostile one could land — it writes through the same validating
+    /// store() that `add` does, and an all-or-nothing failure leaves the
+    /// declaration byte-identical.
+    #[test]
+    fn declare_rejects_what_the_build_would_reject() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(dir.path(), CONFIG);
+        let bad = [("flatpak", "org.gnome.Boxes"), ("brew", "--nogpgcheck")];
+        assert!(super::declare(&path, &bad).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), CONFIG);
+    }
+
+    /// Capture proposes from what the machine has, which can overlap what
+    /// the file already says; the overlap is a no-op, not a duplicate.
+    #[test]
+    fn declare_skips_what_is_already_declared() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(dir.path(), CONFIG);
+        super::declare(&path, &[("rpm", "fish")]).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(out.matches("\"fish\"").count(), 1);
     }
 
     #[test]
