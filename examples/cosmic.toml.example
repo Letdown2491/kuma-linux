@@ -26,10 +26,20 @@ rpm = ["fish", "distrobox"]
 # through a store would be removed again by the next convergence run.
 # This list is the store, and `kuma add --flatpak <id>` is the install
 # button.
+#
+# The session ships files, terminal, editor, and settings, and nothing
+# else: COSMIC has no calculator at all, and its cosmic-player is not
+# pulled in by cosmic-session. Both gaps are filled here rather than in
+# the desktop set, because a line removed from this list uninstalls
+# itself on the next run and a package baked into the image does not.
+# Celluloid also carries its own ffmpeg, which matters on a base
+# composed from Fedora's repos and their codec-free ffmpeg.
 flatpak = [
     "org.mozilla.firefox",
     "org.gnome.Loupe",
     "org.gnome.Papers",
+    "org.gnome.Calculator",
+    "io.github.celluloid_player.Celluloid",
 ]
 
 # brew = ["ripgrep", "fd", "jq"]
