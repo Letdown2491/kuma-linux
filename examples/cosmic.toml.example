@@ -33,5 +33,7 @@ flatpak = [
 
 # brew = ["ripgrep", "fd", "jq"]
 
+# Your additions only. COSMIC already enables what it needs (greeter,
+# firewalld, bluetooth, cups, avahi, chronyd), so those don't belong here.
 [services]
 enable = []
