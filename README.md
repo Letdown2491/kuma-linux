@@ -277,15 +277,20 @@ the test passed.
 
 ```console
 $ cargo test                    # the tier that needs no machine
+$ cargo fmt                     # rustfmt.toml settles layout; CI checks it
 $ scripts/smoke.sh              # check + image, every example
 $ scripts/smoke.sh --boot       # all three stages (needs KVM and sudo)
 $ scripts/smoke.sh --boot cosmic
 ```
 
-CI runs `cargo test`, clippy, and the image stage on the minimal example:
-a desktop image doesn't fit a hosted runner's disk, and the boot stage needs
-KVM. Run `--boot` locally before pushing anything that touches image
-contents.
+CI runs formatting, tests, clippy at `-D warnings`, shellcheck, and the image
+stage on the minimal example: a desktop image doesn't fit a hosted runner's
+disk, and the boot stage needs KVM. Run `--boot` locally before pushing
+anything that touches image contents.
+
+A separate job runs `cargo audit` against the committed `Cargo.lock`, on every
+push and again weekly, because a dependency becomes vulnerable when the
+advisory lands rather than when someone next touches the tree.
 
 **Booting a VM.** `kuma vm` builds a qcow2 via bootc-image-builder and boots
 it in QEMU (it needs sudo; bootc-image-builder runs as root). Log in as your
