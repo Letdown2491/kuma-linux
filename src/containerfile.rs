@@ -1,5 +1,6 @@
 use crate::config::{Config, Desktop};
 use anyhow::Result;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 /// The curated niri desktop: compositor, greeter, launcher, bar,
@@ -958,6 +959,47 @@ const BREW_PROFILE_FISH: &str = r#"if test -x /home/linuxbrew/.linuxbrew/bin/bre
     /home/linuxbrew/.linuxbrew/bin/brew shellenv | source
 end
 "#;
+
+/// Every /etc path this image owns the *contents* of.
+///
+/// Derived from the Containerfile the config compiles to rather than
+/// listed by hand, so a new write into /etc is covered the day it lands
+/// and can't be forgotten by whoever adds it.
+///
+/// A build writes into /etc exactly two ways, and both are unambiguous:
+/// a COPY whose destination is under /etc, and a shell redirect (`>`,
+/// `>>`) into one. Reading an /etc file is not owning it, and the
+/// difference matters: the keyring assert greps /etc/pam.d/greetd and
+/// `niri validate` reads /etc/niri/config.kdl, but only one of those two
+/// files is kuma's to have an opinion about. Redirects separate them for
+/// free, since a read has none.
+pub fn etc_paths(config: &Config) -> Vec<String> {
+    etc_writes(&generate(config))
+}
+
+fn etc_writes(containerfile: &str) -> Vec<String> {
+    let mut paths: BTreeSet<&str> = BTreeSet::new();
+    for line in containerfile.lines() {
+        if let Some(dest) =
+            line.strip_prefix("COPY ").and_then(|rest| rest.split_whitespace().last())
+        {
+            if dest.starts_with("/etc/") {
+                paths.insert(dest);
+            }
+        }
+        let mut rest = line;
+        while let Some(at) = rest.find('>') {
+            rest = rest[at + 1..].trim_start_matches('>').trim_start();
+            let end = rest
+                .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+                .unwrap_or(rest.len());
+            if rest[..end].starts_with("/etc/") {
+                paths.insert(&rest[..end]);
+            }
+        }
+    }
+    paths.into_iter().map(str::to_string).collect()
+}
 
 /// Compile a kuma config into a Containerfile for a bootc image build.
 pub fn generate(config: &Config) -> String {
@@ -1944,6 +1986,55 @@ mod tests {
         // greetd's file exists in the COSMIC image too (cosmic-greeter
         // pulls greetd in), so a stale assert there would look healthy
         assert!(!cosmic.contains("pam_gnome_keyring /etc/pam.d/greetd\n"));
+    }
+
+    /// Ownership of an /etc file is "this build writes it", and the two
+    /// ways to write one are a COPY destination and a shell redirect.
+    /// Reading is not owning, which is the distinction the whole /etc
+    /// drift check rests on: kuma greps Fedora's /etc/pam.d/greetd and
+    /// validates its own /etc/niri/config.kdl, and only the second is
+    /// kuma's to have an opinion about.
+    #[test]
+    fn etc_ownership_is_writes_not_reads() {
+        let paths = etc_writes(
+            "COPY greetd-config /etc/greetd/config.toml\n\
+             COPY --chmod=600 kuma-user /usr/lib/kuma/user\n\
+             RUN sed -e 's/x/y/' /usr/share/doc/niri/default.kdl > /etc/niri/config.kdl \\\n\
+             RUN cat /usr/lib/kuma/extras.kdl >> /etc/niri/config.kdl\n\
+             RUN printf 'A=1\\n' >> /etc/environment\n\
+             RUN test -f /usr/lib64/security/pam_gnome_keyring.so \\\n\
+             RUN grep -q pam_gnome_keyring /etc/pam.d/greetd\n\
+             RUN niri validate --config /etc/niri/config.kdl\n\
+             RUN something 2>/dev/null\n",
+        );
+        assert_eq!(
+            paths,
+            ["/etc/environment", "/etc/greetd/config.toml", "/etc/niri/config.kdl"]
+        );
+        // read-only mentions never become ownership, and a non-/etc
+        // destination or redirect is not this check's business
+        assert!(!paths.iter().any(|p| p.contains("pam.d")));
+        assert!(!paths.iter().any(|p| p.contains("dev/null")));
+    }
+
+    /// Over the real generator, per desktop, because the value of this
+    /// list is that nobody has to remember to update it.
+    #[test]
+    fn etc_paths_track_what_each_desktop_actually_writes() {
+        let niri = etc_paths(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
+        assert!(niri.iter().any(|p| p == "/etc/niri/config.kdl"));
+        assert!(niri.iter().any(|p| p == "/etc/greetd/config.toml"));
+
+        // /etc/environment is where the COSMIC scanout vars live, and the
+        // file whose hand-edited copy motivated the drift check.
+        let cosmic = etc_paths(&config("schema_version = 1\n[system]\ndesktop = \"cosmic\"\n"));
+        assert!(cosmic.iter().any(|p| p == "/etc/environment"));
+        assert!(!cosmic.iter().any(|p| p == "/etc/niri/config.kdl"));
+
+        // A headless image owns almost nothing in /etc, and must not
+        // claim a desktop's files.
+        let minimal = etc_paths(&config("schema_version = 1\n"));
+        assert!(!minimal.iter().any(|p| p.contains("niri") || p.contains("greetd")));
     }
 
     /// The cheap tier of the smoke tests, and the only one that runs

@@ -464,6 +464,7 @@ pub fn doctor(json: bool) -> Result<()> {
     if Path::new("/usr/lib/kuma").is_dir() {
         check_convergence(&mut report);
         check_boot_health(&mut report);
+        check_etc_drift(&mut report);
     } else {
         report(
             Grade::Warn,
@@ -702,6 +703,136 @@ fn check_convergence(report: &mut impl FnMut(Grade, &str, String, Option<Action>
                 );
             }
         }
+    }
+}
+
+/// What a machine has done to a file its own image ships.
+#[derive(PartialEq, Debug)]
+enum EtcState {
+    /// Not in /usr/etc: this image doesn't ship it, so there is nothing
+    /// to shadow.
+    NotShipped,
+    Matches,
+    /// Edited locally. ostree carries the difference between /etc and
+    /// /usr/etc forward onto every future deployment, so this copy wins
+    /// over the image's, permanently and silently.
+    Shadowed,
+    /// Deleted locally, which carries forward the same way: the image's
+    /// file stays gone across updates.
+    Removed,
+}
+
+fn classify_etc(image: Option<&[u8]>, live: Option<&[u8]>) -> EtcState {
+    match (image, live) {
+        (None, _) => EtcState::NotShipped,
+        (Some(_), None) => EtcState::Removed,
+        (Some(from_image), Some(on_disk)) if from_image == on_disk => EtcState::Matches,
+        _ => EtcState::Shadowed,
+    }
+}
+
+struct EtcScan {
+    /// Paths the image actually ships, which is what a percentage or a
+    /// count should be taken over.
+    owned: usize,
+    shadowed: Vec<String>,
+    removed: Vec<String>,
+}
+
+/// Compare each owned path under two roots. `paths` are absolute
+/// (`/etc/greetd/config.toml`), so both roots get the same relative tail.
+fn scan_etc(paths: &[String], image_root: &Path, live_root: &Path) -> EtcScan {
+    let mut scan = EtcScan { owned: 0, shadowed: Vec::new(), removed: Vec::new() };
+    for path in paths {
+        let tail = path.trim_start_matches('/');
+        let from_image = std::fs::read(image_root.join(tail)).ok();
+        if from_image.is_none() {
+            continue;
+        }
+        scan.owned += 1;
+        let on_disk = std::fs::read(live_root.join(tail)).ok();
+        match classify_etc(from_image.as_deref(), on_disk.as_deref()) {
+            EtcState::Shadowed => scan.shadowed.push(path.clone()),
+            EtcState::Removed => scan.removed.push(path.clone()),
+            EtcState::Matches | EtcState::NotShipped => {}
+        }
+    }
+    scan
+}
+
+/// /etc drift: is anything the image ships being overridden locally?
+///
+/// This is the general form of a trap that cost real time here. A var was
+/// added to /etc/environment by hand to fix a display bug, later baked
+/// into the image properly, and the hand-edited copy went on winning: the
+/// declared version could never be tested, and nothing anywhere said so.
+/// ostree's /etc merge is the mechanism, and it is working as designed;
+/// what's missing is anyone telling you it happened.
+///
+/// Two design choices worth keeping. It compares /etc against /usr/etc
+/// directly instead of shelling out to `ostree admin config-diff`, which
+/// needs root: a health check that prompts for a password is a health
+/// check people stop running, and /usr/etc is world-readable. And it only
+/// looks at paths kuma's own image writes, computed from the machine's
+/// baked declaration, because config-diff on a real system reports dozens
+/// of legitimately-local files (machine-id, fstab, ssh host keys) and a
+/// check that cries wolf teaches you to ignore it.
+fn check_etc_drift(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
+    // The machine's own declaration says what its image owns.
+    let Ok(config) = Config::load(Path::new(crate::state::BAKED_CONFIG)) else {
+        return;
+    };
+    // "/usr" and "/" in production; parameterized so the states this
+    // check exists to catch can be exercised against a temp tree instead
+    // of only ever running the everything-is-fine branch.
+    let scan = scan_etc(
+        &crate::containerfile::etc_paths(&config),
+        Path::new("/usr"),
+        Path::new("/"),
+    );
+    let EtcScan { owned, shadowed, removed } = scan;
+    if owned == 0 {
+        return;
+    }
+    // Restoring the image's copy is `cp`, not `rm`: a deletion is itself
+    // a local modification and carries forward as one, so removing the
+    // file would keep it removed rather than let the image's version back.
+    let restore = |path: &str| {
+        Action::new(
+            "restore",
+            format!("sudo cp /usr{path} {path}"),
+            "put the image's copy back so future updates flow through",
+        )
+    };
+    if !shadowed.is_empty() {
+        report(
+            Grade::Warn,
+            "etc",
+            format!(
+                "local edits shadow the image: {}. These win over every future image, so the declared version never applies",
+                shadowed.join(", ")
+            ),
+            Some(restore(&shadowed[0])),
+        );
+    }
+    if !removed.is_empty() {
+        report(
+            Grade::Warn,
+            "etc",
+            format!(
+                "deleted locally, and staying deleted across updates: {}",
+                removed.join(", ")
+            ),
+            Some(restore(&removed[0])),
+        );
+    }
+    if shadowed.is_empty() && removed.is_empty() {
+        report(
+            Grade::Ok,
+            "etc",
+            format!("{owned} files this image owns in /etc, none shadowed locally"),
+            None,
+        );
     }
 }
 
@@ -983,6 +1114,77 @@ mod tests {
         m.brew_installed = None;
         m.brew_leaves = set(&["ripgrep"]);
         assert!(candidates(&config, &m).is_empty());
+    }
+
+    /// The four states an image-owned /etc file can be in. "Not shipped"
+    /// has to be distinct from "matches": a path the declaration implies
+    /// but this image never wrote cannot be shadowed, and reporting it
+    /// would be the false alarm that gets the whole check ignored.
+    #[test]
+    fn etc_states_separate_shadowing_from_absence() {
+        let image = b"KUMA=1\n".as_slice();
+        assert_eq!(classify_etc(Some(image), Some(image)), EtcState::Matches);
+        assert_eq!(classify_etc(Some(image), Some(b"KUMA=0\n")), EtcState::Shadowed);
+        assert_eq!(classify_etc(Some(image), None), EtcState::Removed);
+        // no image copy: nothing to shadow, whatever is on disk
+        assert_eq!(classify_etc(None, Some(b"local only\n")), EtcState::NotShipped);
+        assert_eq!(classify_etc(None, None), EtcState::NotShipped);
+        // byte comparison, so whitespace counts: an /etc file that differs
+        // by a trailing newline still wins over the image's copy
+        assert_eq!(classify_etc(Some(b"KUMA=1\n"), Some(b"KUMA=1")), EtcState::Shadowed);
+    }
+
+    /// The branch that fires when something is actually wrong, which on a
+    /// healthy machine never runs. All four states in one tree: a file
+    /// left alone, one edited (the /etc/environment trap), one deleted,
+    /// and one the image never shipped.
+    #[test]
+    fn scanning_etc_finds_the_shadowed_and_the_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let (image, live) = (dir.path().join("usr"), dir.path().join("live"));
+        let put = |root: &Path, rel: &str, body: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        };
+
+        put(&image, "etc/greetd/config.toml", "greeter\n");
+        put(&live, "etc/greetd/config.toml", "greeter\n");
+        put(&image, "etc/environment", "COSMIC_DISABLE_OVERLAY_SCANOUT=1\n");
+        put(&live, "etc/environment", "COSMIC_DISABLE_OVERLAY_SCANOUT=1\nEDITED=1\n");
+        put(&image, "etc/xdg/mimeapps.list", "defaults\n");
+        // no live copy of mimeapps.list: deleted by hand
+        put(&live, "etc/local-only.conf", "not the image's\n");
+
+        let paths: Vec<String> = [
+            "/etc/greetd/config.toml",
+            "/etc/environment",
+            "/etc/xdg/mimeapps.list",
+            "/etc/local-only.conf",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        let scan = scan_etc(&paths, &image, &live);
+        assert_eq!(scan.owned, 3, "the local-only file is not the image's to own");
+        assert_eq!(scan.shadowed, ["/etc/environment"]);
+        assert_eq!(scan.removed, ["/etc/xdg/mimeapps.list"]);
+    }
+
+    /// An image that ships none of the paths it declares means the check
+    /// has nothing to say, not that everything is fine. Saying "0 files,
+    /// all good" would be a green light nobody earned.
+    #[test]
+    fn an_image_owning_nothing_reports_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let scan = scan_etc(
+            &["/etc/greetd/config.toml".to_string()],
+            &dir.path().join("usr"),
+            &dir.path().join("live"),
+        );
+        assert_eq!(scan.owned, 0);
+        assert!(scan.shadowed.is_empty() && scan.removed.is_empty());
     }
 
     #[test]

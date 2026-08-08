@@ -52,7 +52,7 @@ $ kuma remove org.mozilla.firefox          # drop from whichever list declares i
 $ kuma capture                             # declare what this machine already runs (--yes to write)
 $ kuma check                               # validate the declaration without building anything
 $ kuma diff                                # drift: kuma.toml vs image vs machine
-$ kuma doctor                              # machine health: deployment, boot health, convergence, GPU, storage, disk
+$ kuma doctor                              # machine health: deployment, boot health, convergence, /etc drift, GPU, disk
 $ kuma sync                                # converge flatpaks/brew now, not at next boot
 $ kuma update --yes                        # pull latest base, rebuild, stage for next boot
 $ kuma rollback --yes                      # the update's undo: boot order back to the previous deployment
@@ -106,6 +106,46 @@ aren't resolved at build time at all: convergence installs them on the
 machine at first boot and daily after, so a build-host version would
 describe a system nobody is running. That's the same mutable edge
 `kuma capture` works on.
+
+## The /etc trap
+
+On an ostree system `/etc` is merged, not replaced. Every difference
+between your `/etc` and the image's defaults in `/usr/etc` is treated as
+a local modification and carried forward onto every future deployment. So
+a file you edit by hand keeps winning, silently, no matter what later
+images ship.
+
+That is working as designed, and it is a trap. The way it bites: you fix
+something by editing `/etc` directly, later declare the same fix properly
+so it's baked into the image, and the hand-edited copy goes on overriding
+it. The declared version can never be tested, and nothing tells you why.
+
+`kuma doctor` now says so:
+
+```console
+$ kuma doctor
+ok    etc: 14 files this image owns in /etc, none shadowed locally
+```
+
+and when something is being overridden:
+
+```console
+warn  etc: local edits shadow the image: /etc/environment. These win over
+      every future image, so the declared version never applies
+      → sudo cp /usr/etc/environment /etc/environment   put the image's copy back
+```
+
+The cure is `cp`, not `rm`: a deletion is itself a local modification and
+carries forward as one, so removing the file keeps it removed rather than
+letting the image's version back.
+
+Two things keep the check honest. It reads `/usr/etc` directly instead of
+running `ostree admin config-diff`, which needs root, because a health
+check that asks for a password is one you stop running. And it only looks
+at paths kuma's own image writes, computed from the machine's baked
+declaration, because a real system has dozens of legitimately local files
+in `/etc` (machine-id, fstab, ssh host keys) and a check that cries wolf
+is one you learn to ignore.
 
 ## Drift is a fork, not an error
 
@@ -333,5 +373,5 @@ human; rolling back can't fix what an update didn't break.
 - [x] `kuma capture`: drift as a proposal against the declaration, not an error to erase
 - [x] CI build-and-boot smoke tests: every example built, booted headless, and judged by its own greenboot verdict
 - [x] `kuma.lock`: the base digest pinned, package versions recorded to diff; `kuma update` moves the pin
-- [ ] `kuma doctor` drift detection for `/etc`: flag local edits shadowing the image's baked defaults
+- [x] `kuma doctor` drift detection for `/etc`: flag local edits shadowing the image's baked defaults
 - [ ] Registry publishing + CI builds (`bootc switch`-able from anywhere)
