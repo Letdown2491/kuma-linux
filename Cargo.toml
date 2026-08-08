@@ -2,6 +2,10 @@
 name = "kuma"
 version = "0.1.0"
 edition = "2021"
+# Set by sha-crypt 0.6, the highest floor anything here asks for. Without
+# it, an older toolchain fails somewhere inside a dependency instead of
+# saying which version it wanted.
+rust-version = "1.85"
 description = "Declarative, atomic Fedora bootc system"
 license = "MIT"
 
