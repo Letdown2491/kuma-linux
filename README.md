@@ -20,6 +20,14 @@ Four principles, in order:
    legal next commands, never a dead end. The image carries the declaration
    it was built from, so a machine can always speak for itself.
 
+**Status.** Kuma is early. It builds, boots, and updates the machines it was
+written for, including the laptop it is written on, and it has not been run
+anywhere else. Schema version 1 is meant to be permanent, so the fields
+below are promises; everything around them can still move. `kuma switch`
+reboots you into a system image, and `bootc` will roll a bad one back, but
+try a declaration in `kuma vm` before you try it on a machine you need
+tomorrow.
+
 ## Quick start
 
 ```console
@@ -77,7 +85,7 @@ $ kuma remove org.mozilla.firefox          # drop from whichever list declares i
 $ kuma capture                             # declare what this machine already runs
 $ kuma check                               # validate the declaration, build nothing
 $ kuma diff                                # drift: kuma.toml vs image vs machine
-$ kuma doctor                              # machine health, /etc drift, GPU, disk
+$ kuma doctor                              # machine health, /etc drift, snapshots, GPU, disk
 $ kuma sync                                # converge flatpaks and brew now
 $ kuma snapshot                            # the btrfs snapshots this machine has taken
 $ kuma snapshot --restore ~/notes.md       # bring a path back (dry run; --yes writes)
