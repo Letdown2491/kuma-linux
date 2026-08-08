@@ -134,7 +134,7 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Reclaim build leftovers: dangling images, abandoned build containers
+    /// Reclaim build leftovers: dangling images, abandoned build containers, stale composed bases
     Clean {
         /// Report what was reclaimed as JSON (progress moves to stderr)
         #[arg(long)]
@@ -308,7 +308,13 @@ fn run(
         }
         Cmd::Rollback { yes, json: _ } => rollback(yes, json),
         Cmd::Sync { json: _ } => sync(json),
-        Cmd::Clean { json: _ } => clean(json),
+        Cmd::Clean { json: _ } => {
+            // Quiet fallback: which composed bases are live is decided by
+            // the declaration, and a machine with only a baked one still
+            // deserves a full clean.
+            let path = read_config_path(config_path, explicit, false);
+            clean(&path, json)
+        }
         Cmd::Add { names, rpm, flatpak, brew, json: _ } => {
             // The ArgGroup on Cmd::Add makes clap reject "none" and "more
             // than one" before this runs, with a better message than any
@@ -1178,8 +1184,9 @@ fn sync(json: bool) -> Result<()> {
 /// strands the previous image as a dangling <none>; worse, an interrupted
 /// build abandons its buildah "working container", which pins its layers
 /// while being invisible to `podman images` — one was found holding 68 GB.
-/// `kuma build` self-cleans its own label; this reclaims everything.
-fn clean(json: bool) -> Result<()> {
+/// `kuma build` self-cleans its own label; this reclaims everything,
+/// including composed-base content tags the declaration no longer uses.
+fn clean(config_path: &Path, json: bool) -> Result<()> {
     // Held rather than printed as it goes, so the same run can render as
     // text or as one JSON document. Progress chatter from host::note
     // already routes to stderr in JSON mode.
@@ -1220,6 +1227,32 @@ fn clean(json: bool) -> Result<()> {
         say(format!("Removed {pruned} dangling image(s)."));
     }
 
+    // Composed bases are tagged, so dangling-pruning never reclaims
+    // them, and every base manifest edit strands the previous content
+    // tag (~1 GB each). Live means: the tag the current declaration
+    // composes to, plus whatever its lock records. Without a readable
+    // declaration there is no telling live from stale, so none go.
+    let mut base_pruned = 0;
+    if let Ok(config) = Config::load(config_path) {
+        let mut keep = vec![compose::content_tag(&config)];
+        if let Some(lock) = lock::for_config(config_path) {
+            keep.push(lock.base.reference);
+        }
+        let listed = host_output_any(&[
+            "podman", "images", "--format", "{{.Repository}}:{{.Tag}}",
+            "--filter", "reference=localhost/kuma-base",
+        ])
+        .unwrap_or_default();
+        for tag in stale_base_tags(&listed, &keep) {
+            if host_output(&["podman", "rmi", &tag]).is_ok() {
+                base_pruned += 1;
+            }
+        }
+        if base_pruned > 0 {
+            say(format!("Removed {base_pruned} stale composed base(s)."));
+        }
+    }
+
     // `kuma switch` copies each image into root storage, where the same
     // stranding happens. Only on a bootc machine — elsewhere root storage
     // isn't part of kuma's flow. bootc's own image store is untouched.
@@ -1235,7 +1268,7 @@ fn clean(json: bool) -> Result<()> {
         }
     }
 
-    let nothing = abandoned.is_empty() && pruned == 0 && root_pruned == 0;
+    let nothing = abandoned.is_empty() && pruned == 0 && base_pruned == 0 && root_pruned == 0;
     let freed = match (before, avail_bytes()) {
         (Some(before), Some(after)) if after > before => Some(after - before),
         _ => None,
@@ -1247,6 +1280,7 @@ fn clean(json: bool) -> Result<()> {
                 "ok": true,
                 "containers_removed": abandoned.len(),
                 "images_pruned": pruned,
+                "base_images_pruned": base_pruned,
                 "root_images_pruned": root_pruned,
                 "freed_bytes": freed,
                 "actions": [],
@@ -1264,6 +1298,18 @@ fn clean(json: bool) -> Result<()> {
 
 fn prune_dangling(cmd: &[&str]) -> Result<usize> {
     Ok(host_output(cmd)?.lines().filter(|l| !l.trim().is_empty()).count())
+}
+
+/// Which of podman's listed references are stale composed bases: shaped
+/// like a tag kuma minted, and not in the live set. Pure set arithmetic
+/// so the deletion policy is testable without a podman.
+fn stale_base_tags(listed: &str, keep: &[String]) -> Vec<String> {
+    listed
+        .lines()
+        .map(str::trim)
+        .filter(|t| compose::is_content_tag(t) && !keep.iter().any(|k| k == t))
+        .map(str::to_string)
+        .collect()
 }
 
 /// Free space on the filesystem holding the user's podman storage.
@@ -1643,6 +1689,25 @@ fn path_str(path: &Path) -> Result<&str> {
 
 #[cfg(test)]
 mod tests {
+    /// The deletion policy for composed bases, without a podman: only
+    /// tags shaped like kuma's own content tags go, and never one the
+    /// declaration or its lock still points at.
+    #[test]
+    fn stale_base_tags_spare_the_live_and_the_hand_named() {
+        let listed = "localhost/kuma-base:maaaaaaaaaaaa\n\
+                      localhost/kuma-base:mbbbbbbbbbbbb\n\
+                      localhost/kuma-base:spike3\n\
+                      localhost/kuma:latest\n";
+        let keep = vec!["localhost/kuma-base:maaaaaaaaaaaa".to_string()];
+        assert_eq!(
+            super::stale_base_tags(listed, &keep),
+            vec!["localhost/kuma-base:mbbbbbbbbbbbb".to_string()]
+        );
+        // an empty live set (no lock, fresh declaration) still only
+        // touches content-shaped tags
+        assert_eq!(super::stale_base_tags(listed, &[]).len(), 2);
+    }
+
     /// clap's own verifier over the whole CLI: conflicts naming arguments
     /// that don't exist, groups over missing members, duplicate flags,
     /// and the rest. Cheap, and it covers every verb at once rather than

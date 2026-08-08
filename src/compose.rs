@@ -136,6 +136,15 @@ pub fn content_tag(config: &Config) -> String {
     format!("localhost/kuma-base:m{short}")
 }
 
+/// Whether a reference has the exact shape content_tag() mints:
+/// `localhost/kuma-base:m` + 12 lowercase hex chars. `kuma clean` prunes
+/// only tags matching this, so a user's own base tags are never touched.
+pub fn is_content_tag(reference: &str) -> bool {
+    reference
+        .strip_prefix("localhost/kuma-base:m")
+        .is_some_and(|h| h.len() == 12 && h.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')))
+}
+
 pub fn image_exists(reference: &str) -> bool {
     host_output(&["podman", "image", "exists", reference]).is_ok()
 }
@@ -242,5 +251,24 @@ mod tests {
         assert_ne!(content_tag(&broad), content_tag(&trimmed));
         assert_eq!(content_tag(&broad), content_tag(&with_rpms));
         assert!(content_tag(&broad).starts_with("localhost/kuma-base:m"));
+    }
+
+    /// The prune in `kuma clean` trusts this shape check to separate
+    /// kuma-minted tags from anything a user tagged by hand.
+    #[test]
+    fn content_tag_shape_is_recognized_and_nothing_else() {
+        assert!(is_content_tag(&content_tag(&config("schema_version = 1"))));
+        assert!(is_content_tag("localhost/kuma-base:mefa4beb53f41"));
+        for not_ours in [
+            "localhost/kuma-base:spike3",          // hand-named
+            "localhost/kuma-base:latest",
+            "localhost/kuma-base:mEFA4BEB53F41",   // uppercase never minted
+            "localhost/kuma-base:mefa4beb53f4",    // 11 hex
+            "localhost/kuma-base:mefa4beb53f412",  // 13 hex
+            "localhost/kuma:latest",
+            "quay.io/fedora/fedora-bootc:44",
+        ] {
+            assert!(!is_content_tag(not_ours), "{not_ours}");
+        }
     }
 }

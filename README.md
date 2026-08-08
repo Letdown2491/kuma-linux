@@ -79,7 +79,7 @@ $ kuma sync                                # converge flatpaks and brew now
 $ kuma update --check                      # has the locked base moved?
 $ kuma update --yes                        # rebuild on the latest base, stage it
 $ kuma rollback --yes                      # boot order back to the previous deployment
-$ kuma clean                               # reclaim dangling images and build leftovers
+$ kuma clean                               # reclaim dangling images, stale bases, build leftovers
 ```
 
 `add`, `remove`, and `capture` preserve your comments and formatting.
