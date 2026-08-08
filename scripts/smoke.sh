@@ -118,6 +118,16 @@ smoke_image() {
     podman run --rm "$tag" test -f /usr/libexec/greenboot/greenboot \
         || bad "greenboot missing: this image cannot roll back a bad update"
     ok "boot health present"
+
+    # The lock is written by the build, and the pin is only real if the
+    # next build actually resolves FROM the digest. `generate` prints what
+    # a build would do, so it proves the wiring without a second build.
+    local lock="${file%.example}.lock"
+    [ -f "$lock" ] || bad "no lock written beside $file"
+    grep -q '^digest = "sha256:' "$lock" || bad "lock records no base digest"
+    "$KUMA" --config "$file" generate | grep -qE '^FROM .+@sha256:' \
+        || bad "builds would ignore the locked digest"
+    ok "lock pins the base by digest"
 }
 
 # --- stage: boot -------------------------------------------------------
@@ -235,6 +245,11 @@ for file in examples/*.toml.example; do
 
     if [ $KEEP -eq 0 ]; then
         podman rmi -f "$tag" >/dev/null 2>&1 || true
+        # The lock goes too, so a local run resolves the current base like
+        # CI's fresh checkout does. A pin left lying here would quietly
+        # freeze the smoke tests against a base the world has moved past,
+        # which is the one thing they exist to notice.
+        rm -f "${file%.example}.lock"
         [ -d "vm-smoke/$name" ] && sudo rm -rf "vm-smoke/$name"
     fi
 done

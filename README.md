@@ -63,6 +63,50 @@ $ kuma clean                               # reclaim dangling images and abandon
 `check`, `diff`, and `doctor` are read-only, and everything speaks `--json`
 (see below).
 
+## kuma.lock
+
+`system.base = "quay.io/fedora/fedora-bootc:44"` names a tag, and tags
+move. One moved bootc 1.16.6 to 1.16.7 between two `kuma update` runs here
+and broke every build, which is the argument for a lockfile in one
+sentence.
+
+`kuma.lock` appears beside your declaration after the first build. There
+is no verb to learn: `kuma build` reads it and refreshes it, and
+`kuma update` is the one thing that moves the pin, because moving it
+deliberately is what `kuma update` already meant. Commit it.
+
+What it locks and what it merely records is a deliberate split:
+
+- **The base digest is enforced.** Builds resolve
+  `FROM name@sha256:…` from the lock, so the same declaration plus the
+  same lock builds from the same bytes on any machine.
+- **Package versions are recorded, not pinned.** Pinning rpm versions on a
+  live Fedora would be worse than useless: the mirrors garbage-collect old
+  builds within weeks, so a pin becomes a build failure that has nothing to
+  do with your declaration, and transitive dependencies stay unpinned
+  anyway. The record exists to be *diffed*, which needs no enforcement, and
+  a lock can therefore never break a build.
+
+So `kuma update` can tell you what actually moved:
+
+```console
+$ kuma update
+base  sha256:9f3ca81b2e4d -> sha256:a71b04ef9c33
+      bootc 1.16.6-1.fc44.x86_64 -> 1.16.7-1.fc44.x86_64
+      kernel 6.19.3-200.fc44 -> 6.19.4-200.fc44
+      ... and 34 more changed
+rpm   36 changed, 2 added
+```
+
+and `git diff kuma.lock` is the full story, one line per package, which is
+what makes a bad update bisectable after the fact.
+
+Flatpaks and brew formulae are deliberately absent from the lock. They
+aren't resolved at build time at all: convergence installs them on the
+machine at first boot and daily after, so a build-host version would
+describe a system nobody is running. That's the same mutable edge
+`kuma capture` works on.
+
 ## Drift is a fork, not an error
 
 Declarative systems normally treat drift as failure: the machine deviates,
@@ -288,6 +332,6 @@ human; rolling back can't fix what an update didn't break.
 - [x] Boot health + auto-rollback: greenboot in every image; desktop boots must reach the greeter or fall back
 - [x] `kuma capture`: drift as a proposal against the declaration, not an error to erase
 - [x] CI build-and-boot smoke tests: every example built, booted headless, and judged by its own greenboot verdict
-- [ ] `kuma.lock`: pin base digest and package versions; `kuma update` moves pins deliberately
+- [x] `kuma.lock`: the base digest pinned, package versions recorded to diff; `kuma update` moves the pin
 - [ ] `kuma doctor` drift detection for `/etc`: flag local edits shadowing the image's baked defaults
 - [ ] Registry publishing + CI builds (`bootc switch`-able from anywhere)

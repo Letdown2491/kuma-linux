@@ -9,3 +9,6 @@
 /iso
 /examples/kuma.toml
 /examples/*.kuma.toml
+# ...and the locks beside them. A kuma.lock belongs in git next to the
+# declaration it pins; these just pin declarations that don't live here.
+/examples/*.lock

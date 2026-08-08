@@ -4,6 +4,7 @@ mod containerfile;
 mod edit;
 mod host;
 mod inspect;
+mod lock;
 mod state;
 
 use anyhow::{bail, Context, Result};
@@ -256,7 +257,16 @@ fn run(
         Cmd::Init { force, starter } => init(force, starter),
         Cmd::Generate => {
             // quiet fallback: stdout is the artifact, keep it clean
-            let config = Config::load(&read_config_path(config_path, explicit, false))?;
+            let path = read_config_path(config_path, explicit, false);
+            let mut config = Config::load(&path)?;
+            // Show what a build would actually do. Printing `FROM …:44`
+            // while builds resolve `FROM …@sha256:…` would make this verb
+            // a liar about the one thing the lock exists to control.
+            if let Some(pinned) =
+                lock::Lock::load(&lock::path_for(&path)).and_then(|l| l.pin_for(&config.system.base))
+            {
+                config.system.base = pinned;
+            }
             print!("{}", containerfile::generate(&config));
             Ok(())
         }
@@ -549,9 +559,37 @@ fn build(config_path: &Path, tag: &str, json: bool) -> Result<()> {
 }
 
 fn build_image(config_path: &Path, tag: &str) -> Result<()> {
-    let config = Config::load(config_path)?;
+    build_image_pinned(config_path, tag, Pin::Follow).map(|_| ())
+}
+
+/// Whether this build honors the lock's base digest or goes looking for
+/// whatever the declared tag points at now. Only `kuma update` moves a
+/// pin, which is what "moves pins deliberately" has to mean if the lock
+/// is going to be worth anything.
+#[derive(PartialEq)]
+enum Pin {
+    Follow,
+    Refresh,
+}
+
+fn build_image_pinned(config_path: &Path, tag: &str, pin: Pin) -> Result<Option<lock::Lock>> {
+    let mut config = Config::load(config_path)?;
     let config_text = std::fs::read_to_string(config_path)
         .with_context(|| format!("cannot read {}", config_path.display()))?;
+    let declared_base = config.system.base.clone();
+
+    // The declaration keeps saying `:44`; only the Containerfile gets the
+    // digest. The baked copy is config_text, so the machine still carries
+    // the declaration a human wrote, not a resolved artifact of it.
+    let existing = lock::Lock::load(&lock::path_for(config_path));
+    if pin == Pin::Follow {
+        if let Some(pinned) = existing.as_ref().and_then(|l| l.pin_for(&declared_base)) {
+            note(&format!("Building from the locked base ({pinned})."));
+            config.system.base = pinned;
+        }
+    }
+    let built_from = config.system.base.clone();
+
     let dir = tempfile::tempdir().context("cannot create build directory")?;
     containerfile::write_context(&config, &config_text, dir.path())?;
 
@@ -575,7 +613,9 @@ fn build_image(config_path: &Path, tag: &str) -> Result<()> {
     if pruned > 0 {
         note(&format!("Reclaimed {pruned} stale build image(s)."));
     }
-    Ok(())
+    // The record is taken from the image that just came out, so it says
+    // what shipped rather than what was asked for.
+    Ok(lock::record(config_path, &declared_base, &built_from, tag))
 }
 
 fn switch(tag: &str, yes: bool, json: bool) -> Result<()> {
@@ -673,7 +713,18 @@ fn stage(tag: &str) -> Result<bool> {
 fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
     let config = Config::load(config_path)?;
     run_host(&["podman", "pull", &config.system.base])?;
-    build_image(config_path, tag)?;
+    // The one command that moves the pin. Everything else builds from
+    // whatever the lock already says, so an update is the only way the
+    // base underneath you changes, and it says what changed.
+    let before = lock::Lock::load(&lock::path_for(config_path));
+    let after = build_image_pinned(config_path, tag, Pin::Refresh)?;
+    let moved = match (&before, &after) {
+        (Some(before), Some(after)) => Some(lock::diff(before, after)),
+        _ => None,
+    };
+    if !json {
+        print_lock_diff(moved.as_ref());
+    }
     if !yes {
         let stage_hint = Action::new(
             "stage",
@@ -685,6 +736,7 @@ fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
                 "{}",
                 serde_json::json!({
                     "ok": true, "built": true, "staged": false, "tag": tag,
+                    "changes": lock_diff_json(moved.as_ref()),
                     "actions": [action_json(&stage_hint)],
                 })
             );
@@ -702,6 +754,7 @@ fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
             "{}",
             serde_json::json!({
                 "ok": true, "staged": staged, "up_to_date": !staged, "tag": tag,
+                "changes": lock_diff_json(moved.as_ref()),
                 "actions": actions,
             })
         );
@@ -712,6 +765,65 @@ fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
         println!("\nAlready up to date; the system runs this image.");
     }
     Ok(())
+}
+
+/// What an update actually moved. The base line is the one that matters
+/// (it is the only pin), but the package churn underneath it is what
+/// makes a broken update bisectable, so a bounded sample of it prints
+/// too; the lock has the rest, and `git diff kuma.lock` is the full story.
+fn print_lock_diff(moved: Option<&lock::LockDiff>) {
+    let Some(moved) = moved else { return };
+    if moved.is_empty() {
+        println!("\nNothing moved: same base digest, same packages.");
+        return;
+    }
+    println!();
+    if moved.base_from != moved.base_to {
+        println!("base  {} -> {}", short(&moved.base_from), short(&moved.base_to));
+    } else {
+        println!("base  unchanged ({})", short(&moved.base_to));
+    }
+    const SHOWN: usize = 10;
+    for (name, from, to) in moved.changed.iter().take(SHOWN) {
+        println!("      {name} {from} -> {to}");
+    }
+    if moved.changed.len() > SHOWN {
+        println!("      ... and {} more changed", moved.changed.len() - SHOWN);
+    }
+    let counts = [
+        (moved.changed.len(), "changed"),
+        (moved.added.len(), "added"),
+        (moved.removed.len(), "removed"),
+    ];
+    let summary: Vec<String> = counts
+        .iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, what)| format!("{n} {what}"))
+        .collect();
+    if !summary.is_empty() {
+        println!("rpm   {}", summary.join(", "));
+    }
+}
+
+fn short(digest: &str) -> String {
+    let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
+    format!("sha256:{}", &hex[..hex.len().min(12)])
+}
+
+fn lock_diff_json(moved: Option<&lock::LockDiff>) -> serde_json::Value {
+    match moved {
+        None => serde_json::Value::Null,
+        Some(m) => serde_json::json!({
+            "base": { "from": m.base_from, "to": m.base_to, "moved": m.base_from != m.base_to },
+            "rpm": {
+                "changed": m.changed.iter().map(|(name, from, to)| serde_json::json!({
+                    "name": name, "from": from, "to": to,
+                })).collect::<Vec<_>>(),
+                "added": m.added,
+                "removed": m.removed,
+            },
+        }),
+    }
 }
 
 /// The update's undo. bootc keeps the previous deployment around exactly
@@ -1281,6 +1393,43 @@ fn path_str(path: &Path) -> Result<&str> {
 
 #[cfg(test)]
 mod tests {
+    /// `kuma update --json` is how an agent learns what an update did to
+    /// the machine, so the change set has to be in the document and not
+    /// only in the human text. Null when there was no previous lock to
+    /// compare against (the first build), which is different from an
+    /// update that moved nothing.
+    #[test]
+    fn update_json_carries_what_moved() {
+        assert!(super::lock_diff_json(None).is_null());
+
+        let moved = crate::lock::LockDiff {
+            base_from: "sha256:old".into(),
+            base_to: "sha256:new".into(),
+            changed: vec![("bootc".into(), "1.16.6".into(), "1.16.7".into())],
+            added: vec!["newpkg".into()],
+            removed: vec![],
+        };
+        let json = super::lock_diff_json(Some(&moved));
+        assert_eq!(json["base"]["moved"], true);
+        assert_eq!(json["base"]["from"], "sha256:old");
+        assert_eq!(json["rpm"]["changed"][0]["name"], "bootc");
+        assert_eq!(json["rpm"]["changed"][0]["to"], "1.16.7");
+        assert_eq!(json["rpm"]["added"][0], "newpkg");
+        assert!(json["rpm"]["removed"].as_array().unwrap().is_empty());
+    }
+
+    /// Digests are 64 hex characters and nobody reads them; the report is
+    /// unreadable if two of them wrap the terminal.
+    #[test]
+    fn digests_are_shortened_for_humans() {
+        assert_eq!(
+            super::short("sha256:3e9f042245cf5be2c092b85b5091743b8e47fd57965c512cc4352ca1ac22daa7"),
+            "sha256:3e9f042245cf"
+        );
+        // and something already short, or not a digest at all, survives
+        assert_eq!(super::short("sha256:abc"), "sha256:abc");
+    }
+
     /// bib rejects unsupported blueprint keys for qcow2 and then builds
     /// the disk anyway, so an inert key costs nothing but a "blueprint
     /// validation failed" line in every VM build. It reports one key at a
