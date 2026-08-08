@@ -62,6 +62,7 @@ flatpak = [
     "io.github.celluloid_player.Celluloid",
     "org.gnome.Papers",
     "org.gnome.TextEditor",
+    "org.libreoffice.LibreOffice",
 ]
 
 # CLI tools that move faster than a rebuild-and-reboot cycle. Converged
