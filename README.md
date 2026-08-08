@@ -20,10 +20,9 @@ Four principles, in order:
    legal next commands, never a dead end. The image carries the declaration
    it was built from, so a machine can always speak for itself.
 
-**Status.** Kuma is early. It builds, boots, and updates the machines it was
-written for, including the laptop it is written on, and it has not been run
-anywhere else. Schema version 1 is meant to be permanent, so the fields
-below are promises; everything around them can still move. `kuma switch`
+**Status.** Kuma is early. It builds, boots, and updates real hardware, and
+it has not been run widely. Schema version 1 is meant to be permanent, so
+the fields below are promises; everything around them can still move. `kuma switch`
 reboots you into a system image, and `bootc` will roll a bad one back, but
 try a declaration in `kuma vm` before you try it on a machine you need
 tomorrow.
