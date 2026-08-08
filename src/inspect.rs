@@ -7,6 +7,7 @@
 
 use crate::config::Config;
 use crate::host::{host_output, host_output_any};
+use crate::snapshot;
 use crate::state::{action_json, print_actions, Action};
 use anyhow::{bail, Result};
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,6 +19,10 @@ const BREW_STATE: &str = "/home/linuxbrew/.linuxbrew/.kuma-brews";
 /// Written by the flatpak sync: the apps the declaration installed, which
 /// are the only system apps convergence considers its own to remove.
 const FLATPAK_STATE: &str = "/var/lib/kuma/flatpaks-installed";
+/// The declaration this image was built from, baked in at build time.
+/// Doctor reads it to learn what the machine was meant to do, which is a
+/// better question than what its unit files happen to say.
+const BAKED_CONFIG: &str = "/usr/lib/kuma/kuma.toml";
 
 /// One drift observation: what would change ("add"/"remove"/"mismatch"),
 /// which item, and the note that carries its consequence or cure.
@@ -572,6 +577,7 @@ pub fn doctor(json: bool) -> Result<()> {
 
     if Path::new("/usr/lib/kuma").is_dir() {
         check_convergence(&mut report);
+        check_snapshots(&mut report);
         check_boot_health(&mut report);
         check_etc_drift(&mut report);
     } else {
@@ -828,6 +834,100 @@ fn check_convergence(report: &mut impl FnMut(Grade, &str, String, Option<Action>
                 );
             }
         }
+    }
+}
+
+/// Snapshots fail quietly by design, and correctly so: the script
+/// degrades rather than erroring when the target isn't btrfs, and the
+/// timer is Persistent with a jittered delay, so nothing complains on a
+/// machine taking no snapshots at all. Both choices are right for the
+/// machine and wrong for the person, who otherwise learns on the one day
+/// they wanted a file back. This is the check that asks out loud.
+fn check_snapshots(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
+    let config = match Config::load(Path::new(BAKED_CONFIG)) {
+        Ok(config) => config,
+        // The build validated this file before baking it in, so a copy
+        // that won't load is worth naming even though this check can't
+        // say more than that.
+        Err(_) => {
+            report(Grade::Warn, "snapshots", format!("cannot read {BAKED_CONFIG}"), None);
+            return;
+        }
+    };
+    // A declaration that never asked for snapshots is not unhealthy for
+    // not having any, and saying so on every run would train people to
+    // read past it.
+    if !config.snapshots.enable {
+        return;
+    }
+
+    // Ask the filesystem first: on a target that can't snapshot, the
+    // timer being active is true and beside the point.
+    let target = &config.snapshots.target;
+    let fstype = host_output(&["findmnt", "-no", "FSTYPE", "-T", target]).unwrap_or_default();
+    let fstype = fstype.trim();
+    if !fstype.is_empty() && fstype != "btrfs" {
+        report(
+            Grade::Fail,
+            "snapshots",
+            format!("{target} is {fstype}, not btrfs; no snapshot can ever be taken"),
+            None,
+        );
+        return;
+    }
+
+    let facts = unit_facts(&["kuma-snapshot.timer", "kuma-snapshot.service"]);
+    match facts.get("kuma-snapshot.timer") {
+        Some(fact) if fact.active == "active" => report(
+            Grade::Ok,
+            "snapshots",
+            format!("kuma-snapshot.timer active ({})", config.snapshots.interval),
+            None,
+        ),
+        Some(_) => {
+            let fix = Action::new(
+                "start",
+                "sudo systemctl start kuma-snapshot.timer",
+                "resume scheduled snapshots",
+            );
+            report(Grade::Fail, "snapshots", "kuma-snapshot.timer is not active".into(), Some(fix));
+        }
+        None => {
+            report(Grade::Warn, "snapshots", "kuma-snapshot.timer state unavailable".into(), None)
+        }
+    }
+
+    if let Some(fact) = facts.get("kuma-snapshot.service") {
+        if !fact.result.is_empty() && fact.result != "success" {
+            let fix = Action::new(
+                "inspect",
+                "systemctl status kuma-snapshot.service",
+                "see why the snapshot failed",
+            );
+            report(
+                Grade::Fail,
+                "snapshots",
+                format!("kuma-snapshot.service last run: {}", fact.result),
+                Some(fix),
+            );
+        }
+    }
+
+    // The store is the only evidence the whole chain ran. A unit can be
+    // active and successful and still have written nothing.
+    let (store, count) = snapshot::store_state(&config);
+    if count == 0 {
+        // Warn, not fail: between switching to a declaration that asks
+        // for snapshots and the timer's first tick, empty is the correct
+        // state rather than a broken one.
+        let fix = Action::new(
+            "snapshot",
+            "sudo systemctl start kuma-snapshot.service",
+            "take the first one now instead of waiting for the timer",
+        );
+        report(Grade::Warn, "snapshots", format!("none taken yet in {}", store.display()), Some(fix));
+    } else {
+        report(Grade::Ok, "snapshots", format!("{count} in {}", store.display()), None);
     }
 }
 

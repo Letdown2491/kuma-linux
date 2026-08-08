@@ -53,6 +53,17 @@ fn ids(store: &Path) -> Vec<String> {
     out
 }
 
+/// Where the store is and how much is in it, for doctor. Shared rather
+/// than reimplemented there so one naming rule decides what counts as a
+/// snapshot: a health check that counted directories this command won't
+/// offer would call a machine healthy for holding things it cannot
+/// restore from.
+pub fn store_state(config: &Config) -> (PathBuf, usize) {
+    let store = store(config);
+    let count = ids(&store).len();
+    (store, count)
+}
+
 /// `2026-08-08T134347` reads as a timestamp to a machine and as noise to
 /// a person; this is the same instant with separators people expect.
 fn humanize(id: &str) -> String {
@@ -347,6 +358,32 @@ mod tests {
             ids(dir.path()),
             ["2026-08-08T134347", "2026-08-07T090000", "2026-08-06T120000"]
         );
+    }
+
+    /// Doctor grades a machine on this count, so it has to mean what the
+    /// restore path means. A store holding only things `kuma snapshot`
+    /// would refuse to offer is an empty store, and has to read as one.
+    #[test]
+    fn the_store_count_is_what_a_restore_could_actually_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(&format!(
+            "schema_version = 1\n[snapshots]\nenable = true\ntarget = {:?}\n",
+            dir.path().to_str().unwrap()
+        ));
+        let (store, count) = store_state(&config);
+        assert_eq!(store, dir.path().join(".snapshots"));
+        // A store that doesn't exist yet counts as empty rather than
+        // erroring: it is exactly the state between switch and first tick.
+        assert_eq!(count, 0);
+
+        std::fs::create_dir(&store).unwrap();
+        for name in ["not-a-snapshot", "2026-08-08"] {
+            std::fs::create_dir(store.join(name)).unwrap();
+        }
+        assert_eq!(store_state(&config).1, 0);
+
+        std::fs::create_dir(store.join("2026-08-08T134347")).unwrap();
+        assert_eq!(store_state(&config).1, 1);
     }
 
     /// A file made on Tuesday is not in Monday's snapshot. Walking newest
