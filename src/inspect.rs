@@ -9,10 +9,11 @@ use crate::config::Config;
 use crate::host::{host_output, host_output_any};
 use crate::state::{action_json, print_actions, Action};
 use anyhow::{bail, Result};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 const BREW: &str = "/home/linuxbrew/.linuxbrew/bin/brew";
+const BREW_CELLAR: &str = "/home/linuxbrew/.linuxbrew/Cellar";
 const BREW_STATE: &str = "/home/linuxbrew/.linuxbrew/.kuma-brews";
 
 /// One drift observation: what would change ("add"/"remove"/"mismatch"),
@@ -76,17 +77,54 @@ pub(crate) fn observe(config: &Config) -> Machine {
     let ask_brew = !config.packages.brew.is_empty() || Path::new(BREW).exists();
     let brew_installed =
         ask_brew.then(|| ask(&[BREW, "list", "--formula", "-1"])).flatten();
-    // `brew leaves` walks the dependency graph and costs about 1.3s here,
-    // more than everything else this function does put together. It is
-    // only ever read to tell an ad-hoc formula from a dependency, so it is
-    // worth nothing when there are no installed formulae to classify.
+    // Nothing installed, nothing to classify.
     let brew_leaves = brew_installed
         .as_ref()
-        .and_then(|installed| (!installed.is_empty()).then(|| ask(&[BREW, "leaves"])).flatten())
+        .filter(|installed| !installed.is_empty())
+        .and_then(|installed| {
+            leaves_from_receipts(installed).or_else(|| ask(&[BREW, "leaves"]))
+        })
         .unwrap_or_default();
     let brew_state = owned_set(&std::fs::read_to_string(BREW_STATE).unwrap_or_default());
 
     Machine { rpm, flatpak_system, flatpak_user, brew_installed, brew_leaves, brew_state }
+}
+
+/// Leaves without asking brew: the installed formulae nothing else
+/// depends on.
+///
+/// `brew leaves` resolves the dependency graph and costs about 1.2s,
+/// more than every other query in `observe` put together. The same graph
+/// is already on disk, one `runtime_dependencies` list per formula, and
+/// reading all of them takes about 30ms. Same definition, same answer,
+/// forty times faster. (`state.rs` already reads the Cellar rather than
+/// paying for `brew list`, so this is the established trade here.)
+///
+/// None whenever the receipts can't be trusted (a formula with no
+/// readable receipt, or a shape this doesn't recognise) and the caller
+/// falls back to asking brew. That fallback is the price of reading a
+/// format brew owns and could change.
+fn leaves_from_receipts(installed: &BTreeSet<String>) -> Option<BTreeSet<String>> {
+    let mut depended_on: BTreeSet<String> = BTreeSet::new();
+    for name in installed {
+        let mut read_one = false;
+        for version in std::fs::read_dir(Path::new(BREW_CELLAR).join(name)).ok()? {
+            let receipt = version.ok()?.path().join("INSTALL_RECEIPT.json");
+            let Ok(text) = std::fs::read_to_string(&receipt) else { continue };
+            let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+            for dep in json.get("runtime_dependencies")?.as_array()? {
+                let full = dep.get("full_name")?.as_str()?;
+                // A tap-qualified dependency (owner/tap/tool) has to match
+                // the bare name `brew list` reports.
+                depended_on.insert(full.rsplit('/').next().unwrap_or(full).to_string());
+            }
+            read_one = true;
+        }
+        if !read_one {
+            return None;
+        }
+    }
+    Some(installed.difference(&depended_on).cloned().collect())
 }
 
 /// Something this machine has that the declaration does not name.
@@ -401,6 +439,42 @@ fn image_list_stale(path: &str, declared: &BTreeSet<&str>) -> bool {
     }
 }
 
+/// Everything doctor asks about a unit, for every unit, in one systemctl
+/// call. Each spawn costs about 140ms and there were one or two per unit.
+///
+/// Keyed by the unit rather than positional: `--value` is terser but
+/// separates its answers with blank lines, so lining them up with the
+/// units asked for means relying on a shape systemd never promised, and
+/// getting it wrong pairs one unit's verdict with another's name. Asking
+/// for Id as well makes every answer say who it belongs to, which makes
+/// that mistake unrepresentable rather than merely unlikely.
+#[derive(Default)]
+struct UnitFacts {
+    active: String,
+    result: String,
+}
+
+fn unit_facts(units: &[&str]) -> BTreeMap<String, UnitFacts> {
+    let mut facts: BTreeMap<String, UnitFacts> = BTreeMap::new();
+    if units.is_empty() {
+        return facts;
+    }
+    let mut args = vec!["systemctl", "show", "-p", "Id", "-p", "ActiveState", "-p", "Result"];
+    args.extend(units);
+    let text = host_output_any(&args).unwrap_or_default();
+    let mut current = String::new();
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else { continue };
+        match key {
+            "Id" => current = value.to_string(),
+            "ActiveState" => facts.entry(current.clone()).or_default().active = value.to_string(),
+            "Result" => facts.entry(current.clone()).or_default().result = value.to_string(),
+            _ => {}
+        }
+    }
+    facts
+}
+
 fn unit_state(unit: &str) -> String {
     // is-enabled exits non-zero for disabled units but still names the
     // state on stdout, so read stdout regardless of exit status.
@@ -665,30 +739,29 @@ fn check_convergence(report: &mut impl FnMut(Grade, &str, String, Option<Action>
         targets.push(("kuma-brew-sync.service", "brew sync"));
         targets.push(("kuma-brew-sync.timer", "brew sync"));
     }
-    for (unit, name) in targets {
+    let names: Vec<&str> = targets.iter().map(|(unit, _)| *unit).collect();
+    let facts = unit_facts(&names);
+    for (unit, name) in &targets {
+        let Some(fact) = facts.get(*unit) else {
+            report(Grade::Warn, name, format!("{unit} state unavailable"), None);
+            continue;
+        };
         if unit.ends_with(".timer") {
-            match host_output_any(&["systemctl", "is-active", unit]).as_deref() {
-                Ok("active") => report(Grade::Ok, name, format!("{unit} active"), None),
-                _ => {
-                    let fix = Action::new(
-                        "start",
-                        format!("sudo systemctl start {unit}"),
-                        "restart the convergence timer",
-                    );
-                    report(Grade::Fail, name, format!("{unit} is not active"), Some(fix));
-                }
+            if fact.active == "active" {
+                report(Grade::Ok, name, format!("{unit} active"), None);
+            } else {
+                let fix = Action::new(
+                    "start",
+                    format!("sudo systemctl start {unit}"),
+                    "restart the convergence timer",
+                );
+                report(Grade::Fail, name, format!("{unit} is not active"), Some(fix));
             }
+        } else if fact.result == "success" {
+            report(Grade::Ok, name, format!("{unit} last run succeeded"), None);
         } else {
-            match host_output_any(&["systemctl", "show", "-p", "Result", "--value", unit]).as_deref() {
-                Ok("success") => {
-                    report(Grade::Ok, name, format!("{unit} last run succeeded"), None)
-                }
-                Ok(result) => {
-                    let fix = Action::new("sync", "kuma sync", "re-run convergence now");
-                    report(Grade::Fail, name, format!("{unit} last run: {result}"), Some(fix));
-                }
-                Err(_) => report(Grade::Warn, name, format!("{unit} state unavailable"), None),
-            }
+            let fix = Action::new("sync", "kuma sync", "re-run convergence now");
+            report(Grade::Fail, name, format!("{unit} last run: {}", fact.result), Some(fix));
         }
     }
     if Path::new("/usr/lib/kuma/flatpaks").exists() {
@@ -815,8 +888,14 @@ fn check_etc_drift(report: &mut impl FnMut(Grade, &str, String, Option<Action>))
         report(
             Grade::Warn,
             "etc",
+            // No capture edge here, deliberately, and the message says so
+            // rather than leaving the asymmetry with `kuma diff` looking
+            // like an oversight. Package drift is a fork because a package
+            // is your choice; /etc content is kuma's curation, so an edit
+            // worth keeping belongs in the image rather than in your
+            // declaration. That is how the COSMIC scanout vars got fixed.
             format!(
-                "local edits shadow the image: {}. These win over every future image, so the declared version never applies",
+                "local edits shadow the image: {}. These win over every future image, so the declared version never applies. An edit worth keeping belongs in the image, not the declaration",
                 shadowed.join(", ")
             ),
             Some(restore(&shadowed[0])),

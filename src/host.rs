@@ -48,14 +48,47 @@ pub fn run_host<S: AsRef<str>>(args: &[S]) -> Result<()> {
 /// Run a host command and capture its trimmed stdout; Err on failure.
 pub fn host_output<S: AsRef<str>>(args: &[S]) -> Result<String> {
     let out = host_command(args)?
-        .stderr(std::process::Stdio::null())
+        // Captured rather than discarded, so a failure that reaches a
+        // human carries the tool's own words. podman saying "Treating
+        // single images as manifest lists is not implemented" is worth
+        // rather more than "exited with exit status: 125". Probes that
+        // expect to fail drop the Err anyway, so nothing gets noisier.
+        .stderr(std::process::Stdio::piped())
         .output()
         .with_context(|| format!("failed to run {}", args[0].as_ref()))?;
     if !out.status.success() {
         let shown: Vec<&str> = args.iter().map(|s| s.as_ref()).collect();
-        bail!("{} exited with {}", shown.join(" "), out.status);
+        bail!("{} exited with {}{}", shown.join(" "), out.status, reason(&out.stderr));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// The tail of stderr, where tools put the reason. Bounded in both
+/// directions: the last two lines, each clipped, because some of them
+/// answer with a kilobyte of JSON and an error nobody can read is worth
+/// no more than the exit code it replaced.
+fn reason(stderr: &[u8]) -> String {
+    const WIDTH: usize = 200;
+    let text = String::from_utf8_lossy(stderr);
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let tail: Vec<String> = lines[lines.len().saturating_sub(2)..]
+        .iter()
+        // Clipped from the middle, not the end: tools put the reason at
+        // either end and sometimes both. podman answers a bad manifest
+        // request with a kilobyte of echoed JSON and then, last of all,
+        // the sentence that explains it.
+        .map(|line| {
+            let chars: Vec<char> = line.chars().collect();
+            if chars.len() <= WIDTH {
+                return line.to_string();
+            }
+            let half = WIDTH / 2;
+            let head: String = chars[..half].iter().collect();
+            let tail: String = chars[chars.len() - half..].iter().collect();
+            format!("{head} ... {tail}")
+        })
+        .collect();
+    if tail.is_empty() { String::new() } else { format!(": {}", tail.join("; ")) }
 }
 
 /// Capture stdout even when the command exits non-zero — for tools like

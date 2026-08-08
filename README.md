@@ -178,6 +178,12 @@ warn  etc: local edits shadow the image: /etc/environment. These win over
 The cure is `cp`, not `rm`: a deletion is itself a local modification and
 carries forward as one.
 
+There is deliberately no `kuma capture` for this. Package drift is a fork
+because a package is your choice; `/etc` content is kuma's curation, so an
+edit worth keeping belongs in the image rather than in your declaration.
+That is exactly how the display fix that motivated this check got resolved:
+the workaround stopped being a local edit and became something kuma bakes.
+
 ## Boot health and automatic rollback
 
 Every image bakes [greenboot](https://github.com/fedora-iot/greenboot-rs).
