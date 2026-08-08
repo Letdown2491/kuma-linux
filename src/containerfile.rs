@@ -178,7 +178,37 @@ const COSMIC_BACKGROUND: &str = r#"(
 /// stripped (patents), so video silently falls back to CPU. RPM
 /// Fusion's freeworld build restores it; --allowerasing swaps out
 /// the gutted driver if a dependency dragged it in.
-const MESA_FREEWORLD: &str = "RUN dnf -y install \"https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm\" \\\n    && dnf -y install --allowerasing mesa-va-drivers-freeworld \\\n    && dnf clean all\n";
+fn mesa_freeworld() -> String {
+    dnf_layer(
+        "dnf -y install --setopt=keepcache=1 \"https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm\" \\\n    && dnf -y install --setopt=keepcache=1 --allowerasing mesa-va-drivers-freeworld",
+    )
+}
+
+/// The mount that turns dnf's cache from dead weight in the image into a
+/// cache that survives across builds.
+///
+/// Every dnf layer used to end in `dnf clean all`, which threw away the
+/// repo metadata (~150 MB) and the downloaded RPMs (hundreds of MB for
+/// the desktop set) so they would not bloat the image. The cost was that
+/// a cold build, and every `kuma update` (a base bump invalidates every
+/// layer), re-downloaded all of it. A build cache mount keeps that data
+/// on the host instead of in the layer: it never lands in the image, so
+/// there is nothing to clean, and the next build reuses it. `keepcache=1`
+/// is what makes dnf leave the RPMs there rather than only the metadata,
+/// so an update re-downloads only the packages that actually changed.
+const DNF_CACHE: &str = "/var/cache/libdnf5";
+
+/// One dnf RUN layer with the package cache mounted rather than baked.
+/// `body` is the shell after `RUN `; callers that install a plain list go
+/// through `dnf_install`, and the two-step mesa case builds its own.
+fn dnf_layer(body: &str) -> String {
+    format!("RUN --mount=type=cache,target={DNF_CACHE} \\\n    {body}\n")
+}
+
+/// The common case: install a package list, cached, no clean.
+fn dnf_install(packages: &str) -> String {
+    dnf_layer(&format!("dnf -y install --setopt=keepcache=1 {packages}"))
+}
 
 /// Unlock the keyring with the login password, or every keyring-using
 /// app nags for it on launch (browsers most visibly, but far from only
@@ -1011,11 +1041,9 @@ pub fn generate(config: &Config) -> String {
     // Desktop layer first: it is large and changes rarely, so keeping it
     // before the user's packages preserves the build cache across edits.
     if config.system.desktop == Desktop::Niri {
-        out.push_str(&format!(
-            "\nRUN dnf -y install {} && dnf clean all\n",
-            NIRI_PACKAGES.join(" ")
-        ));
-        out.push_str(MESA_FREEWORLD);
+        out.push('\n');
+        out.push_str(&dnf_install(&NIRI_PACKAGES.join(" ")));
+        out.push_str(&mesa_freeworld());
         out.push_str("COPY greetd-config.toml /etc/greetd/config.toml\n");
         out.push_str("COPY kargs-desktop.toml /usr/lib/bootc/kargs.d/10-kuma-desktop.toml\n");
         out.push_str("COPY niri-extras.kdl /usr/lib/kuma/niri-extras.kdl\n");
@@ -1074,11 +1102,9 @@ pub fn generate(config: &Config) -> String {
     }
 
     if config.system.desktop == Desktop::Cosmic {
-        out.push_str(&format!(
-            "\nRUN dnf -y install {} && dnf clean all\n",
-            COSMIC_PACKAGES.join(" ")
-        ));
-        out.push_str(MESA_FREEWORLD);
+        out.push('\n');
+        out.push_str(&dnf_install(&COSMIC_PACKAGES.join(" ")));
+        out.push_str(&mesa_freeworld());
         // Fedora ships cosmic-greeter.service (preset-enabled, aliased as
         // display-manager.service) running `greetd --config
         // /etc/greetd/cosmic-greeter.toml` — kuma writes no greeter config
@@ -1150,7 +1176,8 @@ pub fn generate(config: &Config) -> String {
         || !config.packages.flatpak.is_empty();
     if wants_flatpak {
         if config.system.desktop == Desktop::None {
-            out.push_str("\nRUN dnf -y install flatpak && dnf clean all\n");
+            out.push('\n');
+            out.push_str(&dnf_install("flatpak"));
         }
         // Preconfigured-remote mechanism: flatpak reads /etc/flatpak/remotes.d,
         // so Flathub (with its GPG key) ships as image content. Flathub is
@@ -1177,7 +1204,8 @@ pub fn generate(config: &Config) -> String {
 
     if config.system.brew || !config.packages.brew.is_empty() {
         // git-core: brew needs git at runtime to update itself
-        out.push_str("\nRUN dnf -y install git-core && dnf clean all\n");
+        out.push('\n');
+        out.push_str(&dnf_install("git-core"));
         out.push_str("COPY --chmod=755 kuma-brew-setup /usr/libexec/kuma-brew-setup\n");
         out.push_str(
             "COPY kuma-brew-setup.service /usr/lib/systemd/system/kuma-brew-setup.service\n",
@@ -1198,10 +1226,8 @@ pub fn generate(config: &Config) -> String {
     }
 
     if !config.packages.rpm.is_empty() {
-        out.push_str(&format!(
-            "\nRUN dnf -y install {} && dnf clean all\n",
-            config.packages.rpm.join(" ")
-        ));
+        out.push('\n');
+        out.push_str(&dnf_install(&config.packages.rpm.join(" ")));
     }
 
     let services: Vec<String> = config
@@ -1233,7 +1259,8 @@ pub fn generate(config: &Config) -> String {
     // greenboot-default-health-checks ships a *required* DNS probe that
     // assumes an always-networked IoT box — it would roll back a laptop
     // that happens to boot offline.
-    out.push_str("\nRUN dnf -y install greenboot && dnf clean all\n");
+    out.push('\n');
+    out.push_str(&dnf_install("greenboot"));
     if config.system.desktop != Desktop::None {
         out.push_str(
             "COPY --chmod=755 kuma-greeter-check /usr/lib/greenboot/check/required.d/50-kuma-greeter.sh\n",
@@ -1292,9 +1319,8 @@ pub fn generate(config: &Config) -> String {
         // The langpack makes the locale actually exist; without it glibc
         // silently falls back and every app renders C.UTF-8.
         if let Some(lang) = langpack(locale) {
-            out.push_str(&format!(
-                "\nRUN dnf -y install glibc-langpack-{lang} && dnf clean all\n"
-            ));
+            out.push('\n');
+            out.push_str(&dnf_install(&format!("glibc-langpack-{lang}")));
         }
         out.push_str(&format!("RUN echo 'LANG={locale}' > /etc/locale.conf\n"));
     }
@@ -1453,7 +1479,7 @@ mod tests {
         // Boot health is the one dnf layer even a minimal image carries:
         // the never-worse-than-before promise is not opt-in.
         assert_eq!(out.matches("dnf -y install").count(), 1);
-        assert!(out.contains("dnf -y install greenboot"));
+        assert!(out.contains(&dnf_install("greenboot")));
         assert!(out.contains("bootc container lint"));
         // The lint runs unqualified first: the --skip is a fallback for
         // one upstream crash, never the path a healthy build takes, and
@@ -1482,7 +1508,7 @@ mod tests {
             "#,
         ));
         assert!(out.contains("FROM ghcr.io/example/kuma-gnome:latest"));
-        assert!(out.contains("RUN dnf -y install fish tailscale && dnf clean all"));
+        assert!(out.contains(&dnf_install("fish tailscale")));
         assert!(out.contains("systemctl enable tailscaled.service"));
         assert!(out.contains("systemctl disable cups.service"));
     }
@@ -1563,7 +1589,7 @@ mod tests {
     #[test]
     fn boot_health_ships_in_every_image() {
         let out = generate(&config("schema_version = 1"));
-        assert!(out.contains("RUN dnf -y install greenboot && dnf clean all"));
+        assert!(out.contains(&dnf_install("greenboot")));
         assert!(out.contains(
             "RUN systemctl enable greenboot-healthcheck.service greenboot-set-rollback-trigger.service greenboot-success.target kuma-boot-health-sync.service"
         ));
@@ -1697,7 +1723,7 @@ mod tests {
         let out = generate(&config(
             "schema_version = 1\n[packages]\nflatpak = [\"org.mozilla.firefox\"]\n",
         ));
-        assert!(out.contains("dnf -y install flatpak"));
+        assert!(out.contains(&dnf_install("flatpak")));
         assert!(out.contains("/etc/flatpak/remotes.d/flathub.flatpakrepo"));
         assert!(out.contains("COPY flatpaks /usr/lib/kuma/flatpaks"));
         assert!(out.contains("systemctl enable kuma-flatpak-sync.service"));
@@ -1710,7 +1736,7 @@ mod tests {
         ));
         assert!(out.contains("flathub.flatpakrepo"));
         // flatpak comes from the desktop set; no second install layer
-        assert!(!out.contains("\nRUN dnf -y install flatpak && dnf clean all"));
+        assert!(!out.contains(&dnf_install("flatpak")));
         // convergence: the empty declaration still syncs, removing strays
         assert!(out.contains("systemctl enable kuma-flatpak-sync.service"));
     }
@@ -1743,7 +1769,7 @@ mod tests {
         // /home is machine state — the account must be created at boot
         assert!(!out.contains("useradd"));
         // the shell check comes after the rpm layer that installs it
-        let rpm_at = out.find("dnf -y install fish").unwrap();
+        let rpm_at = out.find("keepcache=1 fish").unwrap();
         let check_at = out.find("RUN test -x /usr/bin/fish").unwrap();
         assert!(rpm_at < check_at);
 
@@ -1892,7 +1918,7 @@ mod tests {
             "schema_version = 1\n[system]\nhostname = \"kuma-laptop\"\nlocale = \"de_DE.UTF-8\"\n",
         ));
         assert!(out.contains("RUN echo 'kuma-laptop' > /etc/hostname"));
-        assert!(out.contains("dnf -y install glibc-langpack-de"));
+        assert!(out.contains(&dnf_install("glibc-langpack-de")));
         assert!(out.contains("RUN echo 'LANG=de_DE.UTF-8' > /etc/locale.conf"));
         // C.UTF-8 has no territory, so no langpack layer
         let out = generate(&config(
@@ -1972,7 +1998,7 @@ mod tests {
     #[test]
     fn cosmic_desktop_composes_from_the_session() {
         let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"cosmic\"\n"));
-        assert!(out.contains("dnf -y install cosmic-session"));
+        assert!(out.contains("cosmic-session"));
         // Fedora's cosmic-greeter.service owns the display-manager alias;
         // enabling greetd.service alongside it fails the build
         assert!(out.contains("systemctl enable cosmic-greeter.service"));
@@ -2125,7 +2151,7 @@ mod tests {
             // The floor, owed to every image no matter what it declares.
             at("builds FROM the declared base", out.contains(&format!("FROM {}", parsed.system.base)));
             at("runs the bootc lint", out.contains("bootc container lint"));
-            at("bakes greenboot", out.contains("dnf -y install greenboot"));
+            at("bakes greenboot", out.contains(&dnf_install("greenboot")));
             at("converges the boot counter", out.contains("kuma-boot-health-sync.service"));
             at("labels itself for GC", out.contains("LABEL io.kuma.image"));
             at("bakes its own declaration", out.contains("COPY kuma.toml /usr/lib/kuma/kuma.toml"));
