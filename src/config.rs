@@ -349,6 +349,49 @@ mod tests {
         assert!(config.user.is_some(), "the example shows a declared [user]");
     }
 
+    /// kuma.toml.example says it shows every field the schema accepts,
+    /// which is a promise a reader can't check and a schema change can
+    /// quietly break. `services.disable` and `system.brew` were both
+    /// missing when this was written.
+    ///
+    /// Commented-out fields count: an optional field is documented by
+    /// showing its shape, not by being switched on in the example.
+    #[test]
+    fn the_full_example_documents_every_field() {
+        let schema = serde_json::to_value(schemars::schema_for!(Config)).unwrap();
+        let example =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/kuma.toml.example"))
+                .unwrap();
+
+        // Field names from the schema itself, so a new one is covered the
+        // day it lands rather than the day someone remembers.
+        let mut fields: Vec<String> = Vec::new();
+        let mut collect = |object: &serde_json::Value| {
+            if let Some(props) = object["properties"].as_object() {
+                fields.extend(props.keys().cloned());
+            }
+        };
+        collect(&schema);
+        if let Some(defs) = schema["$defs"].as_object() {
+            for definition in defs.values() {
+                collect(definition);
+            }
+        }
+        assert!(fields.len() > 10, "schema walk found only {fields:?}");
+
+        for field in &fields {
+            // A key is documented by `<field> =`, a table by its `[field]`
+            // header. Either may be commented out.
+            let documented = example.lines().any(|line| {
+                let line = line.trim_start().trim_start_matches('#').trim_start();
+                line.starts_with(&format!("{field} "))
+                    || line.starts_with(&format!("{field}="))
+                    || line.starts_with(&format!("[{field}]"))
+            });
+            assert!(documented, "examples/kuma.toml.example never mentions `{field}`");
+        }
+    }
+
     #[test]
     fn minimal_config_parses_with_defaults() {
         let config: Config = toml::from_str("schema_version = 1").unwrap();

@@ -1,43 +1,49 @@
-# A fuller example of a Kuma system definition.
+# A full Kuma system definition. Every field the schema accepts appears
+# here; the commented ones are optional and show their default.
 schema_version = 1
 
 [system]
 base = "quay.io/fedora/fedora-bootc:44"
-# A desktop is a curated set kuma maintains, not a package list you assemble.
-# Supported: "niri" (scrollable-tiling Wayland compositor), "cosmic"
-# (System76's full desktop; see cosmic.toml.example). Omit for headless.
+
+# A curated set kuma maintains, not a package list you assemble.
+# "niri" (scrollable tiling) or "cosmic" (see cosmic.toml.example).
+# Omit for a headless machine.
 desktop = "niri"
-# Timezone is machine state, so usually leave this unset: machines keep
-# whatever `timedatectl set-timezone` chose (it survives image updates),
-# and `kuma vm` mirrors the host. Set it only to pin every machine built
-# from this file to one IANA zone.
+
+# Bootstrap Homebrew without declaring formulae, for ad-hoc use.
+# A non-empty packages.brew implies this.
+# brew = true
+
+# Timezone and hostname are machine state: `timedatectl` and `hostnamectl`
+# set them and they survive image updates. Pin them here only to force
+# every machine built from this file to match. Unset, the hostname is
+# "kuma" and `kuma vm` mirrors the host's timezone.
 # timezone = "America/Denver"
-# Hostname is machine state too (`hostnamectl set-hostname`); unset machines
-# default to "kuma". Locale installs its glibc langpack and sets LANG.
 # hostname = "kuma-laptop"
+
+# Installs the matching glibc langpack and sets LANG.
 # locale = "en_US.UTF-8"
 
-# The primary account: created on first boot, then converged (shell,
-# declared groups, kuma-managed ssh keys) on every boot. Get the hash
-# from `kuma passwd`; it applies only at creation; change it freely on
-# the machine afterward.
+# The primary account, created on first boot and converged on every boot
+# after: shell, declared groups, and kuma-managed ssh keys.
 [user]
 name = "me"
 shell = "fish"
-# password_hash = '$6$...'   # from `kuma passwd`; uncomment with yours
 
-# groups = ["wheel"]                # the default
-# ssh_keys = ["ssh-ed25519 AAAA..."]
-# autologin = true                   # straight to the desktop at boot
+# From `kuma passwd`. Applies only at creation, so change the password on
+# the machine afterward and kuma won't fight you.
+# password_hash = '$6$...'
+
+# groups = ["wheel"]                  # the default
+# ssh_keys = ["ssh-ed25519 AAAA..."]  # served to sshd from /etc/kuma/keys
+# autologin = true                    # straight to the desktop, no greeter
 
 [packages]
+# Baked into the image: changing this list needs a rebuild and a reboot.
 rpm = ["fish", "distrobox", "tailscale"]
-# Dev tools ride Homebrew, not the image: they move too fast for a
-# rebuild-and-reboot cycle. Declaring any formula bootstraps brew itself
-# (system.brew = true does the same without a list, for ad-hoc use).
-# Converged like flatpaks; ad-hoc `brew install` stays yours, and
-# `kuma capture` offers to write it in here when you decide to keep it.
-brew = ["ripgrep", "fd", "jq", "gh", "lazygit", "btop"]
+
+# Flathub apps, converged on boot and daily: additions install, removals
+# uninstall. `flatpak install --user` on the machine stays yours.
 flatpak = [
     "org.mozilla.firefox",
     "org.gnome.Loupe",
@@ -47,7 +53,13 @@ flatpak = [
     "org.gnome.TextEditor",
 ]
 
-# Note: enable/disable fail the build if the unit doesn't exist in the image;
-# strict on purpose, so typos surface at build time instead of being ignored.
+# CLI tools that move faster than a rebuild-and-reboot cycle. Converged
+# like flatpaks; ad-hoc `brew install` stays yours, and `kuma capture`
+# offers to write it down here when you decide to keep it.
+brew = ["ripgrep", "fd", "jq", "gh", "lazygit", "btop"]
+
+# Unit names are checked at build time, so a typo fails the build instead
+# of being silently ignored.
 [services]
 enable = ["tailscaled.service"]
+# disable = ["avahi-daemon.service"]   # the base enables this one

@@ -1,37 +1,36 @@
-# A Kuma system definition for the COSMIC desktop.
+# A Kuma system definition for the COSMIC desktop. See
+# kuma.toml.example for every field the schema accepts.
 schema_version = 1
 
 [system]
 base = "quay.io/fedora/fedora-bootc:44"
-# COSMIC: System76's full desktop (panel, launcher, settings, files,
-# terminal). The desktop curates itself upstream; kuma adds hardware
-# enablement and identity. Omit for a headless system.
+
+# System76's full desktop: panel, launcher, settings, files, terminal.
+# It curates itself upstream, so kuma adds only hardware enablement and
+# identity on top.
 desktop = "cosmic"
 
-# The primary account: created on first boot, then converged on every
-# boot. Get the hash from `kuma passwd`; it applies only at creation.
-# COSMIC's first-boot setup wizard never appears; the account and the
+# COSMIC's first-boot setup wizard never appears: the account and the
 # defaults are declared here instead.
 [user]
 name = "me"
 shell = "fish"
-# password_hash = '$6$...'   # from `kuma passwd`; uncomment with yours
-
-# autologin = true       # straight to the desktop at boot
+# password_hash = '$6$...'   # from `kuma passwd`
+# autologin = true           # straight to the desktop at boot
 
 [packages]
 rpm = ["fish", "distrobox"]
-# Apps come from Flathub and converge on boot: additions install,
-# removals uninstall. COSMIC's app store is deliberately not shipped:
-# system apps installed through a store would be removed again by the
-# next convergence run. This list is the store, and
-# `kuma add --flatpak <id>` is the install button.
-# (`flatpak install --user` on the machine stays yours.)
+
+# COSMIC's app store is deliberately not shipped: an app installed
+# through a store would be removed again by the next convergence run.
+# This list is the store, and `kuma add --flatpak <id>` is the install
+# button.
 flatpak = [
     "org.mozilla.firefox",
     "org.gnome.Loupe",
     "org.gnome.Papers",
 ]
+
 # brew = ["ripgrep", "fd", "jq"]
 
 [services]
