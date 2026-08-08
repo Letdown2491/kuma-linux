@@ -14,7 +14,7 @@ const NIRI_PACKAGES: &[&str] = &[
     "fuzzel",
     "waybar",
     "mako",
-    "alacritty",
+    "foot",
     "pipewire",
     "pipewire-pulseaudio",
     "wireplumber",
@@ -827,15 +827,15 @@ const FASTFETCH_CONFIG: &str = r#"{
 /// All system-wide (never /etc/skel): skel only reaches homes created after
 /// the image ships, so it strands existing users on stale copies — image
 /// updates must retheme every account. User dotfiles still win everywhere:
-/// waybar and fuzzel search /etc/xdg after ~/.config, alacritty checks
-/// /etc/alacritty last, and mako (no system path at all) goes through a
-/// launcher that prefers the user's config.
+/// waybar, fuzzel and foot search /etc/xdg after ~/.config, and mako (no
+/// system path at all) goes through a launcher that prefers the user's
+/// config.
 const WALLPAPER: &[u8] = include_bytes!("../assets/kuma-wallpaper.png");
 const WAYBAR_CONFIG: &str = include_str!("../assets/waybar.jsonc");
 const WAYBAR_STYLE: &str = include_str!("../assets/waybar.css");
 const FUZZEL_CONFIG: &str = include_str!("../assets/fuzzel.ini");
 const MAKO_CONFIG: &str = include_str!("../assets/mako.conf");
-const ALACRITTY_CONFIG: &str = include_str!("../assets/alacritty.toml");
+const FOOT_CONFIG: &str = include_str!("../assets/foot.ini");
 
 /// mako is dbus-activated (org.freedesktop.Notifications), so this wrapper
 /// is wired in via its dbus service file rather than spawn-at-startup.
@@ -1063,7 +1063,12 @@ pub fn generate(config: &Config) -> String {
     // before the user's packages preserves the build cache across edits.
     if config.system.desktop == Desktop::Niri {
         out.push('\n');
-        out.push_str(&dnf_install(&NIRI_PACKAGES.join(" ")));
+        // niri Recommends alacritty, which would ride in past the package
+        // list as a weak dep; Kuma's terminal is foot.
+        out.push_str(&dnf_install(&format!(
+            "--exclude=alacritty {}",
+            NIRI_PACKAGES.join(" ")
+        )));
         out.push_str(&mesa_freeworld());
         out.push_str("COPY greetd-config.toml /etc/greetd/config.toml\n");
         out.push_str("COPY kargs-desktop.toml /usr/lib/bootc/kargs.d/10-kuma-desktop.toml\n");
@@ -1082,7 +1087,7 @@ pub fn generate(config: &Config) -> String {
         out.push_str(
             "RUN grep -qx 'Exec=/usr/bin/mako' /usr/share/dbus-1/services/fr.emersion.mako.service \\\n    && sed -i 's|^Exec=/usr/bin/mako$|Exec=/usr/libexec/kuma-mako|' /usr/share/dbus-1/services/fr.emersion.mako.service\n",
         );
-        out.push_str("COPY alacritty.toml /etc/alacritty/alacritty.toml\n");
+        out.push_str("COPY foot.ini /etc/xdg/foot/foot.ini\n");
         out.push_str("COPY --chmod=755 kuma-clipboard-bridge /usr/libexec/kuma-clipboard-bridge\n");
         out.push_str("COPY fastfetch-config.jsonc /etc/xdg/fastfetch/config.jsonc\n");
         out.push_str("COPY fastfetch-logo.txt /usr/lib/kuma/fastfetch-logo.txt\n");
@@ -1105,8 +1110,12 @@ pub fn generate(config: &Config) -> String {
         // config is that plus our session extras, validated at build time.
         // Fedora's default config already spawns waybar — drop that line (and
         // its comment) or the bar starts twice; Kuma's extras spawn it.
+        // Upstream's terminal is alacritty; Kuma ships foot, so rewrite the
+        // spawn (and its hotkey-overlay title). grep first: if a niri update
+        // stops naming alacritty, fail the build instead of silently
+        // shipping a Mod+T that spawns a terminal the image doesn't have.
         out.push_str(
-            "RUN mkdir -p /etc/niri \\\n    && sed -e '/starts waybar/d' -e '/^spawn-at-startup \"waybar\"$/d' -e '/XF86Audio/d' -e '/XF86MonBrightness/d' -e '/^binds {/r /usr/lib/kuma/niri-binds.kdl' /usr/share/doc/niri/default-config.kdl > /etc/niri/config.kdl \\\n    && cat /usr/lib/kuma/niri-extras.kdl >> /etc/niri/config.kdl \\\n    && niri validate --config /etc/niri/config.kdl\n",
+            "RUN grep -q '\"alacritty\"' /usr/share/doc/niri/default-config.kdl \\\n    && mkdir -p /etc/niri \\\n    && sed -e 's/alacritty/foot/g' -e '/starts waybar/d' -e '/^spawn-at-startup \"waybar\"$/d' -e '/XF86Audio/d' -e '/XF86MonBrightness/d' -e '/^binds {/r /usr/lib/kuma/niri-binds.kdl' /usr/share/doc/niri/default-config.kdl > /etc/niri/config.kdl \\\n    && cat /usr/lib/kuma/niri-extras.kdl >> /etc/niri/config.kdl \\\n    && niri validate --config /etc/niri/config.kdl\n",
         );
         // Upstream niri-session imports the ENTIRE greeter environment into
         // the systemd user manager — deprecated (warns in the journal every
@@ -1416,7 +1425,7 @@ pub fn write_context(config: &Config, config_text: &str, dir: &Path) -> Result<(
         std::fs::write(dir.join("mako.conf"), MAKO_CONFIG)?;
         std::fs::write(dir.join("kuma-mako"), MAKO_LAUNCHER)?;
         std::fs::write(dir.join("mako-dropin.conf"), MAKO_DROPIN)?;
-        std::fs::write(dir.join("alacritty.toml"), ALACRITTY_CONFIG)?;
+        std::fs::write(dir.join("foot.ini"), FOOT_CONFIG)?;
         std::fs::write(dir.join("kuma-clipboard-bridge"), CLIPBOARD_BRIDGE)?;
         std::fs::write(dir.join("kuma-xsettings"), XSETTINGS_LAUNCHER)?;
         std::fs::write(dir.join("xsettingsd.conf"), XSETTINGSD_CONF)?;
@@ -1598,7 +1607,13 @@ mod tests {
         // systemd user sessions activate via SystemdService, not Exec —
         // without the drop-in the wrapper never runs where it matters
         assert!(out.contains("/usr/lib/systemd/user/mako.service.d/kuma.conf"));
-        assert!(out.contains("COPY alacritty.toml /etc/alacritty/alacritty.toml"));
+        assert!(out.contains("COPY foot.ini /etc/xdg/foot/foot.ini"));
+        // upstream niri spawns alacritty; the image ships foot — the sed
+        // must rewrite the bind, and the grep guard must keep it honest
+        assert!(out.contains("grep -q '\"alacritty\"' /usr/share/doc/niri/default-config.kdl"));
+        assert!(out.contains("sed -e 's/alacritty/foot/g'"));
+        // niri Recommends alacritty; without the exclude it ships anyway
+        assert!(out.contains("--exclude=alacritty"));
         assert!(out.contains("COPY dconf-profile /etc/dconf/profile/user"));
         assert!(out.contains("COPY dconf-kuma-dark /etc/dconf/db/local.d/10-kuma-dark"));
         assert!(out.contains("RUN dconf update"));
@@ -1608,7 +1623,7 @@ mod tests {
     fn desktop_defaults_to_dark_and_bare_terminal() {
         assert!(DCONF_DARK.contains("color-scheme='prefer-dark'"));
         // a titlebar in a tiling compositor renders light Adwaita chrome
-        assert!(ALACRITTY_CONFIG.contains("decorations = \"None\""));
+        assert!(FOOT_CONFIG.contains("preferred=none"));
     }
 
     #[test]
@@ -1720,7 +1735,7 @@ mod tests {
         assert!(dir.path().join("waybar-style.css").exists());
         assert!(dir.path().join("fuzzel.ini").exists());
         assert!(dir.path().join("mako.conf").exists());
-        assert!(dir.path().join("alacritty.toml").exists());
+        assert!(dir.path().join("foot.ini").exists());
         let ff = std::fs::read_to_string(dir.path().join("fastfetch-config.jsonc")).unwrap();
         assert!(ff.contains("/usr/lib/kuma/fastfetch-logo.txt"));
         assert!(dir.path().join("fastfetch-logo.txt").exists());
