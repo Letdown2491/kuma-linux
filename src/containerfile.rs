@@ -1928,24 +1928,37 @@ mod tests {
     /// is a link that opens nothing, which is how the default browser sat
     /// on Chromium while every real declaration shipped Firefox.
     ///
-    /// Only the browser is checked mechanically. The rest can't be: some
-    /// handlers are native rpms (thunar, file-roller) whose desktop ids
-    /// look exactly like flatpak ids and are nowhere in the declaration.
+    /// Native desktop ids look exactly like flatpak ids, so the handlers
+    /// the desktop set installs are named here rather than inferred.
+    /// Everything else in the list has to come from the declaration —
+    /// and the declaration to check is the niri one, because this file
+    /// is only baked on the niri arm.
     #[test]
-    fn the_default_browser_is_one_the_examples_install() {
-        let handler = MIMEAPPS
-            .lines()
-            .find_map(|line| line.strip_prefix("x-scheme-handler/https="))
-            .expect("mimeapps sets an https handler");
-        let app = handler.strip_suffix(".desktop").expect("a desktop id");
+    fn the_baked_defaults_name_apps_the_examples_install() {
+        // shipped by NIRI_PACKAGES, never by a declaration
+        const IN_IMAGE: &[&str] = &["thunar", "org.gnome.FileRoller"];
         let example =
             std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/kuma.toml.example"))
                 .unwrap();
         let declared: Config = toml::from_str(&example).unwrap();
-        assert!(
-            declared.packages.flatpak.iter().any(|a| a == app),
-            "{app} handles https but examples/kuma.toml.example doesn't install it"
-        );
+        let mut checked = 0;
+        for line in MIMEAPPS.lines() {
+            let Some((mime, handler)) = line.split_once('=') else {
+                continue; // the [Default Applications] header
+            };
+            let app = handler.strip_suffix(".desktop").expect("a desktop id");
+            if IN_IMAGE.contains(&app) {
+                continue;
+            }
+            assert!(
+                declared.packages.flatpak.iter().any(|a| a == app),
+                "{app} handles {mime} but examples/kuma.toml.example doesn't install it"
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "nothing was checked: has MIMEAPPS changed shape?");
+        // the handler that actually went stale once, still named explicitly
+        assert!(MIMEAPPS.contains("x-scheme-handler/https=org.mozilla.firefox.desktop"));
     }
 
     /// fuzzel runs `Terminal=true` desktop entries through whatever
