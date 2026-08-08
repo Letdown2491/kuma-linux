@@ -1,0 +1,45 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The gate that runs on every push. It covers everything checkable
+  # without a machine to run on, including the cheap tier of the smoke
+  # tests: every committed example parses, validates, and compiles to an
+  # image that keeps kuma's floor (greenboot, the lint, the baked
+  # declaration, a greeter check on every desktop).
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all-targets
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo build --release
+      - name: shellcheck
+        run: shellcheck scripts/smoke.sh
+
+  # The image stage: actually build a declaration with podman and inspect
+  # the result. Only the minimal example, deliberately. A desktop image is
+  # ~4.5 GB plus its layers, which does not fit a hosted runner's disk with
+  # room to spare, and a smoke test that flakes on ENOSPC teaches nobody
+  # anything. Desktop images are covered by the boot stage, which needs
+  # KVM and sudo and runs locally: `scripts/smoke.sh --boot`.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build
+      - name: smoke (check + image)
+        run: ./scripts/smoke.sh minimal

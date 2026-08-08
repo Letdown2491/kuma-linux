@@ -183,6 +183,7 @@ impl Config {
                 // inert inside the single-quoted declaration file the
                 // sync script sources
                 validate_name(hash, "user.password_hash", &['$', '.', '/', '='])?;
+                validate_password_hash(hash)?;
             }
             for key in &user.ssh_keys {
                 let looks_like_key = ["ssh-", "ecdsa-", "sk-"]
@@ -214,6 +215,37 @@ impl Config {
 
 /// Entries end up inside generated RUN instructions, so restrict them to a
 /// conservative character set rather than trusting shell quoting.
+/// A password hash that crypt can never accept has to fail here, at
+/// `kuma check`, not eight minutes later on the machine.
+///
+/// Found by the smoke tests: every committed example shipped the
+/// placeholder `password_hash = '...'`, which validated, built, and then
+/// took down kuma-user-sync on first boot, because `chpasswd -e` rejects
+/// it ("invalid password hash") and the sync script runs under
+/// `set -euo pipefail`. The account ended up with no password and the
+/// only evidence was a failed unit nobody was looking at. A declaration
+/// that validates must either become a running system or fail at the
+/// earliest stage, and this was neither.
+///
+/// Deliberately shape-only, not an allowlist of crypt ids: `$6$`, yescrypt
+/// `$y$`, bcrypt `$2b$`, and whatever glibc adds next all have to keep
+/// working, and rejecting a hash someone's machine already accepts would
+/// be a worse bug than the one this fixes. Anything of the form
+/// `$id$[params$]salt$hash` with non-empty fields passes.
+fn validate_password_hash(hash: &str) -> Result<()> {
+    let fields: Vec<&str> = hash.strip_prefix('$').unwrap_or("").split('$').collect();
+    let well_formed = hash.starts_with('$')
+        && fields.len() >= 3
+        && fields.iter().all(|f| !f.is_empty());
+    if !well_formed {
+        bail!(
+            "user.password_hash {hash:?} is not a crypt(5) hash (expected `$id$salt$hash`, e.g. from `kuma passwd`); \
+             a placeholder here builds fine and then fails on the machine at first boot"
+        );
+    }
+    Ok(())
+}
+
 fn validate_name(value: &str, field: &str, extra: &[char]) -> Result<()> {
     if value.is_empty() {
         bail!("{field} contains an empty entry");
@@ -253,11 +285,49 @@ mod tests {
             config.validate().unwrap_or_else(|e| panic!("{}: {e}", path.display()));
             if let Some(user) = &config.user {
                 assert_eq!(user.name, "me", "{}", path.display());
-                assert_eq!(user.password_hash.as_deref(), Some("..."), "{}", path.display());
+                // No hash in a committed example, in either direction: a
+                // real one would be identity in git, and a placeholder is
+                // worse than nothing since it validates here and then
+                // fails on the machine (see validate_password_hash). The
+                // examples show the line commented out instead.
+                assert_eq!(user.password_hash, None, "{}", path.display());
             }
             checked += 1;
         }
         assert!(checked >= 2, "expected the committed examples, found {checked}");
+    }
+
+    /// The placeholder that started this: it passed every check kuma had,
+    /// built an image, and then failed kuma-user-sync on first boot
+    /// because chpasswd rejects it. Rejecting it at validate time is the
+    /// promise ("fail at the earliest stage") being kept.
+    ///
+    /// The accept list matters more than the reject list here. Rejecting
+    /// a hash that a machine already accepts would lock someone out of
+    /// their own declaration, so anything crypt-shaped passes: every id,
+    /// with or without parameters.
+    #[test]
+    fn password_hash_must_be_one_crypt_could_accept() {
+        let hashed = |h: &str| {
+            let toml = format!(
+                "schema_version = 1\n[user]\nname = \"me\"\npassword_hash = '{h}'\n"
+            );
+            toml::from_str::<Config>(&toml).unwrap().validate()
+        };
+
+        // sha512crypt, as `openssl passwd -6` emits it
+        assert!(hashed("$6$Xy1z$abcDEF.ghi/JKL0123456789").is_ok());
+        // what `kuma passwd` emits: a rounds= parameter field
+        assert!(hashed("$6$rounds=656000$Xy1z$abcDEF.ghi/JKL0123456789").is_ok());
+        // yescrypt (Fedora's default) and bcrypt: no id allowlist here
+        assert!(hashed("$y$j9T$Xy1z$abcDEF0123456789").is_ok());
+        assert!(hashed("$2b$12$Xy1zabcDEF0123456789").is_ok());
+
+        // the placeholder, and the shapes next to it
+        assert!(hashed("...").is_err(), "the placeholder every example shipped");
+        assert!(hashed("$6$").is_err(), "no salt, no hash");
+        assert!(hashed("$6$$abcdef").is_err(), "empty salt field");
+        assert!(hashed("hunter2").is_err(), "a plaintext password is not a hash");
     }
 
     #[test]

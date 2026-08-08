@@ -1946,6 +1946,68 @@ mod tests {
         assert!(!cosmic.contains("pam_gnome_keyring /etc/pam.d/greetd\n"));
     }
 
+    /// The cheap tier of the smoke tests, and the only one that runs
+    /// everywhere: every committed example must compile to an image that
+    /// keeps the promises kuma makes about *all* images, plus the ones
+    /// its own declaration asks for. scripts/smoke.sh takes it from here
+    /// and actually builds and boots them; this catches the regressions
+    /// that don't need a machine to find, on every `cargo test`.
+    ///
+    /// The point is coverage that grows by itself: a new example file is
+    /// automatically held to the same floor, with nobody remembering to
+    /// add a test for it.
+    #[test]
+    fn every_example_compiles_to_a_kuma_image() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/examples");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if !path.extension().is_some_and(|e| e == "example") {
+                continue;
+            }
+            let name = path.display().to_string();
+            let text = std::fs::read_to_string(&path).unwrap();
+            let parsed: Config = toml::from_str(&text).unwrap();
+            let out = generate(&parsed);
+            let at = |what: &str, ok: bool| assert!(ok, "{name}: {what}");
+
+            // The floor, owed to every image no matter what it declares.
+            at("builds FROM the declared base", out.contains(&format!("FROM {}", parsed.system.base)));
+            at("runs the bootc lint", out.contains("bootc container lint"));
+            at("bakes greenboot", out.contains("dnf -y install greenboot"));
+            at("converges the boot counter", out.contains("kuma-boot-health-sync.service"));
+            at("labels itself for GC", out.contains("LABEL io.kuma.image"));
+            at("bakes its own declaration", out.contains("COPY kuma.toml /usr/lib/kuma/kuma.toml"));
+
+            // What this particular declaration asked for.
+            for pkg in &parsed.packages.rpm {
+                at(&format!("installs declared rpm {pkg}"), out.contains(pkg));
+            }
+            for svc in &parsed.services.enable {
+                at(&format!("enables declared service {svc}"), out.contains(svc));
+            }
+            if parsed.user.is_some() {
+                at("converges the declared user", out.contains("kuma-user-sync.service"));
+            }
+            if !parsed.packages.flatpak.is_empty() {
+                at("converges flatpaks", out.contains("kuma-flatpak-sync.service"));
+            }
+
+            // A desktop is a promise about what you see at boot, so the
+            // greeter check and the keyring unlock ride with every one of
+            // them and neither is per-desktop opt-in.
+            if parsed.system.desktop != Desktop::None {
+                at("guards the greeter in greenboot", out.contains("50-kuma-greeter.sh"));
+                at("asserts the keyring PAM module", out.contains("pam_gnome_keyring.so"));
+                at("ships identity", out.contains("fastfetch-logo.txt"));
+            } else {
+                at("stays headless", !out.contains("50-kuma-greeter.sh"));
+            }
+            checked += 1;
+        }
+        assert!(checked >= 3, "expected the committed examples, found {checked}");
+    }
+
     #[test]
     fn cosmic_context_ships_identity_not_niri_glue() {
         let dir = tempfile::tempdir().unwrap();

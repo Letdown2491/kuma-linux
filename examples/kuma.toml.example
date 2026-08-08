@@ -24,7 +24,7 @@ desktop = "niri"
 [user]
 name = "me"
 shell = "fish"
-password_hash = '...'   # from `kuma passwd`
+# password_hash = '$6$...'   # from `kuma passwd`; uncomment with yours
 
 # groups = ["wheel"]                # the default
 # ssh_keys = ["ssh-ed25519 AAAA..."]

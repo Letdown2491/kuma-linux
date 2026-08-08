@@ -15,7 +15,7 @@ desktop = "cosmic"
 [user]
 name = "me"
 shell = "fish"
-password_hash = '...'   # from `kuma passwd`
+# password_hash = '$6$...'   # from `kuma passwd`; uncomment with yours
 
 # autologin = true       # straight to the desktop at boot
 

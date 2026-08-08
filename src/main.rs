@@ -1178,19 +1178,26 @@ fn iso_config_toml(config: &Config) -> String {
 }
 
 fn bib_config_toml() -> String {
-    // hostname first: bare keys must precede the sub-tables to stay under
-    // [customizations]. Written to /etc/hostname at install time — the
-    // os-release DEFAULT_HOSTNAME branding loses at boot because the
-    // initrd (prebuilt by the Fedora base) sets the hostname before our
-    // root is visible.
+    // Only what bib actually supports for qcow2. It rejects anything else
+    // with "blueprint validation failed for image type qcow2: <key>: not
+    // supported" and then builds the disk regardless, so an unsupported
+    // key does nothing but print an alarming line into every VM build,
+    // and it reports one key at a time, so they hid behind each other.
+    //
+    // Both keys that used to be here already had working replacements
+    // elsewhere, which is why nobody noticed they were inert:
+    //   hostname  the image writes /etc/hostname itself, which is what
+    //             beats the initrd's early hostname (the ISO is a
+    //             different path and keeps its kickstart `network
+    //             --hostname=`, which Anaconda does honor).
+    //   timezone  boot_disk passes it through -fw_cfg and
+    //             kuma-vm-timezone adopts it at boot, which exists
+    //             precisely because bib ignores the blueprint key.
     let mut out = String::from(
-        "[customizations]\nhostname = \"kuma\"\n\n[[customizations.user]]\nname = \"kuma\"\npassword = \"kuma\"\ngroups = [\"wheel\"]\n",
+        "[customizations]\n\n[[customizations.user]]\nname = \"kuma\"\npassword = \"kuma\"\ngroups = [\"wheel\"]\n",
     );
     if let Some(key) = find_ssh_pubkey() {
         out.push_str(&format!("key = \"{}\"\n", key.trim()));
-    }
-    if let Some(tz) = host_timezone() {
-        out.push_str(&format!("\n[customizations.timezone]\ntimezone = \"{tz}\"\n"));
     }
     // Headroom for `kuma vm --apply`: image updates transiently need a few
     // GB in the guest. Sparse qcow2, so the host pays nothing up front.
@@ -1274,6 +1281,24 @@ fn path_str(path: &Path) -> Result<&str> {
 
 #[cfg(test)]
 mod tests {
+    /// bib rejects unsupported blueprint keys for qcow2 and then builds
+    /// the disk anyway, so an inert key costs nothing but a "blueprint
+    /// validation failed" line in every VM build. It reports one key at a
+    /// time, which is how hostname and timezone hid behind each other
+    /// until the smoke tests started reading the output. Both look
+    /// obviously correct and would be re-added on sight, and both already
+    /// have working replacements (/etc/hostname in the image; -fw_cfg and
+    /// kuma-vm-timezone at boot), so the absence is pinned here.
+    #[test]
+    fn vm_config_asks_bib_for_nothing_it_refuses() {
+        let out = super::bib_config_toml();
+        assert!(!out.contains("hostname"), "bib rejects it for qcow2");
+        assert!(!out.contains("timezone"), "bib rejects it for qcow2");
+        // and still carries what bib does support
+        assert!(out.contains("[[customizations.user]]"));
+        assert!(out.contains("minsize = \"20 GiB\""));
+    }
+
     #[test]
     fn iso_config_reflects_declaration() {
         let with_user: crate::config::Config =

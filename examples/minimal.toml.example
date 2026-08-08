@@ -1,0 +1,19 @@
+# The smallest declaration that still builds a real machine: no desktop,
+# no user, no packages beyond the base. Useful as a starting point for a
+# headless box, and as the cheap case in the smoke tests (scripts/smoke.sh)
+# since it builds in a minute and boots without a compositor.
+#
+# Even this carries kuma's floor: greenboot and automatic rollback of a
+# failed boot are in every image, never opt-in.
+schema_version = 1
+
+[system]
+base = "quay.io/fedora/fedora-bootc:44"
+# No `desktop` key: headless. Add one (`niri`, `cosmic`) and the whole
+# curated set, greeter, and identity layer come with it.
+
+[packages]
+rpm = ["fish"]
+
+[services]
+enable = []

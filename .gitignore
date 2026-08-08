@@ -1,10 +1,10 @@
 /target
 /Containerfile
-# vm, vm-cosmic, and any future per-desktop disk directories
+# vm, vm-cosmic, vm-smoke, and any future disk directories
 /vm*
 /.claude
 
-# Build outputs and the real declarations stay local — the *.example
+# Build outputs and the real declarations stay local; the *.example
 # files are the committed ones.
 /iso
 /examples/kuma.toml

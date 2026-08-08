@@ -209,6 +209,28 @@ human; rolling back can't fix what an update didn't break.
 
 ## Developing and testing
 
+- **Smoke tests** (`scripts/smoke.sh`) build every committed example and,
+  with `--boot`, boot it. Three stages, cheapest first: `check` validates
+  the declaration, `image` builds it and inspects the layers a successful
+  build doesn't already prove (the baked declaration is byte-identical,
+  the branding sed landed, greenboot is present), and `boot` makes a disk,
+  boots it headless, and asks the machine whether the boot was healthy.
+  That last verdict is greenboot's own: the same check that would roll an
+  update back decides whether the test passed, which on a desktop image
+  means the greeter came up. "Boots fine into a black screen" fails here
+  instead of on your laptop.
+
+  ```console
+  $ cargo test                   # the tier that needs no machine, on every change
+  $ scripts/smoke.sh             # check + image, every example
+  $ scripts/smoke.sh --boot      # all three stages (needs KVM and sudo)
+  $ scripts/smoke.sh --boot cosmic
+  ```
+
+  CI runs `cargo test`, clippy, and the image stage on the minimal example
+  only: a desktop image doesn't fit a hosted runner's disk, and the boot
+  stage needs KVM and sudo. Run `--boot` locally before pushing anything
+  that touches image contents.
 - **CLI development** works anywhere Rust does, including a distrobox. When
   kuma runs inside a container it drives the *host's* podman/bootc via
   `flatpak-spawn --host`.
@@ -265,7 +287,7 @@ human; rolling back can't fix what an update didn't break.
 - [x] Self-describing images: the baked declaration, seeded `kuma init`, config search path
 - [x] Boot health + auto-rollback: greenboot in every image; desktop boots must reach the greeter or fall back
 - [x] `kuma capture`: drift as a proposal against the declaration, not an error to erase
-- [ ] CI build-and-boot smoke tests: every example built against fresh Fedora, booted headless, asserted healthy
+- [x] CI build-and-boot smoke tests: every example built, booted headless, and judged by its own greenboot verdict
 - [ ] `kuma.lock`: pin base digest and package versions; `kuma update` moves pins deliberately
 - [ ] `kuma doctor` drift detection for `/etc`: flag local edits shadowing the image's baked defaults
 - [ ] Registry publishing + CI builds (`bootc switch`-able from anywhere)
