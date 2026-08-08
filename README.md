@@ -79,6 +79,8 @@ $ kuma check                               # validate the declaration, build not
 $ kuma diff                                # drift: kuma.toml vs image vs machine
 $ kuma doctor                              # machine health, /etc drift, GPU, disk
 $ kuma sync                                # converge flatpaks and brew now
+$ kuma snapshot                            # the btrfs snapshots this machine has taken
+$ kuma snapshot --restore ~/notes.md       # bring a path back (dry run; --yes writes)
 $ kuma update --check                      # has the locked base moved?
 $ kuma update --yes                        # rebuild on the latest base, stage it
 $ kuma rollback --yes                      # boot order back to the previous deployment
@@ -108,6 +110,13 @@ Ad-hoc flatpaks, kept as yours: io.github.kolunmi.Bazaar
   → kuma capture   keep them: declare what this machine already runs
   → kuma sync      converge now; otherwise the boot/daily run picks this up
 ```
+
+Snapshots follow the same rule. `kuma snapshot --restore <path>` is a dry
+run that names which snapshot the path would come back from and whether a
+copy on the machine gets replaced; `--yes` does it. It restores a path,
+never a whole subvolume: swapping what `/var/home` *is* while processes
+hold files open in it is a reboot-shaped operation, and the accident
+people actually have is one file.
 
 Convergence takes back only what it installed. Boxes above was declared
 once and no longer is, so it is on the removal list; Bazaar you installed

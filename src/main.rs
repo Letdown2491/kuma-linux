@@ -6,6 +6,7 @@ mod edit;
 mod host;
 mod inspect;
 mod lock;
+mod snapshot;
 mod state;
 
 use anyhow::{bail, Context, Result};
@@ -201,6 +202,21 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// List the snapshots this machine has taken, or restore a path from one
+    Snapshot {
+        /// Restore this path (absolute, inside the snapshot target)
+        #[arg(long, value_name = "PATH")]
+        restore: Option<String>,
+        /// Take it from this snapshot rather than the newest one holding it
+        #[arg(long, value_name = "ID", requires = "restore")]
+        from: Option<String>,
+        /// Actually write the restore (default is a dry run)
+        #[arg(long, requires = "restore")]
+        yes: bool,
+        /// Emit as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Print the JSON Schema for kuma.toml, generated from the parser's own types
     Schema,
     /// Hash a password for the [user] section (prompts; prints the line to paste)
@@ -346,6 +362,18 @@ fn run(
         Cmd::Check { json } => {
             let json = json || root_json;
             check(&read_config_path(config_path, explicit, !json), json)
+        }
+        Cmd::Snapshot { restore, from, yes, json } => {
+            let json = json || root_json;
+            let path = read_config_path(config_path, explicit, !json);
+            let config = Config::load(&path)?;
+            snapshot::snapshot(
+                &config,
+                restore.as_deref(),
+                from.as_deref(),
+                yes,
+                json,
+            )
         }
         Cmd::Schema => schema(),
         Cmd::Passwd => passwd(),
