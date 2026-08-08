@@ -8,6 +8,7 @@ edition = "2021"
 rust-version = "1.85"
 description = "Declarative, atomic Fedora bootc system"
 license = "MIT"
+repository = "https://github.com/Letdown2491/kuma-linux"
 
 [dependencies]
 anyhow = "1"

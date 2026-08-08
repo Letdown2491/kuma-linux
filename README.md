@@ -27,6 +27,39 @@ reboots you into a system image, and `bootc` will roll a bad one back, but
 try a declaration in `kuma vm` before you try it on a machine you need
 tomorrow.
 
+## Install
+
+Kuma is one self-contained binary: the wallpaper, the greeter config, and
+every desktop asset are compiled into it, so it needs nothing beside it on
+disk. Building it needs a Rust toolchain at 1.85 or newer and a linker.
+
+```console
+$ cargo install --git https://github.com/Letdown2491/kuma-linux --locked
+```
+
+Or clone it, which also gets you the example declarations and the smoke
+tests:
+
+```console
+$ git clone https://github.com/Letdown2491/kuma-linux
+$ cd kuma-linux && cargo install --path .
+```
+
+Either way the binary is `kuma`.
+
+Keep `--locked` on the first form. Without it cargo ignores the committed
+`Cargo.lock` and resolves dependencies fresh, so you get versions nobody
+tested.
+
+**What needs what.** `init`, `check`, `generate`, and `build` need only
+podman. `switch`, `update`, `rollback`, and `doctor` need to be running on a
+bootc machine. `vm` and `iso` need KVM and sudo.
+
+One catch worth knowing before you start: if you already run an image-based
+desktop, which is the obvious place to want this, you probably have podman
+and no compiler. Build kuma in a toolbox or a container and copy the binary
+out. Prebuilt binaries are on the roadmap for exactly this reason.
+
 ## Quick start
 
 ```console
