@@ -180,8 +180,9 @@ const COSMIC_BACKGROUND: &str = r#"(
 /// the gutted driver if a dependency dragged it in.
 const MESA_FREEWORLD: &str = "RUN dnf -y install \"https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm\" \\\n    && dnf -y install --allowerasing mesa-va-drivers-freeworld \\\n    && dnf clean all\n";
 
-/// Unlock the keyring with the login password, or every Chromium
-/// launch nags for it. (Autologin skips this: no password typed.)
+/// Unlock the keyring with the login password, or every keyring-using
+/// app nags for it on launch (browsers most visibly, but far from only
+/// them). Autologin skips this: no password is typed.
 ///
 /// Fedora's greeter PAM stacks already call pam_gnome_keyring, so
 /// there is nothing to append; but every one of those lines carries a
@@ -624,9 +625,9 @@ esac
 /// link from Thunar is app-picker roulette. Flatpak-exported desktop
 /// ids for the declared apps, native ids for the in-image tools.
 const MIMEAPPS: &str = r#"[Default Applications]
-x-scheme-handler/http=org.chromium.Chromium.desktop
-x-scheme-handler/https=org.chromium.Chromium.desktop
-text/html=org.chromium.Chromium.desktop
+x-scheme-handler/http=org.mozilla.firefox.desktop
+x-scheme-handler/https=org.mozilla.firefox.desktop
+text/html=org.mozilla.firefox.desktop
 application/pdf=org.gnome.Papers.desktop
 text/plain=org.gnome.TextEditor.desktop
 inode/directory=thunar.desktop
@@ -1776,6 +1777,32 @@ mod tests {
         ));
         assert!(out.contains("-e '/XF86Audio/d'"));
         assert!(out.contains("r /usr/lib/kuma/niri-binds.kdl"));
+    }
+
+    /// The baked defaults name apps the image actually has: flatpak ids
+    /// for the ones the example declares, native ids for the ones the
+    /// desktop set installs. A handler pointing at an app nobody installs
+    /// is a link that opens nothing, which is how the default browser sat
+    /// on Chromium while every real declaration shipped Firefox.
+    ///
+    /// Only the browser is checked mechanically. The rest can't be: some
+    /// handlers are native rpms (thunar, file-roller) whose desktop ids
+    /// look exactly like flatpak ids and are nowhere in the declaration.
+    #[test]
+    fn the_default_browser_is_one_the_examples_install() {
+        let handler = MIMEAPPS
+            .lines()
+            .find_map(|line| line.strip_prefix("x-scheme-handler/https="))
+            .expect("mimeapps sets an https handler");
+        let app = handler.strip_suffix(".desktop").expect("a desktop id");
+        let example =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/kuma.toml.example"))
+                .unwrap();
+        let declared: Config = toml::from_str(&example).unwrap();
+        assert!(
+            declared.packages.flatpak.iter().any(|a| a == app),
+            "{app} handles https but examples/kuma.toml.example doesn't install it"
+        );
     }
 
     #[test]

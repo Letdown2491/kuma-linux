@@ -39,7 +39,7 @@ rpm = ["fish", "distrobox", "tailscale"]
 # `kuma capture` offers to write it in here when you decide to keep it.
 brew = ["ripgrep", "fd", "jq", "gh", "lazygit", "btop"]
 flatpak = [
-    "org.chromium.Chromium",
+    "org.mozilla.firefox",
     "org.gnome.Loupe",
     "org.gnome.Calculator",
     "io.github.celluloid_player.Celluloid",
