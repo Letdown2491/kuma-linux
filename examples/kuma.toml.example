@@ -58,8 +58,10 @@ flatpak = [
 # offers to write it down here when you decide to keep it.
 brew = ["ripgrep", "fd", "jq", "gh", "lazygit", "btop"]
 
-# Unit names are checked at build time, so a typo fails the build instead
-# of being silently ignored.
+# Your additions only. A desktop already enables what it needs (greeter,
+# firewalld, bluetooth, cups, avahi for .local names and driverless
+# printing, chronyd), so those don't belong here. Unit names are checked
+# at build time, so a typo fails the build instead of being ignored.
 [services]
 enable = ["tailscaled.service"]
-# disable = ["avahi-daemon.service"]   # the base enables this one
+# disable = ["mdmonitor.service"]   # e.g. a service for hardware you don't have

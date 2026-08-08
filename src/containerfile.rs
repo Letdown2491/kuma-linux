@@ -1805,6 +1805,39 @@ mod tests {
         );
     }
 
+    /// The example's `disable` line must not name a unit kuma's desktop
+    /// deliberately enables, or the file argues with the image it
+    /// compiles to. It read `avahi-daemon.service` when this was written,
+    /// and the obvious replacement (`bluetooth.service`) was enabled by
+    /// kuma too, which is how the mistake got made twice: the unit has to
+    /// be chosen against kuma's curation, not against the base's defaults.
+    #[test]
+    fn the_disable_example_does_not_fight_the_desktop() {
+        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
+        let enabled: Vec<&str> = out
+            .lines()
+            .find(|line| line.contains("systemctl enable "))
+            .expect("the desktop arm enables units")
+            .split_whitespace()
+            .filter(|word| word.ends_with(".service"))
+            .collect();
+        assert!(enabled.contains(&"avahi-daemon.service"), "sanity: kuma enables avahi");
+
+        let example =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/kuma.toml.example"))
+                .unwrap();
+        for line in example.lines() {
+            let line = line.trim_start().trim_start_matches('#').trim_start();
+            let Some(units) = line.strip_prefix("disable = [") else { continue };
+            for unit in units.split(['"', ',', ']']).filter(|u| u.ends_with(".service")) {
+                assert!(
+                    !enabled.contains(&unit),
+                    "the example suggests disabling {unit}, which kuma's desktop enables"
+                );
+            }
+        }
+    }
+
     #[test]
     fn daily_driver_glue() {
         assert!(NIRI_MEDIA_BINDS.contains("cliphist list"));
