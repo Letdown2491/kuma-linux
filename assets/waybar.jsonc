@@ -9,7 +9,7 @@
     "spacing": 4,
     "modules-left": ["niri/workspaces", "niri/window"],
     "modules-center": ["clock"],
-    "modules-right": ["tray", "privacy", "idle_inhibitor", "pulseaudio", "bluetooth", "network", "power-profiles-daemon", "battery"],
+    "modules-right": ["tray", "idle_inhibitor", "power-profiles-daemon", "privacy", "pulseaudio", "bluetooth", "network", "battery"],
 
     "niri/window": {
         "max-length": 60,
@@ -33,10 +33,11 @@
         "on-click": "blueman-manager"
     },
     "network": {
-        "format-wifi": "  {essid}",
-        "format-ethernet": "  wired",
+        "format-wifi": "",
+        "format-ethernet": "",
         "format-disconnected": "offline",
         "tooltip-format": "{ifname}: {ipaddr}",
+        "tooltip-format-wifi": "{essid}  ({ifname}: {ipaddr})",
         "on-click": "nm-connection-editor"
     },
     "battery": {
