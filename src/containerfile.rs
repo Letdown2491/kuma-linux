@@ -601,6 +601,18 @@ window-rule {
         inactive-color "#333940"
     }
 }
+
+// The machine's own deltas, and the LAST thing in this file on purpose:
+// niri merges includes positionally, so whatever is here wins over
+// everything above it. Without this a user who wants one setting changed
+// must copy the whole config into ~/.config/niri/config.kdl, which then
+// shadows /etc forever and goes stale the moment an image update rewrites
+// the config it was copied from. A few lines in local.kdl cost nothing and
+// never expire. optional=true is what lets the build's `niri validate` (and
+// every machine that never writes one) pass with the file absent; niri logs
+// a reload warning in that case and carries on. Both optional includes and
+// ~ expansion landed in niri 26.04, so this needs that or newer.
+include optional=true "~/.config/niri/local.kdl"
 "##;
 
 /// Dark by default. Apps learn the preference from the settings portal,
@@ -1734,6 +1746,27 @@ mod tests {
         // only the Kuma extras spawn remains (two spawns = two bars).
         assert!(out.contains("-e '/^spawn-at-startup \"waybar\"$/d'"));
         assert_eq!(NIRI_EXTRAS.matches("spawn-at-startup \"waybar\"").count(), 1);
+    }
+
+    /// The local-override include is worthless anywhere but last: niri
+    /// merges includes positionally, so anything appended after it would
+    /// silently outrank the machine's own settings. The extras are catted
+    /// onto the end of the config, so last-in-extras is last-in-config.
+    #[test]
+    fn the_local_override_include_has_the_last_word() {
+        let include = "include optional=true \"~/.config/niri/local.kdl\"";
+        assert_eq!(
+            NIRI_EXTRAS.trim_end().lines().next_back(),
+            Some(include),
+            "the local override must be the final line of the niri config"
+        );
+        // required-and-absent would fail `niri validate` in the build, and
+        // every machine that never writes the file
+        assert!(!NIRI_EXTRAS.contains("include \"~/.config/niri/local.kdl\""));
+        // the build appends extras after the merged upstream config, which
+        // is the only reason last-in-extras means last-in-config
+        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
+        assert!(out.contains("cat /usr/lib/kuma/niri-extras.kdl >> /etc/niri/config.kdl"));
     }
 
     #[test]
