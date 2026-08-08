@@ -27,11 +27,8 @@ pub fn add(path: &Path, list: &str, names: &[String], json: bool) -> Result<()> 
     if !added.is_empty() {
         store(path, &doc)?;
     }
-    let (actions, converge_note) = if added.is_empty() {
-        (Vec::new(), None)
-    } else {
-        apply_edges(list == "rpm")
-    };
+    let (actions, converge_note) =
+        if added.is_empty() { (Vec::new(), None) } else { apply_edges(list == "rpm") };
     if json {
         println!(
             "{}",
@@ -78,9 +75,7 @@ pub fn remove(path: &Path, names: &[String], json: bool) -> Result<()> {
     for name in names {
         let list = LISTS
             .iter()
-            .find(|list| {
-                list_array(&doc, list).is_some_and(|arr| contains(arr, name))
-            })
+            .find(|list| list_array(&doc, list).is_some_and(|arr| contains(arr, name)))
             .with_context(|| format!("{name} is not declared in any [packages] list"))?;
         let arr = list_array_mut(&mut doc, list)?;
         let idx = position(arr, name).expect("just found it");
@@ -88,8 +83,7 @@ pub fn remove(path: &Path, names: &[String], json: bool) -> Result<()> {
         removed.push((name, list));
     }
     store(path, &doc)?;
-    let (actions, converge_note) =
-        apply_edges(removed.iter().any(|(_, list)| *list == "rpm"));
+    let (actions, converge_note) = apply_edges(removed.iter().any(|(_, list)| *list == "rpm"));
     if json {
         println!(
             "{}",
@@ -118,8 +112,7 @@ fn load(path: &Path) -> Result<DocumentMut> {
             path.display()
         )
     })?;
-    text.parse()
-        .with_context(|| format!("invalid config in {}", path.display()))
+    text.parse().with_context(|| format!("invalid config in {}", path.display()))
 }
 
 /// The edited document must still be a valid declaration — the same rules
@@ -137,12 +130,8 @@ fn list_array<'a>(doc: &'a DocumentMut, list: &str) -> Option<&'a Array> {
 }
 
 fn list_array_mut<'a>(doc: &'a mut DocumentMut, list: &str) -> Result<&'a mut Array> {
-    let packages = doc
-        .entry("packages")
-        .or_insert(Item::Table(Table::new()));
-    let table = packages
-        .as_table_mut()
-        .context("[packages] is not a table")?;
+    let packages = doc.entry("packages").or_insert(Item::Table(Table::new()));
+    let table = packages.as_table_mut().context("[packages] is not a table")?;
     table
         .entry(list)
         .or_insert(Item::Value(Value::Array(Array::new())))
@@ -178,8 +167,7 @@ fn push_matching_style(arr: &mut Array, name: &str) {
 /// and brew installs then converge on the machine after the switch. Where
 /// the build goes next depends on the machine — same edges as build()'s.
 pub(crate) fn apply_edges(rpm: bool) -> (Vec<Action>, Option<&'static str>) {
-    let mut actions =
-        vec![Action::new("build", "kuma build", "bake the edit into a new image")];
+    let mut actions = vec![Action::new("build", "kuma build", "bake the edit into a new image")];
     if Path::new("/run/ostree-booted").exists() {
         actions.push(Action::new(
             "switch",
@@ -189,8 +177,8 @@ pub(crate) fn apply_edges(rpm: bool) -> (Vec<Action>, Option<&'static str>) {
     } else {
         actions.push(Action::new("vm", "kuma vm", "boot the result in a QEMU VM"));
     }
-    let converge_note = (!rpm)
-        .then_some("flatpak and brew changes converge on the machine at boot and daily");
+    let converge_note =
+        (!rpm).then_some("flatpak and brew changes converge on the machine at boot and daily");
     (actions, converge_note)
 }
 

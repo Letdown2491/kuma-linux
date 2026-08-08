@@ -194,7 +194,9 @@ fn index_digest(repo_digests: &[&str], manifest: &str, reference: &str) -> Strin
 /// is one gate rather than one per interpolation site.
 fn is_digest(value: &str) -> bool {
     match value.strip_prefix("sha256:") {
-        Some(hex) => hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+        Some(hex) => {
+            hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        }
         None => false,
     }
 }
@@ -273,7 +275,14 @@ fn registry_manifest(reference: &str) -> Result<String> {
 /// a dependency of something else.
 pub fn resolved_rpms(tag: &str) -> Result<BTreeMap<String, String>> {
     let out = host_output(&[
-        "podman", "run", "--rm", tag, "rpm", "-qa", "--qf", "%{NAME} %{EVR}.%{ARCH}\\n",
+        "podman",
+        "run",
+        "--rm",
+        tag,
+        "rpm",
+        "-qa",
+        "--qf",
+        "%{NAME} %{EVR}.%{ARCH}\\n",
     ])?;
     Ok(parse_rpm_query(&out))
 }
@@ -387,12 +396,7 @@ fn rfc3339(secs: u64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
-    format!(
-        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
-        rem / 3600,
-        (rem % 3600) / 60,
-        rem % 60
-    )
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, (rem % 3600) / 60, rem % 60)
 }
 
 #[cfg(test)]
@@ -521,9 +525,8 @@ mod tests {
     /// splitting an NVRA by hand puts half of python3-dbus in the version.
     #[test]
     fn rpm_names_with_dashes_survive_parsing() {
-        let parsed = parse_rpm_query(
-            "fish 4.0.2-1.fc44.x86_64\npython3-dbus 1.4.0-3.fc44.x86_64\n\n",
-        );
+        let parsed =
+            parse_rpm_query("fish 4.0.2-1.fc44.x86_64\npython3-dbus 1.4.0-3.fc44.x86_64\n\n");
         assert_eq!(parsed.get("fish").unwrap(), "4.0.2-1.fc44.x86_64");
         assert_eq!(parsed.get("python3-dbus").unwrap(), "1.4.0-3.fc44.x86_64");
         assert_eq!(parsed.len(), 2);
@@ -536,7 +539,10 @@ mod tests {
         let d = diff(&old, &new);
         assert_eq!(d.base_from, "sha256:old");
         assert_eq!(d.base_to, "sha256:new");
-        assert_eq!(d.changed, [("bootc".into(), "1.16.6-1.fc44.x86_64".into(), "1.16.7-1.fc44.x86_64".into())]);
+        assert_eq!(
+            d.changed,
+            [("bootc".into(), "1.16.6-1.fc44.x86_64".into(), "1.16.7-1.fc44.x86_64".into())]
+        );
         assert_eq!(d.added, ["new"]);
         assert_eq!(d.removed, ["gone"]);
         assert!(!d.is_empty());

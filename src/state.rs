@@ -71,10 +71,18 @@ pub fn print_actions(actions: &[Action]) {
 enum ConfigFact {
     Missing,
     Invalid(String),
-    Loaded { rpm: usize, flatpak: usize, brew: usize },
+    Loaded {
+        rpm: usize,
+        flatpak: usize,
+        brew: usize,
+    },
     /// No working copy around; the machine's own baked declaration
     /// (BAKED_CONFIG) speaks for it.
-    Baked { rpm: usize, flatpak: usize, brew: usize },
+    Baked {
+        rpm: usize,
+        flatpak: usize,
+        brew: usize,
+    },
 }
 
 struct ImageFact {
@@ -166,7 +174,12 @@ fn observe(config_path: &Path) -> Observed {
     };
 
     let image = host_output(&[
-        "podman", "image", "inspect", "--format", "{{.Id}} {{.Created.Unix}}", crate::DEFAULT_TAG,
+        "podman",
+        "image",
+        "inspect",
+        "--format",
+        "{{.Id}} {{.Created.Unix}}",
+        crate::DEFAULT_TAG,
     ])
     .ok()
     .and_then(|out| {
@@ -225,19 +238,19 @@ fn observe_machine() -> MachineFact {
         if let Ok(cellar) = std::fs::read_dir("/home/linuxbrew/.linuxbrew/Cellar") {
             // tapped formulae ("owner/tap/tool") install under their last segment
             let short = |f: &str| f.rsplit('/').next().unwrap_or(f).to_string();
-            let installed: BTreeSet<String> = cellar
-                .flatten()
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect();
+            let installed: BTreeSet<String> =
+                cellar.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
             let declared: BTreeSet<String> = to_set(&baked).iter().map(|f| short(f)).collect();
             let state = std::fs::read_to_string("/home/linuxbrew/.linuxbrew/.kuma-brews")
                 .unwrap_or_default();
             let ever: BTreeSet<String> = to_set(&state).iter().map(|f| short(f)).collect();
-            count(&mut drift, declared.difference(&installed).count(), "brew formula(e) to install");
-            let removals = installed
-                .iter()
-                .filter(|f| ever.contains(*f) && !declared.contains(*f))
-                .count();
+            count(
+                &mut drift,
+                declared.difference(&installed).count(),
+                "brew formula(e) to install",
+            );
+            let removals =
+                installed.iter().filter(|f| ever.contains(*f) && !declared.contains(*f)).count();
             count(&mut drift, removals, "brew formula(e) to remove");
         }
     }
@@ -265,7 +278,10 @@ fn classify(obs: &Observed) -> Snapshot {
     };
 
     if let ConfigFact::Invalid(err) = &obs.config {
-        claim("config-invalid", format!("{} is invalid; nothing can build from it", obs.config_path));
+        claim(
+            "config-invalid",
+            format!("{} is invalid; nothing can build from it", obs.config_path),
+        );
         actions.push(Action::new("edit", format!("$EDITOR {}", obs.config_path), err.clone()));
     }
     if let MachineFact::Kuma { staged: true, .. } = &obs.machine {
@@ -274,7 +290,11 @@ fn classify(obs: &Observed) -> Snapshot {
     }
     if let (ConfigFact::Loaded { .. }, None) = (&obs.config, &obs.image) {
         claim("not-built", format!("{} has never been built here", obs.config_path));
-        actions.push(Action::new("build", "kuma build", "build the system image from the declaration"));
+        actions.push(Action::new(
+            "build",
+            "kuma build",
+            "build the system image from the declaration",
+        ));
     }
     if matches!(&obs.config, ConfigFact::Loaded { .. })
         && obs.image.as_ref().is_some_and(|i| i.edited_after)
@@ -297,7 +317,11 @@ fn classify(obs: &Observed) -> Snapshot {
     if let MachineFact::Kuma { drift, .. } = &obs.machine {
         if !drift.is_empty() {
             claim("drifted", format!("machine drifted from its declaration: {}", drift.join(", ")));
-            actions.push(Action::new("sync", "kuma sync", "converge now (also runs at boot and daily)"));
+            actions.push(Action::new(
+                "sync",
+                "kuma sync",
+                "converge now (also runs at boot and daily)",
+            ));
             actions.push(Action::new("diff", "kuma diff", "see the drift in detail"));
         }
     }
@@ -310,19 +334,31 @@ fn classify(obs: &Observed) -> Snapshot {
                     "kuma switch",
                     "adopt: point this machine at the kuma image (applies on reboot)",
                 ));
-                actions.push(Action::new("vm", "kuma vm", "boot the image in a disposable VM instead"));
+                actions.push(Action::new(
+                    "vm",
+                    "kuma vm",
+                    "boot the image in a disposable VM instead",
+                ));
             }
             MachineFact::NotBootc => {
                 claim("built", "image built; this machine can't run it directly".into());
                 actions.push(Action::new("vm", "kuma vm", "boot the image in a QEMU VM"));
-                actions.push(Action::new("iso", "kuma iso", "build an installer ISO for real hardware"));
+                actions.push(Action::new(
+                    "iso",
+                    "kuma iso",
+                    "build an installer ISO for real hardware",
+                ));
             }
             MachineFact::Kuma { .. } => {}
         }
     }
     if matches!(&obs.machine, MachineFact::Kuma { .. }) && actions.is_empty() {
         claim("in-sync", "machine matches its declaration; nothing pending".into());
-        actions.push(Action::new("update", "kuma update", "pull the latest base image and rebuild"));
+        actions.push(Action::new(
+            "update",
+            "kuma update",
+            "pull the latest base image and rebuild",
+        ));
         actions.push(Action::new("doctor", "kuma doctor", "deeper machine health checks"));
     }
     match &obs.config {
@@ -344,8 +380,7 @@ fn classify(obs: &Observed) -> Snapshot {
         _ => {}
     }
 
-    let (state, headline) =
-        state.unwrap_or(("in-sync", "nothing pending".into()));
+    let (state, headline) = state.unwrap_or(("in-sync", "nothing pending".into()));
     Snapshot { state, headline, facts: facts_of(obs), actions }
 }
 
@@ -414,11 +449,7 @@ mod tests {
 
     #[test]
     fn staged_outranks_edits_and_both_edges_appear() {
-        let snap = classify(&workspace(
-            loaded(),
-            image(true),
-            kuma_machine(true, vec![], None),
-        ));
+        let snap = classify(&workspace(loaded(), image(true), kuma_machine(true, vec![], None)));
         assert_eq!(snap.state, "staged");
         assert_eq!(snap.actions[0].rel, "reboot");
         assert!(snap.actions.iter().any(|a| a.rel == "build"));

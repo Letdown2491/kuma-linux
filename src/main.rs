@@ -299,9 +299,7 @@ fn run(
             // composed base is never digest-rewritten (builds FROM its
             // content tag), so only a declared image applies its pin.
             if let Some(declared) = config.system.base.clone() {
-                if let Some(pinned) =
-                    lock::for_config(&path).and_then(|l| l.pin_for(&declared))
-                {
+                if let Some(pinned) = lock::for_config(&path).and_then(|l| l.pin_for(&declared)) {
                     config.system.base = Some(pinned);
                 }
             }
@@ -367,13 +365,7 @@ fn run(
             let json = json || root_json;
             let path = read_config_path(config_path, explicit, !json);
             let config = Config::load(&path)?;
-            snapshot::snapshot(
-                &config,
-                restore.as_deref(),
-                from.as_deref(),
-                yes,
-                json,
-            )
+            snapshot::snapshot(&config, restore.as_deref(), from.as_deref(), yes, json)
         }
         Cmd::Schema => schema(),
         Cmd::Passwd => passwd(),
@@ -422,8 +414,7 @@ fn check(config_path: &Path, json: bool) -> Result<()> {
             Ok(())
         }
         Err(err) => {
-            let action =
-                Action::new("edit", format!("$EDITOR {shown}"), format!("{err:#}"));
+            let action = Action::new("edit", format!("$EDITOR {shown}"), format!("{err:#}"));
             if json {
                 println!(
                     "{}",
@@ -505,11 +496,10 @@ fn hash_password(password: &str) -> Result<String> {
     // so the default 5000 rounds is not enough. 656k (passlib's sha512
     // calibration) makes offline guessing ~130x costlier; glibc reads the
     // rounds= prefix, and login-time cost stays well under a second.
-    let params = sha_crypt::Params::new(656_000)
-        .map_err(|e| anyhow::anyhow!("crypt params: {e:?}"))?;
+    let params =
+        sha_crypt::Params::new(656_000).map_err(|e| anyhow::anyhow!("crypt params: {e:?}"))?;
     hash_with(password, params)
 }
-
 
 const STARTER: &str = r#"# Kuma system definition
 schema_version = 1
@@ -583,7 +573,10 @@ fn read_config_path(resolved: &Path, explicit: bool, announce: bool) -> PathBuf 
         let baked = Path::new(state::BAKED_CONFIG);
         if baked.exists() {
             if announce {
-                println!("No local kuma.toml; using this machine's baked declaration ({}).\n", baked.display());
+                println!(
+                    "No local kuma.toml; using this machine's baked declaration ({}).\n",
+                    baked.display()
+                );
             }
             return baked.to_path_buf();
         }
@@ -598,8 +591,7 @@ fn init(force: bool, starter: bool) -> Result<()> {
     }
     // A kuma machine carries the declaration it was built from — a copy
     // of that beats a generic template, because it's true to this machine.
-    let baked =
-        (!starter).then(|| std::fs::read_to_string(state::BAKED_CONFIG).ok()).flatten();
+    let baked = (!starter).then(|| std::fs::read_to_string(state::BAKED_CONFIG).ok()).flatten();
     match baked {
         Some(text) => {
             std::fs::write(&path, text).context("cannot write kuma.toml")?;
@@ -624,7 +616,11 @@ fn build(config_path: &Path, tag: &str, json: bool) -> Result<()> {
     // machine can switch to the image; anywhere else a VM is the way in.
     let mut actions = Vec::new();
     if Path::new("/run/ostree-booted").exists() {
-        actions.push(Action::new("switch", "kuma switch", "stage it onto this machine (applies on reboot)"));
+        actions.push(Action::new(
+            "switch",
+            "kuma switch",
+            "stage it onto this machine (applies on reboot)",
+        ));
     }
     actions.push(Action::new("vm", "kuma vm", "boot it in a disposable VM"));
     if json {
@@ -737,11 +733,10 @@ fn build_image_pinned(config_path: &Path, tag: &str, pin: Pin) -> Result<Option<
     // <none> (~3.5 GB each — they once piled up to 150 GB). The label
     // filter keeps this to kuma's own images; a prune failure is not a
     // build failure.
-    let pruned = host_output(&[
-        "podman", "image", "prune", "-f", "--filter", "label=io.kuma.image",
-    ])
-    .map(|out| out.lines().filter(|l| !l.trim().is_empty()).count())
-    .unwrap_or(0);
+    let pruned =
+        host_output(&["podman", "image", "prune", "-f", "--filter", "label=io.kuma.image"])
+            .map(|out| out.lines().filter(|l| !l.trim().is_empty()).count())
+            .unwrap_or(0);
     if pruned > 0 {
         note(&format!("Reclaimed {pruned} stale build image(s)."));
     }
@@ -843,7 +838,13 @@ fn stage(tag: &str) -> Result<bool> {
     if std::fs::write(&stamp, format!("{local_id}\n")).is_ok() {
         if let Ok(stamp) = path_str(&stamp) {
             let _ = host_output(&[
-                "sudo", "install", "-D", "-m", "0644", stamp, state::DEPLOYED_ID_FILE,
+                "sudo",
+                "install",
+                "-D",
+                "-m",
+                "0644",
+                stamp,
+                state::DEPLOYED_ID_FILE,
             ]);
         }
     }
@@ -878,9 +879,12 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
         // checked; the repos it composes from move continuously. The
         // honest answer is what an update would do, not a fake "current".
         let lock = lock::for_config(config_path);
-        let manifest_changed =
-            lock.as_ref().is_some_and(|lock| &lock.base.reference != base);
-        let update = Action::new("update", "kuma update", "recompose and rebuild; the lock diff shows what moved");
+        let manifest_changed = lock.as_ref().is_some_and(|lock| &lock.base.reference != base);
+        let update = Action::new(
+            "update",
+            "kuma update",
+            "recompose and rebuild; the lock diff shows what moved",
+        );
         if json {
             println!(
                 "{}",
@@ -1054,11 +1058,8 @@ fn print_lock_diff(moved: Option<&lock::LockDiff>) {
         (moved.added.len(), "added"),
         (moved.removed.len(), "removed"),
     ];
-    let summary: Vec<String> = counts
-        .iter()
-        .filter(|(n, _)| *n > 0)
-        .map(|(n, what)| format!("{n} {what}"))
-        .collect();
+    let summary: Vec<String> =
+        counts.iter().filter(|(n, _)| *n > 0).map(|(n, what)| format!("{n} {what}")).collect();
     if !summary.is_empty() {
         println!("rpm   {}", summary.join(", "));
     }
@@ -1189,10 +1190,7 @@ fn sync(json: bool) -> Result<()> {
             // forward move, but the JSON still carries the actions key so
             // an agent sees the same shape every mutating verb promises.
             if json {
-                println!(
-                    "{}",
-                    serde_json::json!({ "ok": true, "converged": [], "actions": [] })
-                );
+                println!("{}", serde_json::json!({ "ok": true, "converged": [], "actions": [] }));
             } else {
                 println!("Nothing to converge: this image declares no flatpaks or brew formulae.");
             }
@@ -1210,7 +1208,8 @@ fn sync(json: bool) -> Result<()> {
     // move is to confirm it: `kuma diff` should report no drift. Every
     // other mutating verb ends at an affordance; sync was the one that
     // dead-ended, in the human output and in the promised JSON shape both.
-    let verify = Action::new("diff", "kuma diff", "confirm the machine now matches its declaration");
+    let verify =
+        Action::new("diff", "kuma diff", "confirm the machine now matches its declaration");
     if json {
         println!(
             "{}",
@@ -1251,7 +1250,12 @@ fn clean(config_path: &Path, json: bool) -> Result<()> {
     let before = avail_bytes();
 
     let external = host_output_any(&[
-        "podman", "ps", "-a", "--external", "--format", "{{.ID}} {{.Names}} {{.Status}}",
+        "podman",
+        "ps",
+        "-a",
+        "--external",
+        "--format",
+        "{{.ID}} {{.Names}} {{.Status}}",
     ])
     .unwrap_or_default();
     let abandoned: Vec<&str> = external
@@ -1286,8 +1290,12 @@ fn clean(config_path: &Path, json: bool) -> Result<()> {
             keep.push(lock.base.reference);
         }
         let listed = host_output_any(&[
-            "podman", "images", "--format", "{{.Repository}}:{{.Tag}}",
-            "--filter", "reference=localhost/kuma-base",
+            "podman",
+            "images",
+            "--format",
+            "{{.Repository}}:{{.Tag}}",
+            "--filter",
+            "reference=localhost/kuma-base",
         ])
         .unwrap_or_default();
         for tag in stale_base_tags(&listed, &keep) {
@@ -1446,22 +1454,32 @@ fn iso(config_path: &Path, tag: &str, output: &Path) -> Result<()> {
     // Fedora's, so lift the newest fedora def out of the bib image and
     // mount it back in under kuma's name.
     let distro = host_output(&[
-        "podman", "run", "--rm", tag, "sh", "-c",
+        "podman",
+        "run",
+        "--rm",
+        tag,
+        "sh",
+        "-c",
         ". /usr/lib/os-release && echo \"$ID-$VERSION_ID\"",
     ])
     .context("cannot read os-release from the image")?;
     let mut def = host_output(&[
-        "sudo", "podman", "run", "--rm", "--entrypoint", "/bin/sh", BIB_IMAGE, "-c",
+        "sudo",
+        "podman",
+        "run",
+        "--rm",
+        "--entrypoint",
+        "/bin/sh",
+        BIB_IMAGE,
+        "-c",
         "cat \"$(ls /usr/share/bootc-image-builder/defs/fedora-*.yaml | sort -V | tail -1)\"",
     ])
     .context("cannot extract a fedora installer def from bootc-image-builder")?;
     def.push('\n');
     let def_path = output.join("installer-def.yaml");
     std::fs::write(&def_path, def)?;
-    let def_mount = format!(
-        "{}:/usr/share/bootc-image-builder/defs/{distro}.yaml:ro",
-        path_str(&def_path)?
-    );
+    let def_mount =
+        format!("{}:/usr/share/bootc-image-builder/defs/{distro}.yaml:ro", path_str(&def_path)?);
 
     println!("Building installer ISO with bootc-image-builder (this takes a while; it assembles a full Anaconda environment)...");
     run_bib(&output, &bib_config, "anaconda-iso", tag, &[def_mount])?;
@@ -1519,14 +1537,10 @@ fn run_bib(
         args.extend(["-v", mount.as_str()]);
     }
     args.extend([
-        BIB_IMAGE,
-        "--type",
-        image_type,
+        BIB_IMAGE, "--type", image_type,
         // fedora-bootc images declare no default root filesystem, so bib
         // fails with "missing required info: DefaultRootFs" without this.
-        "--rootfs",
-        "xfs",
-        tag,
+        "--rootfs", "xfs", tag,
     ]);
     run_host(&args)?;
     // bib ran as root, so its output is root-owned; hand it back to the
@@ -1572,9 +1586,7 @@ fn vm_apply(tag: &str) -> Result<()> {
     run_host(&[
         "sh",
         "-c",
-        &format!(
-            "podman save {tag} | ssh -p 2222 {ssh_opts} kuma@localhost '{remote_load}'"
-        ),
+        &format!("podman save {tag} | ssh -p 2222 {ssh_opts} kuma@localhost '{remote_load}'"),
     ])?;
 
     println!("Switching the VM to the new image (staged; applies on reboot)...");

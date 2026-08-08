@@ -1201,10 +1201,7 @@ pub fn generate(config: &Config) -> String {
         out.push('\n');
         // niri Recommends alacritty, which would ride in past the package
         // list as a weak dep; Kuma's terminal is kitty.
-        out.push_str(&dnf_install(&format!(
-            "--exclude=alacritty {}",
-            NIRI_PACKAGES.join(" ")
-        )));
+        out.push_str(&dnf_install(&format!("--exclude=alacritty {}", NIRI_PACKAGES.join(" "))));
         out.push_str(&mesa_freeworld());
         out.push_str("COPY greetd-config.toml /etc/greetd/config.toml\n");
         out.push_str("COPY kargs-desktop.toml /usr/lib/bootc/kargs.d/10-kuma-desktop.toml\n");
@@ -1215,9 +1212,7 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY fuzzel.ini /etc/xdg/fuzzel/fuzzel.ini\n");
         out.push_str("COPY mako.conf /usr/lib/kuma/mako.conf\n");
         out.push_str("COPY --chmod=755 kuma-mako /usr/libexec/kuma-mako\n");
-        out.push_str(
-            "COPY mako-dropin.conf /usr/lib/systemd/user/mako.service.d/kuma.conf\n",
-        );
+        out.push_str("COPY mako-dropin.conf /usr/lib/systemd/user/mako.service.d/kuma.conf\n");
         // grep first: if a mako update moves or rewords the service file,
         // fail the build instead of silently shipping unthemed notifications
         out.push_str(
@@ -1304,9 +1299,7 @@ pub fn generate(config: &Config) -> String {
         // the first-boot setup must not fire. Plain rm so the build fails
         // if COSMIC ever moves the autostart file, instead of the wizard
         // silently resurfacing.
-        out.push_str(
-            "RUN rm /etc/xdg/autostart/com.system76.CosmicInitialSetup.desktop\n",
-        );
+        out.push_str("RUN rm /etc/xdg/autostart/com.system76.CosmicInitialSetup.desktop\n");
         // cosmic-comp promotes buffers straight to scanout, and on AMD
         // GFX10+ (seen on Rembrandt/680M) a promoted buffer can carry a
         // DCC-compressed modifier the scanout path reads as raw pixels —
@@ -1350,8 +1343,8 @@ pub fn generate(config: &Config) -> String {
         );
     }
 
-    let wants_flatpak = config.system.desktop != Desktop::None
-        || !config.packages.flatpak.is_empty();
+    let wants_flatpak =
+        config.system.desktop != Desktop::None || !config.packages.flatpak.is_empty();
     if wants_flatpak {
         if config.system.desktop == Desktop::None {
             out.push('\n');
@@ -1416,13 +1409,7 @@ pub fn generate(config: &Config) -> String {
         .enable
         .iter()
         .map(|s| format!("systemctl enable {s}"))
-        .chain(
-            config
-                .services
-                .disable
-                .iter()
-                .map(|s| format!("systemctl disable {s}")),
-        )
+        .chain(config.services.disable.iter().map(|s| format!("systemctl disable {s}")))
         .collect();
     if !services.is_empty() {
         out.push_str(&format!("\nRUN {}\n", services.join(" && ")));
@@ -1447,9 +1434,7 @@ pub fn generate(config: &Config) -> String {
             "COPY --chmod=755 kuma-greeter-check /usr/lib/greenboot/check/required.d/50-kuma-greeter.sh\n",
         );
     }
-    out.push_str(
-        "COPY --chmod=755 kuma-boot-health-sync /usr/libexec/kuma-boot-health-sync\n",
-    );
+    out.push_str("COPY --chmod=755 kuma-boot-health-sync /usr/libexec/kuma-boot-health-sync\n");
     out.push_str(
         "COPY kuma-boot-health-sync.service /usr/lib/systemd/system/kuma-boot-health-sync.service\n",
     );
@@ -1470,9 +1455,7 @@ pub fn generate(config: &Config) -> String {
         out.push('\n');
         out.push_str(&dnf_install("btrfs-progs"));
         out.push_str("COPY --chmod=755 kuma-snapshot /usr/libexec/kuma-snapshot\n");
-        out.push_str(
-            "COPY kuma-snapshot.service /usr/lib/systemd/system/kuma-snapshot.service\n",
-        );
+        out.push_str("COPY kuma-snapshot.service /usr/lib/systemd/system/kuma-snapshot.service\n");
         out.push_str("COPY kuma-snapshot.timer /usr/lib/systemd/system/kuma-snapshot.timer\n");
         out.push_str("RUN systemctl enable kuma-snapshot.timer\n");
     }
@@ -1507,9 +1490,7 @@ pub fn generate(config: &Config) -> String {
         out.push_str("RUN systemctl enable kuma-user-sync.service\n");
         if !user.ssh_keys.is_empty() {
             out.push_str(&format!("COPY kuma-user-keys /etc/kuma/keys/{}\n", user.name));
-            out.push_str(
-                "COPY kuma-sshd-keys.conf /etc/ssh/sshd_config.d/40-kuma-keys.conf\n",
-            );
+            out.push_str("COPY kuma-sshd-keys.conf /etc/ssh/sshd_config.d/40-kuma-keys.conf\n");
         }
     }
 
@@ -1734,9 +1715,7 @@ mod tests {
 
     #[test]
     fn niri_desktop_generates_curated_layer() {
-        let out = generate(&config(
-            "schema_version = 1\n[system]\ndesktop = \"niri\"\n",
-        ));
+        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
         assert!(out.contains("niri"));
         assert!(out.contains("greetd"));
         assert!(out.contains("NetworkManager-wifi"));
@@ -1768,10 +1747,10 @@ mod tests {
 
     #[test]
     fn niri_desktop_ships_theme_and_wallpaper() {
-        let out = generate(&config(
-            "schema_version = 1\n[system]\ndesktop = \"niri\"\n",
-        ));
-        assert!(out.contains("COPY kuma-wallpaper.png /usr/share/backgrounds/kuma/kuma-wallpaper.png"));
+        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
+        assert!(
+            out.contains("COPY kuma-wallpaper.png /usr/share/backgrounds/kuma/kuma-wallpaper.png")
+        );
         assert!(out.contains("COPY waybar-config.jsonc /etc/xdg/waybar/config.jsonc"));
         assert!(out.contains("COPY waybar-style.css /etc/xdg/waybar/style.css"));
         // system-wide, never /etc/skel — skel strands existing homes on
@@ -1823,9 +1802,8 @@ mod tests {
         assert!(out.contains(
             "RUN systemctl enable greenboot-healthcheck.service greenboot-set-rollback-trigger.service greenboot-success.target kuma-boot-health-sync.service"
         ));
-        assert!(out.contains(
-            "COPY --chmod=755 kuma-boot-health-sync /usr/libexec/kuma-boot-health-sync"
-        ));
+        assert!(out
+            .contains("COPY --chmod=755 kuma-boot-health-sync /usr/libexec/kuma-boot-health-sync"));
         // the IoT subpackage's *required* DNS probe would roll back a
         // laptop that boots offline
         assert!(!out.contains("greenboot-default-health-checks"));
@@ -1850,8 +1828,7 @@ mod tests {
         assert!(BOOT_HEALTH_SYNC_SCRIPT.contains("grep -q boot_counter \"$cfg\""));
         let dir = tempfile::tempdir().unwrap();
         context("schema_version = 1\n", dir.path());
-        let script =
-            std::fs::read_to_string(dir.path().join("kuma-boot-health-sync")).unwrap();
+        let script = std::fs::read_to_string(dir.path().join("kuma-boot-health-sync")).unwrap();
         assert!(script.starts_with("#!/usr/bin/bash"));
     }
 
@@ -1877,9 +1854,8 @@ mod tests {
 
     #[test]
     fn timezone_links_localtime() {
-        let out = generate(&config(
-            "schema_version = 1\n[system]\ntimezone = \"America/Denver\"\n",
-        ));
+        let out =
+            generate(&config("schema_version = 1\n[system]\ntimezone = \"America/Denver\"\n"));
         assert!(out.contains(
             "test -e /usr/share/zoneinfo/America/Denver && ln -sfn /usr/share/zoneinfo/America/Denver /etc/localtime"
         ));
@@ -1890,9 +1866,7 @@ mod tests {
 
     #[test]
     fn stock_waybar_spawn_is_deduped() {
-        let out = generate(&config(
-            "schema_version = 1\n[system]\ndesktop = \"niri\"\n",
-        ));
+        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
         // Fedora's default config spawns waybar; the merge must drop it so
         // only the Kuma extras spawn remains (two spawns = two bars).
         assert!(out.contains("-e '/^spawn-at-startup \"waybar\"$/d'"));
@@ -1982,9 +1956,7 @@ mod tests {
 
     #[test]
     fn niri_ships_sync_even_without_declared_apps() {
-        let out = generate(&config(
-            "schema_version = 1\n[system]\ndesktop = \"niri\"\n",
-        ));
+        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
         assert!(out.contains("flathub.flatpakrepo"));
         // flatpak comes from the desktop set; no second install layer
         assert!(!out.contains(&dnf_install("flatpak")));
@@ -2054,10 +2026,7 @@ mod tests {
         context("schema_version = 1\n[system]\ndesktop = \"niri\"\n", dir.path());
         // an empty declaration is real content: take back everything
         // convergence ever installed, leaving the owner's apps alone
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("flatpaks")).unwrap(),
-            ""
-        );
+        assert_eq!(std::fs::read_to_string(dir.path().join("flatpaks")).unwrap(), "");
         assert!(dir.path().join("kuma-flatpak-sync").exists());
     }
 
@@ -2103,9 +2072,7 @@ mod tests {
         assert!(NIRI_EXTRAS.contains("kuma-wob"));
         // media keys route through the OSD helper, spliced into stock binds
         assert!(NIRI_MEDIA_BINDS.contains("kuma-osd"));
-        let out = generate(&config(
-            "schema_version = 1\n[system]\ndesktop = \"niri\"\n",
-        ));
+        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
         assert!(out.contains("-e '/XF86Audio/d'"));
         assert!(out.contains("r /usr/lib/kuma/niri-binds.kdl"));
     }
@@ -2125,9 +2092,11 @@ mod tests {
     fn the_baked_defaults_name_apps_the_examples_install() {
         // shipped by NIRI_PACKAGES, never by a declaration
         const IN_IMAGE: &[&str] = &["thunar", "org.gnome.FileRoller"];
-        let example =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/kuma.toml.example"))
-                .unwrap();
+        let example = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/kuma.toml.example"
+        ))
+        .unwrap();
         let declared: Config = toml::from_str(&example).unwrap();
         let mut checked = 0;
         for line in MIMEAPPS.lines() {
@@ -2187,9 +2156,11 @@ mod tests {
             .collect();
         assert!(enabled.contains(&"avahi-daemon.service"), "sanity: kuma enables avahi");
 
-        let example =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/kuma.toml.example"))
-                .unwrap();
+        let example = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/kuma.toml.example"
+        ))
+        .unwrap();
         for line in example.lines() {
             let line = line.trim_start().trim_start_matches('#').trim_start();
             let Some(units) = line.strip_prefix("disable = [") else { continue };
@@ -2207,9 +2178,7 @@ mod tests {
         assert!(NIRI_MEDIA_BINDS.contains("cliphist list"));
         assert!(MIMEAPPS.contains("application/pdf=org.gnome.Papers.desktop"));
         assert!(MIMEAPPS.contains("inode/directory=thunar.desktop"));
-        let out = generate(&config(
-            "schema_version = 1\n[system]\ndesktop = \"niri\"\n",
-        ));
+        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
         assert!(out.contains("COPY mimeapps.list /etc/xdg/mimeapps.list"));
         assert!(out.contains("pam_gnome_keyring"));
     }
@@ -2263,10 +2232,7 @@ mod tests {
         assert!(!out.contains("> /etc/hostname"));
         let dir = tempfile::tempdir().unwrap();
         context("schema_version = 1\n[system]\nhostname = \"kuma-laptop\"\n", dir.path());
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("hostname")).unwrap(),
-            "kuma-laptop\n"
-        );
+        assert_eq!(std::fs::read_to_string(dir.path().join("hostname")).unwrap(), "kuma-laptop\n");
         // undeclared, the default seeds the ostree merge default
         let dir = tempfile::tempdir().unwrap();
         context("schema_version = 1\n", dir.path());
@@ -2274,9 +2240,7 @@ mod tests {
         assert!(out.contains(&dnf_install("glibc-langpack-de")));
         assert!(out.contains("RUN echo 'LANG=de_DE.UTF-8' > /etc/locale.conf"));
         // C.UTF-8 has no territory, so no langpack layer
-        let out = generate(&config(
-            "schema_version = 1\n[system]\nlocale = \"C.UTF-8\"\n",
-        ));
+        let out = generate(&config("schema_version = 1\n[system]\nlocale = \"C.UTF-8\"\n"));
         assert!(!out.contains("glibc-langpack"));
         assert!(out.contains("LANG=C.UTF-8"));
     }
@@ -2295,9 +2259,7 @@ mod tests {
 
     #[test]
     fn brew_generates_setup_service_and_shell_profiles() {
-        let out = generate(&config(
-            "schema_version = 1\n[system]\nbrew = true\n",
-        ));
+        let out = generate(&config("schema_version = 1\n[system]\nbrew = true\n"));
         assert!(out.contains("git-core"));
         assert!(out.contains("COPY --chmod=755 kuma-brew-setup /usr/libexec/kuma-brew-setup"));
         assert!(out.contains("systemctl enable kuma-brew-setup.service"));
@@ -2366,10 +2328,16 @@ mod tests {
         assert!(out.contains("cosmic-edit"));
         // wallpaper is identity, and the packaged dock/background defaults
         // are overwritten in place, guarded so a moved path fails the build
-        assert!(out.contains("COPY kuma-wallpaper.png /usr/share/backgrounds/kuma/kuma-wallpaper.png"));
+        assert!(
+            out.contains("COPY kuma-wallpaper.png /usr/share/backgrounds/kuma/kuma-wallpaper.png")
+        );
         assert!(out.contains("test -f /usr/share/cosmic/com.system76.CosmicAppList/v1/favorites"));
-        assert!(out.contains("COPY cosmic-favorites /usr/share/cosmic/com.system76.CosmicAppList/v1/favorites"));
-        assert!(out.contains("COPY cosmic-background /usr/share/cosmic/com.system76.CosmicBackground/v1/all"));
+        assert!(out.contains(
+            "COPY cosmic-favorites /usr/share/cosmic/com.system76.CosmicAppList/v1/favorites"
+        ));
+        assert!(out.contains(
+            "COPY cosmic-background /usr/share/cosmic/com.system76.CosmicBackground/v1/all"
+        ));
         // the baked dock pins only what the image ships: no store, and no
         // browser — that's the declaration's choice
         assert!(!COSMIC_FAVORITES.contains("Store"));
@@ -2446,10 +2414,7 @@ mod tests {
              RUN niri validate --config /etc/niri/config.kdl\n\
              RUN something 2>/dev/null\n",
         );
-        assert_eq!(
-            paths,
-            ["/etc/environment", "/etc/greetd/config.toml", "/etc/niri/config.kdl"]
-        );
+        assert_eq!(paths, ["/etc/environment", "/etc/greetd/config.toml", "/etc/niri/config.kdl"]);
         // read-only mentions never become ownership, and a non-/etc
         // destination or redirect is not this check's business
         assert!(!paths.iter().any(|p| p.contains("pam.d")));
@@ -2478,8 +2443,7 @@ mod tests {
         // Unpinned, the baked hostname is machine state (hostnamectl is
         // the sanctioned rename, not drift); declared, it's owned.
         assert!(!niri.iter().any(|p| p == "/etc/hostname"));
-        let pinned =
-            etc_paths(&config("schema_version = 1\n[system]\nhostname = \"workbench\"\n"));
+        let pinned = etc_paths(&config("schema_version = 1\n[system]\nhostname = \"workbench\"\n"));
         assert!(pinned.iter().any(|p| p == "/etc/hostname"));
     }
 
@@ -2509,7 +2473,10 @@ mod tests {
             let at = |what: &str, ok: bool| assert!(ok, "{name}: {what}");
 
             // The floor, owed to every image no matter what it declares.
-            at("builds FROM the declared base", out.contains(&format!("FROM {}", parsed.base_ref())));
+            at(
+                "builds FROM the declared base",
+                out.contains(&format!("FROM {}", parsed.base_ref())),
+            );
             at("runs the bootc lint", out.contains("bootc container lint"));
             at("bakes greenboot", out.contains(&dnf_install("greenboot")));
             at("converges the boot counter", out.contains("kuma-boot-health-sync.service"));

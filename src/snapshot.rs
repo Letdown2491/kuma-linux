@@ -209,10 +209,7 @@ fn restore_path(
 ) -> Result<()> {
     let relative = relative_to_target(config, path)?;
     if ids.is_empty() {
-        bail!(
-            "no snapshots in {} to restore from (run `kuma snapshot` for why)",
-            store.display()
-        );
+        bail!("no snapshots in {} to restore from (run `kuma snapshot` for why)", store.display());
     }
     if let Some(id) = from {
         if !ids.iter().any(|known| known == id) {
@@ -227,9 +224,9 @@ fn restore_path(
         Some(id) => ids.iter().filter(|known| *known == id).collect(),
         None => ids.iter().collect(),
     };
-    let found = search.iter().find_map(|id| {
-        source_in(store, id, &relative).map(|source| ((*id).clone(), source))
-    });
+    let found = search
+        .iter()
+        .find_map(|id| source_in(store, id, &relative).map(|source| ((*id).clone(), source)));
     let Some((id, source)) = found else {
         match from {
             Some(id) => bail!("{path} is not in snapshot {id}"),

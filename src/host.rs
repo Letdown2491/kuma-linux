@@ -35,9 +35,7 @@ pub fn run_host<S: AsRef<str>>(args: &[S]) -> Result<()> {
             .context("cannot redirect subprocess output to stderr")?;
         cmd.stdout(std::process::Stdio::from(stderr));
     }
-    let status = cmd
-        .status()
-        .with_context(|| format!("failed to run {}", args[0].as_ref()))?;
+    let status = cmd.status().with_context(|| format!("failed to run {}", args[0].as_ref()))?;
     if !status.success() {
         let shown: Vec<&str> = args.iter().map(|s| s.as_ref()).collect();
         bail!("{} exited with {status}", shown.join(" "));
@@ -88,7 +86,11 @@ fn reason(stderr: &[u8]) -> String {
             format!("{head} ... {tail}")
         })
         .collect();
-    if tail.is_empty() { String::new() } else { format!(": {}", tail.join("; ")) }
+    if tail.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", tail.join("; "))
+    }
 }
 
 /// Capture stdout even when the command exits non-zero — for tools like
@@ -103,8 +105,8 @@ pub fn host_output_any<S: AsRef<str>>(args: &[S]) -> Result<String> {
 }
 
 fn host_command<S: AsRef<str>>(args: &[S]) -> Result<Command> {
-    let in_container = Path::new("/run/.containerenv").exists()
-        || Path::new("/.dockerenv").exists();
+    let in_container =
+        Path::new("/run/.containerenv").exists() || Path::new("/.dockerenv").exists();
     let mut full: Vec<&str> = Vec::new();
     if in_container {
         full.extend(["flatpak-spawn", "--host"]);

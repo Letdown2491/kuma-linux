@@ -69,8 +69,7 @@ pub fn capture(
 
     // Named but not offered by default: capturing one changes what it is,
     // so it is worth saying they exist rather than silently omitting them.
-    let opt_in: Vec<&str> =
-        found.iter().filter(|c| c.promotes).map(|c| c.item.as_str()).collect();
+    let opt_in: Vec<&str> = found.iter().filter(|c| c.promotes).map(|c| c.item.as_str()).collect();
 
     if selected.is_empty() {
         if json {
@@ -83,15 +82,17 @@ pub fn capture(
             );
             return Ok(());
         }
-        println!("Nothing to capture: this machine runs nothing {} doesn't name.", config_path.display());
+        println!(
+            "Nothing to capture: this machine runs nothing {} doesn't name.",
+            config_path.display()
+        );
         if !opt_in.is_empty() {
             print_opt_in(&opt_in);
         }
         return Ok(());
     }
 
-    let items: Vec<(&str, &str)> =
-        selected.iter().map(|c| (c.list, c.item.as_str())).collect();
+    let items: Vec<(&str, &str)> = selected.iter().map(|c| (c.list, c.item.as_str())).collect();
 
     if !yes {
         if json {
@@ -175,10 +176,7 @@ fn print_proposal(selected: &[&Candidate]) {
 /// Promoting a --user flatpak to a system one is a real change, not a
 /// bookkeeping one, so it happens only when asked for by name.
 fn print_opt_in(items: &[&str]) {
-    println!(
-        "\nPer-user flatpaks stay yours and are captured only by name: {}",
-        items.join(", ")
-    );
+    println!("\nPer-user flatpaks stay yours and are captured only by name: {}", items.join(", "));
     println!("Declaring one installs it system-wide and hands it to convergence.");
 }
 

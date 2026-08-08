@@ -154,17 +154,13 @@ pub struct System {
     pub locale: Option<String>,
 }
 
-
 impl Config {
     /// The image the Containerfile builds FROM: the declared base, or —
     /// the kuma default — the content-addressed tag its own composed
     /// base will carry. A pure function of the declaration, so builds,
     /// `kuma generate`, and tests all agree without touching podman.
     pub fn base_ref(&self) -> String {
-        self.system
-            .base
-            .clone()
-            .unwrap_or_else(|| crate::compose::content_tag(self))
+        self.system.base.clone().unwrap_or_else(|| crate::compose::content_tag(self))
     }
 }
 
@@ -180,7 +176,6 @@ pub enum Desktop {
     Niri,
     Cosmic,
 }
-
 
 #[derive(Debug, Deserialize, Default, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -275,13 +270,9 @@ impl Config {
                 validate_password_hash(hash)?;
             }
             for key in &user.ssh_keys {
-                let looks_like_key = ["ssh-", "ecdsa-", "sk-"]
-                    .iter()
-                    .any(|p| key.starts_with(p));
+                let looks_like_key = ["ssh-", "ecdsa-", "sk-"].iter().any(|p| key.starts_with(p));
                 if !looks_like_key || key.contains('\n') {
-                    bail!(
-                        "user.ssh_keys entry doesn't look like a single-line OpenSSH public key"
-                    );
+                    bail!("user.ssh_keys entry doesn't look like a single-line OpenSSH public key");
                 }
             }
         }
@@ -301,9 +292,7 @@ impl Config {
         if self.snapshots.enable {
             let target = &self.snapshots.target;
             if !target.starts_with('/') || target.contains("..") {
-                bail!(
-                    "snapshots.target must be an absolute path with no `..` (got {target:?})"
-                );
+                bail!("snapshots.target must be an absolute path with no `..` (got {target:?})");
             }
             validate_name(target, "snapshots.target", &['/', '.', '-', '_'])?;
             // Lands in a unit's OnCalendar=, so the systemd calendar
@@ -347,9 +336,8 @@ impl Config {
 /// `$id$[params$]salt$hash` with non-empty fields passes.
 fn validate_password_hash(hash: &str) -> Result<()> {
     let fields: Vec<&str> = hash.strip_prefix('$').unwrap_or("").split('$').collect();
-    let well_formed = hash.starts_with('$')
-        && fields.len() >= 3
-        && fields.iter().all(|f| !f.is_empty());
+    let well_formed =
+        hash.starts_with('$') && fields.len() >= 3 && fields.iter().all(|f| !f.is_empty());
     if !well_formed {
         bail!(
             "user.password_hash {hash:?} is not a crypt(5) hash (expected `$id$salt$hash`, e.g. from `kuma passwd`); \
@@ -393,8 +381,8 @@ mod tests {
                 continue;
             }
             let text = std::fs::read_to_string(&path).unwrap();
-            let config: Config = toml::from_str(&text)
-                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            let config: Config =
+                toml::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
             config.validate().unwrap_or_else(|e| panic!("{}: {e}", path.display()));
             if let Some(user) = &config.user {
                 assert_eq!(user.name, "me", "{}", path.display());
@@ -422,9 +410,8 @@ mod tests {
     #[test]
     fn password_hash_must_be_one_crypt_could_accept() {
         let hashed = |h: &str| {
-            let toml = format!(
-                "schema_version = 1\n[user]\nname = \"me\"\npassword_hash = '{h}'\n"
-            );
+            let toml =
+                format!("schema_version = 1\n[user]\nname = \"me\"\npassword_hash = '{h}'\n");
             toml::from_str::<Config>(&toml).unwrap().validate()
         };
 
@@ -472,9 +459,11 @@ mod tests {
     #[test]
     fn the_full_example_documents_every_field() {
         let schema = serde_json::to_value(schemars::schema_for!(Config)).unwrap();
-        let example =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/kuma.toml.example"))
-                .unwrap();
+        let example = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/examples/kuma.toml.example"
+        ))
+        .unwrap();
 
         // Field names from the schema itself, so a new one is covered the
         // day it lands rather than the day someone remembers.
@@ -522,10 +511,9 @@ mod tests {
         )
         .unwrap();
         one_tier.validate().unwrap();
-        let disabled: Config = toml::from_str(
-            "schema_version = 1\n[snapshots]\nkeep_recent = 0\nkeep_daily = 0\n",
-        )
-        .unwrap();
+        let disabled: Config =
+            toml::from_str("schema_version = 1\n[snapshots]\nkeep_recent = 0\nkeep_daily = 0\n")
+                .unwrap();
         disabled.validate().unwrap();
     }
 
@@ -554,10 +542,9 @@ mod tests {
 
     #[test]
     fn firmware_trim_is_validated() {
-        let unknown: Config = toml::from_str(
-            "schema_version = 1\n[system]\nfirmware = [\"warp-core-firmware\"]\n",
-        )
-        .unwrap();
+        let unknown: Config =
+            toml::from_str("schema_version = 1\n[system]\nfirmware = [\"warp-core-firmware\"]\n")
+                .unwrap();
         assert!(unknown.validate().is_err());
         let with_image_base: Config = toml::from_str(
             "schema_version = 1\n[system]\nbase = \"quay.io/x/y:1\"\nfirmware = [\"amd-gpu-firmware\"]\n",
@@ -593,10 +580,8 @@ mod tests {
 
     #[test]
     fn shell_metacharacters_rejected() {
-        let config: Config = toml::from_str(
-            "schema_version = 1\n[packages]\nrpm = [\"fish; rm -rf /\"]\n",
-        )
-        .unwrap();
+        let config: Config =
+            toml::from_str("schema_version = 1\n[packages]\nrpm = [\"fish; rm -rf /\"]\n").unwrap();
         assert!(config.validate().is_err());
     }
 

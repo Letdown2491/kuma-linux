@@ -81,21 +81,17 @@ pub(crate) fn observe(config: &Config) -> Machine {
     let rpm = (!config.packages.rpm.is_empty())
         .then(|| ask(&["rpm", "-qa", "--qf", "%{NAME}\n"]))
         .flatten();
-    let flatpak_system =
-        ask(&["flatpak", "list", "--system", "--app", "--columns=application"]);
+    let flatpak_system = ask(&["flatpak", "list", "--system", "--app", "--columns=application"]);
     let flatpak_user =
         ask(&["flatpak", "list", "--user", "--app", "--columns=application"]).unwrap_or_default();
 
     let ask_brew = !config.packages.brew.is_empty() || Path::new(BREW).exists();
-    let brew_installed =
-        ask_brew.then(|| ask(&[BREW, "list", "--formula", "-1"])).flatten();
+    let brew_installed = ask_brew.then(|| ask(&[BREW, "list", "--formula", "-1"])).flatten();
     // Nothing installed, nothing to classify.
     let brew_leaves = brew_installed
         .as_ref()
         .filter(|installed| !installed.is_empty())
-        .and_then(|installed| {
-            leaves_from_receipts(installed).or_else(|| ask(&[BREW, "leaves"]))
-        })
+        .and_then(|installed| leaves_from_receipts(installed).or_else(|| ask(&[BREW, "leaves"])))
         .unwrap_or_default();
     let brew_state = owned_set(&std::fs::read_to_string(BREW_STATE).unwrap_or_default());
     let flatpak_state = owned_set(&std::fs::read_to_string(FLATPAK_STATE).unwrap_or_default());
@@ -512,7 +508,11 @@ fn unit_state(unit: &str) -> String {
     // is-enabled exits non-zero for disabled units but still names the
     // state on stdout, so read stdout regardless of exit status.
     let state = host_output_any(&["systemctl", "is-enabled", unit]).unwrap_or_default();
-    if state.is_empty() { "not found".into() } else { state }
+    if state.is_empty() {
+        "not found".into()
+    } else {
+        state
+    }
 }
 
 enum Grade {
@@ -596,14 +596,10 @@ pub fn doctor(json: bool) -> Result<()> {
         .or_else(|_| host_output(&["df", "-h", "--output=pcent,avail", "/"]))
     {
         Ok(out) => {
-            let fields: Vec<&str> =
-                out.lines().nth(1).unwrap_or("").split_whitespace().collect();
-            let pcent: u32 = fields
-                .first()
-                .and_then(|p| p.trim_end_matches('%').parse().ok())
-                .unwrap_or(0);
-            let detail =
-                format!("{}% used, {} free", pcent, fields.get(1).unwrap_or(&"?"));
+            let fields: Vec<&str> = out.lines().nth(1).unwrap_or("").split_whitespace().collect();
+            let pcent: u32 =
+                fields.first().and_then(|p| p.trim_end_matches('%').parse().ok()).unwrap_or(0);
+            let detail = format!("{}% used, {} free", pcent, fields.get(1).unwrap_or(&"?"));
             if pcent >= 90 {
                 let fix = Action::new("clean", "kuma clean", "reclaim build leftovers first");
                 report(Grade::Warn, "disk", detail, Some(fix));
@@ -671,7 +667,12 @@ fn check_deployment(report: &mut impl FnMut(Grade, &str, String, Option<Action>)
     let status = match host_output(&["sudo", "bootc", "status", "--format", "json"]) {
         Ok(out) => out,
         Err(_) => {
-            report(Grade::Warn, "deployment", "bootc status unavailable (not a bootc system, or sudo declined)".into(), None);
+            report(
+                Grade::Warn,
+                "deployment",
+                "bootc status unavailable (not a bootc system, or sudo declined)".into(),
+                None,
+            );
             return;
         }
     };
@@ -684,9 +685,7 @@ fn check_deployment(report: &mut impl FnMut(Grade, &str, String, Option<Action>)
     };
     let slot = |name: &str| json.get("status").and_then(|s| s.get(name));
     let image_of = |slot: &serde_json::Value| {
-        slot.pointer("/image/image/image")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
+        slot.pointer("/image/image/image").and_then(|v| v.as_str()).map(str::to_string)
     };
     let digest_of = |slot: &serde_json::Value| {
         slot.pointer("/image/imageDigest").and_then(|v| v.as_str()).map(str::to_string)
@@ -731,16 +730,18 @@ fn check_deployment(report: &mut impl FnMut(Grade, &str, String, Option<Action>)
         .unwrap_or_else(|| crate::DEFAULT_TAG.to_string());
     if let Ok(local_id) = crate::image_id(&compared_tag) {
         let root = host_output(&[
-            "sudo", "podman", "image", "inspect", "--format", "{{.Id}} {{.Digest}}",
+            "sudo",
+            "podman",
+            "image",
+            "inspect",
+            "--format",
+            "{{.Id}} {{.Digest}}",
             &compared_tag,
         ])
         .unwrap_or_default();
         let (root_id, root_digest) = root.split_once(' ').unwrap_or(("", ""));
-        let deployed: Vec<String> = [Some(&booted), staged.as_ref()]
-            .into_iter()
-            .flatten()
-            .filter_map(digest_of)
-            .collect();
+        let deployed: Vec<String> =
+            [Some(&booted), staged.as_ref()].into_iter().flatten().filter_map(digest_of).collect();
         let deployment_current =
             !root_digest.is_empty() && deployed.iter().any(|d| d == root_digest);
         if local_id != root_id || (!deployed.is_empty() && !deployment_current) {
@@ -925,7 +926,12 @@ fn check_snapshots(report: &mut impl FnMut(Grade, &str, String, Option<Action>))
             "sudo systemctl start kuma-snapshot.service",
             "take the first one now instead of waiting for the timer",
         );
-        report(Grade::Warn, "snapshots", format!("none taken yet in {}", store.display()), Some(fix));
+        report(
+            Grade::Warn,
+            "snapshots",
+            format!("none taken yet in {}", store.display()),
+            Some(fix),
+        );
     } else {
         report(Grade::Ok, "snapshots", format!("{count} in {}", store.display()), None);
     }
@@ -1010,11 +1016,8 @@ fn check_etc_drift(report: &mut impl FnMut(Grade, &str, String, Option<Action>))
     // "/usr" and "/" in production; parameterized so the states this
     // check exists to catch can be exercised against a temp tree instead
     // of only ever running the everything-is-fine branch.
-    let scan = scan_etc(
-        &crate::containerfile::etc_paths(&config),
-        Path::new("/usr"),
-        Path::new("/"),
-    );
+    let scan =
+        scan_etc(&crate::containerfile::etc_paths(&config), Path::new("/usr"), Path::new("/"));
     let EtcScan { owned, shadowed, removed } = scan;
     if owned == 0 {
         return;
@@ -1050,10 +1053,7 @@ fn check_etc_drift(report: &mut impl FnMut(Grade, &str, String, Option<Action>))
         report(
             Grade::Warn,
             "etc",
-            format!(
-                "deleted locally, and staying deleted across updates: {}",
-                removed.join(", ")
-            ),
+            format!("deleted locally, and staying deleted across updates: {}", removed.join(", ")),
             Some(restore(&removed[0])),
         );
     }
@@ -1083,9 +1083,7 @@ fn check_boot_health(report: &mut impl FnMut(Grade, &str, String, Option<Action>
     }
     // RemainAfterExit keeps the health-check oneshot `active` after
     // success, so is-active is this boot's green/red verdict.
-    match host_output_any(&["systemctl", "is-active", "greenboot-healthcheck.service"])
-        .as_deref()
-    {
+    match host_output_any(&["systemctl", "is-active", "greenboot-healthcheck.service"]).as_deref() {
         Ok("active") => {
             report(Grade::Ok, "boot health", "this boot passed its health checks".into(), None)
         }
@@ -1152,12 +1150,15 @@ fn check_build_leftovers(report: &mut impl FnMut(Grade, &str, String, Option<Act
     let dangling = host_output(&["podman", "images", "-f", "dangling=true", "-q"])
         .map(|out| out.lines().filter(|l| !l.trim().is_empty()).count());
     let abandoned = host_output_any(&[
-        "podman", "ps", "-a", "--external", "--format", "{{.Names}} {{.Status}}",
+        "podman",
+        "ps",
+        "-a",
+        "--external",
+        "--format",
+        "{{.Names}} {{.Status}}",
     ])
     .map(|out| {
-        out.lines()
-            .filter(|l| l.contains("-working-container") && l.ends_with(" Storage"))
-            .count()
+        out.lines().filter(|l| l.contains("-working-container") && l.ends_with(" Storage")).count()
     });
     match (dangling, abandoned) {
         (Err(_), Err(_)) => {} // no podman here — nothing to check
@@ -1171,7 +1172,9 @@ fn check_build_leftovers(report: &mut impl FnMut(Grade, &str, String, Option<Act
                 // doesn't have — name the stranded builds instead.
                 let mut parts = Vec::new();
                 if dangling > 0 {
-                    parts.push(format!("{dangling} stranded build image(s) plus their cached layers"));
+                    parts.push(format!(
+                        "{dangling} stranded build image(s) plus their cached layers"
+                    ));
                 }
                 if abandoned > 0 {
                     parts.push(format!("{abandoned} abandoned build container(s)"));
@@ -1206,14 +1209,24 @@ fn check_gpu(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
         }
     }
     let render = std::fs::read_dir("/dev/dri").is_ok_and(|mut d| {
-        d.any(|e| {
-            e.is_ok_and(|e| e.file_name().to_string_lossy().starts_with("renderD"))
-        })
+        d.any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().starts_with("renderD")))
     });
     match (drivers.is_empty(), render) {
-        (false, true) => report(Grade::Ok, "gpu", format!("{} bound, render node present", drivers.join(", ")), None),
-        (false, false) => report(Grade::Warn, "gpu", format!("{} bound, but no render node; software rendering likely", drivers.join(", ")), None),
-        (true, _) => report(Grade::Warn, "gpu", "no GPU driver bound (VM or headless?)".into(), None),
+        (false, true) => report(
+            Grade::Ok,
+            "gpu",
+            format!("{} bound, render node present", drivers.join(", ")),
+            None,
+        ),
+        (false, false) => report(
+            Grade::Warn,
+            "gpu",
+            format!("{} bound, but no render node; software rendering likely", drivers.join(", ")),
+            None,
+        ),
+        (true, _) => {
+            report(Grade::Warn, "gpu", "no GPU driver bound (VM or headless?)".into(), None)
+        }
     }
 }
 
@@ -1453,7 +1466,11 @@ mod tests {
                 grade: Grade::Fail,
                 name: "flathub".into(),
                 detail: "remote missing".into(),
-                fix: Some(Action::new("add-remote", "sudo flatpak remote-add flathub", "restore the remote")),
+                fix: Some(Action::new(
+                    "add-remote",
+                    "sudo flatpak remote-add flathub",
+                    "restore the remote",
+                )),
             },
         ];
         let json = doctor_json(&findings);
