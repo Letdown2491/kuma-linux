@@ -1039,8 +1039,14 @@ fn sync(json: bool) -> Result<()> {
         // Three different truths hide behind "nothing to start" — name the
         // one that holds here, with its next move.
         if Path::new("/usr/lib/kuma").is_dir() {
+            // Nothing declared to converge is a terminal like in-sync: no
+            // forward move, but the JSON still carries the actions key so
+            // an agent sees the same shape every mutating verb promises.
             if json {
-                println!("{}", serde_json::json!({ "ok": true, "converged": [] }));
+                println!(
+                    "{}",
+                    serde_json::json!({ "ok": true, "converged": [], "actions": [] })
+                );
             } else {
                 println!("Nothing to converge: this image declares no flatpaks or brew formulae.");
             }
@@ -1054,10 +1060,23 @@ fn sync(json: bool) -> Result<()> {
     let mut args = vec!["sudo", "systemctl", "start"];
     args.extend(&units);
     run_host(&args)?;
+    // The machine now matches its baked declaration, so the honest next
+    // move is to confirm it: `kuma diff` should report no drift. Every
+    // other mutating verb ends at an affordance; sync was the one that
+    // dead-ended, in the human output and in the promised JSON shape both.
+    let verify = Action::new("diff", "kuma diff", "confirm the machine now matches its declaration");
     if json {
-        println!("{}", serde_json::json!({ "ok": true, "converged": units }));
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "converged": units,
+                "actions": [action_json(&verify)],
+            })
+        );
     } else {
         println!("Converged: {}", units.join(", "));
+        print_actions(&[verify]);
     }
     Ok(())
 }
