@@ -14,7 +14,7 @@ const NIRI_PACKAGES: &[&str] = &[
     "fuzzel",
     "waybar",
     "mako",
-    "foot",
+    "kitty",
     "pipewire",
     "pipewire-pulseaudio",
     "wireplumber",
@@ -827,15 +827,16 @@ const FASTFETCH_CONFIG: &str = r#"{
 /// All system-wide (never /etc/skel): skel only reaches homes created after
 /// the image ships, so it strands existing users on stale copies — image
 /// updates must retheme every account. User dotfiles still win everywhere:
-/// waybar, fuzzel and foot search /etc/xdg after ~/.config, and mako (no
-/// system path at all) goes through a launcher that prefers the user's
-/// config.
+/// waybar and fuzzel search /etc/xdg after ~/.config, kitty merges
+/// /etc/xdg beneath the user's file (so a one-key override keeps the rest
+/// of this theme), and mako (no system path at all) goes through a
+/// launcher that prefers the user's config.
 const WALLPAPER: &[u8] = include_bytes!("../assets/kuma-wallpaper.png");
 const WAYBAR_CONFIG: &str = include_str!("../assets/waybar.jsonc");
 const WAYBAR_STYLE: &str = include_str!("../assets/waybar.css");
 const FUZZEL_CONFIG: &str = include_str!("../assets/fuzzel.ini");
 const MAKO_CONFIG: &str = include_str!("../assets/mako.conf");
-const FOOT_CONFIG: &str = include_str!("../assets/foot.ini");
+const KITTY_CONFIG: &str = include_str!("../assets/kitty.conf");
 
 /// mako is dbus-activated (org.freedesktop.Notifications), so this wrapper
 /// is wired in via its dbus service file rather than spawn-at-startup.
@@ -1064,7 +1065,7 @@ pub fn generate(config: &Config) -> String {
     if config.system.desktop == Desktop::Niri {
         out.push('\n');
         // niri Recommends alacritty, which would ride in past the package
-        // list as a weak dep; Kuma's terminal is foot.
+        // list as a weak dep; Kuma's terminal is kitty.
         out.push_str(&dnf_install(&format!(
             "--exclude=alacritty {}",
             NIRI_PACKAGES.join(" ")
@@ -1087,7 +1088,19 @@ pub fn generate(config: &Config) -> String {
         out.push_str(
             "RUN grep -qx 'Exec=/usr/bin/mako' /usr/share/dbus-1/services/fr.emersion.mako.service \\\n    && sed -i 's|^Exec=/usr/bin/mako$|Exec=/usr/libexec/kuma-mako|' /usr/share/dbus-1/services/fr.emersion.mako.service\n",
         );
-        out.push_str("COPY foot.ini /etc/xdg/foot/foot.ini\n");
+        out.push_str("COPY kitty.conf /etc/xdg/kitty/kitty.conf\n");
+        // kitty skips settings it doesn't recognise and starts anyway, so a
+        // renamed key ships a silently unthemed terminal — which is exactly
+        // how foot 1.27 voided this palette before kuma switched. Parse the
+        // file with kitty's own loader at build time, and treat BOTH of its
+        // complaints as fatal: accumulate_bad_lines catches malformed lines
+        // but NOT unknown keys, which are only ever logged to stderr (that
+        // asymmetry was verified by sabotage, so don't collapse this into
+        // the exit code alone). Grepping kitty's own log keeps the check
+        // free of an option allowlist to maintain.
+        out.push_str(
+            "RUN rc=0; kitty +runpy \"import sys; from kitty.config import load_config; bad = []; load_config('/etc/xdg/kitty/kitty.conf', accumulate_bad_lines=bad); sys.exit('malformed kitty.conf lines: %s' % bad if bad else 0)\" 2>/tmp/kitty.err || rc=$?; \\\n    cat /tmp/kitty.err >&2; \\\n    if grep -q 'unknown config key' /tmp/kitty.err; then rc=1; fi; \\\n    rm -f /tmp/kitty.err; exit $rc\n",
+        );
         out.push_str("COPY --chmod=755 kuma-clipboard-bridge /usr/libexec/kuma-clipboard-bridge\n");
         out.push_str("COPY fastfetch-config.jsonc /etc/xdg/fastfetch/config.jsonc\n");
         out.push_str("COPY fastfetch-logo.txt /usr/lib/kuma/fastfetch-logo.txt\n");
@@ -1110,12 +1123,12 @@ pub fn generate(config: &Config) -> String {
         // config is that plus our session extras, validated at build time.
         // Fedora's default config already spawns waybar — drop that line (and
         // its comment) or the bar starts twice; Kuma's extras spawn it.
-        // Upstream's terminal is alacritty; Kuma ships foot, so rewrite the
+        // Upstream's terminal is alacritty; Kuma ships kitty, so rewrite the
         // spawn (and its hotkey-overlay title). grep first: if a niri update
         // stops naming alacritty, fail the build instead of silently
         // shipping a Mod+T that spawns a terminal the image doesn't have.
         out.push_str(
-            "RUN grep -q '\"alacritty\"' /usr/share/doc/niri/default-config.kdl \\\n    && mkdir -p /etc/niri \\\n    && sed -e 's/alacritty/foot/g' -e '/starts waybar/d' -e '/^spawn-at-startup \"waybar\"$/d' -e '/XF86Audio/d' -e '/XF86MonBrightness/d' -e '/^binds {/r /usr/lib/kuma/niri-binds.kdl' /usr/share/doc/niri/default-config.kdl > /etc/niri/config.kdl \\\n    && cat /usr/lib/kuma/niri-extras.kdl >> /etc/niri/config.kdl \\\n    && niri validate --config /etc/niri/config.kdl\n",
+            "RUN grep -q '\"alacritty\"' /usr/share/doc/niri/default-config.kdl \\\n    && mkdir -p /etc/niri \\\n    && sed -e 's/alacritty/kitty/g' -e '/starts waybar/d' -e '/^spawn-at-startup \"waybar\"$/d' -e '/XF86Audio/d' -e '/XF86MonBrightness/d' -e '/^binds {/r /usr/lib/kuma/niri-binds.kdl' /usr/share/doc/niri/default-config.kdl > /etc/niri/config.kdl \\\n    && cat /usr/lib/kuma/niri-extras.kdl >> /etc/niri/config.kdl \\\n    && niri validate --config /etc/niri/config.kdl\n",
         );
         // Upstream niri-session imports the ENTIRE greeter environment into
         // the systemd user manager — deprecated (warns in the journal every
@@ -1425,7 +1438,7 @@ pub fn write_context(config: &Config, config_text: &str, dir: &Path) -> Result<(
         std::fs::write(dir.join("mako.conf"), MAKO_CONFIG)?;
         std::fs::write(dir.join("kuma-mako"), MAKO_LAUNCHER)?;
         std::fs::write(dir.join("mako-dropin.conf"), MAKO_DROPIN)?;
-        std::fs::write(dir.join("foot.ini"), FOOT_CONFIG)?;
+        std::fs::write(dir.join("kitty.conf"), KITTY_CONFIG)?;
         std::fs::write(dir.join("kuma-clipboard-bridge"), CLIPBOARD_BRIDGE)?;
         std::fs::write(dir.join("kuma-xsettings"), XSETTINGS_LAUNCHER)?;
         std::fs::write(dir.join("xsettingsd.conf"), XSETTINGSD_CONF)?;
@@ -1607,11 +1620,16 @@ mod tests {
         // systemd user sessions activate via SystemdService, not Exec —
         // without the drop-in the wrapper never runs where it matters
         assert!(out.contains("/usr/lib/systemd/user/mako.service.d/kuma.conf"));
-        assert!(out.contains("COPY foot.ini /etc/xdg/foot/foot.ini"));
-        // upstream niri spawns alacritty; the image ships foot — the sed
+        assert!(out.contains("COPY kitty.conf /etc/xdg/kitty/kitty.conf"));
+        // an unparseable theme must fail the build, not ship unthemed —
+        // and unknown keys only ever reach stderr, so both halves matter
+        assert!(out.contains("kitty +runpy"));
+        assert!(out.contains("accumulate_bad_lines=bad"));
+        assert!(out.contains("grep -q 'unknown config key' /tmp/kitty.err"));
+        // upstream niri spawns alacritty; the image ships kitty, so the sed
         // must rewrite the bind, and the grep guard must keep it honest
         assert!(out.contains("grep -q '\"alacritty\"' /usr/share/doc/niri/default-config.kdl"));
-        assert!(out.contains("sed -e 's/alacritty/foot/g'"));
+        assert!(out.contains("sed -e 's/alacritty/kitty/g'"));
         // niri Recommends alacritty; without the exclude it ships anyway
         assert!(out.contains("--exclude=alacritty"));
         assert!(out.contains("COPY dconf-profile /etc/dconf/profile/user"));
@@ -1623,7 +1641,7 @@ mod tests {
     fn desktop_defaults_to_dark_and_bare_terminal() {
         assert!(DCONF_DARK.contains("color-scheme='prefer-dark'"));
         // a titlebar in a tiling compositor renders light Adwaita chrome
-        assert!(FOOT_CONFIG.contains("preferred=none"));
+        assert!(KITTY_CONFIG.contains("hide_window_decorations yes"));
     }
 
     #[test]
@@ -1735,7 +1753,7 @@ mod tests {
         assert!(dir.path().join("waybar-style.css").exists());
         assert!(dir.path().join("fuzzel.ini").exists());
         assert!(dir.path().join("mako.conf").exists());
-        assert!(dir.path().join("foot.ini").exists());
+        assert!(dir.path().join("kitty.conf").exists());
         let ff = std::fs::read_to_string(dir.path().join("fastfetch-config.jsonc")).unwrap();
         assert!(ff.contains("/usr/lib/kuma/fastfetch-logo.txt"));
         assert!(dir.path().join("fastfetch-logo.txt").exists());
@@ -1877,6 +1895,26 @@ mod tests {
         assert!(
             declared.packages.flatpak.iter().any(|a| a == app),
             "{app} handles https but examples/kuma.toml.example doesn't install it"
+        );
+    }
+
+    /// fuzzel runs `Terminal=true` desktop entries through whatever
+    /// `terminal=` names, so it has to be a binary the image ships. Nothing
+    /// fails at build time if it isn't: the symptom is a launcher entry
+    /// that silently does nothing. This read `foot` until kuma switched
+    /// terminals, and the package list was the obvious edit to remember.
+    #[test]
+    fn fuzzels_terminal_is_one_the_desktop_installs() {
+        let terminal = FUZZEL_CONFIG
+            .lines()
+            .find_map(|line| line.strip_prefix("terminal="))
+            .expect("fuzzel names a terminal")
+            .split_whitespace()
+            .next()
+            .expect("the terminal is not blank");
+        assert!(
+            NIRI_PACKAGES.contains(&terminal),
+            "fuzzel launches terminal apps with {terminal}, which the niri image doesn't install"
         );
     }
 
