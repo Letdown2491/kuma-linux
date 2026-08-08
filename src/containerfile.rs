@@ -672,23 +672,40 @@ esac
 /// System-wide default apps: without associations, opening a PDF or a
 /// link from Thunar is app-picker roulette. Flatpak-exported desktop
 /// ids for the declared apps, native ids for the in-image tools.
+///
+/// A `.desktop` file's MimeType= line says an app *can* open a type;
+/// this list says which one *wins*. So the entries worth having are the
+/// contested types — a type with one claimant resolves to it unaided.
+/// Firefox is why most of this list exists: it claims application/pdf,
+/// six image types, and four audio/video types, every one of which it
+/// would otherwise be free to take from Papers, Loupe, or Celluloid.
+/// The in-image contest is inode/directory, which kitty-open.desktop
+/// claims alongside thunar.
+///
+/// text/plain has no entry on purpose: nothing in the image claims it,
+/// so a declared editor wins unopposed, and an entry would only pin an
+/// app that a declaration is free not to install.
 const MIMEAPPS: &str = r#"[Default Applications]
 x-scheme-handler/http=org.mozilla.firefox.desktop
 x-scheme-handler/https=org.mozilla.firefox.desktop
 text/html=org.mozilla.firefox.desktop
 application/pdf=org.gnome.Papers.desktop
-text/plain=org.gnome.TextEditor.desktop
 inode/directory=thunar.desktop
 image/png=org.gnome.Loupe.desktop
 image/jpeg=org.gnome.Loupe.desktop
 image/webp=org.gnome.Loupe.desktop
 image/gif=org.gnome.Loupe.desktop
+image/avif=org.gnome.Loupe.desktop
 image/svg+xml=org.gnome.Loupe.desktop
+image/tiff=org.gnome.Loupe.desktop
 video/mp4=io.github.celluloid_player.Celluloid.desktop
 video/webm=io.github.celluloid_player.Celluloid.desktop
+video/ogg=io.github.celluloid_player.Celluloid.desktop
 video/x-matroska=io.github.celluloid_player.Celluloid.desktop
 audio/mpeg=io.github.celluloid_player.Celluloid.desktop
 audio/flac=io.github.celluloid_player.Celluloid.desktop
+audio/ogg=io.github.celluloid_player.Celluloid.desktop
+audio/webm=io.github.celluloid_player.Celluloid.desktop
 application/zip=org.gnome.FileRoller.desktop
 "#;
 
