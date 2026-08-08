@@ -76,7 +76,14 @@ pub(crate) fn observe(config: &Config) -> Machine {
     let ask_brew = !config.packages.brew.is_empty() || Path::new(BREW).exists();
     let brew_installed =
         ask_brew.then(|| ask(&[BREW, "list", "--formula", "-1"])).flatten();
-    let brew_leaves = ask(&[BREW, "leaves"]).unwrap_or_default();
+    // `brew leaves` walks the dependency graph and costs about 1.3s here,
+    // more than everything else this function does put together. It is
+    // only ever read to tell an ad-hoc formula from a dependency, so it is
+    // worth nothing when there are no installed formulae to classify.
+    let brew_leaves = brew_installed
+        .as_ref()
+        .and_then(|installed| (!installed.is_empty()).then(|| ask(&[BREW, "leaves"])).flatten())
+        .unwrap_or_default();
     let brew_state = owned_set(&std::fs::read_to_string(BREW_STATE).unwrap_or_default());
 
     Machine { rpm, flatpak_system, flatpak_user, brew_installed, brew_leaves, brew_state }

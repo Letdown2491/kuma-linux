@@ -280,7 +280,7 @@ fn run(
             // while builds resolve `FROM …@sha256:…` would make this verb
             // a liar about the one thing the lock exists to control.
             if let Some(pinned) =
-                lock::Lock::load(&lock::path_for(&path)).and_then(|l| l.pin_for(&config.system.base))
+                lock::for_config(&path).and_then(|l| l.pin_for(&config.system.base))
             {
                 config.system.base = pinned;
             }
@@ -607,7 +607,7 @@ fn build_image_pinned(config_path: &Path, tag: &str, pin: Pin) -> Result<Option<
     // The declaration keeps saying `:44`; only the Containerfile gets the
     // digest. The baked copy is config_text, so the machine still carries
     // the declaration a human wrote, not a resolved artifact of it.
-    let pinned_digest = lock::Lock::load(&lock::path_for(config_path))
+    let pinned_digest = lock::for_config(config_path)
         .filter(|_| pin == Pin::Follow)
         .filter(|lock| lock.base.reference == declared_base)
         .map(|lock| lock.base.digest);
@@ -767,7 +767,7 @@ fn stage(tag: &str) -> Result<bool> {
 fn update_check(config_path: &Path, json: bool) -> Result<()> {
     let config = Config::load(config_path)?;
     let base = &config.system.base;
-    let Some(lock) = lock::Lock::load(&lock::path_for(config_path)) else {
+    let Some(lock) = lock::for_config(config_path) else {
         // Both verbs record a lock, but only one of them works from here:
         // `build` is a write path and needs a real file, so on a machine
         // reading its own baked declaration it would fail. Naming an edge
@@ -792,8 +792,7 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
         return Ok(());
     };
 
-    let remote = lock::remote_digest(base)?;
-    let moved = remote != lock.base.digest;
+    let moved = lock::base_moved(base, &lock.base.digest)?;
     let update = Action::new("update", "kuma update", "move the pin and rebuild on the new base");
     let actions: Vec<Action> = if moved { vec![update] } else { Vec::new() };
 
@@ -802,20 +801,21 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
             "{}",
             serde_json::json!({
                 "ok": true, "locked": true, "base": base, "moved": moved,
-                "digest": { "locked": lock.base.digest, "remote": remote },
+                "digest": { "locked": lock.base.digest },
                 "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
             })
         );
         return Ok(());
     }
     if moved {
-        println!("{base} moved.");
-        println!("  locked  {}", short(&lock.base.digest));
-        println!("  now     {}", short(&remote));
+        // The new digest isn't named: learning it would cost a second
+        // tool, and `kuma update` prints the full before-and-after from
+        // the lock anyway, one line per package.
+        println!("{base} moved since {}.", short(&lock.base.digest));
         println!();
         print_actions(&actions);
     } else {
-        println!("{base} is current ({}).", short(&remote));
+        println!("{base} is current ({}).", short(&lock.base.digest));
         // Saying "nothing to do" would overclaim: only the base is
         // pinned, so a rebuild can still resolve newer packages.
         println!("Only the base is pinned, so a rebuild can still move package versions.");
@@ -829,7 +829,7 @@ fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
     // The one command that moves the pin. Everything else builds from
     // whatever the lock already says, so an update is the only way the
     // base underneath you changes, and it says what changed.
-    let before = lock::Lock::load(&lock::path_for(config_path));
+    let before = lock::for_config(config_path);
     let after = build_image_pinned(config_path, tag, Pin::Refresh)?;
     let moved = match (&before, &after) {
         (Some(before), Some(after)) => Some(lock::diff(before, after)),

@@ -134,13 +134,9 @@ smoke_image() {
     # recording a different KIND of digest than the tag resolves to (the
     # per-architecture manifest instead of the OCI index), which is a
     # permanent false alarm rather than news. That shipped once.
-    if command -v skopeo >/dev/null; then
-        "$KUMA" --config "$file" update --check | grep -q 'is current' \
-            || bad "update --check disagrees with the lock this build just wrote"
-        ok "check agrees with the fresh lock"
-    else
-        echo "   .. skipping the --check assertion (no skopeo)"
-    fi
+    "$KUMA" --config "$file" update --check | grep -q 'is current' \
+        || bad "update --check disagrees with the lock this build just wrote"
+    ok "check agrees with the fresh lock"
 }
 
 # --- stage: boot -------------------------------------------------------
