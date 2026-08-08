@@ -66,6 +66,7 @@ flatpak = [
     "org.gnome.TextEditor",
     "org.libreoffice.LibreOffice",
     "io.github.kolunmi.Bazaar",
+    "org.gnome.Firmware",
 ]
 
 # CLI tools that move faster than a rebuild-and-reboot cycle. Converged

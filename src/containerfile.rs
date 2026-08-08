@@ -359,6 +359,12 @@ WantedBy=timers.target
 /// `.snapshots` lives inside the target on purpose. It is a directory
 /// holding nested subvolumes, and btrfs does not recurse into those when
 /// it snapshots the parent, so the snapshots never contain each other.
+///
+/// It is traversable (0755) so that recovering a file is a file manager
+/// and a copy rather than a root shell. That exposes nothing: a snapshot
+/// preserves the permissions of everything inside it, so a home directory
+/// that was 0700 in the live tree is still 0700 in every snapshot of it.
+/// Only the timestamps in the listing become public.
 const SNAPSHOT_SCRIPT: &str = r#"#!/usr/bin/bash
 set -euo pipefail
 target='{target}'
@@ -369,7 +375,7 @@ store="$target/.snapshots"
 [ "$(findmnt -no FSTYPE -- "$target" 2>/dev/null || true)" = btrfs ] || exit 0
 btrfs subvolume show "$target" >/dev/null 2>&1 || exit 0
 
-install -d -m 0700 "$store"
+install -d -m 0755 "$store"
 btrfs subvolume snapshot -r "$target" "$store/$(date +%Y-%m-%dT%H%M%S)" >/dev/null
 
 # Newest first. Keep keep_recent whatever their age, then the newest
@@ -1452,8 +1458,9 @@ pub fn generate(config: &Config) -> String {
     );
 
     // Refreshes LVFS metadata only; it never applies a firmware update on
-    // its own. `fwupdmgr update` stays the deliberate act, which is the
-    // right split for a machine that reboots into a signed image.
+    // its own. Applying stays a deliberate act — `fwupdmgr update`, or the
+    // org.gnome.Firmware flatpak the examples declare, which drives this
+    // same daemon over the system bus.
     out.push_str("RUN systemctl enable fwupd-refresh.timer\n");
 
     if config.snapshots.enable {
