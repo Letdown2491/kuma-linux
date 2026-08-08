@@ -104,6 +104,10 @@ enum Cmd {
         /// Image tag to build and stage
         #[arg(long, default_value = DEFAULT_TAG)]
         tag: String,
+        /// Ask whether the locked base has moved, and change nothing.
+        /// One registry round-trip; no pull, no build.
+        #[arg(long, conflicts_with = "yes")]
+        check: bool,
         /// Actually stage the rebuilt image (requires root; applies on reboot)
         #[arg(long)]
         yes: bool,
@@ -276,8 +280,13 @@ fn run(
             vm(&tag, &output, no_run, rebuild, apply)
         }
         Cmd::Iso { tag, output } => iso(config_path, &tag, &output),
-        Cmd::Update { tag, yes, json: _ } => {
-            update(&read_config_path(config_path, explicit, !json), &tag, yes, json)
+        Cmd::Update { tag, check, yes, json: _ } => {
+            let path = read_config_path(config_path, explicit, !json);
+            if check {
+                update_check(&path, json)
+            } else {
+                update(&path, &tag, yes, json)
+            }
         }
         Cmd::Rollback { yes, json: _ } => rollback(yes, json),
         Cmd::Sync { json: _ } => sync(json),
@@ -581,14 +590,15 @@ fn build_image_pinned(config_path: &Path, tag: &str, pin: Pin) -> Result<Option<
     // The declaration keeps saying `:44`; only the Containerfile gets the
     // digest. The baked copy is config_text, so the machine still carries
     // the declaration a human wrote, not a resolved artifact of it.
-    let existing = lock::Lock::load(&lock::path_for(config_path));
-    if pin == Pin::Follow {
-        if let Some(pinned) = existing.as_ref().and_then(|l| l.pin_for(&declared_base)) {
-            note(&format!("Building from the locked base ({pinned})."));
-            config.system.base = pinned;
-        }
+    let pinned_digest = lock::Lock::load(&lock::path_for(config_path))
+        .filter(|_| pin == Pin::Follow)
+        .filter(|lock| lock.base.reference == declared_base)
+        .map(|lock| lock.base.digest);
+    if let Some(digest) = &pinned_digest {
+        let pinned = lock::pinned_ref(&declared_base, digest);
+        note(&format!("Building from the locked base ({pinned})."));
+        config.system.base = pinned;
     }
-    let built_from = config.system.base.clone();
 
     let dir = tempfile::tempdir().context("cannot create build directory")?;
     containerfile::write_context(&config, &config_text, dir.path())?;
@@ -613,9 +623,22 @@ fn build_image_pinned(config_path: &Path, tag: &str, pin: Pin) -> Result<Option<
     if pruned > 0 {
         note(&format!("Reclaimed {pruned} stale build image(s)."));
     }
+    // A build that followed a pin built from exactly that digest, so
+    // there is nothing to resolve; one that refreshed asks the tag it
+    // just pulled what it resolved to.
+    let digest = match pinned_digest {
+        Some(digest) => digest,
+        None => match lock::base_digest(&declared_base) {
+            Ok(digest) => digest,
+            Err(err) => {
+                eprintln!("cannot resolve the base digest ({err}); no lock written");
+                return Ok(None);
+            }
+        },
+    };
     // The record is taken from the image that just came out, so it says
     // what shipped rather than what was asked for.
-    Ok(lock::record(config_path, &declared_base, &built_from, tag))
+    Ok(lock::record(config_path, &declared_base, digest, tag))
 }
 
 fn switch(tag: &str, yes: bool, json: bool) -> Result<()> {
@@ -710,6 +733,79 @@ fn stage(tag: &str) -> Result<bool> {
 /// the cached base, so a same-tag base (fedora-bootc:44) never moves
 /// without it. Unlike `kuma switch`, an unchanged system is a normal
 /// outcome here, not an error.
+/// The cheap question: has the base this declaration is pinned to moved?
+///
+/// Deliberately the only question it answers. "Would a rebuild change my
+/// packages" looks like it belongs here and doesn't: kuma's Containerfile
+/// runs `dnf install`, not `dnf upgrade`, so a rebuild never moves the
+/// base's existing packages, and `dnf check-update` inside the image
+/// would list hundreds a rebuild would leave exactly where they are.
+/// Narrowing it to the declared list is closer and still wrong, because
+/// their dependencies move too and aren't enumerable without doing the
+/// resolve, which is a build. The lock's diff already answers that
+/// honestly, afterwards.
+///
+/// Note this is the *builder's* check. A machine running a published
+/// image asks bootc instead, and `bootc upgrade --check` already exists.
+fn update_check(config_path: &Path, json: bool) -> Result<()> {
+    let config = Config::load(config_path)?;
+    let base = &config.system.base;
+    let Some(lock) = lock::Lock::load(&lock::path_for(config_path)) else {
+        // Both verbs record a lock, but only one of them works from here:
+        // `build` is a write path and needs a real file, so on a machine
+        // reading its own baked declaration it would fail. Naming an edge
+        // that can't be taken is worse than naming a heavier one.
+        let build = if config_path == Path::new(state::BAKED_CONFIG) {
+            Action::new("update", "kuma update", "record what this declaration resolves to")
+        } else {
+            Action::new("build", "kuma build", "record what this declaration resolves to")
+        };
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": true, "locked": false, "base": base,
+                    "actions": [action_json(&build)],
+                })
+            );
+        } else {
+            println!("Nothing pinned yet: {base} has no lock to have moved from.");
+            print_actions(&[build]);
+        }
+        return Ok(());
+    };
+
+    let remote = lock::remote_digest(base)?;
+    let moved = remote != lock.base.digest;
+    let update = Action::new("update", "kuma update", "move the pin and rebuild on the new base");
+    let actions: Vec<Action> = if moved { vec![update] } else { Vec::new() };
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true, "locked": true, "base": base, "moved": moved,
+                "digest": { "locked": lock.base.digest, "remote": remote },
+                "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
+            })
+        );
+        return Ok(());
+    }
+    if moved {
+        println!("{base} moved.");
+        println!("  locked  {}", short(&lock.base.digest));
+        println!("  now     {}", short(&remote));
+        println!();
+        print_actions(&actions);
+    } else {
+        println!("{base} is current ({}).", short(&remote));
+        // Saying "nothing to do" would overclaim: only the base is
+        // pinned, so a rebuild can still resolve newer packages.
+        println!("Only the base is pinned, so a rebuild can still move package versions.");
+    }
+    Ok(())
+}
+
 fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
     let config = Config::load(config_path)?;
     run_host(&["podman", "pull", &config.system.base])?;

@@ -128,6 +128,19 @@ smoke_image() {
     "$KUMA" --config "$file" generate | grep -qE '^FROM .+@sha256:' \
         || bad "builds would ignore the locked digest"
     ok "lock pins the base by digest"
+
+    # The digest just recorded is the one this build used, so the registry
+    # has to agree the base is current. A "moved" here means the lock is
+    # recording a different KIND of digest than the tag resolves to (the
+    # per-architecture manifest instead of the OCI index), which is a
+    # permanent false alarm rather than news. That shipped once.
+    if command -v skopeo >/dev/null; then
+        "$KUMA" --config "$file" update --check | grep -q 'is current' \
+            || bad "update --check disagrees with the lock this build just wrote"
+        ok "check agrees with the fresh lock"
+    else
+        echo "   .. skipping the --check assertion (no skopeo)"
+    fi
 }
 
 # --- stage: boot -------------------------------------------------------

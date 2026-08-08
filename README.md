@@ -54,6 +54,7 @@ $ kuma check                               # validate the declaration without bu
 $ kuma diff                                # drift: kuma.toml vs image vs machine
 $ kuma doctor                              # machine health: deployment, boot health, convergence, /etc drift, GPU, disk
 $ kuma sync                                # converge flatpaks/brew now, not at next boot
+$ kuma update --check                      # has the locked base moved? (one registry query)
 $ kuma update --yes                        # pull latest base, rebuild, stage for next boot
 $ kuma rollback --yes                      # the update's undo: boot order back to the previous deployment
 $ kuma clean                               # reclaim dangling images and abandoned build containers
@@ -100,6 +101,26 @@ rpm   36 changed, 2 added
 
 and `git diff kuma.lock` is the full story, one line per package, which is
 what makes a bad update bisectable after the fact.
+
+To ask whether an update is even there, without building one:
+
+```console
+$ kuma update --check
+quay.io/fedora/fedora-bootc:44 is current (sha256:1650030cbdb1).
+Only the base is pinned, so a rebuild can still move package versions.
+```
+
+One registry round-trip, no pull and no build, which completes a ladder on
+the verb that already owns the concept: `--check` asks, bare `update`
+builds without staging, `--check`'s opposite `--yes` builds and stages.
+
+It answers exactly one question on purpose. "Would a rebuild change my
+packages" looks like it belongs there and doesn't: kuma runs `dnf install`,
+not `dnf upgrade`, so a rebuild never moves the base's existing packages,
+and any cheap approximation of that question is misleading rather than
+merely incomplete. This is also the *builder's* check. A machine running a
+published image asks bootc instead, and `bootc upgrade --check` already
+exists.
 
 Flatpaks and brew formulae are deliberately absent from the lock. They
 aren't resolved at build time at all: convergence installs them on the

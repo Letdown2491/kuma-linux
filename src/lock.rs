@@ -111,34 +111,108 @@ impl Lock {
     }
 }
 
+/// `quay.io/fedora/fedora-bootc:44` -> `quay.io/fedora/fedora-bootc`
+///
+/// Splitting on the last colon *after the last slash* keeps a registry
+/// port (`localhost:5000/x`) from being mistaken for a tag.
+fn repo_name(reference: &str) -> &str {
+    // A digest reference names the repo before the '@', and its digest
+    // half contains a colon that the tag logic below would otherwise
+    // split on, silently yielding `…/fedora-bootc@sha256`.
+    let reference = match reference.split_once('@') {
+        Some((repo, _digest)) => repo,
+        None => reference,
+    };
+    let (prefix, last) = match reference.rsplit_once('/') {
+        Some((prefix, last)) => (prefix.len() + 1, last),
+        None => (0, reference),
+    };
+    match last.split_once(':') {
+        Some((repo, _tag)) => &reference[..prefix + repo.len()],
+        None => reference,
+    }
+}
+
 /// `quay.io/fedora/fedora-bootc:44` + digest -> `quay.io/fedora/fedora-bootc@sha256:…`
 ///
 /// The tag has to go: `name:tag@digest` is legal for some tools and
 /// rejected by others, and the digest is the only part that decides what
-/// gets pulled anyway. Splitting on the LAST colon after the last slash
-/// keeps a registry port (`localhost:5000/x`) from being read as a tag.
+/// gets pulled anyway.
 pub fn pinned_ref(reference: &str, digest: &str) -> String {
-    let name = match reference.rsplit_once('/') {
-        Some((host, last)) => match last.split_once(':') {
-            Some((repo, _tag)) => format!("{host}/{repo}"),
-            None => reference.to_string(),
-        },
-        None => match reference.split_once(':') {
-            Some((repo, _tag)) => repo.to_string(),
-            None => reference.to_string(),
-        },
-    };
-    format!("{name}@{digest}")
+    format!("{}@{digest}", repo_name(reference))
+}
+
+/// The digest the *registry* means by a tag, which for a multi-arch image
+/// is the OCI index's and not the per-architecture manifest's.
+///
+/// This distinction is not cosmetic and it shipped wrong once.
+/// `podman image inspect --format '{{.Digest}}'` reports the manifest for
+/// the arch you are on, so pinning it (a) pins one architecture, which
+/// breaks the lock's promise of building the same bytes on any machine,
+/// and (b) can never be compared against what a registry says the tag
+/// resolves to, so `kuma update --check` would report "moved" on every
+/// run forever. Both digests are real and both name the same image; only
+/// one of them is what the tag points at.
+///
+/// podman records both in RepoDigests and has no field naming which is
+/// which, so the index is identified as the one that isn't the manifest.
+/// A single-arch image has no index, and then the manifest digest *is*
+/// what the tag resolves to.
+fn index_digest(repo_digests: &[&str], manifest: &str, reference: &str) -> String {
+    let name = repo_name(reference);
+    repo_digests
+        .iter()
+        // entries for other repos (the same image tagged from a second
+        // registry) name a different image to a different registry
+        .filter_map(|entry| entry.split_once('@'))
+        .filter(|(repo, _)| *repo == name)
+        .map(|(_, digest)| digest)
+        .find(|digest| *digest != manifest)
+        .unwrap_or(manifest)
+        .to_string()
 }
 
 pub fn path_for(config_path: &Path) -> PathBuf {
     config_path.with_extension("lock")
 }
 
-/// The manifest digest of a base image already in local storage, which is
-/// where it is right after a build that used it. No extra pull.
+/// The digest of a base image already in local storage, which is where it
+/// is right after a build that used it. Local on purpose: reading it back
+/// off the registry instead would race a tag that moved between the build
+/// and the question, and record a digest the build never used.
 pub fn base_digest(reference: &str) -> Result<String> {
-    let out = host_output(&["podman", "image", "inspect", "--format", "{{.Digest}}", reference])?;
+    let out = host_output(&[
+        "podman",
+        "image",
+        "inspect",
+        "--format",
+        "{{.Digest}}{{range .RepoDigests}}\n{{.}}{{end}}",
+        reference,
+    ])?;
+    let mut lines = out.lines().map(str::trim).filter(|line| !line.is_empty());
+    let manifest = lines.next().with_context(|| format!("no digest for {reference}"))?;
+    anyhow::ensure!(
+        manifest.starts_with("sha256:"),
+        "unexpected digest {manifest:?} for {reference}"
+    );
+    let repo_digests: Vec<&str> = lines.collect();
+    Ok(index_digest(&repo_digests, manifest, reference))
+}
+
+/// What the registry says the tag resolves to right now, without pulling
+/// it. skopeo rather than podman because podman has no way to ask about a
+/// remote image it hasn't fetched, and fetching is the thing being
+/// avoided: the whole point of a check is that it costs one round trip
+/// instead of a rebuild.
+pub fn remote_digest(reference: &str) -> Result<String> {
+    let out = host_output(&[
+        "skopeo",
+        "inspect",
+        "--format",
+        "{{.Digest}}",
+        &format!("docker://{reference}"),
+    ])
+    .with_context(|| format!("cannot ask the registry about {reference}"))?;
     let digest = out.trim().to_string();
     anyhow::ensure!(digest.starts_with("sha256:"), "unexpected digest {digest:?} for {reference}");
     Ok(digest)
@@ -214,14 +288,12 @@ pub fn diff(old: &Lock, new: &Lock) -> LockDiff {
 /// declaration. Never fatal: a build that produced an image succeeded,
 /// and /usr/lib/kuma is read-only when the declaration came from the
 /// image itself.
-pub fn record(config_path: &Path, declared_base: &str, built_from: &str, tag: &str) -> Option<Lock> {
-    let digest = match base_digest(built_from) {
-        Ok(digest) => digest,
-        Err(err) => {
-            eprintln!("cannot resolve the base digest ({err}); no lock written");
-            return None;
-        }
-    };
+/// `digest` is the caller's to supply, because only the caller knows
+/// whether it needs resolving. A build that followed a pin built from
+/// exactly that digest and has nothing to look up; re-deriving it from
+/// the pinned `name@sha256:…` reference would be circular, and asking the
+/// local tag instead could record a newer image than the one built.
+pub fn record(config_path: &Path, declared_base: &str, digest: String, tag: &str) -> Option<Lock> {
     let rpm = match resolved_rpms(tag) {
         Ok(rpm) => rpm,
         Err(err) => {
@@ -291,6 +363,41 @@ mod tests {
         }
     }
 
+    /// The bug this fixes, in one test. podman reports the per-arch
+    /// manifest as `.Digest` and puts BOTH that and the index digest in
+    /// RepoDigests, with nothing saying which is which. Pinning the
+    /// manifest pins one architecture, and comparing it against what a
+    /// registry says the tag resolves to reports "moved" every time.
+    ///
+    /// Real values from quay.io/fedora/fedora-bootc:44, where 1650030c is
+    /// the index (verified by hashing the raw OCI index) and 3e9f0422 is
+    /// the x86_64 manifest.
+    #[test]
+    fn the_index_digest_is_what_a_tag_resolves_to() {
+        let manifest = "sha256:3e9f0422";
+        let index = "sha256:1650030c";
+        let both = [
+            "quay.io/fedora/fedora-bootc@sha256:1650030c",
+            "quay.io/fedora/fedora-bootc@sha256:3e9f0422",
+        ];
+        let reference = "quay.io/fedora/fedora-bootc:44";
+        assert_eq!(index_digest(&both, manifest, reference), index);
+        // order is not contractual, so it is matched by value
+        let flipped = [both[1], both[0]];
+        assert_eq!(index_digest(&flipped, manifest, reference), index);
+
+        // A single-arch image has no index, and then the manifest digest
+        // IS what the tag resolves to.
+        let one = ["quay.io/fedora/fedora-bootc@sha256:3e9f0422"];
+        assert_eq!(index_digest(&one, manifest, reference), manifest);
+        assert_eq!(index_digest(&[], manifest, reference), manifest);
+
+        // The same image tagged from a second registry names a different
+        // image to a different registry, and must not be picked up.
+        let foreign = ["ghcr.io/someone/mirror@sha256:deadbeef"];
+        assert_eq!(index_digest(&foreign, manifest, reference), manifest);
+    }
+
     /// The tag has to come off: `name:tag@digest` is accepted by some
     /// tools and rejected by others, and a registry port must not be
     /// mistaken for one.
@@ -307,6 +414,32 @@ mod tests {
         );
         assert_eq!(pinned_ref("localhost:5000/kuma:44", d), "localhost:5000/kuma@sha256:abc");
         assert_eq!(pinned_ref("fedora-bootc:44", d), "fedora-bootc@sha256:abc");
+    }
+
+    /// A digest reference has a colon in its digest half, and the tag
+    /// logic would split on it and yield `…/fedora-bootc@sha256`. That
+    /// nonsense name matched nothing in RepoDigests, so index_digest
+    /// silently fell back to the per-arch manifest and the whole fix
+    /// above did nothing on any machine that already had a lock.
+    #[test]
+    fn a_digest_reference_still_names_its_repo() {
+        assert_eq!(
+            repo_name("quay.io/fedora/fedora-bootc@sha256:3e9f0422"),
+            "quay.io/fedora/fedora-bootc"
+        );
+        assert_eq!(repo_name("localhost:5000/kuma@sha256:abc"), "localhost:5000/kuma");
+        assert_eq!(repo_name("quay.io/fedora/fedora-bootc:44"), "quay.io/fedora/fedora-bootc");
+        assert_eq!(repo_name("localhost:5000/kuma"), "localhost:5000/kuma");
+
+        // and so the index is found when asked about a pinned reference
+        let both = [
+            "quay.io/fedora/fedora-bootc@sha256:1650030c",
+            "quay.io/fedora/fedora-bootc@sha256:3e9f0422",
+        ];
+        assert_eq!(
+            index_digest(&both, "sha256:3e9f0422", "quay.io/fedora/fedora-bootc@sha256:3e9f0422"),
+            "sha256:1650030c"
+        );
     }
 
     /// A lock pins the base it was taken for. Editing `system.base` in

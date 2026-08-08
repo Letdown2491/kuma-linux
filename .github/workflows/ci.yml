@@ -41,5 +41,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build
+      # skopeo is how `kuma update --check` asks a registry what a tag
+      # resolves to; without it the smoke run skips that assertion, and
+      # the assertion is the one guarding a bug that already shipped once.
+      - run: sudo apt-get install -y skopeo
       - name: smoke (check + image)
         run: ./scripts/smoke.sh minimal
