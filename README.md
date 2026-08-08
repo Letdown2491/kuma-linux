@@ -311,11 +311,20 @@ so build shareable media from a declaration without one.
 
 Shipped: the v1 schema and image build, `switch`, `vm`, `iso`, the day-2
 verbs, two curated desktops (niri and COSMIC), declarative users, flatpak
-and brew convergence, boot health with automatic rollback, `kuma.lock`,
-`/etc` drift detection, build-and-boot smoke tests, and a JSON surface for
-agents.
+and brew convergence that takes back only what it installed, declarative
+btrfs snapshots with `kuma snapshot` to reach them, firmware updates via
+fwupd, boot health with automatic rollback, `kuma.lock`, `/etc` drift
+detection, build-and-boot smoke tests, and a JSON surface for agents.
 
 Next:
 
 - [ ] Registry publishing and CI builds, so an image is `bootc switch`-able
       from anywhere, signed.
+- [ ] Offsite backup to complement `[snapshots]`, which only survives a
+      mistake and not a dead disk. Blocked on where a repo credential
+      lives, since it cannot be the declaration.
+- [ ] Hibernate. A swapfile's size and `resume_offset` are properties of
+      the installed disk, so it needs a first-boot unit rather than an
+      image that already knows the answer.
+- [ ] Flatpak permission overrides, which survive image updates and are
+      the one part of the app layer the declaration cannot see.
