@@ -100,10 +100,16 @@ doesn't name is a proposal against your declaration:
 $ kuma diff
 packages.flatpak
   - org.gnome.Boxes  installed, not declared (convergence removes it)
+Ad-hoc flatpaks, kept as yours: io.github.kolunmi.Bazaar
 
   → kuma capture   keep them: declare what this machine already runs
   → kuma sync      converge now; otherwise the boot/daily run picks this up
 ```
+
+Convergence takes back only what it installed. Boxes above was declared
+once and no longer is, so it is on the removal list; Bazaar you installed
+yourself, so it is undeclared but in no danger. Install apps from a store
+if you like — being undeclared costs reproducibility, never survival.
 
 `kuma capture` prints the proposal and writes nothing until `--yes`; naming
 items captures only those. You review a diff of your *declaration*, not of

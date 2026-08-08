@@ -113,9 +113,9 @@ const NIRI_PACKAGES: &[&str] = &[
 /// notifications, OSD, screenshot, portal, fonts), so this list is the
 /// session plus the hardware enablement a desktop lives on. pipewire is
 /// explicit because nothing in the session requires the daemon, only
-/// its client library. cosmic-store is deliberately absent: it installs
-/// system flatpaks imperatively, which the next convergence run would
-/// remove — in kuma the store is `kuma add --flatpak`.
+/// its client library. cosmic-store is absent, though no longer because
+/// convergence would fight it: a store is a user-facing app, so which
+/// one a machine gets is the declaration's call, not the desktop set's.
 const COSMIC_PACKAGES: &[&str] = &[
     "cosmic-session",
     // the session requires files, term, and settings but not the text
@@ -364,19 +364,37 @@ else
 fi
 "#;
 
-/// Convergence, not just installation: system apps missing from the
-/// declaration are removed, so deleting a line in kuma.toml has the same
-/// authority as adding one. User installs (`flatpak install --user`) are
-/// personal machine state and are never touched.
+/// Convergence, not just installation: an app the declaration installed
+/// and no longer names is removed, so deleting a line in kuma.toml has
+/// the same authority as adding one.
+///
+/// Authority is tracked explicitly, in a state file of what the
+/// declaration installed, exactly as the brew sync does — and for the
+/// same reason, now that scope can no longer stand in for it. This once
+/// removed every undeclared *system* app, reading `--system` as "kuma
+/// put it here" and `--user` as "the owner did". That proxy held only
+/// while nothing else installed system-wide, and a Flatpak store breaks
+/// it: Bazaar's flatpak build talks to the system installation through
+/// SystemHelper, so apps a person deliberately installed looked exactly
+/// like drift and were silently uninstalled hours later. Convergence now
+/// takes back only what it gave. Everything else on the machine is the
+/// owner's, and `kuma capture` offers to write it down.
+///
+/// The uninstall tolerates failure because the state file can name an
+/// app the owner already removed by hand, which is not an error.
 const FLATPAK_SYNC_SCRIPT: &str = r#"#!/usr/bin/bash
 set -euo pipefail
 declared=/usr/lib/kuma/flatpaks
+state=/var/lib/kuma/flatpaks-installed
+mkdir -p /var/lib/kuma
+[ -f "$state" ] || : > "$state"
 xargs -r -a "$declared" flatpak install --system --assumeyes --noninteractive --or-update flathub
-flatpak list --system --app --columns=application | while read -r app; do
+while read -r app; do
     grep -qxF "$app" "$declared" \
-        || flatpak uninstall --system --assumeyes --noninteractive "$app"
-done
+        || flatpak uninstall --system --assumeyes --noninteractive "$app" || true
+done < "$state"
 flatpak uninstall --system --unused --assumeyes --noninteractive
+cp "$declared" "$state"
 "#;
 
 const FLATHUB_URL: &str = "https://dl.flathub.org/repo/flathub.flatpakrepo";
@@ -961,11 +979,12 @@ IOWeight=25
 WantedBy=multi-user.target
 "#;
 
-/// Converge installed formulae to the declared list. Unlike the flatpak
-/// sync there is no system/user scope split to lean on — brew is
-/// single-prefix — so authority is tracked explicitly: a state file
-/// remembers what the declaration installed, and only ever-declared
-/// formulae are removal candidates. Ad-hoc `brew install` is untouched.
+/// Converge installed formulae to the declared list. Brew is
+/// single-prefix, with no scope split that could stand in for
+/// authority, so a state file remembers what the declaration installed
+/// and only ever-declared formulae are removal candidates. Ad-hoc `brew
+/// install` is untouched. The flatpak sync learned the same trick after
+/// its scope proxy turned out to be one a store could break.
 const BREW_SYNC_SCRIPT: &str = r#"#!/usr/bin/bash
 set -euo pipefail
 brew=/home/linuxbrew/.linuxbrew/bin/brew
@@ -1858,14 +1877,25 @@ mod tests {
         assert!(out.contains("systemctl enable kuma-flatpak-sync.service"));
     }
 
+    /// Convergence removes what the declaration installed and dropped,
+    /// and nothing else. The removal loop must read the state file: the
+    /// moment it reads `flatpak list` instead, every app a store put
+    /// here system-wide is swept, which is the bug that kept kuma from
+    /// being able to ship a store at all.
     #[test]
-    fn flatpak_sync_converges_removals() {
+    fn flatpak_sync_removes_only_what_it_installed() {
         assert!(FLATPAK_SYNC_SCRIPT.contains("flatpak uninstall --system"));
+        assert!(FLATPAK_SYNC_SCRIPT.contains(r#"done < "$state""#));
+        assert!(
+            !FLATPAK_SYNC_SCRIPT.contains("flatpak list"),
+            "removal candidates must come from the state file, never from what is installed"
+        );
         // user-level installs are personal state — never touched
         assert!(!FLATPAK_SYNC_SCRIPT.contains("--user"));
         let dir = tempfile::tempdir().unwrap();
         context("schema_version = 1\n[system]\ndesktop = \"niri\"\n", dir.path());
-        // empty declaration is real content: converge to "no system apps"
+        // an empty declaration is real content: take back everything
+        // convergence ever installed, leaving the owner's apps alone
         assert_eq!(
             std::fs::read_to_string(dir.path().join("flatpaks")).unwrap(),
             ""

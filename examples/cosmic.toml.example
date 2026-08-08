@@ -22,10 +22,9 @@ shell = "fish"
 [packages]
 rpm = ["fish", "distrobox"]
 
-# COSMIC's app store is deliberately not shipped: an app installed
-# through a store would be removed again by the next convergence run.
-# This list is the store, and `kuma add --flatpak <id>` is the install
-# button.
+# Converged on boot and daily, and convergence only takes back what it
+# installed: an app you install through a store stays yours until you
+# decide, and `kuma capture` offers to write it down here.
 flatpak = [
     "org.mozilla.firefox",
     "org.gnome.Loupe",
@@ -33,6 +32,7 @@ flatpak = [
     "org.gnome.Calculator",
     "io.github.celluloid_player.Celluloid",
     "org.libreoffice.LibreOffice",
+    "io.github.kolunmi.Bazaar",
 ]
 
 # brew = ["ripgrep", "fd", "jq"]

@@ -15,6 +15,9 @@ use std::path::Path;
 const BREW: &str = "/home/linuxbrew/.linuxbrew/bin/brew";
 const BREW_CELLAR: &str = "/home/linuxbrew/.linuxbrew/Cellar";
 const BREW_STATE: &str = "/home/linuxbrew/.linuxbrew/.kuma-brews";
+/// Written by the flatpak sync: the apps the declaration installed, which
+/// are the only system apps convergence considers its own to remove.
+const FLATPAK_STATE: &str = "/var/lib/kuma/flatpaks-installed";
 
 /// One drift observation: what would change ("add"/"remove"/"mismatch"),
 /// which item, and the note that carries its consequence or cure.
@@ -49,6 +52,10 @@ pub(crate) struct Machine {
     /// Convergence never touches these, and capture only takes one when
     /// it is named.
     pub flatpak_user: BTreeSet<String>,
+    /// Apps the sync has ever installed (its state file): the only system
+    /// apps convergence considers its own to remove. A store installs
+    /// system-wide too, so scope alone can't tell whose an app is.
+    pub flatpak_state: BTreeSet<String>,
     pub brew_installed: Option<BTreeSet<String>>,
     /// Explicit installs only. A dependency is baggage that arrived with
     /// a choice, not a choice.
@@ -86,8 +93,17 @@ pub(crate) fn observe(config: &Config) -> Machine {
         })
         .unwrap_or_default();
     let brew_state = owned_set(&std::fs::read_to_string(BREW_STATE).unwrap_or_default());
+    let flatpak_state = owned_set(&std::fs::read_to_string(FLATPAK_STATE).unwrap_or_default());
 
-    Machine { rpm, flatpak_system, flatpak_user, brew_installed, brew_leaves, brew_state }
+    Machine {
+        rpm,
+        flatpak_system,
+        flatpak_user,
+        flatpak_state,
+        brew_installed,
+        brew_leaves,
+        brew_state,
+    }
 }
 
 /// Leaves without asking brew: the installed formulae nothing else
@@ -158,12 +174,11 @@ pub(crate) fn candidates(config: &Config, machine: &Machine) -> Vec<Candidate> {
 
     if let Some(installed) = &machine.flatpak_system {
         for app in installed.iter().filter(|a| !flatpak.contains(a.as_str())) {
-            out.push(Candidate {
-                list: "flatpak",
-                item: app.clone(),
-                doomed: true,
-                promotes: false,
-            });
+            // Same rule as brew: convergence takes back only what it
+            // installed. An app a store put here system-wide is the
+            // owner's, undeclared but in no danger.
+            let doomed = machine.flatpak_state.contains(app);
+            out.push(Candidate { list: "flatpak", item: app.clone(), doomed, promotes: false });
         }
     }
 
@@ -278,11 +293,18 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
     stale_image |= image_list_stale("/usr/lib/kuma/brews", &declared);
     sections.push(DiffSection { name: "packages.brew", entries, skipped });
 
-    // Ad-hoc brews are the non-doomed half of the same set: convergence
-    // leaves them alone, so the only thing undeclared costs them is that
-    // a rebuild elsewhere wouldn't reproduce them.
-    let adhoc: Vec<String> =
+    // Ad-hoc installs are the non-doomed half of the same set:
+    // convergence leaves them alone, so the only thing undeclared costs
+    // them is that a rebuild elsewhere wouldn't reproduce them. Per-user
+    // flatpaks are excluded because declaring one would change what it
+    // is, and diff has never reported them as anything to reconcile.
+    let adhoc_brews: Vec<String> =
         found.iter().filter(|c| c.list == "brew" && !c.doomed).map(|c| c.item.clone()).collect();
+    let adhoc_flatpaks: Vec<String> = found
+        .iter()
+        .filter(|c| c.list == "flatpak" && !c.doomed && !c.promotes)
+        .map(|c| c.item.clone())
+        .collect();
 
     // Service state is machine state (an /etc overlay change survives image
     // updates), so the cure is systemctl, not a rebuild — name it when it
@@ -350,7 +372,8 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
             serde_json::to_string_pretty(&diff_json(
                 config_path,
                 &sections,
-                &adhoc,
+                &adhoc_brews,
+                &adhoc_flatpaks,
                 stale_image,
                 drift,
                 &actions
@@ -377,8 +400,11 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
             println!("  ({reason})");
         }
     }
-    if !adhoc.is_empty() {
-        println!("Ad-hoc brews, kept as yours: {}", adhoc.join(", "));
+    if !adhoc_flatpaks.is_empty() {
+        println!("Ad-hoc flatpaks, kept as yours: {}", adhoc_flatpaks.join(", "));
+    }
+    if !adhoc_brews.is_empty() {
+        println!("Ad-hoc brews, kept as yours: {}", adhoc_brews.join(", "));
     }
     if stale_image {
         println!("\nThe image's baked declaration is behind {}.", config_path.display());
@@ -397,7 +423,8 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
 fn diff_json(
     config_path: &Path,
     sections: &[DiffSection],
-    adhoc: &[String],
+    adhoc_brews: &[String],
+    adhoc_flatpaks: &[String],
     stale_image: bool,
     drift: bool,
     actions: &[Action],
@@ -415,7 +442,8 @@ fn diff_json(
                     "change": e.change, "item": e.item, "note": e.note,
                 })).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
-        "adhoc_brews": adhoc,
+        "adhoc_brews": adhoc_brews,
+        "adhoc_flatpaks": adhoc_flatpaks,
         "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
     })
 }
@@ -1109,6 +1137,7 @@ mod tests {
             rpm: None,
             flatpak_system: Some(BTreeSet::new()),
             flatpak_user: BTreeSet::new(),
+            flatpak_state: BTreeSet::new(),
             brew_installed: Some(BTreeSet::new()),
             brew_leaves: BTreeSet::new(),
             brew_state: BTreeSet::new(),
@@ -1127,12 +1156,33 @@ mod tests {
         let config = config("schema_version = 1\n[packages]\nflatpak = [\"org.gnome.Loupe\"]\n");
         let mut m = machine();
         m.flatpak_system = Some(set(&["org.gnome.Loupe", "org.gnome.Boxes"]));
+        // the sync installed Boxes back when it was declared, so it is
+        // convergence's to take back
+        m.flatpak_state = set(&["org.gnome.Loupe", "org.gnome.Boxes"]);
         let found = candidates(&config, &m);
         assert_eq!(items(&found), ["org.gnome.Boxes"]);
         assert!(found[0].doomed);
         assert_eq!(found[0].list, "flatpak");
         // and the declared one is never offered back to itself
         assert!(!items(&found).contains(&"org.gnome.Loupe"));
+    }
+
+    /// The reason a Flatpak store can exist on a kuma machine at all.
+    /// Installing system-wide is no longer evidence that convergence put
+    /// it there, so an app the owner installed is offered for capture
+    /// and left alone until they decide — while one the sync installed
+    /// and the declaration dropped is still removed.
+    #[test]
+    fn a_store_install_is_the_owners_not_convergences() {
+        let config = config("schema_version = 1\n");
+        let mut m = machine();
+        m.flatpak_system = Some(set(&["io.github.kolunmi.Bazaar", "org.gnome.Boxes"]));
+        m.flatpak_state = set(&["org.gnome.Boxes"]);
+        let found = candidates(&config, &m);
+        assert_eq!(items(&found), ["org.gnome.Boxes", "io.github.kolunmi.Bazaar"], "urgent first");
+        assert!(found[0].doomed, "Boxes was convergence's and is now undeclared");
+        assert!(!found[1].doomed, "the store put Bazaar there, so it is the owner's");
+        assert!(!found[1].promotes, "it is already system-wide; declaring only writes it down");
     }
 
     /// You cannot imperatively install an rpm on a bootc machine, so
@@ -1336,9 +1386,23 @@ mod tests {
             },
         ];
         let actions = [Action::new("sync", "kuma sync", "converge now")];
-        let json = diff_json(Path::new("kuma.toml"), &sections, &[], false, true, &actions);
+        let adhoc_brews = ["jq".to_string()];
+        let adhoc_flatpaks = ["io.github.kolunmi.Bazaar".to_string()];
+        let json = diff_json(
+            Path::new("kuma.toml"),
+            &sections,
+            &adhoc_brews,
+            &adhoc_flatpaks,
+            false,
+            true,
+            &actions,
+        );
         assert_eq!(json["config"], "kuma.toml");
         assert_eq!(json["drift"], true);
+        // both ad-hoc lists are always present, so an agent can read
+        // "nothing of mine is undeclared" from an empty array
+        assert_eq!(json["adhoc_brews"][0], "jq");
+        assert_eq!(json["adhoc_flatpaks"][0], "io.github.kolunmi.Bazaar");
         // the empty, unskipped section is elided; the skipped one is kept
         assert_eq!(json["sections"].as_array().unwrap().len(), 2);
         assert_eq!(json["sections"][0]["entries"][0]["change"], "add");
