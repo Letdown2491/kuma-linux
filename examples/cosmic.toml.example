@@ -20,7 +20,7 @@ shell = "fish"
 # autologin = true           # straight to the desktop at boot
 
 [packages]
-rpm = ["fish", "distrobox"]
+rpm = ["fish", "git-core", "git-core-doc", "distrobox"]
 
 # Converged on boot and daily, and convergence only takes back what it
 # installed: an app you install through a store stays yours until you

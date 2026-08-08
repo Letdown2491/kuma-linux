@@ -51,7 +51,7 @@ shell = "fish"
 
 [packages]
 # Baked into the image: changing this list needs a rebuild and a reboot.
-rpm = ["fish", "distrobox", "tailscale"]
+rpm = ["fish", "git-core", "git-core-doc", "distrobox", "tailscale"]
 
 # Flathub apps, converged on boot and daily: additions install, removals
 # uninstall. Convergence only ever takes back what it installed, so an
