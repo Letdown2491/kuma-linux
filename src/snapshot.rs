@@ -113,6 +113,7 @@ fn relative_to_target(config: &Config, path: &str) -> Result<PathBuf> {
 
 pub fn snapshot(
     config: &Config,
+    config_path: &Path,
     restore: Option<&str>,
     from: Option<&str>,
     yes: bool,
@@ -122,16 +123,25 @@ pub fn snapshot(
     let ids = ids(&store);
     match restore {
         Some(path) => restore_path(config, &store, &ids, path, from, yes, json),
-        None => list(config, &store, &ids, json),
+        None => list(config, config_path, &store, &ids, json),
     }
 }
 
-fn list(config: &Config, store: &Path, ids: &[String], json: bool) -> Result<()> {
+fn list(
+    config: &Config,
+    config_path: &Path,
+    store: &Path,
+    ids: &[String],
+    json: bool,
+) -> Result<()> {
     let mut actions: Vec<Action> = Vec::new();
     if !config.snapshots.enable {
+        // Turning snapshots on is a hand edit of a table kuma has no verb
+        // for, so this points at the file the way an invalid config does
+        // rather than at a `kuma edit` that has never existed.
         actions.push(Action::new(
-            "declare",
-            "kuma edit",
+            "edit",
+            format!("$EDITOR {}", config_path.display()),
             "add [snapshots] enable = true, then kuma build and kuma switch",
         ));
     } else {

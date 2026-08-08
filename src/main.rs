@@ -233,6 +233,9 @@ fn main() -> Result<()> {
     let explicit = cli.config.is_some();
     let root_json = cli.json;
     let config_path = resolve_config(cli.config);
+    // Before the first affordance is built: every command kuma goes on to
+    // print has to address the declaration this run is actually using.
+    state::set_config_flag(explicit.then_some(config_path.as_path()));
     let Some(command) = cli.command else {
         return state::root(&config_path, root_json);
     };
@@ -365,7 +368,7 @@ fn run(
             let json = json || root_json;
             let path = read_config_path(config_path, explicit, !json);
             let config = Config::load(&path)?;
-            snapshot::snapshot(&config, restore.as_deref(), from.as_deref(), yes, json)
+            snapshot::snapshot(&config, &path, restore.as_deref(), from.as_deref(), yes, json)
         }
         Cmd::Schema => schema(),
         Cmd::Passwd => passwd(),

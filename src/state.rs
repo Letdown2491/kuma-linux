@@ -16,6 +16,7 @@ use crate::inspect::to_set;
 use anyhow::Result;
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::OnceLock;
 
 /// Written (as root) whenever `kuma switch`/`update` stage an image, and
 /// refreshed by doctor, which holds root and the truth. It exists so the
@@ -39,7 +40,62 @@ pub struct Action {
 
 impl Action {
     pub fn new(rel: &'static str, cmd: impl Into<String>, why: impl Into<String>) -> Self {
-        Self { rel, cmd: cmd.into(), why: why.into() }
+        let cmd = apply_config_flag(cmd.into(), CONFIG_FLAG.get().and_then(Option::as_deref));
+        Self { rel, cmd, why: why.into() }
+    }
+}
+
+/// The `--config` this invocation carried, already rendered as the flag
+/// to append to printed commands; None when the declaration was
+/// discovered rather than named. Set once in main, before any affordance
+/// exists to carry it.
+///
+/// Affordances are promises that a command is runnable, and a hint that
+/// drops `--config` names a different file than the command that printed
+/// it. From a directory with no kuma.toml that's a loud error; from one
+/// with an unrelated kuma.toml it's a silent write into the wrong
+/// declaration. Discovered paths deliberately stay off the printed
+/// command: they'd resolve the same way for the reader, and every write
+/// this suggests already names its target in the line above.
+static CONFIG_FLAG: OnceLock<Option<String>> = OnceLock::new();
+
+/// The verbs that resolve a declaration in `run`. Everything else takes
+/// `--config` from clap (it's global) and ignores it — `init` always
+/// writes ./kuma.toml, and switch/vm/sync/doctor/rollback never read one
+/// — so appending it there would claim an influence it doesn't have.
+const CONFIG_VERBS: &[&str] = &[
+    "add", "build", "capture", "check", "clean", "diff", "generate", "iso", "remove", "snapshot",
+    "update",
+];
+
+/// Called once from main with the `--config` path, or None when discovery
+/// found the declaration on its own.
+pub fn set_config_flag(explicit: Option<&Path>) {
+    let _ = CONFIG_FLAG.set(explicit.map(|path| format!(" --config {}", shell_quote(path))));
+}
+
+/// The pure half of the flag logic, so tests can exercise it without
+/// touching the process-wide cell (which, once set, would leak into every
+/// other test's affordances).
+fn apply_config_flag(cmd: String, flag: Option<&str>) -> String {
+    let Some(flag) = flag else { return cmd };
+    match cmd.strip_prefix("kuma ").and_then(|rest| rest.split_whitespace().next()) {
+        Some(verb) if CONFIG_VERBS.contains(&verb) => format!("{cmd}{flag}"),
+        _ => cmd,
+    }
+}
+
+/// Single-quote anything that isn't a bare word, so a declaration under a
+/// directory with a space in it survives the copy-paste it was printed
+/// for.
+fn shell_quote(path: &Path) -> String {
+    let shown = path.display().to_string();
+    let bare = !shown.is_empty()
+        && shown.chars().all(|c| c.is_ascii_alphanumeric() || "._/-@+:,=".contains(c));
+    if bare {
+        shown
+    } else {
+        format!("'{}'", shown.replace('\'', r"'\''"))
     }
 }
 
@@ -436,6 +492,57 @@ mod tests {
 
     fn workspace(config: ConfigFact, image: Option<ImageFact>, machine: MachineFact) -> Observed {
         Observed { config_path: "kuma.toml".into(), config, image, machine }
+    }
+
+    /// The bug this exists to prevent: capture's dry run printed `kuma
+    /// capture --yes` after being pointed at a declaration with --config,
+    /// and running it either failed from a directory with no kuma.toml or
+    /// wrote into an unrelated one.
+    #[test]
+    fn config_flag_rides_along_on_verbs_that_read_the_declaration() {
+        let flag = Some(" --config /home/x/kuma.toml");
+        assert_eq!(
+            apply_config_flag("kuma capture --yes".into(), flag),
+            "kuma capture --yes --config /home/x/kuma.toml"
+        );
+        assert_eq!(
+            apply_config_flag("kuma build".into(), flag),
+            "kuma build --config /home/x/kuma.toml"
+        );
+    }
+
+    /// Verbs that never resolve a declaration must stay bare: `init`
+    /// always writes ./kuma.toml, so a --config on it would be a lie.
+    #[test]
+    fn config_flag_stays_off_verbs_that_ignore_it() {
+        let flag = Some(" --config /home/x/kuma.toml");
+        for cmd in ["kuma init", "kuma switch", "kuma vm", "kuma sync", "kuma doctor"] {
+            assert_eq!(apply_config_flag(cmd.into(), flag), cmd, "{cmd} should not carry --config");
+        }
+    }
+
+    /// Not every affordance is a kuma command, and the ones that aren't
+    /// take no such flag.
+    #[test]
+    fn config_flag_stays_off_foreign_commands() {
+        let flag = Some(" --config /home/x/kuma.toml");
+        for cmd in ["sudo systemctl reboot", "$EDITOR kuma.toml", "kumactl build"] {
+            assert_eq!(apply_config_flag(cmd.into(), flag), cmd);
+        }
+    }
+
+    /// A discovered declaration resolves the same way for whoever runs the
+    /// hint, so it stays off the line.
+    #[test]
+    fn discovered_declaration_prints_no_flag() {
+        assert_eq!(apply_config_flag("kuma build".into(), None), "kuma build");
+    }
+
+    #[test]
+    fn awkward_paths_survive_the_copy_paste() {
+        assert_eq!(shell_quote(Path::new("/home/x/kuma.toml")), "/home/x/kuma.toml");
+        assert_eq!(shell_quote(Path::new("/home/my box/kuma.toml")), "'/home/my box/kuma.toml'");
+        assert_eq!(shell_quote(Path::new("/tmp/it's.toml")), r"'/tmp/it'\''s.toml'");
     }
     fn loaded() -> ConfigFact {
         ConfigFact::Loaded { rpm: 2, flatpak: 1, brew: 0 }
