@@ -120,6 +120,8 @@ packages:
   - openssh-server  # remote access; VMs and smoke tests ssh in
   - passwd          # password management
   - cryptsetup      # LUKS unlock at boot
+  - fwupd           # LVFS firmware updates; security maintenance on real
+                    # hardware, and nothing else in the image can do it
 "#
     )
 }

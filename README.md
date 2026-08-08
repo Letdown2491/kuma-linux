@@ -52,6 +52,9 @@ brew = ["ripgrep", "gh"]            # CLI tools, no rebuild needed
 
 [services]
 enable = ["tailscaled.service"]
+
+[snapshots]
+enable = true   # hourly read-only btrfs snapshots of /var/home
 ```
 
 A fuller, commented version lives in

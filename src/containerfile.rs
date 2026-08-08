@@ -348,6 +348,87 @@ RandomizedDelaySec=1h
 WantedBy=timers.target
 "#;
 
+/// Read-only btrfs snapshots of the declared subvolume, pruned to the
+/// declared retention. The parameters are baked in by `snapshot_script`.
+///
+/// Two guards, both of which exit clean rather than fail: a target that
+/// isn't btrfs, and a target that is btrfs but not a subvolume. The
+/// declaration is one file across many machines, and a laptop laid out
+/// with ext4 must not turn into a unit that fails on every timer tick.
+///
+/// `.snapshots` lives inside the target on purpose. It is a directory
+/// holding nested subvolumes, and btrfs does not recurse into those when
+/// it snapshots the parent, so the snapshots never contain each other.
+const SNAPSHOT_SCRIPT: &str = r#"#!/usr/bin/bash
+set -euo pipefail
+target='{target}'
+keep_recent={keep_recent}
+keep_daily={keep_daily}
+store="$target/.snapshots"
+
+[ "$(findmnt -no FSTYPE -- "$target" 2>/dev/null || true)" = btrfs ] || exit 0
+btrfs subvolume show "$target" >/dev/null 2>&1 || exit 0
+
+install -d -m 0700 "$store"
+btrfs subvolume snapshot -r "$target" "$store/$(date +%Y-%m-%dT%H%M%S)" >/dev/null
+
+# Newest first. Keep keep_recent whatever their age, then the newest
+# survivor of each of keep_daily days the recent tier did not already
+# cover, and delete the rest. Days the recent tier spans are marked seen
+# without spending a daily slot, so keep_daily always buys that many
+# *further* days back rather than being eaten by a busy afternoon. Only
+# names this script writes are ever considered, let alone deleted.
+mapfile -t all < <(ls -1 "$store" 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}$' | sort -r)
+declare -A day_seen=()
+recent=0
+days=0
+for snap in "${all[@]}"; do
+    day="${snap%%T*}"
+    if [ "$recent" -lt "$keep_recent" ]; then
+        recent=$((recent + 1))
+        day_seen[$day]=1
+        continue
+    fi
+    if [ -z "${day_seen[$day]:-}" ] && [ "$days" -lt "$keep_daily" ]; then
+        day_seen[$day]=1
+        days=$((days + 1))
+        continue
+    fi
+    btrfs subvolume delete "$store/$snap" >/dev/null
+done
+"#;
+
+const SNAPSHOT_SERVICE: &str = r#"[Unit]
+Description=Snapshot the declared btrfs subvolume
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/kuma-snapshot
+CPUWeight=25
+IOWeight=25
+
+[Install]
+WantedBy=multi-user.target
+"#;
+
+/// Persistent so a laptop that was asleep at the appointed hour still
+/// gets its snapshot, and jittered so a fleet doesn't stampede a shared
+/// disk at the top of the hour.
+fn snapshot_timer(interval: &str) -> String {
+    format!(
+        "[Unit]\nDescription=Scheduled btrfs snapshots\n\n[Timer]\nOnCalendar={interval}\nPersistent=true\nRandomizedDelaySec=5m\n\n[Install]\nWantedBy=timers.target\n"
+    )
+}
+
+/// The script with this declaration's retention baked in. Validation has
+/// already restricted every substitution to a conservative alphabet.
+fn snapshot_script(config: &Config) -> String {
+    SNAPSHOT_SCRIPT
+        .replace("{target}", &config.snapshots.target)
+        .replace("{keep_recent}", &config.snapshots.keep_recent.to_string())
+        .replace("{keep_daily}", &config.snapshots.keep_daily.to_string())
+}
+
 /// Toggle screen recording: wf-recorder to ~/Videos, notifications on
 /// both edges. SIGINT lets wf-recorder finalize the file properly.
 const RECORD_SCRIPT: &str = r#"#!/usr/bin/bash
@@ -1370,6 +1451,25 @@ pub fn generate(config: &Config) -> String {
         "RUN systemctl enable greenboot-healthcheck.service greenboot-set-rollback-trigger.service greenboot-success.target kuma-boot-health-sync.service\n",
     );
 
+    // Refreshes LVFS metadata only; it never applies a firmware update on
+    // its own. `fwupdmgr update` stays the deliberate act, which is the
+    // right split for a machine that reboots into a signed image.
+    out.push_str("RUN systemctl enable fwupd-refresh.timer\n");
+
+    if config.snapshots.enable {
+        // btrfs-progs is named rather than assumed: it happens to ride in
+        // today, and a snapshot timer that dies on a missing binary would
+        // be a backup that silently isn't one.
+        out.push('\n');
+        out.push_str(&dnf_install("btrfs-progs"));
+        out.push_str("COPY --chmod=755 kuma-snapshot /usr/libexec/kuma-snapshot\n");
+        out.push_str(
+            "COPY kuma-snapshot.service /usr/lib/systemd/system/kuma-snapshot.service\n",
+        );
+        out.push_str("COPY kuma-snapshot.timer /usr/lib/systemd/system/kuma-snapshot.timer\n");
+        out.push_str("RUN systemctl enable kuma-snapshot.timer\n");
+    }
+
     // Every image can adopt a kuma vm host timezone; no-op on hardware.
     out.push_str("\nCOPY --chmod=755 kuma-vm-timezone /usr/libexec/kuma-vm-timezone\n");
     out.push_str(
@@ -1511,6 +1611,14 @@ pub fn write_context(config: &Config, config_text: &str, dir: &Path) -> Result<(
         std::fs::write(dir.join("kuma-flatpak-sync"), FLATPAK_SYNC_SCRIPT)?;
         std::fs::write(dir.join("kuma-flatpak-sync.service"), FLATPAK_SYNC_SERVICE)?;
         std::fs::write(dir.join("kuma-flatpak-sync.timer"), FLATPAK_SYNC_TIMER)?;
+    }
+    if config.snapshots.enable {
+        std::fs::write(dir.join("kuma-snapshot"), snapshot_script(config))?;
+        std::fs::write(dir.join("kuma-snapshot.service"), SNAPSHOT_SERVICE)?;
+        std::fs::write(
+            dir.join("kuma-snapshot.timer"),
+            snapshot_timer(&config.snapshots.interval),
+        )?;
     }
     if let Some(user) = &config.user {
         let mut decl = format!("KUMA_USER='{}'\n", user.name);
@@ -1882,6 +1990,49 @@ mod tests {
     /// moment it reads `flatpak list` instead, every app a store put
     /// here system-wide is swept, which is the bug that kept kuma from
     /// being able to ship a store at all.
+    /// Off unless declared, and when declared it bakes its own tools:
+    /// a snapshot timer that dies on a missing btrfs binary would be a
+    /// backup that silently isn't one.
+    #[test]
+    fn snapshots_are_opt_in_and_bring_their_own_tools() {
+        let out = generate(&config("schema_version = 1\n"));
+        assert!(!out.contains("kuma-snapshot"));
+        assert!(!out.contains(&dnf_install("btrfs-progs")));
+
+        let out = generate(&config("schema_version = 1\n[snapshots]\nenable = true\n"));
+        assert!(out.contains(&dnf_install("btrfs-progs")));
+        assert!(out.contains("RUN systemctl enable kuma-snapshot.timer"));
+    }
+
+    /// The retention and the target are the declaration's, so they have
+    /// to reach the machine; and a target that isn't btrfs has to end the
+    /// run cleanly rather than fail a unit on every tick, because one
+    /// declaration describes machines laid out differently.
+    #[test]
+    fn snapshot_script_carries_the_declared_policy() {
+        let declared = config(
+            "schema_version = 1\n[snapshots]\nenable = true\ntarget = \"/var/data\"\nkeep_recent = 3\nkeep_daily = 90\n",
+        );
+        let script = snapshot_script(&declared);
+        assert!(script.contains("target='/var/data'"));
+        assert!(script.contains("keep_recent=3"));
+        assert!(script.contains("keep_daily=90"));
+        for placeholder in ["{target}", "{keep_recent}", "{keep_daily}"] {
+            assert!(!script.contains(placeholder), "{placeholder} was never substituted");
+        }
+        assert!(script.contains("= btrfs ] || exit 0"), "a non-btrfs target exits clean");
+        assert!(script.contains("btrfs subvolume show"), "a non-subvolume exits clean");
+
+        let dir = tempfile::tempdir().unwrap();
+        context(
+            "schema_version = 1\n[snapshots]\nenable = true\ninterval = \"daily\"\n",
+            dir.path(),
+        );
+        let timer = std::fs::read_to_string(dir.path().join("kuma-snapshot.timer")).unwrap();
+        assert!(timer.contains("OnCalendar=daily"));
+        assert!(timer.contains("Persistent=true"), "a laptop asleep at the hour still snapshots");
+    }
+
     #[test]
     fn flatpak_sync_removes_only_what_it_installed() {
         assert!(FLATPAK_SYNC_SCRIPT.contains("flatpak uninstall --system"));

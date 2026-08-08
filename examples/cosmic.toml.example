@@ -41,3 +41,8 @@ flatpak = [
 # firewalld, bluetooth, cups, avahi, chronyd), so those don't belong here.
 [services]
 enable = []
+
+# Hourly read-only snapshots of /var/home, kept 24 deep plus a week of
+# dailies. Skipped on a machine whose /var/home isn't a btrfs subvolume.
+[snapshots]
+enable = true

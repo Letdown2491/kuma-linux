@@ -19,6 +19,67 @@ pub struct Config {
     pub packages: Packages,
     #[serde(default)]
     pub services: Services,
+    #[serde(default)]
+    pub snapshots: Snapshots,
+}
+
+/// Local btrfs snapshots of the machine state a declaration cannot
+/// reproduce. kuma.toml rebuilds a *system*; it does not rebuild
+/// /var/home, and a tool that makes machines feel disposable owes that
+/// part an answer.
+///
+/// Deliberately the cheap half of the problem: this survives a bad
+/// update, an overwrite, or a deleted directory, and not a dead disk or
+/// a stolen laptop. Offsite backup is a different feature with a
+/// credential in it, and credentials do not belong in a file that gets
+/// committed and baked world-readable into an image — the same boundary
+/// capture.rs draws around [user].
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Snapshots {
+    #[serde(default)]
+    pub enable: bool,
+    /// The btrfs subvolume to snapshot. Snapshots land in
+    /// `<target>/.snapshots`, a nested subvolume path btrfs leaves out
+    /// of the snapshots themselves, so they never nest.
+    #[serde(default = "default_snapshot_target")]
+    pub target: String,
+    /// A systemd OnCalendar expression: "hourly", "daily", or something
+    /// like "*-*-* 03:00:00".
+    #[serde(default = "default_snapshot_interval")]
+    pub interval: String,
+    /// Keep this many of the newest snapshots, whatever their age.
+    #[serde(default = "default_keep_recent")]
+    pub keep_recent: u32,
+    /// Then additionally keep the newest snapshot from each of this many
+    /// further days, so the total ceiling is keep_recent + keep_daily.
+    #[serde(default = "default_keep_daily")]
+    pub keep_daily: u32,
+}
+
+fn default_snapshot_target() -> String {
+    "/var/home".to_string()
+}
+fn default_snapshot_interval() -> String {
+    "hourly".to_string()
+}
+fn default_keep_recent() -> u32 {
+    24
+}
+fn default_keep_daily() -> u32 {
+    7
+}
+
+impl Default for Snapshots {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            target: default_snapshot_target(),
+            interval: default_snapshot_interval(),
+            keep_recent: default_keep_recent(),
+            keep_daily: default_keep_daily(),
+        }
+    }
 }
 
 /// The primary account, created and converged by a boot service, not at
@@ -237,6 +298,30 @@ impl Config {
         for svc in self.services.enable.iter().chain(&self.services.disable) {
             validate_name(svc, "services", &['.', '-', '_', '@'])?;
         }
+        if self.snapshots.enable {
+            let target = &self.snapshots.target;
+            if !target.starts_with('/') || target.contains("..") {
+                bail!(
+                    "snapshots.target must be an absolute path with no `..` (got {target:?})"
+                );
+            }
+            validate_name(target, "snapshots.target", &['/', '.', '-', '_'])?;
+            // Lands in a unit's OnCalendar=, so the systemd calendar
+            // alphabet and nothing else.
+            validate_name(
+                &self.snapshots.interval,
+                "snapshots.interval",
+                &['*', '-', ':', ' ', ',', '.', '/', '~'],
+            )?;
+            // A retention that keeps nothing deletes each snapshot on the
+            // run that takes it: busywork that looks like a backup.
+            if self.snapshots.keep_recent == 0 && self.snapshots.keep_daily == 0 {
+                bail!(
+                    "snapshots keeps nothing: keep_recent and keep_daily are both 0, \
+                     so every snapshot would be deleted by the run that took it"
+                );
+            }
+        }
         Ok(())
     }
 }
@@ -417,6 +502,43 @@ mod tests {
                     || line.starts_with(&format!("[{field}]"))
             });
             assert!(documented, "examples/kuma.toml.example never mentions `{field}`");
+        }
+    }
+
+    /// A retention that keeps nothing would delete each snapshot on the
+    /// run that took it: an expensive way to look protected.
+    #[test]
+    fn a_retention_that_keeps_nothing_is_rejected() {
+        let keeps_nothing: Config = toml::from_str(
+            "schema_version = 1\n[snapshots]\nenable = true\nkeep_recent = 0\nkeep_daily = 0\n",
+        )
+        .unwrap();
+        assert!(keeps_nothing.validate().is_err());
+
+        // one tier is enough; and the same policy disabled is nobody's
+        // problem, so it must not fail a build that never snapshots
+        let one_tier: Config = toml::from_str(
+            "schema_version = 1\n[snapshots]\nenable = true\nkeep_recent = 0\nkeep_daily = 1\n",
+        )
+        .unwrap();
+        one_tier.validate().unwrap();
+        let disabled: Config = toml::from_str(
+            "schema_version = 1\n[snapshots]\nkeep_recent = 0\nkeep_daily = 0\n",
+        )
+        .unwrap();
+        disabled.validate().unwrap();
+    }
+
+    /// The target is baked into a root script that deletes subvolumes, so
+    /// path traversal and relative paths are refused at `kuma check`.
+    #[test]
+    fn a_snapshot_target_must_be_an_absolute_path() {
+        for bad in ["/var/home/../etc", "var/home", "/var/home; rm -rf /"] {
+            let config: Config = toml::from_str(&format!(
+                "schema_version = 1\n[snapshots]\nenable = true\ntarget = \"{bad}\"\n"
+            ))
+            .unwrap();
+            assert!(config.validate().is_err(), "{bad:?} should be rejected");
         }
     }
 
