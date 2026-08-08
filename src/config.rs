@@ -54,7 +54,7 @@ fn default_groups() -> Vec<String> {
     vec!["wheel".to_string()]
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct System {
     /// Unset — the default — means kuma composes its own base from
@@ -82,8 +82,8 @@ pub struct System {
     #[serde(default)]
     pub timezone: Option<String>,
     /// Pin /etc/hostname. Usually unset: hostname is machine state
-    /// (`hostnamectl set-hostname` persists), and os-release branding
-    /// already makes unset default to "kuma".
+    /// (`hostnamectl set-hostname` persists), and the image ships
+    /// /etc/hostname "kuma" as the merge default when unset.
     #[serde(default)]
     pub hostname: Option<String>,
     /// System locale, e.g. "en_US.UTF-8". Installs the matching glibc
@@ -93,19 +93,6 @@ pub struct System {
     pub locale: Option<String>,
 }
 
-impl Default for System {
-    fn default() -> Self {
-        Self {
-            base: None,
-            firmware: None,
-            desktop: Desktop::default(),
-            brew: false,
-            timezone: None,
-            hostname: None,
-            locale: None,
-        }
-    }
-}
 
 impl Config {
     /// The image the Containerfile builds FROM: the declared base, or —

@@ -867,11 +867,6 @@ ExecStart=/usr/libexec/kuma-mako
 /// stays Fedora's so toolbox/dnf/bib keep resolving. An unlisted base
 /// falls back to plain "Kuma" and Fedora's own VERSION string.
 ///
-/// /etc/hostname ships "kuma" because DEFAULT_HOSTNAME can't win: the
-/// initrd's dracut-built os-release still says "fedora", its systemd sets
-/// the kernel hostname first, and the real root won't override a hostname
-/// that's already set. Image /etc is only the ostree merge default, so a
-/// machine whose admin set a hostname keeps it.
 const BRANDING: &str = r#"
 RUN . /usr/lib/os-release \
     && case "${VERSION_ID}" in \
@@ -890,8 +885,7 @@ RUN . /usr/lib/os-release \
         -e "s|^VERSION_CODENAME=.*|VERSION_CODENAME=$(printf %s "$CODENAME" | tr '[:upper:]' '[:lower:]')|" \
         /usr/lib/os-release; fi \
     && { grep -q '^ID_LIKE=' /usr/lib/os-release || echo 'ID_LIKE="fedora"' >> /usr/lib/os-release; } \
-    && { [ ! -f /usr/lib/fedora-release ] || echo "Kuma release ${VERSION_ID}${CODENAME:+ ($CODENAME)}" > /usr/lib/fedora-release; } \
-    && echo kuma > /etc/hostname
+    && { [ ! -f /usr/lib/fedora-release ] || echo "Kuma release ${VERSION_ID}${CODENAME:+ ($CODENAME)}" > /usr/lib/fedora-release; }
 "#;
 
 /// Homebrew lives in /home/linuxbrew — machine-local mutable state, so it
@@ -1024,7 +1018,15 @@ end
 /// files is kuma's to have an opinion about. Redirects separate them for
 /// free, since a read has none.
 pub fn etc_paths(config: &Config) -> Vec<String> {
-    etc_writes(&generate(config))
+    let mut paths = etc_writes(&generate(config));
+    // Hostname is machine state: unpinned, the baked file only seeds the
+    // ostree merge default and an admin's `hostnamectl` rename is the
+    // sanctioned interface, not drift. A *declared* hostname is an
+    // opinion the machine should match, so then it stays owned.
+    if config.system.hostname.is_none() {
+        paths.retain(|p| p != "/etc/hostname");
+    }
+    paths
 }
 
 fn etc_writes(containerfile: &str) -> Vec<String> {
@@ -1334,9 +1336,15 @@ pub fn generate(config: &Config) -> String {
         }
     }
 
-    if let Some(hostname) = &config.system.hostname {
-        out.push_str(&format!("\nRUN echo '{hostname}' > /etc/hostname\n"));
-    }
+    // /etc/hostname ships in every image because DEFAULT_HOSTNAME can't
+    // win: the initrd's dracut-built os-release still says "fedora", its
+    // systemd sets the kernel hostname first, and the real root won't
+    // override a hostname that's already set. Image /etc is only the
+    // ostree merge default, so a machine whose admin set a hostname
+    // keeps it. COPY, never a RUN redirect: buildah bind-mounts
+    // /etc/hostname (like /etc/hosts) into every RUN container, so a
+    // redirect writes the runtime mount and never reaches the layer.
+    out.push_str("\nCOPY hostname /etc/hostname\n");
     if let Some(locale) = &config.system.locale {
         // The langpack makes the locale actually exist; without it glibc
         // silently falls back and every app renders C.UTF-8.
@@ -1380,6 +1388,8 @@ fn langpack(locale: &str) -> Option<&str> {
 pub fn write_context(config: &Config, config_text: &str, dir: &Path) -> Result<()> {
     std::fs::write(dir.join("kuma.toml"), config_text)?;
     std::fs::write(dir.join("Containerfile"), generate(config))?;
+    let hostname = config.system.hostname.as_deref().unwrap_or("kuma");
+    std::fs::write(dir.join("hostname"), format!("{hostname}\n"))?;
     std::fs::write(dir.join("kuma-vm-timezone"), VM_TZ_SCRIPT)?;
     std::fs::write(dir.join("kuma-vm-timezone.service"), VM_TZ_SERVICE)?;
     std::fs::write(dir.join("kuma-boot-health-sync"), BOOT_HEALTH_SYNC_SCRIPT)?;
@@ -1936,12 +1946,27 @@ mod tests {
         assert!(script.contains("usermod -aG"));
     }
 
+    /// The hostname must ship as a COPY, never a RUN redirect: buildah
+    /// bind-mounts /etc/hostname into RUN containers, so a redirect
+    /// writes the runtime mount and the image ships no hostname at all —
+    /// which is exactly what every image did until 2026-08.
     #[test]
     fn hostname_and_locale_pins() {
         let out = generate(&config(
             "schema_version = 1\n[system]\nhostname = \"kuma-laptop\"\nlocale = \"de_DE.UTF-8\"\n",
         ));
-        assert!(out.contains("RUN echo 'kuma-laptop' > /etc/hostname"));
+        assert!(out.contains("COPY hostname /etc/hostname"));
+        assert!(!out.contains("> /etc/hostname"));
+        let dir = tempfile::tempdir().unwrap();
+        context("schema_version = 1\n[system]\nhostname = \"kuma-laptop\"\n", dir.path());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("hostname")).unwrap(),
+            "kuma-laptop\n"
+        );
+        // undeclared, the default seeds the ostree merge default
+        let dir = tempfile::tempdir().unwrap();
+        context("schema_version = 1\n", dir.path());
+        assert_eq!(std::fs::read_to_string(dir.path().join("hostname")).unwrap(), "kuma\n");
         assert!(out.contains(&dnf_install("glibc-langpack-de")));
         assert!(out.contains("RUN echo 'LANG=de_DE.UTF-8' > /etc/locale.conf"));
         // C.UTF-8 has no territory, so no langpack layer
@@ -2145,6 +2170,13 @@ mod tests {
         // claim a desktop's files.
         let minimal = etc_paths(&config("schema_version = 1\n"));
         assert!(!minimal.iter().any(|p| p.contains("niri") || p.contains("greetd")));
+
+        // Unpinned, the baked hostname is machine state (hostnamectl is
+        // the sanctioned rename, not drift); declared, it's owned.
+        assert!(!niri.iter().any(|p| p == "/etc/hostname"));
+        let pinned =
+            etc_paths(&config("schema_version = 1\n[system]\nhostname = \"workbench\"\n"));
+        assert!(pinned.iter().any(|p| p == "/etc/hostname"));
     }
 
     /// The cheap tier of the smoke tests, and the only one that runs
