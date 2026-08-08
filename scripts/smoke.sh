@@ -182,6 +182,8 @@ smoke_boot() {
 
     local ssh_opts=(-p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
                     -o ConnectTimeout=5 -o LogLevel=ERROR kuma@127.0.0.1)
+    # shellcheck disable=SC2029  # client-side expansion is the point: every
+    # caller builds the command here and wants the guest to run it literally.
     guest() { ssh "${ssh_opts[@]}" "$@" 2>/dev/null; }
 
     echo "   .. waiting for ssh on $port"

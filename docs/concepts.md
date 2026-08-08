@@ -1,0 +1,151 @@
+# How kuma behaves
+
+The reasoning behind the parts of kuma that are not obvious from the
+verbs. None of this is needed to use it; all of it explains why it does
+what it does.
+
+## Drift is a fork, not an error
+
+Declarative systems normally treat drift as failure: the machine deviates,
+the tool corrects it, the deviation is erased. That is why imperative
+escape hatches always feel like cheating, and why the thing you installed
+in a hurry never makes it into the declaration.
+
+Kuma gives drift a second exit. Anything the machine has that `kuma.toml`
+doesn't name is a proposal against your declaration:
+
+```console
+$ kuma diff
+packages.flatpak
+  - org.gnome.Boxes  installed, not declared (convergence removes it)
+Ad-hoc flatpaks, kept as yours: io.github.kolunmi.Bazaar
+
+  → kuma capture   keep them: declare what this machine already runs
+  → kuma sync      converge now; otherwise the boot/daily run picks this up
+```
+
+Snapshots follow the same rule. `kuma snapshot --restore <path>` is a dry
+run that names which snapshot the path would come back from and whether a
+copy on the machine gets replaced; `--yes` does it. It restores a path,
+never a whole subvolume: swapping what `/var/home` *is* while processes
+hold files open in it is a reboot-shaped operation, and the accident
+people actually have is one file.
+
+Convergence takes back only what it installed. Boxes above was declared
+once and no longer is, so it is on the removal list; Bazaar you installed
+yourself, so it is undeclared but in no danger. Install apps from a store
+if you like — being undeclared costs reproducibility, never survival.
+
+`kuma capture` prints the proposal and writes nothing until `--yes`; naming
+items captures only those. You review a diff of your *declaration*, not of
+your system. Experiment imperatively, promote deliberately.
+
+Capture never touches the machine, only the file, so a dry run is as safe
+as `kuma diff`. It takes flatpaks and brew leaves, which are the whole
+mutable edge. It will not take rpms, because a bootc machine can't install
+one imperatively and `[packages].rpm` is already declarative. It takes a
+`flatpak --user` install only when you name it, since declaring one makes
+it system-wide. And it never touches `[user]` or `[system]`: a password
+hash and machine state must not walk into a file you commit.
+
+## kuma.lock
+
+`base = "…/fedora-bootc:44"` names a tag, and tags move. One such move,
+bootc 1.16.6 to 1.16.7 between two updates, is enough to break every build
+that trusted the tag.
+
+`kuma.lock` appears beside your declaration after the first build. There is
+no verb to learn: `kuma build` reads it and refreshes it, and `kuma update`
+is the one thing that moves the pin. Commit it.
+
+What it pins and what it merely records is a deliberate split:
+
+- **The base digest is enforced.** Builds resolve `FROM name@sha256:…` from
+  the lock, so the same declaration plus the same lock builds from the same
+  bytes anywhere.
+- **Package versions are recorded, not pinned.** Fedora's mirrors garbage
+  collect old builds within weeks, so a version pin becomes a build failure
+  that has nothing to do with your declaration. The record exists to be
+  diffed, which needs no enforcement, so a lock can never break a build.
+
+That makes an update legible, and `git diff kuma.lock` is the full story:
+
+```console
+$ kuma update
+base  sha256:9f3ca81b2e4d -> sha256:a71b04ef9c33
+      bootc 1.16.6-1.fc44.x86_64 -> 1.16.7-1.fc44.x86_64
+      ... and 34 more changed
+rpm   36 changed, 2 added
+
+$ kuma update --check
+quay.io/fedora/fedora-bootc:44 is current (sha256:1650030cbdb1).
+```
+
+`--check` is one registry query: no pull, no build. It reports only whether
+the base moved, because that is the only question with an honest cheap
+answer.
+
+## /etc is merged, not replaced
+
+On an ostree system, every difference between your `/etc` and the image's
+defaults in `/usr/etc` is treated as a local modification and carried onto
+every future deployment. A file you edit by hand keeps winning, silently,
+no matter what later images ship.
+
+That is working as designed, and it is a trap. You fix something by editing
+`/etc` directly, later declare the same fix properly, and the hand-edited
+copy goes on overriding it. The declared version can never be tested, and
+nothing tells you why.
+
+`kuma doctor` watches the files your image owns:
+
+```console
+ok    etc: 14 files this image owns in /etc, none shadowed locally
+
+warn  etc: local edits shadow the image: /etc/environment. These win over
+      every future image, so the declared version never applies
+      → sudo cp /usr/etc/environment /etc/environment
+```
+
+The cure is `cp`, not `rm`: a deletion is itself a local modification and
+carries forward as one.
+
+There is deliberately no `kuma capture` for this. Package drift is a fork
+because a package is your choice; `/etc` content is kuma's curation, so an
+edit worth keeping belongs in the image rather than in your declaration.
+That is exactly how the display fix that motivated this check got resolved:
+the workaround stopped being a local edit and became something kuma bakes.
+
+## Boot health and automatic rollback
+
+Every image bakes [greenboot](https://github.com/fedora-iot/greenboot-rs).
+There is nothing to configure, because a declarative system whose bad
+update can strand the machine isn't declarative where it counts.
+
+The first boot of a new deployment arms a rollback trigger, and a GRUB boot
+counter gives it three attempts. A boot that hangs before userspace burns
+an attempt just the same. On a desktop image, a boot counts as healthy only
+once the greeter is actually on screen, so "boots fine into a black screen"
+is precisely what this catches. When the attempts run out, GRUB falls back
+and greenboot makes it permanent. A bad update costs three reboots, not the
+machine.
+
+Two deliberate choices:
+
+- **No default health checks.** greenboot's optional check package makes DNS
+  resolution *required*: reasonable on an always-networked IoT box, absurd
+  on a laptop that boots offline. Kuma installs the core framework and its
+  own greeter check. Add your own under
+  `/etc/greenboot/check/required.d/`.
+- **Existing machines are retrofitted.** The boot counter is bootloader
+  config written once at install time, so a machine installed before boot
+  health entered its image would count nothing and reboot-loop forever
+  instead of falling back. `kuma-boot-health-sync` converges that on every
+  boot, and removes it again if the bootloader learns to count natively.
+
+A rollback isn't silent: the failed deployment stays in the rollback slot,
+and `kuma doctor` grades both this boot's verdict and whether the
+bootloader can actually count. A previously-good deployment that starts
+failing reboots three times and then waits for a human, because rolling
+back can't fix what an update didn't break.
+
