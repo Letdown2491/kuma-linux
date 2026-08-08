@@ -144,8 +144,9 @@ hash and machine state must not walk into a file you commit.
 
 ## kuma.lock
 
-`base = "…/fedora-bootc:44"` names a tag, and tags move. One moved bootc
-1.16.6 to 1.16.7 between two updates here and broke every build.
+`base = "…/fedora-bootc:44"` names a tag, and tags move. One such move,
+bootc 1.16.6 to 1.16.7 between two updates, is enough to break every build
+that trusted the tag.
 
 `kuma.lock` appears beside your declaration after the first build. There is
 no verb to learn: `kuma build` reads it and refreshes it, and `kuma update`
