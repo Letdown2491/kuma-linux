@@ -57,7 +57,7 @@ $ kuma sync                                # converge flatpaks/brew now, not at 
 $ kuma update --check                      # has the locked base moved? (one registry query)
 $ kuma update --yes                        # pull latest base, rebuild, stage for next boot
 $ kuma rollback --yes                      # the update's undo: boot order back to the previous deployment
-$ kuma clean                               # reclaim dangling images and abandoned build containers
+$ kuma clean                               # reclaim dangling images and abandoned build containers (--json too)
 ```
 
 `add`, `remove`, and `capture` preserve your comments and formatting;
@@ -226,12 +226,21 @@ response names the legal next commands.
   generated from the same types that parse it, field docs included, so
   it cannot drift from reality. `kuma check [--json]` validates a
   declaration without building anything.
-- **Mutate**: `build`, `switch`, `update`, `rollback`, `sync`, `add`, and
-  `remove` accept `--json`: stdout carries exactly one JSON document:
-  `{"ok": true, ...}` with result fields and next `actions`, or
-  `{"ok": false, "error": ...}` with a non-zero exit. Progress and
-  subprocess output move to stderr. Mutations gate on `--yes` and never
-  touch the running system: they build and stage; a reboot applies.
+- **Mutate**: `build`, `switch`, `update`, `rollback`, `sync`, `add`,
+  `capture`, `remove`, and `clean` accept `--json`: stdout carries exactly
+  one JSON document: `{"ok": true, ...}` with result fields and next
+  `actions`, or `{"ok": false, "error": ...}` with a non-zero exit.
+  Progress and subprocess output move to stderr.
+- **Nothing changes what's running without a reboot.** The verbs that
+  touch the system (`switch`, `update`, `rollback`) gate on `--yes`, and
+  even then only stage a deployment. The others edit the declaration
+  (`add`, `capture`, `remove`) or reclaim local storage (`clean`), and
+  `capture` gates on `--yes` as well because it proposes a set it
+  discovered rather than one you named.
+- **Ask before doing**: `kuma check --json` validates a declaration,
+  `kuma update --check --json` reports whether the locked base has moved
+  (one registry round-trip, no build), and `kuma diff --json` reports
+  drift. All three change nothing.
 
 Without `--config`, kuma uses `./kuma.toml`, falling back to
 `~/.config/kuma/kuma.toml`, a home for declarations that don't live in a

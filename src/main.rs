@@ -106,7 +106,10 @@ enum Cmd {
         tag: String,
         /// Ask whether the locked base has moved, and change nothing.
         /// One registry round-trip; no pull, no build.
-        #[arg(long, conflicts_with = "yes")]
+        // --tag too: a check builds nothing, so there is no image for a
+        // tag to name, and silently ignoring one is how a flag comes to
+        // mean nothing.
+        #[arg(long, conflicts_with_all = ["yes", "tag"])]
         check: bool,
         /// Actually stage the rebuilt image (requires root; applies on reboot)
         #[arg(long)]
@@ -131,8 +134,16 @@ enum Cmd {
         json: bool,
     },
     /// Reclaim build leftovers: dangling images, abandoned build containers
-    Clean,
+    Clean {
+        /// Report what was reclaimed as JSON (progress moves to stderr)
+        #[arg(long)]
+        json: bool,
+    },
     /// Declare packages in kuma.toml (pick the list: --rpm, --flatpak, --brew)
+    // The list is required and exclusive, expressed to clap rather than
+    // checked at runtime: `kuma add --help` now says so, and a call with
+    // no list fails before anything reads the declaration.
+    #[command(group(clap::ArgGroup::new("list").required(true).args(["rpm", "flatpak", "brew"])))]
     Add {
         /// Package names, Flathub app IDs, or brew formulae
         #[arg(required = true)]
@@ -219,6 +230,7 @@ fn main() -> Result<()> {
             | Cmd::Update { json, .. }
             | Cmd::Rollback { json, .. }
             | Cmd::Sync { json }
+            | Cmd::Clean { json }
             | Cmd::Add { json, .. }
             | Cmd::Capture { json, .. }
             | Cmd::Remove { json, .. } => *json,
@@ -231,6 +243,7 @@ fn main() -> Result<()> {
             | Cmd::Update { .. }
             | Cmd::Rollback { .. }
             | Cmd::Sync { .. }
+            | Cmd::Clean { .. }
             | Cmd::Add { .. }
             | Cmd::Capture { .. }
             | Cmd::Remove { .. }
@@ -290,8 +303,12 @@ fn run(
         }
         Cmd::Rollback { yes, json: _ } => rollback(yes, json),
         Cmd::Sync { json: _ } => sync(json),
-        Cmd::Clean => clean(),
+        Cmd::Clean { json: _ } => clean(json),
         Cmd::Add { names, rpm, flatpak, brew, json: _ } => {
+            // The ArgGroup on Cmd::Add makes clap reject "none" and "more
+            // than one" before this runs, with a better message than any
+            // written here. This arm is the exhaustiveness the compiler
+            // wants, and a backstop if that group is ever loosened.
             let list = match (rpm, flatpak, brew) {
                 (true, false, false) => "rpm",
                 (false, true, false) => "flatpak",
@@ -1050,7 +1067,15 @@ fn sync(json: bool) -> Result<()> {
 /// build abandons its buildah "working container", which pins its layers
 /// while being invisible to `podman images` — one was found holding 68 GB.
 /// `kuma build` self-cleans its own label; this reclaims everything.
-fn clean() -> Result<()> {
+fn clean(json: bool) -> Result<()> {
+    // Held rather than printed as it goes, so the same run can render as
+    // text or as one JSON document. Progress chatter from host::note
+    // already routes to stderr in JSON mode.
+    let say = |line: String| {
+        if !json {
+            println!("{line}");
+        }
+    };
     // An in-flight build's working container looks identical to an
     // abandoned one — don't yank the layers out from under it. The [ ]
     // keeps the pattern from matching kuma's own pgrep invocation.
@@ -1075,12 +1100,12 @@ fn clean() -> Result<()> {
         let mut args = vec!["podman", "rm", "--force"];
         args.extend(&abandoned);
         host_output(&args)?; // capture the ID-per-line chatter
-        println!("Removed {} abandoned build container(s).", abandoned.len());
+        say(format!("Removed {} abandoned build container(s).", abandoned.len()));
     }
 
     let pruned = prune_dangling(&["podman", "image", "prune", "-f"])?;
     if pruned > 0 {
-        println!("Removed {pruned} dangling image(s).");
+        say(format!("Removed {pruned} dangling image(s)."));
     }
 
     // `kuma switch` copies each image into root storage, where the same
@@ -1091,19 +1116,36 @@ fn clean() -> Result<()> {
         match prune_dangling(&["sudo", "podman", "image", "prune", "-f"]) {
             Ok(n) if n > 0 => {
                 root_pruned = n;
-                println!("Removed {n} dangling image(s) from root storage.");
+                say(format!("Removed {n} dangling image(s) from root storage."));
             }
             Ok(_) => {}
-            Err(_) => println!("Root storage skipped (sudo declined)."),
+            Err(_) => say("Root storage skipped (sudo declined).".to_string()),
         }
     }
 
-    if abandoned.is_empty() && pruned == 0 && root_pruned == 0 {
-        println!("Nothing to reclaim.");
-    } else if let (Some(before), Some(after)) = (before, avail_bytes()) {
-        if after > before {
-            println!("Freed {}.", human_size(after - before));
-        }
+    let nothing = abandoned.is_empty() && pruned == 0 && root_pruned == 0;
+    let freed = match (before, avail_bytes()) {
+        (Some(before), Some(after)) if after > before => Some(after - before),
+        _ => None,
+    };
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "containers_removed": abandoned.len(),
+                "images_pruned": pruned,
+                "root_images_pruned": root_pruned,
+                "freed_bytes": freed,
+                "actions": [],
+            })
+        );
+        return Ok(());
+    }
+    if nothing {
+        say("Nothing to reclaim.".to_string());
+    } else if let Some(freed) = freed {
+        say(format!("Freed {}.", human_size(freed)));
     }
     Ok(())
 }
@@ -1489,6 +1531,16 @@ fn path_str(path: &Path) -> Result<&str> {
 
 #[cfg(test)]
 mod tests {
+    /// clap's own verifier over the whole CLI: conflicts naming arguments
+    /// that don't exist, groups over missing members, duplicate flags,
+    /// and the rest. Cheap, and it covers every verb at once rather than
+    /// the one somebody remembered to test.
+    #[test]
+    fn the_cli_definition_is_coherent() {
+        use clap::CommandFactory;
+        super::Cli::command().debug_assert();
+    }
+
     /// `kuma update --json` is how an agent learns what an update did to
     /// the machine, so the change set has to be in the document and not
     /// only in the human text. Null when there was no previous lock to
