@@ -171,7 +171,7 @@ const COSMIC_FAVORITES: &str = r#"[
 /// own theme-matched set.
 const COSMIC_BACKGROUND: &str = r#"(
     output: "all",
-    source: Path("/usr/share/backgrounds/kuma/kuma-wallpaper.png"),
+    source: Path("/usr/share/backgrounds/kuma/kuma-wallpaper.jpg"),
     filter_by_theme: false,
     rotation_frequency: 3600,
     filter_method: Lanczos,
@@ -688,9 +688,9 @@ spawn-at-startup "udiskie"
 // Time-based night light: no location needed, unlike solar mode.
 spawn-at-startup "wlsunset" "-S" "07:00" "-s" "20:00"
 spawn-at-startup "waybar"
-spawn-at-startup "swaybg" "-i" "/usr/share/backgrounds/kuma/kuma-wallpaper.png" "-m" "fill"
+spawn-at-startup "swaybg" "-i" "/usr/share/backgrounds/kuma/kuma-wallpaper.jpg" "-m" "fill"
 // Lock at 15 min, screen off a minute later (any input wakes it).
-spawn-at-startup "swayidle" "-w" "timeout" "900" "swaylock -f -i /usr/share/backgrounds/kuma/kuma-wallpaper.png -s fill" "timeout" "960" "niri msg action power-off-monitors" "before-sleep" "swaylock -f -i /usr/share/backgrounds/kuma/kuma-wallpaper.png -s fill"
+spawn-at-startup "swayidle" "-w" "timeout" "900" "swaylock -f -i /usr/share/backgrounds/kuma/kuma-wallpaper.jpg -s fill" "timeout" "960" "niri msg action power-off-monitors" "before-sleep" "swaylock -f -i /usr/share/backgrounds/kuma/kuma-wallpaper.jpg -s fill"
 spawn-at-startup "/usr/libexec/kuma-battery-watch"
 // Wayland clipboards can die with their window; cliphist keeps history
 // (paste picker on Mod+Ctrl+V, spliced into the stock binds).
@@ -957,7 +957,9 @@ const FASTFETCH_CONFIG: &str = r#"{
 }
 "#;
 
-/// Theme files for the curated desktop, drawn from the Kuma wallpaper palette.
+/// Theme files for the curated desktop. The navy base is the wallpaper's own
+/// darkest tones; the accent is picked to sit against it, not sampled from it,
+/// so replacing the wallpaper does not oblige a retheme.
 /// All system-wide (never /etc/skel): skel only reaches homes created after
 /// the image ships, so it strands existing users on stale copies — image
 /// updates must retheme every account. User dotfiles still win everywhere:
@@ -965,7 +967,7 @@ const FASTFETCH_CONFIG: &str = r#"{
 /// /etc/xdg beneath the user's file (so a one-key override keeps the rest
 /// of this theme), and mako (no system path at all) goes through a
 /// launcher that prefers the user's config.
-const WALLPAPER: &[u8] = include_bytes!("../assets/kuma-wallpaper.png");
+const WALLPAPER: &[u8] = include_bytes!("../assets/kuma-wallpaper.jpg");
 const WAYBAR_CONFIG: &str = include_str!("../assets/waybar.jsonc");
 const WAYBAR_STYLE: &str = include_str!("../assets/waybar.css");
 const FUZZEL_CONFIG: &str = include_str!("../assets/fuzzel.ini");
@@ -1206,7 +1208,7 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY greetd-config.toml /etc/greetd/config.toml\n");
         out.push_str("COPY kargs-desktop.toml /usr/lib/bootc/kargs.d/10-kuma-desktop.toml\n");
         out.push_str("COPY niri-extras.kdl /usr/lib/kuma/niri-extras.kdl\n");
-        out.push_str("COPY kuma-wallpaper.png /usr/share/backgrounds/kuma/kuma-wallpaper.png\n");
+        out.push_str("COPY kuma-wallpaper.jpg /usr/share/backgrounds/kuma/kuma-wallpaper.jpg\n");
         out.push_str("COPY waybar-config.jsonc /etc/xdg/waybar/config.jsonc\n");
         out.push_str("COPY waybar-style.css /etc/xdg/waybar/style.css\n");
         out.push_str("COPY fuzzel.ini /etc/xdg/fuzzel/fuzzel.ini\n");
@@ -1321,7 +1323,7 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY kargs-desktop.toml /usr/lib/bootc/kargs.d/10-kuma-desktop.toml\n");
         out.push_str("COPY fastfetch-config.jsonc /etc/xdg/fastfetch/config.jsonc\n");
         out.push_str("COPY fastfetch-logo.txt /usr/lib/kuma/fastfetch-logo.txt\n");
-        out.push_str("COPY kuma-wallpaper.png /usr/share/backgrounds/kuma/kuma-wallpaper.png\n");
+        out.push_str("COPY kuma-wallpaper.jpg /usr/share/backgrounds/kuma/kuma-wallpaper.jpg\n");
         // Overwrite COSMIC's packaged defaults in place, guarded so the
         // build fails if an update moves them — an override at a path
         // nothing reads would silently ship the stock look.
@@ -1558,7 +1560,7 @@ pub fn write_context(config: &Config, config_text: &str, dir: &Path) -> Result<(
         std::fs::write(dir.join("kargs-desktop.toml"), DESKTOP_KARGS)?;
         std::fs::write(dir.join("fastfetch-config.jsonc"), FASTFETCH_CONFIG)?;
         std::fs::write(dir.join("fastfetch-logo.txt"), FASTFETCH_LOGO)?;
-        std::fs::write(dir.join("kuma-wallpaper.png"), WALLPAPER)?;
+        std::fs::write(dir.join("kuma-wallpaper.jpg"), WALLPAPER)?;
         std::fs::write(dir.join("kuma-greeter-check"), GREETER_CHECK)?;
     }
     if config.system.desktop == Desktop::Cosmic {
@@ -1749,7 +1751,7 @@ mod tests {
     fn niri_desktop_ships_theme_and_wallpaper() {
         let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
         assert!(
-            out.contains("COPY kuma-wallpaper.png /usr/share/backgrounds/kuma/kuma-wallpaper.png")
+            out.contains("COPY kuma-wallpaper.jpg /usr/share/backgrounds/kuma/kuma-wallpaper.jpg")
         );
         assert!(out.contains("COPY waybar-config.jsonc /etc/xdg/waybar/config.jsonc"));
         assert!(out.contains("COPY waybar-style.css /etc/xdg/waybar/style.css"));
@@ -1898,10 +1900,10 @@ mod tests {
     fn context_includes_theme_files_for_niri() {
         let dir = tempfile::tempdir().unwrap();
         context("schema_version = 1\n[system]\ndesktop = \"niri\"\n", dir.path());
-        let wallpaper = std::fs::read(dir.path().join("kuma-wallpaper.png")).unwrap();
+        let wallpaper = std::fs::read(dir.path().join("kuma-wallpaper.jpg")).unwrap();
         assert!(!wallpaper.is_empty());
         let extras = std::fs::read_to_string(dir.path().join("niri-extras.kdl")).unwrap();
-        assert!(extras.contains("/usr/share/backgrounds/kuma/kuma-wallpaper.png"));
+        assert!(extras.contains("/usr/share/backgrounds/kuma/kuma-wallpaper.jpg"));
         assert!(extras.contains("spawn-at-startup \"waybar\""));
         assert!(extras.contains("kuma-clipboard-bridge"));
         assert!(dir.path().join("kuma-clipboard-bridge").exists());
@@ -2329,7 +2331,7 @@ mod tests {
         // wallpaper is identity, and the packaged dock/background defaults
         // are overwritten in place, guarded so a moved path fails the build
         assert!(
-            out.contains("COPY kuma-wallpaper.png /usr/share/backgrounds/kuma/kuma-wallpaper.png")
+            out.contains("COPY kuma-wallpaper.jpg /usr/share/backgrounds/kuma/kuma-wallpaper.jpg")
         );
         assert!(out.contains("test -f /usr/share/cosmic/com.system76.CosmicAppList/v1/favorites"));
         assert!(out.contains(
@@ -2519,7 +2521,7 @@ mod tests {
         // identity and kargs travel with every desktop
         assert!(dir.path().join("fastfetch-logo.txt").exists());
         assert!(dir.path().join("kargs-desktop.toml").exists());
-        assert!(dir.path().join("kuma-wallpaper.png").exists());
+        assert!(dir.path().join("kuma-wallpaper.jpg").exists());
         // the dock and background overrides are cosmic-only context
         assert!(dir.path().join("cosmic-favorites").exists());
         assert!(dir.path().join("cosmic-background").exists());

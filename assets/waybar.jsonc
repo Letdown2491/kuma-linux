@@ -1,4 +1,5 @@
-// Kuma waybar: palette drawn from the Kuma wallpaper (night navy / aurora).
+// Kuma waybar: night navy base, matched to the wallpaper's darkest tones; the
+// teal accent is chosen against it rather than sampled from it.
 {
     "layer": "top",
     "position": "top",
