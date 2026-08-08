@@ -479,16 +479,35 @@ fn passwd() -> Result<()> {
     Ok(())
 }
 
+/// Raw salt bytes to generate. The hash stores the salt base64'd, and
+/// sha512-crypt truncates that to 16 characters, so this is the largest
+/// salt that survives a round trip: 12 bytes encode to exactly 16
+/// characters, which is also all the entropy 16 characters can carry
+/// (16 * 6 bits = 96). sha-crypt's own default is 16 *bytes*, which
+/// encodes to 22 characters and does not survive: see the test.
+const SALT_BYTES: usize = 12;
+
+/// Split out so the test can exercise the real salt and format at rounds
+/// it can afford, since the production cost is the whole point of the
+/// number hash_password passes.
+fn hash_with(password: &str, params: sha_crypt::Params) -> Result<String> {
+    use sha_crypt::PasswordHasher;
+    let salt = sha_crypt::password_hash::generate_salt();
+    sha_crypt::ShaCrypt::new(sha_crypt::Algorithm::Sha512Crypt, params)
+        .hash_password_with_salt(password.as_bytes(), &salt[..SALT_BYTES])
+        .map(|hash| hash.to_string())
+        .map_err(|e| anyhow::anyhow!("hashing failed: {e:?}"))
+}
+
 fn hash_password(password: &str) -> Result<String> {
     // The hash is world-readable on a kuma machine (baked kuma.toml) and
     // often committed to git, unlike /etc/shadow's mode-0 protection —
     // so the default 5000 rounds is not enough. 656k (passlib's sha512
     // calibration) makes offline guessing ~130x costlier; glibc reads the
     // rounds= prefix, and login-time cost stays well under a second.
-    let params = sha_crypt::Sha512Params::new(656_000)
+    let params = sha_crypt::Params::new(656_000)
         .map_err(|e| anyhow::anyhow!("crypt params: {e:?}"))?;
-    sha_crypt::sha512_simple(password, &params)
-        .map_err(|e| anyhow::anyhow!("hashing failed: {e:?}"))
+    hash_with(password, params)
 }
 
 
@@ -1868,9 +1887,19 @@ mod tests {
         // hash_password's 656k rounds take ~13s in a debug build — hash at
         // the spec minimum instead (still a real rounds= hash, so the '='
         // path is exercised) and validate the production shape statically.
-        let params = sha_crypt::Sha512Params::new(1_000).unwrap();
-        let real = sha_crypt::sha512_simple("kuma", &params).unwrap();
+        let real = super::hash_with("kuma", sha_crypt::Params::new(1_000).unwrap()).unwrap();
         assert!(real.starts_with("$6$"));
+
+        // The salt has to survive crypt(3) unchanged. sha512-crypt
+        // truncates it to 16 characters, and PAM authenticates by
+        // string-comparing crypt(password, stored) against stored, so a
+        // salt longer than that hashes correctly and still fails every
+        // login: libcrypt echoes back a shorter string than the one we
+        // wrote. sha-crypt's own salt generator produces 22 characters
+        // and would do exactly this.
+        let salt = real.split('$').nth(3).expect("$6$rounds=N$salt$hash");
+        assert!(salt.len() <= 16, "salt {salt:?} is {} chars, crypt(3) keeps 16", salt.len());
+
         for hash in [real.as_str(), "$6$rounds=656000$0aQ8mNcQ$abc./XYZ"] {
             // must survive the [user] password_hash validation round-trip
             let config: crate::config::Config = toml::from_str(&format!(

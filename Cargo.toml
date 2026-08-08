@@ -15,6 +15,8 @@ toml_edit = "0.22"
 tempfile = "3"
 clap_complete = "4"
 rpassword = "7"
-sha-crypt = "0.5"
-sha2 = "0.10"
+# getrandom: 0.6 stopped generating a salt for you, and the trait method
+# that still does is behind this feature.
+sha-crypt = { version = "0.6", features = ["getrandom"] }
+sha2 = "0.11"
 schemars = { version = "1.2.2", features = ["derive"] }
