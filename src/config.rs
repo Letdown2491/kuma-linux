@@ -57,8 +57,19 @@ fn default_groups() -> Vec<String> {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct System {
-    #[serde(default = "default_base")]
-    pub base: String,
+    /// Unset — the default — means kuma composes its own base from
+    /// Fedora's repos (see compose.rs). Set it to any bootc image
+    /// reference to build FROM that instead: the escape hatch for
+    /// debugging against fedora-bootc, a mirror, or a test tag.
+    #[serde(default)]
+    pub base: Option<String>,
+    /// Trim the composed base's firmware to these packages (members of
+    /// compose::FIRMWARE_PACKAGES). Unset ships the broad set: every
+    /// vendor's GPU/wifi/audio blobs, so unknown hardware still boots
+    /// with everything working. Only meaningful when the base is
+    /// composed — an explicit `base` image rejects it.
+    #[serde(default)]
+    pub firmware: Option<Vec<String>>,
     #[serde(default)]
     pub desktop: Desktop,
     /// Homebrew in /home/linuxbrew: imperative CLI tools that survive image
@@ -85,13 +96,27 @@ pub struct System {
 impl Default for System {
     fn default() -> Self {
         Self {
-            base: default_base(),
+            base: None,
+            firmware: None,
             desktop: Desktop::default(),
             brew: false,
             timezone: None,
             hostname: None,
             locale: None,
         }
+    }
+}
+
+impl Config {
+    /// The image the Containerfile builds FROM: the declared base, or —
+    /// the kuma default — the content-addressed tag its own composed
+    /// base will carry. A pure function of the declaration, so builds,
+    /// `kuma generate`, and tests all agree without touching podman.
+    pub fn base_ref(&self) -> String {
+        self.system
+            .base
+            .clone()
+            .unwrap_or_else(|| crate::compose::content_tag(self))
     }
 }
 
@@ -108,9 +133,6 @@ pub enum Desktop {
     Cosmic,
 }
 
-fn default_base() -> String {
-    DEFAULT_BASE.to_string()
-}
 
 #[derive(Debug, Deserialize, Default, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -160,7 +182,26 @@ impl Config {
                 CURRENT_SCHEMA
             );
         }
-        validate_name(&self.system.base, "system.base", &['/', ':', '.', '-', '_', '@'])?;
+        if let Some(base) = &self.system.base {
+            validate_name(base, "system.base", &['/', ':', '.', '-', '_', '@'])?;
+        }
+        if let Some(firmware) = &self.system.firmware {
+            if self.system.base.is_some() {
+                bail!(
+                    "system.firmware trims kuma's composed base; it means nothing \
+                     when system.base names an image — remove one of the two"
+                );
+            }
+            for pkg in firmware {
+                if !crate::compose::FIRMWARE_PACKAGES.contains(&pkg.as_str()) {
+                    bail!(
+                        "system.firmware entry {pkg:?} is not a firmware package kuma \
+                         knows; the set is: {}",
+                        crate::compose::FIRMWARE_PACKAGES.join(", ")
+                    );
+                }
+            }
+        }
         if let Some(tz) = &self.system.timezone {
             validate_name(tz, "system.timezone", &['/', '-', '_', '+'])?;
         }
@@ -396,8 +437,29 @@ mod tests {
     fn minimal_config_parses_with_defaults() {
         let config: Config = toml::from_str("schema_version = 1").unwrap();
         config.validate().unwrap();
-        assert_eq!(config.system.base, DEFAULT_BASE);
+        // The default base is kuma's own composed one, not fedora-bootc.
+        assert_eq!(config.system.base, None);
+        assert!(config.base_ref().starts_with("localhost/kuma-base:m"));
         assert!(config.packages.rpm.is_empty());
+    }
+
+    #[test]
+    fn firmware_trim_is_validated() {
+        let unknown: Config = toml::from_str(
+            "schema_version = 1\n[system]\nfirmware = [\"warp-core-firmware\"]\n",
+        )
+        .unwrap();
+        assert!(unknown.validate().is_err());
+        let with_image_base: Config = toml::from_str(
+            "schema_version = 1\n[system]\nbase = \"quay.io/x/y:1\"\nfirmware = [\"amd-gpu-firmware\"]\n",
+        )
+        .unwrap();
+        assert!(with_image_base.validate().is_err());
+        let good: Config = toml::from_str(
+            "schema_version = 1\n[system]\nfirmware = [\"amd-gpu-firmware\", \"mt7xxx-firmware\"]\n",
+        )
+        .unwrap();
+        good.validate().unwrap();
     }
 
     #[test]

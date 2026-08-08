@@ -683,10 +683,22 @@ fn check_deployment(report: &mut impl FnMut(Grade, &str, String, Option<Action>)
     // bootc actually deploys. Manifest digests don't survive the
     // save/load sync between them — only image IDs (config digests) do —
     // so compare IDs across storages and digests only within root's.
-    if let Ok(local_id) = crate::image_id(crate::DEFAULT_TAG) {
+    //
+    // Compare against the tag the machine actually deploys, not a
+    // hardcoded one: a deployment that intentionally tracks another tag
+    // (an overridden build, a test image) must never be told the
+    // unrelated default build is "newer" — following that suggestion
+    // would switch the machine off the tag its admin chose.
+    let compared_tag = booted
+        .pointer("/image/image/transport")
+        .and_then(|v| v.as_str())
+        .filter(|transport| *transport == "containers-storage")
+        .and_then(|_| image_of(&booted))
+        .unwrap_or_else(|| crate::DEFAULT_TAG.to_string());
+    if let Ok(local_id) = crate::image_id(&compared_tag) {
         let root = host_output(&[
             "sudo", "podman", "image", "inspect", "--format", "{{.Id}} {{.Digest}}",
-            crate::DEFAULT_TAG,
+            &compared_tag,
         ])
         .unwrap_or_default();
         let (root_id, root_digest) = root.split_once(' ').unwrap_or(("", ""));
@@ -698,11 +710,16 @@ fn check_deployment(report: &mut impl FnMut(Grade, &str, String, Option<Action>)
         let deployment_current =
             !root_digest.is_empty() && deployed.iter().any(|d| d == root_digest);
         if local_id != root_id || (!deployed.is_empty() && !deployment_current) {
+            let switch_cmd = if compared_tag == crate::DEFAULT_TAG {
+                "kuma switch".to_string()
+            } else {
+                format!("kuma switch --tag {compared_tag}")
+            };
             report(
                 Grade::Warn,
                 "deployment",
-                "localhost/kuma:latest is newer than the deployment".into(),
-                Some(Action::new("switch", "kuma switch", "stage the newer build")),
+                format!("{compared_tag} is newer than the deployment"),
+                Some(Action::new("switch", switch_cmd, "stage the newer build")),
             );
         }
         // Doctor holds root and the truth, so refresh the stamp the

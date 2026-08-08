@@ -43,7 +43,11 @@ pub struct Lock {
 
 #[derive(Serialize, Deserialize)]
 pub struct Base {
-    /// The declaration's `system.base`, verbatim. Kept so a changed
+    /// What the build resolved its base from: the declaration's
+    /// `system.base` verbatim, or — for kuma's own composed base — the
+    /// content-addressed `localhost/kuma-base:m…` tag, which embeds the
+    /// manifest identity, so a manifest change reads as a changed
+    /// reference exactly like an edited `system.base` would. Kept so a changed
     /// declaration can be told apart from a moved tag: the first means
     /// the pin is for a different image entirely and must be re-resolved.
     #[serde(rename = "ref")]

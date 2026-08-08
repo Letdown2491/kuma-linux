@@ -3,7 +3,18 @@
 schema_version = 1
 
 [system]
-base = "quay.io/fedora/fedora-bootc:44"
+# Unset — the default — kuma composes its own base from Fedora's package
+# repos: Fedora's minimal bootc core (kernel, systemd, bootc, dnf) plus
+# hardware enablement, and none of the general-purpose weight
+# fedora-bootc carries. Set it to any bootc image reference to build
+# FROM that instead — the escape hatch for debugging against
+# fedora-bootc, a mirror, or a test tag.
+# base = "quay.io/fedora/fedora-bootc:44"
+
+# The composed base ships every vendor's firmware by default, so any
+# machine boots with working GPU/wifi/audio. Name packages here to trim
+# the base to exactly your hardware (see `kuma schema` for the set).
+# firmware = ["amd-gpu-firmware", "amd-ucode-firmware", "mt7xxx-firmware"]
 
 # A curated set kuma maintains, not a package list you assemble.
 # "niri" (scrollable tiling) or "cosmic" (see cosmic.toml.example).

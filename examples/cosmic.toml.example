@@ -3,7 +3,8 @@
 schema_version = 1
 
 [system]
-base = "quay.io/fedora/fedora-bootc:44"
+# No `base` key: kuma composes its own from Fedora's repos. Name a bootc
+# image here only as an escape hatch (see kuma.toml.example).
 
 # System76's full desktop: panel, launcher, settings, files, terminal.
 # It curates itself upstream, so kuma adds only hardware enablement and

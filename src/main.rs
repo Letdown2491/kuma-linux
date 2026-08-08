@@ -1,4 +1,5 @@
 mod capture;
+mod compose;
 mod config;
 mod containerfile;
 mod edit;
@@ -278,11 +279,15 @@ fn run(
             let mut config = Config::load(&path)?;
             // Show what a build would actually do. Printing `FROM …:44`
             // while builds resolve `FROM …@sha256:…` would make this verb
-            // a liar about the one thing the lock exists to control.
-            if let Some(pinned) =
-                lock::for_config(&path).and_then(|l| l.pin_for(&config.system.base))
-            {
-                config.system.base = pinned;
+            // a liar about the one thing the lock exists to control. A
+            // composed base is never digest-rewritten (builds FROM its
+            // content tag), so only a declared image applies its pin.
+            if let Some(declared) = config.system.base.clone() {
+                if let Some(pinned) =
+                    lock::for_config(&path).and_then(|l| l.pin_for(&declared))
+                {
+                    config.system.base = Some(pinned);
+                }
             }
             print!("{}", containerfile::generate(&config));
             Ok(())
@@ -602,19 +607,66 @@ fn build_image_pinned(config_path: &Path, tag: &str, pin: Pin) -> Result<Option<
     let mut config = Config::load(config_path)?;
     let config_text = std::fs::read_to_string(config_path)
         .with_context(|| format!("cannot read {}", config_path.display()))?;
-    let declared_base = config.system.base.clone();
+    // For a declared image this is that reference; for kuma's own
+    // composed base it is the content-addressed tag the manifest hashes
+    // to. Either way it is what the lock's reference must equal for a
+    // pin to mean anything.
+    let declared_base = config.base_ref();
 
     // The declaration keeps saying `:44`; only the Containerfile gets the
     // digest. The baked copy is config_text, so the machine still carries
     // the declaration a human wrote, not a resolved artifact of it.
-    let pinned_digest = lock::for_config(config_path)
+    let mut pinned_digest = lock::for_config(config_path)
         .filter(|_| pin == Pin::Follow)
         .filter(|lock| lock.base.reference == declared_base)
         .map(|lock| lock.base.digest);
-    if let Some(digest) = &pinned_digest {
+
+    if config.system.base.is_none() {
+        // The composed base. The Containerfile always FROMs the content
+        // tag (a `localhost/` tag never touches a registry — the trap a
+        // pruned digest fell into during the spike); "honoring the pin"
+        // means making sure that tag still IS the locked image. When it
+        // can't be — recomposed tag, pruned storage, a brand-new machine
+        // — the honest move is to say so, compose fresh, and let the
+        // lock record the move, not to fail a build that can succeed.
+        let present = compose::image_exists(&declared_base);
+        let matches_pin = |digest: &String| {
+            lock::base_digest(&declared_base).is_ok_and(|current| current == *digest)
+        };
+        match (&pin, &pinned_digest, present) {
+            (Pin::Refresh, _, _) => {
+                compose::compose(&config, &declared_base)?;
+                pinned_digest = None;
+            }
+            (Pin::Follow, Some(digest), true) if matches_pin(digest) => {
+                note(&format!("Building from the locked composed base ({declared_base})."));
+            }
+            (Pin::Follow, Some(_), true) => {
+                note(
+                    "The composed base in storage no longer matches the lock; \
+                     building from what's there — the lock will record the move.",
+                );
+                pinned_digest = None;
+            }
+            (Pin::Follow, Some(_), false) => {
+                note(
+                    "The locked composed base is gone from image storage; \
+                     composing fresh — the lock will record the move.",
+                );
+                compose::compose(&config, &declared_base)?;
+                pinned_digest = None;
+            }
+            (Pin::Follow, None, true) => {
+                note(&format!("Reusing the composed base in storage ({declared_base})."));
+            }
+            (Pin::Follow, None, false) => {
+                compose::compose(&config, &declared_base)?;
+            }
+        }
+    } else if let Some(digest) = &pinned_digest {
         let pinned = lock::pinned_ref(&declared_base, digest);
         note(&format!("Building from the locked base ({pinned})."));
-        config.system.base = pinned;
+        config.system.base = Some(pinned);
     }
 
     let dir = tempfile::tempdir().context("cannot create build directory")?;
@@ -766,7 +818,41 @@ fn stage(tag: &str) -> Result<bool> {
 /// image asks bootc instead, and `bootc upgrade --check` already exists.
 fn update_check(config_path: &Path, json: bool) -> Result<()> {
     let config = Config::load(config_path)?;
-    let base = &config.system.base;
+    let base = &config.base_ref();
+
+    if config.system.base.is_none() {
+        // A composed base has no registry tag whose movement can be
+        // checked; the repos it composes from move continuously. The
+        // honest answer is what an update would do, not a fake "current".
+        let lock = lock::for_config(config_path);
+        let manifest_changed =
+            lock.as_ref().is_some_and(|lock| &lock.base.reference != base);
+        let update = Action::new("update", "kuma update", "recompose and rebuild; the lock diff shows what moved");
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": true, "composed": true, "locked": lock.is_some(),
+                    "base": base, "manifest_changed": manifest_changed,
+                    "actions": [action_json(&update)],
+                })
+            );
+        } else {
+            if manifest_changed {
+                println!("The base manifest changed since the lock: the next build composes a new base ({base}).");
+            } else {
+                println!("The base is composed locally from Fedora's repos ({base}).");
+            }
+            println!(
+                "There is no upstream tag to compare against; `kuma update` \
+                 recomposes against the repos' current packages."
+            );
+            println!();
+            print_actions(&[update]);
+        }
+        return Ok(());
+    }
+
     let Some(lock) = lock::for_config(config_path) else {
         // Both verbs record a lock, but only one of them works from here:
         // `build` is a write path and needs a real file, so on a machine
@@ -825,7 +911,14 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
 
 fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
     let config = Config::load(config_path)?;
-    run_host(&["podman", "pull", &config.system.base])?;
+    match &config.system.base {
+        Some(base) => run_host(&["podman", "pull", base])?,
+        // Composed base: the packages come from Fedora's repos at
+        // compose time, so "pull the base" means "refresh the compose
+        // environment" (repo definitions + Fedora's minimal manifest);
+        // Pin::Refresh below forces the actual recompose.
+        None => run_host(&["podman", "pull", compose::COMPOSE_ENV])?,
+    }
     // The one command that moves the pin. Everything else builds from
     // whatever the lock already says, so an update is the only way the
     // base underneath you changes, and it says what changed.

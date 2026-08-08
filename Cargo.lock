@@ -275,6 +275,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha-crypt",
+ "sha2",
  "tempfile",
  "toml",
  "toml_edit",

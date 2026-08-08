@@ -120,23 +120,39 @@ smoke_image() {
     ok "boot health present"
 
     # The lock is written by the build, and the pin is only real if the
-    # next build actually resolves FROM the digest. `generate` prints what
-    # a build would do, so it proves the wiring without a second build.
+    # next build actually resolves it. `generate` prints what a build
+    # would do, so it proves the wiring without a second build.
     local lock="${file%.example}.lock"
     [ -f "$lock" ] || bad "no lock written beside $file"
     grep -q '^digest = "sha256:' "$lock" || bad "lock records no base digest"
-    "$KUMA" --config "$file" generate | grep -qE '^FROM .+@sha256:' \
-        || bad "builds would ignore the locked digest"
-    ok "lock pins the base by digest"
+    if grep -q '^base *=' "$file"; then
+        "$KUMA" --config "$file" generate | grep -qE '^FROM .+@sha256:' \
+            || bad "builds would ignore the locked digest"
+        ok "lock pins the base by digest"
 
-    # The digest just recorded is the one this build used, so the registry
-    # has to agree the base is current. A "moved" here means the lock is
-    # recording a different KIND of digest than the tag resolves to (the
-    # per-architecture manifest instead of the OCI index), which is a
-    # permanent false alarm rather than news. That shipped once.
-    "$KUMA" --config "$file" update --check | grep -q 'is current' \
-        || bad "update --check disagrees with the lock this build just wrote"
-    ok "check agrees with the fresh lock"
+        # The digest just recorded is the one this build used, so the registry
+        # has to agree the base is current. A "moved" here means the lock is
+        # recording a different KIND of digest than the tag resolves to (the
+        # per-architecture manifest instead of the OCI index), which is a
+        # permanent false alarm rather than news. That shipped once.
+        "$KUMA" --config "$file" update --check | grep -q 'is current' \
+            || bad "update --check disagrees with the lock this build just wrote"
+        ok "check agrees with the fresh lock"
+    else
+        # Composed base: the pin is the content-addressed tag itself.
+        # Builds FROM it (a localhost/ tag never touches a registry) and
+        # the lock's reference must be that tag, so a manifest change
+        # reads as a moved reference.
+        "$KUMA" --config "$file" generate | grep -qE '^FROM localhost/kuma-base:m' \
+            || bad "builds don't FROM the composed content tag"
+        grep -q '^ref = "localhost/kuma-base:m' "$lock" \
+            || bad "lock doesn't reference the composed base tag"
+        ok "lock records the composed base"
+
+        "$KUMA" --config "$file" update --check | grep -q 'composed' \
+            || bad "update --check doesn't explain composed-base updates"
+        ok "check explains recompose semantics"
+    fi
 }
 
 # --- stage: boot -------------------------------------------------------
