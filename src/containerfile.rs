@@ -892,9 +892,15 @@ RUN . /usr/lib/os-release \
 /// can't be image content. First boot installs it; the tarball is the
 /// official "untar anywhere" method. Prefix owned by uid 1000, brew's
 /// single-user model (same choice Bluefin makes).
+///
+/// The in-script guard duplicates the unit's ConditionPathExists on
+/// purpose: PID 1 evaluates conditions as init_t, and the script runs
+/// unconfined, so the two can disagree (they did, for months — see the
+/// service comment). Whichever check runs, an installed brew is left alone.
 const BREW_SETUP_SCRIPT: &str = r#"#!/usr/bin/bash
 set -euo pipefail
 prefix=/home/linuxbrew/.linuxbrew
+if [ -x "$prefix/bin/brew" ]; then exit 0; fi
 mkdir -p "$prefix/Homebrew" "$prefix/bin"
 curl -fsSL https://github.com/Homebrew/brew/tarball/HEAD \
     | tar -xz --strip-components=1 -C "$prefix/Homebrew"
@@ -906,7 +912,14 @@ const BREW_SETUP_SERVICE: &str = r#"[Unit]
 Description=Install Homebrew
 Wants=network-online.target
 After=network-online.target
-ConditionPathExists=!/home/linuxbrew/.linuxbrew/bin/brew
+# The condition must not traverse a symlink: PID 1 checks it as init_t,
+# which SELinux lets search home dirs and stat home files but not read
+# home symlinks (lnk_file read), so any path through /home (itself a
+# symlink to var/home) or ending at bin/brew (a symlink into Homebrew/)
+# resolves as "missing" and the condition fails open — this service ran,
+# and re-downloaded all of Homebrew, on every single boot. The real
+# ruby entry point, named via /var/home, is symlink-free the whole way.
+ConditionPathExists=!/var/home/linuxbrew/.linuxbrew/Homebrew/bin/brew
 
 [Service]
 Type=oneshot
@@ -1203,9 +1216,12 @@ pub fn generate(config: &Config) -> String {
     }
 
     if config.system.brew || !config.packages.brew.is_empty() {
-        // git-core: brew needs git at runtime to update itself
+        // git-core: brew needs git at runtime to update itself.
+        // tar: the setup script unpacks brew's tarball with it. fedora-bootc
+        // happened to ship both; a base composed from Fedora's minimal
+        // manifest ships neither, so this layer pays for its own tools.
         out.push('\n');
-        out.push_str(&dnf_install("git-core"));
+        out.push_str(&dnf_install("git-core tar"));
         out.push_str("COPY --chmod=755 kuma-brew-setup /usr/libexec/kuma-brew-setup\n");
         out.push_str(
             "COPY kuma-brew-setup.service /usr/lib/systemd/system/kuma-brew-setup.service\n",
