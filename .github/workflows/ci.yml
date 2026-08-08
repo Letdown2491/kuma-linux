@@ -4,6 +4,13 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  # A dependency becomes vulnerable on the day the advisory lands, not on
+  # the day someone next touches the code. Pushes alone would mean a
+  # quiet week is indistinguishable from a clean one, so the audit gets a
+  # heartbeat. The image job opts out of it below: nothing it builds
+  # changes while the tree sits still.
+  schedule:
+    - cron: "0 6 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
@@ -36,6 +43,9 @@ jobs:
   # KVM and sudo and runs locally: `scripts/smoke.sh --boot`.
   image:
     runs-on: ubuntu-latest
+    # Skipped on the weekly run: this builds a real image with podman, and
+    # the tree it builds from is the same one it built last week.
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -43,3 +53,23 @@ jobs:
       - run: cargo build
       - name: smoke (check + image)
         run: ./scripts/smoke.sh minimal
+
+  # Nothing else here asks whether the dependencies have known holes.
+  # Clippy reads our code and the tests read our behavior; neither has an
+  # opinion about an advisory against a crate we merely depend on. This
+  # reads Cargo.lock against the RustSec database, which is the other
+  # reason that lock is committed rather than only pinning our builds.
+  #
+  # Plain `cargo audit` fails on vulnerabilities and reports unmaintained
+  # or yanked crates without failing. That split is deliberate: a crate
+  # losing its maintainer is worth hearing about on a Monday, and is not
+  # worth blocking a push over.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit
