@@ -330,6 +330,25 @@ mod tests {
         assert!(hashed("hunter2").is_err(), "a plaintext password is not a hash");
     }
 
+    /// The README's example declaration is the first thing anyone copies,
+    /// so it is held to the same bar as the committed examples. It has
+    /// been wrong before: it showed `password_hash = '...'` for months,
+    /// which is a placeholder the parser now rejects precisely because it
+    /// built an image that failed on first boot.
+    #[test]
+    fn the_readme_example_is_a_valid_declaration() {
+        let readme =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")).unwrap();
+        let block = readme
+            .split_once("```toml\n")
+            .and_then(|(_, rest)| rest.split_once("```"))
+            .map(|(block, _)| block)
+            .expect("README has a ```toml example");
+        let config: Config = toml::from_str(block).expect("README example parses");
+        config.validate().expect("README example validates");
+        assert!(config.user.is_some(), "the example shows a declared [user]");
+    }
+
     #[test]
     fn minimal_config_parses_with_defaults() {
         let config: Config = toml::from_str("schema_version = 1").unwrap();
