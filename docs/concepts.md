@@ -110,6 +110,35 @@ way it does for anything a desktop enables. Boot health and rollback sit
 below that line and cannot be switched off. Disable sshd and `kuma vm`
 still builds a disk, but nothing will be able to ssh into it.
 
+## The image is self-describing, not just self-contained
+
+A bootc image is expected to be self-contained: everything the system runs
+is in it. Kuma's images also carry what the machine needs to reason about
+itself, which is three things.
+
+The declaration it was built from, verbatim at `/usr/lib/kuma/kuma.toml`,
+comments and formatting intact. Kuma itself, at `/usr/bin/kuma`. And the
+units and helpers that converge flatpaks, brews, the declared user, and
+boot health.
+
+That is the complete set needed to answer "what am I supposed to be" and
+then act on it, which means a machine needs neither a working copy of your
+declaration nor a tool you brought with you. `kuma update --yes` works on a
+machine installed from an ISO that has never had a `kuma.toml` anywhere,
+because read-only commands fall back to the baked one. `kuma init` on such
+a machine seeds a copy true to that machine rather than a generic starter.
+
+The lock is deliberately not included. A `kuma.lock` belongs in git next to
+the declaration it pins, not on every machine built from it.
+
+Two things worth knowing about the baked declaration. It is world-readable,
+because the probe and `kuma init` both need it, so a `password_hash` line in
+your declaration is readable by any local user; the hash that actually
+creates the account ships separately at 0600. And it records what the
+machine was built to be, not what it is now. Comparing the two is what
+`kuma diff` does, and what the machine has that the file does not name is a
+fork rather than a fault.
+
 ## A desktop is infrastructure, your declaration is applications
 
 Choosing a desktop installs packages you did not name. That set is session
