@@ -237,6 +237,18 @@ smoke_boot() {
         ok "declared packages are installed"
     fi
 
+    # Every other check in this file drives kuma from the host, which is
+    # how the image shipped for months with no kuma in it at all: the
+    # declaration was baked, the units were enabled, the helpers were in
+    # /usr/libexec, and nothing ever ran the binary from inside a machine.
+    # `generate` is the cheapest verb that needs both halves — a runnable
+    # binary and the baked-declaration fallback a machine with no working
+    # copy depends on, which is what docs/agents.md promises.
+    guest kuma --version >/dev/null || bad "the image ships no runnable kuma"
+    guest kuma generate | grep -q '^FROM ' \
+        || bad "kuma on the machine cannot read its baked declaration"
+    ok "the machine can run its own kuma"
+
     if grep -q '^desktop' "$file"; then
         [ "$(guest systemctl is-active display-manager.service)" = active ] \
             || bad "greeter is not running"

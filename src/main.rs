@@ -751,7 +751,10 @@ fn build_image_pinned(config_path: &Path, tag: &str, pin: Pin) -> Result<Option<
     }
 
     let dir = tempfile::tempdir().context("cannot create build directory")?;
-    containerfile::write_context(&config, &config_text, dir.path())?;
+    // The image ships the kuma running this build, so a machine installed
+    // from it can converge itself without acquiring one by hand.
+    let self_exe = std::env::current_exe().context("cannot locate the running kuma binary")?;
+    containerfile::write_context(&config, &config_text, &self_exe, dir.path())?;
 
     run_host(&[
         "podman",

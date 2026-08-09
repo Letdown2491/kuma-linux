@@ -1,5 +1,5 @@
 use crate::config::{Config, Desktop};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -1619,6 +1619,30 @@ pub fn generate(config: &Config) -> String {
 
     out.push_str(BRANDING);
 
+    // The machine gets the kuma that built it. Everything else needed to
+    // run kuma on a machine already shipped — the baked declaration below,
+    // the convergence units, thirteen helpers in /usr/libexec — but not
+    // the binary that drives them, so an ISO-installed machine could not
+    // run the `kuma update --yes` docs/agents.md promises it, and the
+    // fallback-to-baked-declaration path had nothing to execute it.
+    //
+    // current_exe rather than a download: no network in the build, and no
+    // version skew between the kuma that wrote this image and the kuma
+    // that ships in it. The cost is that the binary is the build host's,
+    // so a musl host, a different arch, or a glibc newer than the base's
+    // produces one this image cannot execute.
+    //
+    // Which is what the RUN is for. Without it the COPY succeeds, the
+    // image ships, and the failure surfaces at first boot as a machine
+    // whose kuma is an ELF it cannot run — the same class of far-end
+    // failure as a shell that was never installed, and guarded the same
+    // way (`RUN test -x /usr/bin/{shell}` above).
+    //
+    // Late in the file, beside the declaration, because both layers
+    // change on every edit.
+    out.push_str("\nCOPY --chmod=755 kuma /usr/bin/kuma\n");
+    out.push_str("RUN /usr/bin/kuma --version\n");
+
     // The image carries the declaration it was built from, verbatim: the
     // machine stays self-describing when the original file is gone, and
     // `kuma init` seeds a working copy from it. No new secret exposure —
@@ -1648,8 +1672,20 @@ fn langpack(locale: &str) -> Option<&str> {
 
 /// `config_text` is the declaration verbatim — comments and formatting
 /// intact — because it gets baked into the image at /usr/lib/kuma/kuma.toml.
-pub fn write_context(config: &Config, config_text: &str, dir: &Path) -> Result<()> {
+///
+/// `kuma_binary` is the running kuma, passed rather than resolved here so
+/// the tests can stage a stub instead of copying a 42 MB test harness into
+/// a temp directory fourteen times — the same reason `loop_mounts_in` takes
+/// its input and `scan_etc` takes its roots.
+pub fn write_context(
+    config: &Config,
+    config_text: &str,
+    kuma_binary: &Path,
+    dir: &Path,
+) -> Result<()> {
     std::fs::write(dir.join("kuma.toml"), config_text)?;
+    std::fs::copy(kuma_binary, dir.join("kuma"))
+        .with_context(|| format!("staging {} into the build context", kuma_binary.display()))?;
     std::fs::write(dir.join("Containerfile"), generate(config))?;
     let hostname = config.system.hostname.as_deref().unwrap_or("kuma");
     std::fs::write(dir.join("hostname"), format!("{hostname}\n"))?;
@@ -1761,8 +1797,42 @@ mod tests {
         config
     }
 
+    /// A stand-in for the kuma binary: write_context only copies it, and
+    /// the real one here would be the 42 MB test harness. Dot-prefixed so
+    /// it cannot collide with a name the context actually uses.
     fn context(toml: &str, dir: &Path) {
-        write_context(&config(toml), toml, dir).unwrap();
+        let stub = dir.join(".stub-kuma");
+        std::fs::write(&stub, b"not really a binary\n").unwrap();
+        write_context(&config(toml), toml, &stub, dir).unwrap();
+    }
+
+    /// The declaration, the units, and the helpers all shipped while the
+    /// binary that drives them did not, so an installed machine had no way
+    /// to run the `kuma update` docs/agents.md promises it. Every image,
+    /// not just VM disks: an ISO install has the same hole.
+    #[test]
+    fn every_image_ships_the_kuma_that_built_it() {
+        let out = generate(&config("schema_version = 1"));
+        assert!(out.contains("COPY --chmod=755 kuma /usr/bin/kuma"));
+        let dir = tempfile::tempdir().unwrap();
+        context("schema_version = 1", dir.path());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("kuma")).unwrap(),
+            "not really a binary\n"
+        );
+    }
+
+    /// The staged binary is the build host's, so a musl host or a foreign
+    /// arch produces one the image cannot execute. Running it during the
+    /// build is what makes that a build failure rather than a machine that
+    /// boots with a kuma it cannot run, so the order is the whole point:
+    /// a guard before its COPY proves nothing.
+    #[test]
+    fn the_staged_binary_is_proved_runnable_before_the_image_ships() {
+        let out = generate(&config("schema_version = 1"));
+        let copied = out.find("COPY --chmod=755 kuma /usr/bin/kuma").unwrap();
+        let proved = out.find("RUN /usr/bin/kuma --version").unwrap();
+        assert!(copied < proved, "the guard must run after the binary lands");
     }
 
     #[test]
