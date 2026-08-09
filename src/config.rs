@@ -430,6 +430,41 @@ mod tests {
         assert!(hashed("hunter2").is_err(), "a plaintext password is not a hash");
     }
 
+    /// The README tells people to download one filename and the release
+    /// workflow publishes another, and nothing else connects the two. A
+    /// rename on either side leaves an install command that 404s, which
+    /// is invisible here and immediate for anyone following the front
+    /// door. So the workflow's asset name is the assertion.
+    ///
+    /// The name is deliberately unversioned, which is what lets the
+    /// README hold a `releases/latest/download/` URL at all; this pins
+    /// that too, since putting the version back would break the link
+    /// silently one release later.
+    #[test]
+    fn the_readme_downloads_what_the_release_workflow_publishes() {
+        let workflow = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/.github/workflows/release.yml"
+        ))
+        .unwrap();
+        let target = workflow
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("TARGET: "))
+            .expect("the workflow names a build target");
+        let asset = format!("kuma-{target}");
+        assert!(
+            workflow.contains("echo \"name=kuma-${TARGET}\""),
+            "the workflow builds its asset name from TARGET, unversioned"
+        );
+
+        let readme =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")).unwrap();
+        assert!(
+            readme.contains(&format!("releases/latest/download/{asset}")),
+            "README should download {asset} from the latest release"
+        );
+    }
+
     /// The README's example declaration is the first thing anyone copies,
     /// so it is held to the same bar as the committed examples. It has
     /// been wrong before: it showed `password_hash = '...'` for months,

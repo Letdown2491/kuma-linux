@@ -1,0 +1,156 @@
+name: release
+
+on:
+  # A tag is a release: it gets a version number, release notes, and a URL
+  # that keeps meaning the same thing a year from now.
+  push:
+    tags:
+      - "v*"
+  # main is the rolling channel. kuma is consumed by rebuilding constantly,
+  # so waiting for a tag to get a usable binary would mean the published
+  # one is nearly always behind the tree it is meant to build from.
+  branches:
+    - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  # Keyless signing: cosign trades this token for a short-lived certificate
+  # instead of anyone holding a private key.
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+  TARGET: x86_64-unknown-linux-musl
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: work out what this build is
+        id: what
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "kuma") | .version')
+          # The asset name carries no version on purpose. A versioned
+          # filename would make releases/latest/download/<name> change
+          # every release, so the README could never hold a durable URL,
+          # and the version is not lost: the tag has it and the binary
+          # reports it.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            # A tag that disagrees with Cargo.toml would publish a binary
+            # whose own --version contradicts the release it sits in. That
+            # is the exact class of lie the build stamp exists to prevent,
+            # so it fails here rather than shipping.
+            if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+              echo "tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${version}" >&2
+              exit 1
+            fi
+            {
+              echo "tag=v${version}"
+              echo "name=kuma-${TARGET}"
+              echo "prerelease=false"
+              echo "title=kuma v${version}"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "tag=latest"
+              echo "name=kuma-${TARGET}"
+              echo "prerelease=true"
+              echo "title=Rolling build from main"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+
+      # ci.yml runs on this same push, but nothing makes this job wait for
+      # it, so without a gate here a red tree still publishes a binary.
+      # Testing on the release target rather than the host's costs nothing
+      # extra: it is one compile instead of two, and it exercises the
+      # artifact actually being shipped.
+      - name: test
+        run: cargo test --locked --target "$TARGET"
+
+      # Static by construction, not by flag: kuma is pure Rust with no NSS
+      # calls and no in-process networking, so a musl build has nothing to
+      # dynamically link. That is what lets it run on an image-based
+      # desktop that has podman and no toolchain, which is the machine
+      # most likely to want it.
+      - name: build
+        run: cargo build --locked --release --target "$TARGET"
+
+      - name: package
+        id: pkg
+        run: |
+          set -euo pipefail
+          name='${{ steps.what.outputs.name }}'
+          cp "target/${TARGET}/release/kuma" "$name"
+          strip "$name"
+          sha256sum "$name" > "${name}.sha256"
+          # Prove the artifact runs before publishing it. A binary that
+          # cannot answer --version on a clean runner is not a release.
+          "./$name" --version
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: sign
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --output-signature '${{ steps.pkg.outputs.name }}.sig' \
+            --output-certificate '${{ steps.pkg.outputs.name }}.pem' \
+            '${{ steps.pkg.outputs.name }}'
+
+      # The rolling release is one moving target, so its old assets and tag
+      # are cleared first. Deleting the tag matters: gh reuses an existing
+      # one and the release would keep pointing at the commit it was first
+      # cut from.
+      - name: clear the rolling release
+        if: steps.what.outputs.tag == 'latest'
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: publish
+        run: |
+          set -euo pipefail
+          gh release create '${{ steps.what.outputs.tag }}' \
+            --title '${{ steps.what.outputs.title }}' \
+            --notes "$(cat <<'NOTES'
+          Static `x86_64` binary, no runtime dependencies.
+
+          ```console
+          $ curl -LO ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ steps.what.outputs.tag }}/${{ steps.pkg.outputs.name }}
+          $ chmod +x ${{ steps.pkg.outputs.name }} && sudo mv ${{ steps.pkg.outputs.name }} /usr/local/bin/kuma
+          ```
+
+          Verify it came from this workflow:
+
+          ```console
+          $ cosign verify-blob \
+              --certificate ${{ steps.pkg.outputs.name }}.pem \
+              --signature ${{ steps.pkg.outputs.name }}.sig \
+              --certificate-identity-regexp '^${{ github.server_url }}/${{ github.repository }}/' \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              ${{ steps.pkg.outputs.name }}
+          ```
+
+          Built from `${{ github.sha }}`.
+          NOTES
+          )" \
+            ${{ steps.what.outputs.prerelease == 'true' && '--prerelease' || '' }} \
+            --target '${{ github.sha }}' \
+            '${{ steps.pkg.outputs.name }}' \
+            '${{ steps.pkg.outputs.name }}.sha256' \
+            '${{ steps.pkg.outputs.name }}.sig' \
+            '${{ steps.pkg.outputs.name }}.pem'
+        env:
+          GH_TOKEN: ${{ github.token }}

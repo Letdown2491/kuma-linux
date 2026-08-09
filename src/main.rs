@@ -19,8 +19,21 @@ use std::path::{Path, PathBuf};
 pub(crate) const DEFAULT_TAG: &str = "localhost/kuma:latest";
 const BIB_IMAGE: &str = "quay.io/centos-bootc/bootc-image-builder:latest";
 
+/// What `--version` prints. The number alone cannot answer "is this
+/// binary the one that has my last change in it", which is the question
+/// that has actually cost time here. See build.rs for where the stamp
+/// comes from and why a dirty tree is called out.
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("KUMA_BUILD_SHA"),
+    " ",
+    env!("KUMA_BUILD_DATE"),
+    ")"
+);
+
 #[derive(Parser)]
-#[command(name = "kuma", version, about = "Your system is one file.")]
+#[command(name = "kuma", version = VERSION, about = "Your system is one file.")]
 struct Cli {
     /// Path to the kuma config file [default: ./kuma.toml, else
     /// ~/.config/kuma/kuma.toml when the current directory has none]

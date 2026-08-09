@@ -31,34 +31,45 @@ try a declaration in `kuma vm` before a machine you depend on.
 ## Install
 
 Kuma is one self-contained binary: the wallpaper, the greeter config, and
-every desktop asset are compiled into it. Building it needs a Rust
-toolchain at 1.85 or newer and a linker.
+every desktop asset are compiled into it. The published build is static, so
+it needs nothing installed alongside it. This matters on the machines most
+likely to want kuma, which tend to have podman and no compiler.
+
+```console
+$ curl -LO https://github.com/Letdown2491/kuma-linux/releases/latest/download/kuma-x86_64-unknown-linux-musl
+$ chmod +x kuma-x86_64-unknown-linux-musl
+$ sudo mv kuma-x86_64-unknown-linux-musl /usr/local/bin/kuma
+```
+
+Every release is signed. Each one carries the `cosign verify-blob` command
+that checks it came from this repository's release workflow.
+
+The `latest` prerelease is the same binary built from the current `main`,
+for tracking the tree between releases.
+
+Building it yourself needs a Rust toolchain at 1.85 or newer and a linker:
 
 ```console
 $ cargo install --git https://github.com/Letdown2491/kuma-linux --locked
 ```
 
-Or clone it, which also gets you the example declarations and the smoke
-tests:
+Keep `--locked`. Without it cargo ignores the committed `Cargo.lock` and
+resolves dependencies fresh, so you get versions nobody tested.
+
+Cloning also gets you the example declarations and the smoke tests:
 
 ```console
 $ git clone https://github.com/Letdown2491/kuma-linux
 $ cd kuma-linux && cargo install --path .
 ```
 
-Either way the binary is `kuma`.
-
-Keep `--locked` on the first form. Without it cargo ignores the committed
-`Cargo.lock` and resolves dependencies fresh, so you get versions nobody
-tested.
+`kuma --version` reports the commit it was built from, and says `-dirty` if
+that tree had uncommitted changes. Worth checking when a change you just
+made does not show up in the image.
 
 **What needs what.** `init`, `check`, `generate`, and `build` need only
 podman. `switch`, `update`, `rollback`, and `doctor` need to be running on a
 bootc machine. `vm` and `iso` need KVM and sudo.
-
-If you already run an image-based desktop, the obvious place to want this,
-you probably have podman and no compiler. Build kuma in a toolbox or a
-container and copy the binary out.
 
 ## Quick start
 
@@ -165,10 +176,9 @@ not obvious from them:
 
 What kuma doesn't do:
 
-- **No published images.** Everything is built locally. An image isn't
-  `bootc switch`-able from anywhere, and nothing is signed yet.
-- **No prebuilt `kuma` binary.** Getting the tool needs a Rust toolchain
-  and a linker.
+- **No published images.** Every image is built locally, so none is
+  `bootc switch`-able from anywhere, and no image is signed. The `kuma`
+  binary is published and signed; the images it builds are not.
 - **No offsite backup.** `[snapshots]` survives a mistake, not a dead
   disk. Blocked on where a repository credential lives, since it cannot be
   the declaration.

@@ -1,6 +1,6 @@
 [package]
 name = "kuma"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 # Set by sha-crypt 0.6, the highest floor anything here asks for. Without
 # it, an older toolchain fails somewhere inside a dependency instead of
@@ -9,6 +9,13 @@ rust-version = "1.85"
 description = "Declarative, atomic Fedora bootc system"
 license = "MIT"
 repository = "https://github.com/Letdown2491/kuma-linux"
+
+# cargo-binstall fetches the release asset instead of compiling. Its
+# default URL patterns expect the version in the filename, which kuma's
+# assets deliberately omit, so the pattern is spelled out.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/kuma-{ target }"
+pkg-fmt = "bin"
 
 [dependencies]
 anyhow = "1"
