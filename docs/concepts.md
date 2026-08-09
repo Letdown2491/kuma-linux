@@ -89,6 +89,27 @@ Two consequences:
 
 Naming a `base` opts out of all of it: any bootc image can be one.
 
+**The base runs sshd.** `openssh-server` is composed in, and the image
+enables `sshd.service` by name, so every kuma machine listens on port 22
+and firewalld's default zone permits it. This is deliberate rather than
+inherited: `kuma vm` and the boot stage of the smoke tests both reach a
+guest over ssh, so an image that could not be reached that way would take
+the test harness with it.
+
+Authentication is Fedora's default, which means passwords work. If you
+declare `[user].ssh_keys`, kuma serves them from `/etc/kuma/keys/<name>`
+alongside the user's own `~/.ssh/authorized_keys` and never overwrites
+it. To require keys, drop a conf into `/etc/ssh/sshd_config.d/`; `/etc`
+is merged rather than replaced, so it survives image updates, and `kuma
+doctor` will report it as a local modification because it is one.
+
+`[services].disable = ["sshd.service"]` turns it off on a machine that
+doesn't want it. It is a default, not part of kuma's floor: the image
+enables it above your `[services]` block, so your declaration wins, the
+way it does for anything a desktop enables. Boot health and rollback sit
+below that line and cannot be switched off. Disable sshd and `kuma vm`
+still builds a disk, but nothing will be able to ssh into it.
+
 ## A desktop is infrastructure, your declaration is applications
 
 Choosing a desktop installs packages you did not name. That set is session

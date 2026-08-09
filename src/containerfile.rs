@@ -1491,6 +1491,23 @@ pub fn generate(config: &Config) -> String {
         out.push_str(&dnf_install(&config.packages.rpm.join(" ")));
     }
 
+    // Named rather than inherited. openssh-server is in the composed base
+    // and Fedora's RPM preset already enables it, so every kuma image has
+    // run a listening network service that nothing here chose. This
+    // changes no behaviour; it makes the choice kuma's, and testable. A
+    // preset flip upstream would otherwise silently change what a kuma
+    // machine exposes, in either direction: a base that stopped enabling
+    // sshd would take `kuma vm` and the boot smoke stage with it, since
+    // both reach the guest over ssh.
+    //
+    // Placed before the declaration's own [services] block on purpose.
+    // That boundary is what separates a curated default from kuma's
+    // floor: a desktop's units are enabled above it and an owner's
+    // `disable` can override them, while greenboot, fwupd, and the
+    // timezone adoption come after and cannot be turned off. sshd is a
+    // default, not a floor.
+    out.push_str("\nRUN systemctl enable sshd.service\n");
+
     let services: Vec<String> = config
         .services
         .enable
@@ -1906,6 +1923,49 @@ mod tests {
         assert!(VM_TZ_SCRIPT.contains("qemu_fw_cfg/by_name/opt/org.kuma.tz"));
         // guard against a garbage or hostile fw_cfg value
         assert!(VM_TZ_SCRIPT.contains("[ -e \"/usr/share/zoneinfo/$tz\" ] || exit 0"));
+    }
+
+    /// sshd was enabled on every kuma machine by Fedora's RPM preset
+    /// rather than by anything here, which made a listening network
+    /// service the one part of the image kuma had never decided. Naming
+    /// it changed no behaviour and pins it against a preset flip
+    /// upstream, in either direction: a base that stopped enabling sshd
+    /// would otherwise take `kuma vm` and the boot smoke stage with it.
+    #[test]
+    fn sshd_is_enabled_by_name_in_every_image() {
+        for declaration in [
+            "schema_version = 1",
+            "schema_version = 1\n[system]\ndesktop = \"niri\"\n",
+            "schema_version = 1\n[system]\ndesktop = \"cosmic\"\n",
+        ] {
+            let out = generate(&config(declaration));
+            assert!(
+                out.contains("RUN systemctl enable sshd.service"),
+                "sshd not named for: {declaration}"
+            );
+        }
+    }
+
+    /// A default, not a floor. The declaration's own [services] block is
+    /// emitted after kuma's curated enables and before the units that
+    /// cannot be turned off, so an owner who disables sshd gets a machine
+    /// without it. Move the enable below that block and the disable
+    /// becomes a silent no-op, which is the shape of bug that made the
+    /// example's `disable` line fight the desktop.
+    #[test]
+    fn a_declared_disable_beats_the_sshd_default() {
+        let out =
+            generate(&config("schema_version = 1\n[services]\ndisable = [\"sshd.service\"]\n"));
+        let enable = out.find("systemctl enable sshd.service").expect("sshd is enabled by name");
+        let disable = out.find("systemctl disable sshd.service").expect("the declared disable");
+        assert!(enable < disable, "kuma's default must not outrank the declaration");
+
+        // The floor stays the floor: these are emitted after [services]
+        // precisely so a declaration cannot switch them off.
+        for floor in ["greenboot-healthcheck.service", "fwupd-refresh.timer"] {
+            let at = out.find(floor).expect(floor);
+            assert!(at > disable, "{floor} drifted above the declaration's [services]");
+        }
     }
 
     #[test]
