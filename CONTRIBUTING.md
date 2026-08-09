@@ -40,10 +40,11 @@ The tag and `Cargo.toml` have to agree. The release workflow checks and
 fails rather than publishing a binary whose own `--version` contradicts the
 release it sits in.
 
-Push to `main` first and let it go green. The same workflow refreshes a
-rolling `latest` prerelease on every push, running every step a tag will
-run, so a problem surfaces while it still costs nothing instead of leaving
-a tag to clean up.
+Push to `main` first and let it go green. A push that touches anything
+other than documentation refreshes the rolling `latest` prerelease, and it
+calls the release workflow rather than copying it, so main is a complete
+rehearsal of every step a tag will run. A problem surfaces there while it
+costs nothing, instead of once a tag already exists.
 
 A release is one static `x86_64` binary, its checksum, and a Sigstore
 bundle. The asset name carries no version on purpose: that is what keeps
