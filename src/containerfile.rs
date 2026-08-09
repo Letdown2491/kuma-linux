@@ -1654,6 +1654,19 @@ pub fn generate(config: &Config) -> String {
     // image as a dangling <none>, and only kuma's own should be reclaimed.
     out.push_str("\nLABEL io.kuma.image=\"1\"\n");
 
+    // Which kuma generated this. The declaration alone cannot answer "is
+    // this image the one that has my last change in it": an unchanged
+    // declaration built by an older binary produces a perfectly current
+    // looking image, so the probe reports in-sync and is right by its own
+    // definition. Same question VERSION's own doc comment exists for, one
+    // level up, and the same cost when it goes unanswered.
+    //
+    // A label rather than reading /usr/bin/kuma out of the image: the
+    // probe behind bare `kuma` is meant to stay cheap, and `podman image
+    // inspect` already runs there for the id and the timestamp. Running a
+    // container to ask the binary its version would not.
+    out.push_str(&format!("LABEL io.kuma.builder=\"{}\"\n", crate::VERSION));
+
     out.push_str(SWEEP);
     out.push_str(LINT);
     out
@@ -1833,6 +1846,19 @@ mod tests {
         let copied = out.find("COPY --chmod=755 kuma /usr/bin/kuma").unwrap();
         let proved = out.find("RUN /usr/bin/kuma --version").unwrap();
         assert!(copied < proved, "the guard must run after the binary lands");
+    }
+
+    /// The image records which kuma generated it, so the probe can answer
+    /// "is this image the one that has my last change in it". A label
+    /// rather than the binary inside the image, because bare `kuma` is a
+    /// cheap probe and already runs `podman image inspect`.
+    #[test]
+    fn the_image_records_which_kuma_built_it() {
+        let out = generate(&config("schema_version = 1"));
+        assert!(
+            out.contains(&format!("LABEL io.kuma.builder=\"{}\"", crate::VERSION)),
+            "no builder label in:\n{out}"
+        );
     }
 
     #[test]

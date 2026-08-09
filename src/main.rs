@@ -38,7 +38,7 @@ const BIB_IMAGE: &str = "quay.io/centos-bootc/bootc-image-builder:latest";
 /// binary the one that has my last change in it", which is the question
 /// that has actually cost time here. See build.rs for where the stamp
 /// comes from and why a dirty tree is called out.
-const VERSION: &str = concat!(
+pub(crate) const VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     " (",
     env!("KUMA_BUILD_SHA"),

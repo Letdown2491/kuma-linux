@@ -146,6 +146,10 @@ struct ImageFact {
     age_secs: u64,
     /// kuma.toml was modified after this image was built.
     edited_after: bool,
+    /// `io.kuma.builder`: which kuma generated this image. None for images
+    /// built before the label existed, which is itself the answer — those
+    /// were built by a kuma older than this one.
+    builder: Option<String>,
 }
 
 enum MachineFact {
@@ -229,17 +233,28 @@ fn observe(config_path: &Path) -> Observed {
         ConfigFact::Missing
     };
 
+    // The builder label rides along with the id and the timestamp rather
+    // than costing a second call. It is last because it is the only field
+    // that can contain spaces, so a splitn leaves it whole.
     let image = host_output(&[
         "podman",
         "image",
         "inspect",
         "--format",
-        "{{.Id}} {{.Created.Unix}}",
+        "{{.Id}} {{.Created.Unix}} {{index .Config.Labels \"io.kuma.builder\"}}",
         crate::DEFAULT_TAG,
     ])
     .ok()
     .and_then(|out| {
-        let (id, created) = out.trim().split_once(' ')?;
+        let mut parts = out.trim().splitn(3, ' ');
+        let id = parts.next()?;
+        let created = parts.next()?;
+        // podman prints "<no value>" for a label the image does not carry.
+        let builder = parts
+            .next()
+            .map(str::trim)
+            .filter(|b| !b.is_empty() && *b != "<no value>")
+            .map(str::to_string);
         let created: i64 = created.parse().ok()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -254,6 +269,7 @@ fn observe(config_path: &Path) -> Observed {
             id: id.to_string(),
             age_secs: now.saturating_sub(created).max(0) as u64,
             edited_after: edited.is_some_and(|mtime| mtime > created),
+            builder,
         })
     });
 
@@ -358,6 +374,19 @@ fn classify(obs: &Observed) -> Snapshot {
         claim("edited", format!("{} changed after the last image build", obs.config_path));
         actions.push(Action::new("build", "kuma build", "rebuild the image to pick up the edit"));
     }
+    // Below `edited` on purpose: when the declaration changed too, that is
+    // the more familiar reason and both edges are the same `kuma build`.
+    // The claim is "a different kuma", never "an older" one. Ordering two
+    // of these strings would mean ranking a commit sha against another,
+    // and running a deliberately older binary is a real thing to do.
+    if obs.image.as_ref().is_some_and(|i| i.builder.as_deref() != Some(crate::VERSION)) {
+        let built_by = match obs.image.as_ref().and_then(|i| i.builder.as_deref()) {
+            Some(other) => format!("kuma {other}"),
+            None => "a kuma older than the label".into(),
+        };
+        claim("stale-build", format!("the image was built by {built_by}, not the one running"));
+        actions.push(Action::new("build", "kuma build", "rebuild with the kuma you are running"));
+    }
     if let (Some(image), MachineFact::Kuma { deployed_id: Some(deployed), .. }) =
         (&obs.image, &obs.machine)
     {
@@ -455,7 +484,14 @@ fn facts_of(obs: &Observed) -> [(&'static str, String); 3] {
         None => format!("none built ({} not in podman storage)", crate::DEFAULT_TAG),
         Some(image) => {
             let edited = if image.edited_after { ", before the last config edit" } else { "" };
-            format!("{}, built {} ago{edited}", crate::DEFAULT_TAG, human_age(image.age_secs))
+            // Named only when it is not this kuma. Stamping every line with
+            // the version you are already running says nothing.
+            let by = match image.builder.as_deref() {
+                Some(b) if b == crate::VERSION => String::new(),
+                Some(other) => format!(", by kuma {other}"),
+                None => ", by an unrecorded kuma".into(),
+            };
+            format!("{}, built {} ago{edited}{by}", crate::DEFAULT_TAG, human_age(image.age_secs))
         }
     };
     let machine = match &obs.machine {
@@ -547,11 +583,81 @@ mod tests {
     fn loaded() -> ConfigFact {
         ConfigFact::Loaded { rpm: 2, flatpak: 1, brew: 0 }
     }
+    /// Built by the running kuma unless a test says otherwise, so the
+    /// existing cases keep testing what they were written to test.
     fn image(edited_after: bool) -> Option<ImageFact> {
-        Some(ImageFact { id: "sha256:aaa".into(), age_secs: 60, edited_after })
+        Some(ImageFact {
+            id: "sha256:aaa".into(),
+            age_secs: 60,
+            edited_after,
+            builder: Some(crate::VERSION.to_string()),
+        })
+    }
+
+    fn image_built_by(builder: Option<&str>) -> Option<ImageFact> {
+        Some(ImageFact {
+            id: "sha256:aaa".into(),
+            age_secs: 60,
+            edited_after: false,
+            builder: builder.map(str::to_string),
+        })
     }
     fn kuma_machine(staged: bool, drift: Vec<String>, deployed_id: Option<&str>) -> MachineFact {
         MachineFact::Kuma { staged, drift, deployed_id: deployed_id.map(str::to_string) }
+    }
+
+    /// The gap this closes: an unchanged declaration built by a different
+    /// binary produced an image the probe called in-sync, correctly by its
+    /// own definition and uselessly in practice. Cost real time twice in
+    /// one day before the image carried the answer.
+    #[test]
+    fn an_image_built_by_another_kuma_is_not_in_sync() {
+        let snap = classify(&workspace(
+            loaded(),
+            image_built_by(Some("0.3.0 (deadbee 2026-08-01)")),
+            kuma_machine(false, vec![], Some("sha256:aaa")),
+        ));
+        assert_eq!(snap.state, "stale-build");
+        assert!(snap.headline.contains("0.3.0"), "name what built it: {}", snap.headline);
+        assert!(snap.actions.iter().any(|a| a.cmd == "kuma build"));
+    }
+
+    /// Images predating the label are the common case on any machine that
+    /// existed before it, and "unknown" is the answer, not an exemption:
+    /// whatever built them was not this kuma.
+    #[test]
+    fn an_unlabelled_image_counts_as_built_by_another_kuma() {
+        let snap = classify(&workspace(
+            loaded(),
+            image_built_by(None),
+            kuma_machine(false, vec![], Some("sha256:aaa")),
+        ));
+        assert_eq!(snap.state, "stale-build");
+        assert!(snap.actions.iter().any(|a| a.cmd == "kuma build"));
+    }
+
+    /// The half that matters more, since a check that always fires is one
+    /// people learn to ignore.
+    #[test]
+    fn an_image_this_kuma_built_stays_quiet() {
+        let snap = classify(&workspace(
+            loaded(),
+            image_built_by(Some(crate::VERSION)),
+            kuma_machine(false, vec![], Some("sha256:aaa")),
+        ));
+        assert_eq!(snap.state, "in-sync");
+        assert!(!snap.facts.iter().any(|(_, d)| d.contains("by kuma")), "{:?}", snap.facts);
+    }
+
+    /// An edit is the more familiar reason to rebuild and the edge is the
+    /// same, so it names the state. Pinned because the ordering reads like
+    /// an accident and is not one.
+    #[test]
+    fn an_edit_outranks_the_builder_check() {
+        let mut img = image(true).unwrap();
+        img.builder = Some("0.3.0 (deadbee 2026-08-01)".into());
+        let snap = classify(&workspace(loaded(), Some(img), kuma_machine(false, vec![], None)));
+        assert_eq!(snap.state, "edited");
     }
 
     #[test]
