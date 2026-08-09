@@ -6,11 +6,12 @@ on:
   push:
     tags:
       - "v*"
-  # main is the rolling channel. kuma is consumed by rebuilding constantly,
-  # so waiting for a tag to get a usable binary would mean the published
-  # one is nearly always behind the tree it is meant to build from.
-  branches:
-    - main
+    # main is the rolling channel. kuma is consumed by rebuilding
+    # constantly, so waiting for a tag to get a usable binary would mean
+    # the published one is nearly always behind the tree it is meant to
+    # build from.
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:

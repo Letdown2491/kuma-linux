@@ -36,6 +36,17 @@ jobs:
       - name: shellcheck
         run: shellcheck scripts/smoke.sh
 
+      # A workflow can be valid YAML and still be nonsense to Actions,
+      # which only says so by refusing to run any job at all. That is a
+      # slow way to find out, and it already cost one push here: a
+      # `branches:` key one level too high parsed fine everywhere except
+      # GitHub. actionlint reads the event schema, and shellchecks the
+      # inline run blocks that the step above cannot see.
+      - name: actionlint
+        uses: docker://rhysd/actionlint:latest
+        with:
+          args: -color
+
   # The image stage: actually build a declaration with podman and inspect
   # the result. Only the minimal example, deliberately. A desktop image is
   # ~4.5 GB plus its layers, which does not fit a hosted runner's disk with
