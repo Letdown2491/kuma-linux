@@ -534,6 +534,20 @@ struct Finding {
 /// machinery, and the hardware basics a desktop lives on. Read-only.
 /// A finding that has a cure carries it as an action — a diagnosis
 /// without its next command is a dead end.
+/// Does this fstab still have an active `/` entry, the one kuma-fstab-sync
+/// exists to comment out? The field test rather than a regex over the line:
+/// "root" appears inside subvolume names and inside /var/roothome, and a
+/// loose match there decides whether a real failure gets excused.
+fn fstab_declares_root(text: &str) -> bool {
+    text.lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        match (fields.next(), fields.next()) {
+            (Some(dev), Some(target)) => !dev.starts_with('#') && target == "/",
+            _ => false,
+        }
+    })
+}
+
 pub fn doctor(json: bool) -> Result<()> {
     let mut findings: Vec<Finding> = Vec::new();
     let mut report = |grade: Grade, name: &str, detail: String, fix: Option<Action>| {
@@ -552,8 +566,21 @@ pub fn doctor(json: bool) -> Result<()> {
             // Anaconda writes a `/` line into fstab that composefs can't
             // remount, so this one fails on every boot of an installed
             // system — real, but cosmetic; don't bury real failures in it.
+            //
+            // Narrowed to the cause rather than the unit name. kuma-fstab-sync
+            // now comments that line out on first boot, so a machine can fail
+            // this unit for the known reason (line still active, converger has
+            // not run yet) or for an unknown one (line already gone, so
+            // whatever broke is not this). Excusing the unit by name would
+            // keep calling the second case benign forever, which is how a
+            // workaround outlives its bug and starts hiding news.
+            let root_line_active = std::fs::read_to_string("/etc/fstab")
+                .map(|f| fstab_declares_root(&f))
+                .unwrap_or(false);
             let (benign, real): (Vec<&str>, Vec<&str>) = names.iter().partition(|n| {
-                **n == "systemd-remount-fs.service" && Path::new("/run/ostree-booted").exists()
+                **n == "systemd-remount-fs.service"
+                    && Path::new("/run/ostree-booted").exists()
+                    && root_line_active
             });
             if !real.is_empty() {
                 let fix = Action::new(
@@ -568,7 +595,11 @@ pub fn doctor(json: bool) -> Result<()> {
                     Grade::Warn,
                     "units",
                     "systemd-remount-fs failed, known-benign: Anaconda's fstab `/` line can't be remounted over composefs".into(),
-                    None,
+                    Some(Action::new(
+                        "reboot",
+                        "sudo systemctl reboot".to_string(),
+                        "kuma-fstab-sync has commented the line out; the unit stops failing next boot",
+                    )),
                 );
             }
         }
@@ -1236,6 +1267,33 @@ mod tests {
 
     fn set(items: &[&str]) -> BTreeSet<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// This decides whether a failed systemd-remount-fs is excused, so a
+    /// loose match here is how a real failure gets called known-benign
+    /// forever. The near-misses are the point: `root` is a subvolume name
+    /// on every Anaconda btrfs install, and /var/roothome is a real mount.
+    #[test]
+    fn only_an_active_root_entry_excuses_the_remount_failure() {
+        let anaconda = "UUID=86bf4581 / btrfs subvol=root,compress=zstd:1,ro 0 0\n\
+                        UUID=4de4aa74 /boot ext4 defaults 1 2\n";
+        assert!(fstab_declares_root(anaconda));
+
+        // What kuma-fstab-sync leaves behind: the same line, commented.
+        let converged = "# Commented out by kuma-fstab-sync: this machine boots a composefs\n\
+                         #UUID=86bf4581 / btrfs subvol=root,compress=zstd:1,ro 0 0\n\
+                         UUID=4de4aa74 /boot ext4 defaults 1 2\n";
+        assert!(!fstab_declares_root(converged));
+
+        // A space after the comment marker shifts every field right, which
+        // is exactly how a naive field test would still see a root mount.
+        assert!(!fstab_declares_root("# UUID=86bf4581 / btrfs subvol=root 0 0\n"));
+
+        // Neither of these is a root entry, and both contain "root".
+        assert!(!fstab_declares_root("UUID=y /var/roothome btrfs subvol=root 0 0\n"));
+        assert!(!fstab_declares_root("UUID=4de4aa74 /boot ext4 defaults 1 2\n"));
+
+        assert!(!fstab_declares_root(""));
     }
 
     fn config(toml: &str) -> Config {

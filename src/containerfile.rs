@@ -673,6 +673,94 @@ save_env boot_success
 EOF
 "#;
 
+/// Anaconda writes a `/` line into /etc/fstab describing the root as the
+/// filesystem it installed onto (btrfs here). On a bootc machine the root
+/// is a composefs overlay, so systemd-remount-fs reads that line, tries to
+/// remount `/` with those options, and the kernel refuses:
+///
+///   mount: /: fsconfig() failed: overlay: No changes allowed in reconfigure.
+///
+/// Nothing downstream depends on it, which is why this was filed as
+/// cosmetic and carried a known-benign downgrade in doctor for months. The
+/// reason it earns a converger anyway: nothing else ever rewrites that
+/// file. It is machine state written once by the installer, so the failure
+/// is permanent on every machine kuma installs, and the only cure anyone
+/// had was editing the file by hand on each one. Same category as the
+/// bootloader's boot counter above, and fixed the same way.
+///
+/// Deliberately one-directional, unlike the boot-counter block. Leaving
+/// the line commented is safe on any bootc machine: the root is already
+/// mounted by the initrd, and that line drives nothing but this remount.
+/// Uncommenting it again would not be safe, because the only reason to do
+/// so would be a detection mistake, and the cost of that mistake is a
+/// machine that fails a mount at boot. So the marker records what was done
+/// and a human can reverse it; the script never will.
+/// Takes the file as an argument, defaulting to the real one, for the same
+/// reason inspect.rs's scan_etc takes its roots: on a machine that is
+/// already converged the editing branch never runs, so without a way to
+/// point it at a fixture this would ship having never once executed the
+/// only lines that matter. The unit passes no argument.
+// r##: the awk below prints lines starting `"#`, which closes an r#" literal.
+const FSTAB_SYNC_SCRIPT: &str = r##"#!/usr/bin/bash
+set -euo pipefail
+fstab=${1:-/etc/fstab}
+[ -f "$fstab" ] || exit 0
+# The whole justification for the edit is that the mounted root is not
+# what the line claims. Ask the kernel rather than assuming: on anything
+# that is not a composefs overlay this exits having done nothing.
+[ "$(findmnt -n -o FSTYPE / 2>/dev/null)" = overlay ] || exit 0
+
+# awk, not sed: the target is "the line whose second field is /", which is
+# a field test, and writing it as a regex over the whole line is how you
+# end up commenting out /boot or a subvolume that merely mentions root.
+# Already-commented lines cannot match, so this is idempotent without
+# needing to look for its own marker.
+new=$(mktemp)
+awk '
+$1 !~ /^#/ && $2 == "/" {
+    print "# Commented out by kuma-fstab-sync: this machine boots a composefs"
+    print "# overlay, and systemd-remount-fs fails every boot trying to remount"
+    print "# / with the options below. Uncomment only if / stops being an overlay."
+    print "#" $0
+    next
+}
+{ print }
+' "$fstab" > "$new"
+
+if cmp -s "$fstab" "$new"; then
+    rm -f "$new"
+    exit 0
+fi
+# cat into the existing file rather than mv over it: this keeps the inode,
+# the mode, and the SELinux label that a rename from /tmp would replace.
+cat "$new" > "$fstab"
+rm -f "$new"
+# The generated mount units come from this file, so tell systemd it moved.
+# Nothing is remounted here: the failing remount is the thing being
+# prevented, and this boot has already had it. Skipped when running
+# against a fixture, which has no business reloading the host's systemd.
+[ -n "${1:-}" ] || systemctl daemon-reload
+"##;
+
+/// multi-user, not early boot, and the cost is understood: systemd-remount-fs
+/// runs in sysinit, so the machine that installs today still fails this unit
+/// once and comes up clean on every boot after. Ordering this before it
+/// instead would need DefaultDependencies=no and a hand-built ordering into
+/// the middle of early boot, where a cycle does not produce a failed unit,
+/// it produces a machine that does not boot. That is a bad trade against a
+/// failure whose entire consequence is a red line in `systemctl --failed`.
+const FSTAB_SYNC_SERVICE: &str = r#"[Unit]
+Description=Converge Anaconda's fstab root line for a composefs root
+ConditionPathExists=/run/ostree-booted
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/kuma-fstab-sync
+
+[Install]
+WantedBy=multi-user.target
+"#;
+
 /// Before the health check only for tidiness — the hook matters at the
 /// NEXT grub run, so any point in this boot converges in time.
 const BOOT_HEALTH_SYNC_SERVICE: &str = r#"[Unit]
@@ -1542,8 +1630,10 @@ pub fn generate(config: &Config) -> String {
     out.push_str(
         "COPY kuma-boot-health-sync.service /usr/lib/systemd/system/kuma-boot-health-sync.service\n",
     );
+    out.push_str("COPY --chmod=755 kuma-fstab-sync /usr/libexec/kuma-fstab-sync\n");
+    out.push_str("COPY kuma-fstab-sync.service /usr/lib/systemd/system/kuma-fstab-sync.service\n");
     out.push_str(
-        "RUN systemctl enable greenboot-healthcheck.service greenboot-set-rollback-trigger.service greenboot-success.target kuma-boot-health-sync.service\n",
+        "RUN systemctl enable greenboot-healthcheck.service greenboot-set-rollback-trigger.service greenboot-success.target kuma-boot-health-sync.service kuma-fstab-sync.service\n",
     );
 
     // Refreshes LVFS metadata only; it never applies a firmware update on
@@ -1706,6 +1796,8 @@ pub fn write_context(
     std::fs::write(dir.join("kuma-vm-timezone.service"), VM_TZ_SERVICE)?;
     std::fs::write(dir.join("kuma-boot-health-sync"), BOOT_HEALTH_SYNC_SCRIPT)?;
     std::fs::write(dir.join("kuma-boot-health-sync.service"), BOOT_HEALTH_SYNC_SERVICE)?;
+    std::fs::write(dir.join("kuma-fstab-sync"), FSTAB_SYNC_SCRIPT)?;
+    std::fs::write(dir.join("kuma-fstab-sync.service"), FSTAB_SYNC_SERVICE)?;
     // Identity, wallpaper, and kargs ship with every desktop; the rest
     // of the niri block is glue COSMIC provides natively.
     if config.system.desktop != Desktop::None {
@@ -2099,6 +2191,40 @@ mod tests {
         context("schema_version = 1\n", dir.path());
         let script = std::fs::read_to_string(dir.path().join("kuma-boot-health-sync")).unwrap();
         assert!(script.starts_with("#!/usr/bin/bash"));
+    }
+
+    /// The cure for the fstab wart has to travel in the image. It was
+    /// fixed by hand on one laptop in August 2026 and that fixed exactly
+    /// one machine: nothing in a kuma image touched /etc/fstab, the bootc
+    /// rpm ships no unit for it, and the ISO kickstart never mentions it,
+    /// so every fresh install went on failing systemd-remount-fs forever.
+    #[test]
+    fn every_image_carries_the_fstab_converger() {
+        let out = generate(&config("schema_version = 1"));
+        assert!(out.contains("COPY --chmod=755 kuma-fstab-sync /usr/libexec/kuma-fstab-sync"));
+        assert!(out.contains("kuma-fstab-sync.service"));
+
+        let dir = tempfile::tempdir().unwrap();
+        context("schema_version = 1\n", dir.path());
+        let script = std::fs::read_to_string(dir.path().join("kuma-fstab-sync")).unwrap();
+        assert!(script.starts_with("#!/usr/bin/bash"));
+
+        // Three properties the edit is only safe because of, each of which
+        // reads like a detail and is the whole guard:
+        //
+        // it asks the kernel what / actually is instead of assuming any
+        // bootc machine is composefs,
+        assert!(script.contains("findmnt -n -o FSTYPE /"));
+        // it matches the mount point as a FIELD, because "root" appears in
+        // subvolume names and /var/roothome is a real mount,
+        assert!(script.contains(r#"$1 !~ /^#/ && $2 == "/""#));
+        // and it writes back through the existing inode, so the file keeps
+        // its mode and SELinux label instead of inheriting a temp file's.
+        assert!(script.contains(r#"cat "$new" > "$fstab""#));
+
+        // The unit is inert anywhere that is not an ostree deployment,
+        // since on a package system that fstab line is load-bearing.
+        assert!(FSTAB_SYNC_SERVICE.contains("ConditionPathExists=/run/ostree-booted"));
     }
 
     #[test]
