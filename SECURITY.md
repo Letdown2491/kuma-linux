@@ -1,0 +1,134 @@
+# Security
+
+Kuma is early and maintained by one person.
+
+## Reporting a vulnerability
+
+Use GitHub's private vulnerability reporting:
+[**Report a vulnerability**](https://github.com/Letdown2491/kuma-linux/security/advisories/new).
+It reaches the maintainer privately, and it is the only channel. Please don't
+open a public issue for one first.
+
+Worth including: the output of `kuma --version`, the declaration that
+reproduces it with any password hash removed, and what an attacker ends up
+able to do.
+
+Expect a reply in days rather than hours. There is no bounty and no response
+guarantee. Only the most recent release is supported; fixes go out in a new
+release rather than as backports to older tags.
+
+## What is kuma's to fix
+
+Kuma compiles a declaration into a Containerfile and hands it to podman. It
+builds no packages and no kernels. What it adds to an image is its own binary,
+the systemd units it writes, and the desktop assets compiled into it.
+
+So a flaw in the kernel, in systemd, in a Fedora package, or in bootc is not
+kuma's to patch, and kuma needs no patch mechanism of its own: a rebuild
+resolves against Fedora's packages as they are that day, which makes updating
+and patching the same operation. `kuma update` is how you take security
+updates.
+
+A flaw in how kuma generates a build, in what it puts in an image, or in what
+it runs on your machine is kuma's, and is worth reporting.
+
+## Your declaration is the trust boundary
+
+One short file spans several trust roots, and naming a string is how you opt
+into each:
+
+- **`packages.rpm`** comes from Fedora's repositories. Kuma adds no third-party
+  repositories and provides no way to declare one. Signature checking is dnf's
+  default and kuma never disables it.
+- **`system.base`**, when set, is trust in whoever publishes that image. Unset,
+  kuma composes a base from Fedora's repositories instead, so the trust root is
+  the same as for `packages.rpm`.
+- **`packages.flatpak`** is trust in Flathub and in each application's
+  publisher. These converge on every boot, as root.
+- **`packages.brew`** is trust in Homebrew and in each formula's upstream.
+  Naming any formula (or setting `system.brew`) makes the image fetch
+  Homebrew's tarball over HTTPS on first boot, with no signature to check
+  because Homebrew publishes none.
+  Formulae then install into `/home/linuxbrew`, owned by your user, rather than
+  into the image.
+- **`services.enable`** starts units that are already in the image. It cannot
+  introduce one.
+
+Names in these lists are validated before they reach dnf, flatpak, systemctl,
+or brew: no leading dashes, so a name can't become a flag, and no shell
+metacharacters. `rpm = ["--nogpgcheck"]` and `rpm = ["fish; rm -rf /"]` are
+both rejected by `kuma check`.
+
+## What a build pins
+
+`kuma.lock` records what a build resolved. The base digest is enforced, so the
+same declaration and the same lock build from the same bytes. Package versions
+are recorded but not enforced, because Fedora's mirrors garbage collect old
+builds within weeks and a pinned version would become a build failure rather
+than a defense. The record is there to show what moved between two builds.
+
+`kuma update` is the only thing that moves the pin.
+
+## Verifying a release
+
+Every release asset is signed with Sigstore, keyless, using the release
+workflow's own identity. No private key exists to be stolen; what an attacker
+would have to take is push access to this repository.
+
+```console
+$ cosign verify-blob \
+    --bundle kuma-x86_64-unknown-linux-musl.bundle \
+    --certificate-identity-regexp '^https://github.com/Letdown2491/kuma-linux/' \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    kuma-x86_64-unknown-linux-musl
+```
+
+Worth doing: the install instructions put this binary in `/usr/local/bin` and
+it goes on to build the filesystem you boot.
+
+Images kuma builds for you are not signed. They're built on your machine, from
+your declaration, and stay in your local container storage unless you push
+them somewhere.
+
+## Secrets in a declaration
+
+`user.password_hash` is baked into the image. Anyone who can pull that image
+can read the hash and start cracking it offline. That is fine for an image
+that never leaves your machine and bad for one you publish, so **don't push an
+image built from a declaration that carries a password hash.** The committed
+examples declare no user for this reason.
+
+`user.ssh_keys` holds public keys and is safe to publish.
+
+`user.autologin` means the machine boots to a session with no password prompt.
+It's a deliberate choice for a kiosk or a VM, and it is not a good one for a
+laptop that leaves the house.
+
+## VM and installer images
+
+`kuma vm` disks carry a `kuma` account with the password `kuma` and membership
+in `wheel`, so a freshly built VM is always reachable. QEMU forwards its ssh
+port on `127.0.0.1` only. Treat a `kuma vm` guest as a scratch machine and
+don't expose one to a network.
+
+`kuma iso` builds installer media from your declaration, and a declared
+`[user]` rides along into it, password hash included. `kuma iso` says so when
+it happens. Build shareable media from a declaration with no `[user]`.
+
+## What runs as root
+
+`init`, `check`, `generate`, and `build` need only rootless podman.
+
+`switch`, `update`, `rollback`, and `sync` call `bootc` and `systemctl` under
+sudo. `vm` and `iso` need sudo because bootc-image-builder runs as root. Kuma
+asks for sudo at those points and nowhere else.
+
+## Not yet
+
+- Builds are not reproducible, and kuma makes no claim that two builds of one
+  declaration produce identical bytes.
+- Kuma emits no SBOM. `kuma.lock` records resolved package versions, which is
+  adjacent but not the same thing.
+- Images kuma builds are not signed, and kuma has no verification step for a
+  `system.base` beyond the digest pin in `kuma.lock`.
+- There is no security advisory history, because there have been no advisories.

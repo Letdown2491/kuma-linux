@@ -473,6 +473,16 @@ pub(crate) mod tests {
             readme.contains(&format!("releases/latest/download/{asset}")),
             "README should download {asset} from the latest release"
         );
+
+        // SECURITY.md quotes the verify command against the same asset, and
+        // a verify command naming a file nobody has is worse than none: it
+        // reads as a check that passed.
+        let security =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/SECURITY.md")).unwrap();
+        assert!(
+            security.contains(&format!("{asset}.bundle")) && security.contains(&asset),
+            "SECURITY.md should verify {asset} against its bundle"
+        );
     }
 
     /// The README's example declaration is the first thing anyone copies,

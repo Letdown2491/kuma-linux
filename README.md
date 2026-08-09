@@ -126,6 +126,8 @@ $ sudo mv kuma-x86_64-unknown-linux-musl /usr/local/bin/kuma
 
 Every release is signed. Each one carries the `cosign verify-blob` command
 that checks it came from this repository's release workflow.
+[`SECURITY.md`](SECURITY.md) has that command, what a declaration trusts, and
+where to report a vulnerability.
 
 The `latest` prerelease is the same binary built from the current `main`,
 for tracking the tree between releases.
