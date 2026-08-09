@@ -240,6 +240,33 @@ fn keyring_pam(service: &str) -> String {
     )
 }
 
+/// Two lint warnings' worth of build litter, swept before the verdict.
+///
+/// Installing packages leaves behind runtime state that a booted machine
+/// makes for itself anyway: /run/cups, /run/dnf, /run/mdadm, /run/samba
+/// and selinux-policy's scratch files, plus dnf5's own log in /var/log.
+/// bootc's nonempty-run-tmp and var-log lints flag both, and both are
+/// right. /run and /tmp are tmpfs on a running machine, so anything
+/// baked into them is dead weight nothing will ever read, and a shipped
+/// logfile is a record of the build host rather than of the machine.
+///
+/// rm's exit status cannot be the verdict here. podman holds two paths
+/// inside /run open for the whole build: /run/secrets, and (because the
+/// base's /etc/resolv.conf is a symlink into it)
+/// /run/systemd/resolve/stub-resolv.conf. Deleting a live bind mount
+/// fails busy no matter what the image wants. Neither survives as
+/// content: what lands in the layer is an empty file, which is exactly
+/// what "nonempty" means the lint does not count.
+///
+/// /var/log is the half kuma controls completely, so it is asserted
+/// rather than hoped for: a logfile that outlives the sweep fails the
+/// build instead of shipping.
+const SWEEP: &str = r#"
+RUN find /run /tmp -mindepth 1 -delete; \
+    find /var/log -type f -delete; \
+    ! find /var/log -type f | grep -q .
+"#;
+
 /// bootc's own build-time check that the image is a valid bootable
 /// container. It runs last, and its verdict is the build's verdict.
 ///
@@ -266,13 +293,20 @@ fn keyring_pam(service: &str) -> String {
 /// (verified against a fatal var-run), warnings still reach the log
 /// either way, and once bootc stops crashing the first run simply
 /// passes and the fallback goes cold on its own.
+///
+/// The output is held in a variable rather than a scratch file. A file
+/// under /tmp was the obvious way to look at the lint's own stderr twice,
+/// and it worked, but the lint reads /tmp while it runs: once the rest of
+/// the litter was swept, the only thing left in the image was
+/// /tmp/lint.err, and the check spent its last warning reporting itself.
+/// Nothing on disk means nothing to notice and nothing to clean up.
 const LINT: &str = r#"
-RUN rc=0; bootc container lint 2>/tmp/lint.err || rc=$?; \
-    cat /tmp/lint.err >&2; \
-    if [ $rc -ne 0 ] && grep -q 'var-tmpfiles: I/O error' /tmp/lint.err; then \
+RUN said=$(bootc container lint 2>&1); rc=$?; \
+    printf '%s\n' "$said"; \
+    if [ $rc -ne 0 ] && printf '%s' "$said" | grep -q 'var-tmpfiles: I/O error'; then \
         rc=0; bootc container lint --skip var-tmpfiles || rc=$?; \
     fi; \
-    rm -f /tmp/lint.err; exit $rc
+    exit $rc
 "#;
 
 const GREETD_CONFIG: &str = r#"[terminal]
@@ -1555,6 +1589,7 @@ pub fn generate(config: &Config) -> String {
     // image as a dangling <none>, and only kuma's own should be reclaimed.
     out.push_str("\nLABEL io.kuma.image=\"1\"\n");
 
+    out.push_str(SWEEP);
     out.push_str(LINT);
     out
 }
@@ -1714,12 +1749,37 @@ mod tests {
         // one upstream crash, never the path a healthy build takes, and
         // it must not swallow any other lint failure. Pin the shape so a
         // future edit can't turn it into a blanket skip.
-        assert!(out.contains("RUN rc=0; bootc container lint 2>/tmp/lint.err"));
-        assert!(out.contains("grep -q 'var-tmpfiles: I/O error' /tmp/lint.err"));
+        assert!(out.contains("RUN said=$(bootc container lint 2>&1); rc=$?;"));
+        assert!(out.contains("grep -q 'var-tmpfiles: I/O error'"));
         assert!(out.contains("bootc container lint --skip var-tmpfiles || rc=$?"));
-        // the scratch file is removed in the same layer that made it, and
         // the build's exit status is still the lint's
-        assert!(out.contains("rm -f /tmp/lint.err; exit $rc"));
+        assert!(out.contains("exit $rc"));
+        // Nothing on disk: a scratch file here is litter the lint itself
+        // reads back and reports, since /tmp is one of the directories
+        // it checks.
+        assert!(!out.contains("lint.err"));
+    }
+
+    /// Every image was shipping dnf's log and a /run full of state that a
+    /// booted machine creates for itself. Two bootc lint warnings said so
+    /// on every build, and warnings cannot fail a build, so they were
+    /// noise nobody had to act on.
+    #[test]
+    fn build_litter_is_swept_before_the_image_is_judged() {
+        let out = generate(&config("schema_version = 1"));
+        assert!(out.contains("find /run /tmp -mindepth 1 -delete"));
+        assert!(out.contains("find /var/log -type f -delete"));
+
+        // The sweep has to precede the lint, or the lint passes judgement
+        // on an image that is not the one being shipped.
+        let sweep = out.find("find /run /tmp -mindepth 1 -delete").unwrap();
+        let lint = out.find("RUN said=$(bootc container lint").unwrap();
+        assert!(sweep < lint);
+
+        // The logs are asserted rather than assumed. /run cannot be: the
+        // build holds two paths inside it open, so nothing there can be
+        // checked for emptiness from within the build itself.
+        assert!(out.contains("! find /var/log -type f | grep -q ."));
     }
 
     #[test]
