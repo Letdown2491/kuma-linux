@@ -175,6 +175,16 @@ pub fn pinned_ref(reference: &str, digest: &str) -> String {
 /// which, so the index is identified as the one that isn't the manifest.
 /// A single-arch image has no index, and then the manifest digest *is*
 /// what the tag resolves to.
+///
+/// The preference is real but it is not a guarantee, which is the part
+/// that shipped wrong the second time. RepoDigests is podman's own
+/// bookkeeping, and a machine that pulled the base exactly once can hold
+/// only the per-architecture entry: this laptop reports both digests and
+/// a fresh CI runner reported one, off the same tag. So the fallback
+/// below is reached in practice and writes a per-arch digest into a real
+/// lock. That is a fine thing to build `FROM`, and `base_moved` is
+/// written to answer the moved question for either shape rather than
+/// assuming this one succeeded.
 fn index_digest(repo_digests: &[&str], manifest: &str, reference: &str) -> String {
     let name = repo_name(reference);
     repo_digests
@@ -245,20 +255,63 @@ pub fn base_digest(reference: &str) -> Result<String> {
 /// digest arithmetic: if the tag still points at that image, the two
 /// references describe the same document.
 ///
+/// That rules out digest arithmetic and leaves one way to ask per kind
+/// of digest a lock can hold, because the two shapes are not
+/// interchangeable here:
+///
+/// - A **per-architecture digest** is listed in the tag's index, so
+///   membership answers the question in a single call. Asking podman
+///   about such a digest directly is not a slower way to the same
+///   answer, it is an error: `podman manifest inspect` refuses a single
+///   image ("Treating single images as manifest lists is not
+///   implemented"). CI failed on exactly this.
+/// - An **index digest** is listed nowhere, since an index does not name
+///   itself, so the only comparison left is fetching the pinned
+///   reference and diffing the two documents.
+///
+/// Membership is therefore tried first, and the second call is reached
+/// only when it misses. Getting there proves the registry answered a
+/// moment ago, so a failure on the pinned reference is podman refusing a
+/// single image that this index no longer lists, which is the moved
+/// case and not an error. That inference is what keeps this off podman's
+/// error strings, which are not an interface.
+///
 /// skopeo would give the digest in one call instead of two, and was the
 /// first implementation. It is not worth a second dependency: `kuma
 /// build` needs nothing but podman, and one verb quietly needing more
-/// makes that promise false for whoever doesn't have it installed.
-/// The one limitation: `podman manifest inspect` refuses a
-/// single-architecture image ("Treating single images as manifest lists
-/// is not implemented"), so a base published without a manifest list
-/// can't be checked this way. Multi-arch is the norm and fedora-bootc is
-/// one, so this trades an edge case for a dependency everyone would
-/// otherwise have to install.
+/// makes that promise false for whoever doesn't have it installed. The
+/// surviving limitation is a base published with no index at all, which
+/// the first call cannot read either. Multi-arch is the norm and
+/// fedora-bootc is one, so this trades an edge case for a dependency
+/// everyone would otherwise have to install.
 pub fn base_moved(reference: &str, digest: &str) -> Result<bool> {
     let tagged = registry_manifest(reference)?;
-    let locked = registry_manifest(&pinned_ref(reference, digest))?;
-    Ok(tagged != locked)
+    if index_lists(&tagged, digest) {
+        return Ok(false);
+    }
+    match registry_manifest(&pinned_ref(reference, digest)) {
+        Ok(locked) => Ok(tagged != locked),
+        Err(_) => Ok(true),
+    }
+}
+
+/// Does this index list `digest` as one of its per-architecture
+/// manifests? Pure over the document podman prints, so it is testable
+/// without a registry.
+///
+/// Anything unparseable or indexless answers "no" rather than raising:
+/// the only caller treats a miss as "ask the other way", which is the
+/// safe direction. A malformed document that errored here would turn a
+/// checkable lock into a hard failure, while a miss merely costs the
+/// round trip this is trying to save.
+fn index_lists(index: &str, digest: &str) -> bool {
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(index) else {
+        return false;
+    };
+    let Some(manifests) = doc.get("manifests").and_then(|m| m.as_array()) else {
+        return false;
+    };
+    manifests.iter().any(|m| m.get("digest").and_then(|d| d.as_str()) == Some(digest))
 }
 
 fn registry_manifest(reference: &str) -> Result<String> {
@@ -460,6 +513,59 @@ mod tests {
         // image to a different registry, and must not be picked up.
         let foreign = ["ghcr.io/someone/mirror@sha256:deadbeef"];
         assert_eq!(index_digest(&foreign, manifest, reference), manifest);
+    }
+
+    /// What `podman manifest inspect` prints for a multi-arch tag, cut to
+    /// the fields read here. The digests are the real ones from
+    /// quay.io/fedora/fedora-bootc:44.
+    const FEDORA_INDEX: &str = r#"{
+      "schemaVersion": 2,
+      "mediaType": "application/vnd.oci.image.index.v1+json",
+      "manifests": [
+        {"digest": "sha256:c30f3679", "platform": {"architecture": "arm64"}},
+        {"digest": "sha256:8210cf5b", "platform": {"architecture": "ppc64le"}},
+        {"digest": "sha256:37460a10", "platform": {"architecture": "s390x"}},
+        {"digest": "sha256:7d662ca3", "platform": {"architecture": "amd64"}}
+      ]
+    }"#;
+
+    /// The regression: a lock holding a per-architecture digest used to
+    /// be unanswerable, because the only question asked was one podman
+    /// refuses for a single image. The index lists it, so membership
+    /// answers it without asking about the digest at all.
+    #[test]
+    fn a_per_architecture_lock_is_answered_by_the_index_listing_it() {
+        // 7d662ca3 is the amd64 manifest CI locked and then died on.
+        assert!(index_lists(FEDORA_INDEX, "sha256:7d662ca3"));
+        // Not this architecture, still this tag: membership is about the
+        // digest, so no arch matching is needed to get the right answer.
+        assert!(index_lists(FEDORA_INDEX, "sha256:c30f3679"));
+
+        // A digest this tag no longer lists: the base moved.
+        assert!(!index_lists(FEDORA_INDEX, "sha256:deadbeef"));
+
+        // An index never names itself, so a lock holding the index digest
+        // misses here on purpose and falls through to comparing the two
+        // documents. Miss and moved are not the same answer, which is why
+        // the caller cannot stop at this function.
+        assert!(!index_lists(FEDORA_INDEX, "sha256:1650030c"));
+    }
+
+    /// A miss, never a raise: the caller's next move on a miss is to ask
+    /// the registry the other way, so an unreadable document costs a
+    /// round trip instead of turning a checkable lock into a failure.
+    #[test]
+    fn an_unreadable_index_is_a_miss_rather_than_an_error() {
+        assert!(!index_lists("", "sha256:7d662ca3"));
+        assert!(!index_lists("Error: unauthorized", "sha256:7d662ca3"));
+        // A single image manifest has layers where an index has
+        // manifests, and this is what podman prints when it does not
+        // refuse outright.
+        let single = r#"{"schemaVersion": 2, "config": {}, "layers": []}"#;
+        assert!(!index_lists(single, "sha256:7d662ca3"));
+        // Well-formed JSON, entries that are not what they should be.
+        let ragged = r#"{"manifests": [{"platform": {}}, {"digest": 42}, "sha256:7d662ca3"]}"#;
+        assert!(!index_lists(ragged, "sha256:7d662ca3"));
     }
 
     /// The tag has to come off: `name:tag@digest` is accepted by some
