@@ -17,6 +17,21 @@ use state::{action_json, print_actions, reboot_action, Action};
 use std::path::{Path, PathBuf};
 
 pub(crate) const DEFAULT_TAG: &str = "localhost/kuma:latest";
+
+/// The root filesystem bib puts in the disks it builds. Required at all
+/// because fedora-bootc images declare no default and bib fails with
+/// "missing required info: DefaultRootFs" without one.
+///
+/// ext4 rather than xfs, and the difference is load-bearing rather than
+/// taste. osbuild pins filesystem UUIDs in its manifest so builds
+/// reproduce, so every disk built from one declaration carries the same
+/// UUID. XFS refuses outright to mount a UUID that is already mounted,
+/// and a desktop automounter grabs each build's partitions as they
+/// appear (see `automounted_loop_mounts`), so one automounted disk made
+/// every later `kuma vm` die on "Filesystem has duplicate UUID ... -
+/// can't mount", surfacing as a Python traceback out of osbuild. ext4
+/// permits duplicates, so the collision can no longer fail a build.
+const BIB_ROOTFS: &str = "ext4";
 const BIB_IMAGE: &str = "quay.io/centos-bootc/bootc-image-builder:latest";
 
 /// What `--version` prints. The number alone cannot answer "is this
@@ -1526,6 +1541,51 @@ fn sync_image_to_root(tag: &str, scratch: &Path) -> Result<String> {
     Ok(local_id)
 }
 
+/// Mount points where a desktop automounter has grabbed a previous disk
+/// build's partitions.
+///
+/// bib partitions a loop device, and udisks2 mounts anything with a
+/// filesystem on it under `/run/media/<user>`. Those mounts then hold
+/// the loop device open, so bib cannot detach it when it finishes and
+/// the backing file is left deleted-but-attached.
+///
+/// That used to poison every later build. osbuild pins filesystem UUIDs
+/// in its manifest so builds reproduce, which means the next disk from
+/// the same declaration carries the same UUID, and XFS refuses outright
+/// to mount a UUID that is already mounted: "Filesystem has duplicate
+/// UUID ... - can't mount", forty lines into a Python traceback. One
+/// automount was enough to make every subsequent `kuma vm` fail, and
+/// each failure left another pair of mounts behind.
+///
+/// ext4 does not enforce that uniqueness, so the build survives now.
+/// The mounts still accumulate and still pin loop devices, which is
+/// worth saying out loud rather than leaving for whoever eventually
+/// wonders where their loop devices went.
+fn automounted_loop_mounts() -> Vec<String> {
+    let Ok(mountinfo) = std::fs::read_to_string("/proc/self/mountinfo") else {
+        return Vec::new();
+    };
+    loop_mounts_in(&mountinfo)
+}
+
+/// The parse, split from the read so it is testable. On a machine that
+/// has never hit this the function above would otherwise ship having
+/// never matched a line, which is the same reason `scan_etc` takes its
+/// roots as parameters.
+fn loop_mounts_in(mountinfo: &str) -> Vec<String> {
+    mountinfo
+        .lines()
+        .filter_map(|line| {
+            // "<id> <parent> <maj:min> <root> <target> <opts> ... - <fstype> <source> <superopts>"
+            let (left, right) = line.split_once(" - ")?;
+            let target = left.split_whitespace().nth(4)?;
+            let source = right.split_whitespace().nth(1)?;
+            (target.starts_with("/run/media/") && source.starts_with("/dev/loop"))
+                .then(|| target.to_string())
+        })
+        .collect()
+}
+
 fn run_bib(
     output: &Path,
     bib_config: &Path,
@@ -1533,6 +1593,18 @@ fn run_bib(
     tag: &str,
     extra_mounts: &[String],
 ) -> Result<()> {
+    // A warning rather than a refusal: on ext4 the build works anyway,
+    // and blocking a build that would have succeeded is the worse error.
+    let stray = automounted_loop_mounts();
+    if !stray.is_empty() {
+        note(&format!(
+            "WARNING: your desktop has automounted a previous disk build:\n\n  {}\n\n\
+             Those mounts pin the loop devices they sit on. To clear them:\n\n  \
+             sudo umount {}\n  sudo losetup -D\n",
+            stray.join("\n  "),
+            stray.join(" ")
+        ));
+    }
     let out_mount = format!("{}:/output", path_str(output)?);
     let config_mount = format!("{}:/config.toml:ro", path_str(bib_config)?);
     let mut args = vec![
@@ -1553,12 +1625,7 @@ fn run_bib(
     for mount in extra_mounts {
         args.extend(["-v", mount.as_str()]);
     }
-    args.extend([
-        BIB_IMAGE, "--type", image_type,
-        // fedora-bootc images declare no default root filesystem, so bib
-        // fails with "missing required info: DefaultRootFs" without this.
-        "--rootfs", "xfs", tag,
-    ]);
+    args.extend([BIB_IMAGE, "--type", image_type, "--rootfs", BIB_ROOTFS, tag]);
     run_host(&args)?;
     // bib ran as root, so its output is root-owned; hand it back to the
     // user so QEMU (and cleanup) work without privileges.
@@ -1912,6 +1979,35 @@ mod tests {
         assert!(out.contains("minsize = \"20 GiB\""));
         // no key to inject means no key line at all, not an empty one
         assert!(!out.contains("key ="));
+    }
+
+    /// XFS refuses a duplicate UUID and osbuild pins UUIDs, so the two
+    /// together made one automounted disk poison every later build. The
+    /// choice is pinned here because it reads like a preference and is
+    /// not one; anything that reverts it brings the failure back.
+    #[test]
+    fn disks_are_built_on_a_filesystem_that_tolerates_duplicate_uuids() {
+        assert_eq!(super::BIB_ROOTFS, "ext4");
+    }
+
+    /// The desktop automounts each disk build's partitions under
+    /// /run/media/<user>, which pins the loop device they sit on. Only
+    /// that combination counts: a loop device mounted somewhere else is
+    /// someone's business, and a real disk under /run/media is a USB
+    /// stick.
+    #[test]
+    fn only_loop_devices_under_run_media_are_reported() {
+        let mountinfo = "\
+25 30 0:22 / /proc rw,nosuid,nodev,noexec,relatime shared:12 - proc proc rw
+99 33 7:4 / /run/media/martin/root ro,nosuid,nodev,relatime shared:1 - ext4 /dev/loop0p4 ro,seclabel
+98 33 7:3 / /run/media/martin/boot ro,nosuid,nodev,relatime shared:2 - xfs /dev/loop0p3 ro,seclabel
+97 33 8:17 / /run/media/martin/usb rw,nosuid,nodev,relatime shared:3 - vfat /dev/sdb1 rw
+96 33 7:9 / /mnt/scratch rw,relatime shared:4 - ext4 /dev/loop9 rw,seclabel
+";
+        assert_eq!(
+            super::loop_mounts_in(mountinfo),
+            ["/run/media/martin/root", "/run/media/martin/boot"]
+        );
     }
 
     /// A public key's trailing comment is free text fixed at the moment
