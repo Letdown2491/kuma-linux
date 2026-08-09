@@ -16,14 +16,46 @@ $ scripts/smoke.sh --boot       # all three stages (needs KVM and sudo)
 $ scripts/smoke.sh --boot cosmic
 ```
 
-CI runs formatting, tests, clippy at `-D warnings`, shellcheck, and the image
-stage on the minimal example: a desktop image doesn't fit a hosted runner's
-disk, and the boot stage needs KVM. Run `--boot` locally before pushing
-anything that touches image contents.
+CI runs formatting, tests, clippy at `-D warnings`, shellcheck, actionlint,
+and the image stage on the minimal example: a desktop image doesn't fit a
+hosted runner's disk, and the boot stage needs KVM. Run `--boot` locally
+before pushing anything that touches image contents.
+
+actionlint is there because a workflow can be valid YAML and still be
+rejected by Actions, which says so by running no job at all and leaving no
+log to read.
 
 A separate job runs `cargo audit` against the committed `Cargo.lock`, on every
 push and again weekly, because a dependency becomes vulnerable when the
 advisory lands rather than when someone next touches the tree.
+
+**Cutting a release.** Bump `version` in `Cargo.toml`, commit it, then tag:
+
+```console
+$ git tag -a v0.3.0 -m "kuma v0.3.0"
+$ git push origin v0.3.0
+```
+
+The tag and `Cargo.toml` have to agree. The release workflow checks and
+fails rather than publishing a binary whose own `--version` contradicts the
+release it sits in.
+
+Push to `main` first and let it go green. The same workflow refreshes a
+rolling `latest` prerelease on every push, running every step a tag will
+run, so a problem surfaces while it still costs nothing instead of leaving
+a tag to clean up.
+
+A release is one static `x86_64` binary, its checksum, and a Sigstore
+bundle. The asset name carries no version on purpose: that is what keeps
+the README's `releases/latest/download/` URL correct from one release to
+the next, and a test pins the two together so a rename can't quietly break
+the front door.
+
+**Knowing which binary you have.** `kuma --version` reports the commit it
+was built from and appends `-dirty` when that tree had uncommitted changes.
+Worth checking whenever a change doesn't appear in the image: `kuma build`
+runs whatever `kuma` is on `$PATH`, which is not necessarily the tree you
+just edited.
 
 **Booting a VM.** `kuma vm` builds a qcow2 via bootc-image-builder and boots
 it in QEMU (it needs sudo; bootc-image-builder runs as root). Log in as your

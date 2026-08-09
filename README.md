@@ -170,7 +170,7 @@ not obvious from them:
 - [For agents](docs/agents.md): the JSON surface, and why every response
   ends at the legal next commands.
 - [Contributing](CONTRIBUTING.md): smoke tests, booting a VM, iterating
-  without losing state, and what CI checks.
+  without losing state, what CI checks, and how a release is cut.
 
 ## Not yet
 
