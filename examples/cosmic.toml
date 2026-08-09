@@ -32,9 +32,6 @@ flatpak = [
     "org.gnome.Papers",
     "org.gnome.Calculator",
     "io.github.celluloid_player.Celluloid",
-    "org.libreoffice.LibreOffice",
-    "io.github.kolunmi.Bazaar",
-    "org.gnome.Firmware",
 ]
 
 # brew = ["ripgrep", "fd", "jq"]
