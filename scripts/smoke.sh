@@ -180,8 +180,15 @@ smoke_boot() {
     # shellcheck disable=SC2064
     trap "kill $qemu 2>/dev/null || true" EXIT
 
+    # BatchMode: this stage calls ssh dozens of times with stderr thrown
+    # away, so an auth failure must return rather than stop on a password
+    # prompt. Without it a host with no ssh key turns the whole stage
+    # interactive and the deadline below never gets to run.
     local ssh_opts=(-p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
-                    -o ConnectTimeout=5 -o LogLevel=ERROR kuma@127.0.0.1)
+                    -o ConnectTimeout=5 -o LogLevel=ERROR -o BatchMode=yes)
+    # `kuma vm` writes this only when the host had no key of its own.
+    [ -f "$dir/ssh-key" ] && ssh_opts+=(-i "$dir/ssh-key")
+    ssh_opts+=(kuma@127.0.0.1)
     # shellcheck disable=SC2029  # client-side expansion is the point: every
     # caller builds the command here and wants the guest to run it literally.
     guest() { ssh "${ssh_opts[@]}" "$@" 2>/dev/null; }

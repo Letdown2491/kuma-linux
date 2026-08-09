@@ -1428,13 +1428,13 @@ fn vm(tag: &str, output: &Path, no_run: bool, rebuild: bool, apply: bool) -> Res
         println!("Boot it later with `kuma vm`, or import it into GNOME Boxes / virt-manager.");
         return Ok(());
     }
-    boot_disk(&disk)
+    boot_disk(&disk, &output)
 }
 
 fn build_disk(tag: &str, output: &Path) -> Result<()> {
     let local_id = sync_image_to_root(tag, output)?;
     let bib_config = output.join("config.toml");
-    std::fs::write(&bib_config, bib_config_toml())?;
+    std::fs::write(&bib_config, bib_config_toml(vm_ssh_key(output).as_deref()))?;
     println!("Building qcow2 with bootc-image-builder (this takes a few minutes)...");
     run_bib(output, &bib_config, "qcow2", tag, &[])?;
     // Stamp which image this disk came from, so a later `kuma vm` can
@@ -1661,7 +1661,7 @@ fn iso_config_toml(config: &Config) -> String {
     out
 }
 
-fn bib_config_toml() -> String {
+fn bib_config_toml(pubkey: Option<&str>) -> String {
     // Only what bib actually supports for qcow2. It rejects anything else
     // with "blueprint validation failed for image type qcow2: <key>: not
     // supported" and then builds the disk regardless, so an unsupported
@@ -1680,8 +1680,13 @@ fn bib_config_toml() -> String {
     let mut out = String::from(
         "[customizations]\n\n[[customizations.user]]\nname = \"kuma\"\npassword = \"kuma\"\ngroups = [\"wheel\"]\n",
     );
-    if let Some(key) = find_ssh_pubkey() {
-        out.push_str(&format!("key = \"{}\"\n", key.trim()));
+    if let Some(key) = pubkey {
+        // Escaped rather than interpolated: a public key's trailing
+        // comment is free text from whenever it was generated, and one
+        // quote in it would otherwise produce a blueprint bib cannot
+        // parse.
+        let value = toml::Value::String(key.trim().to_string());
+        out.push_str(&format!("key = {value}\n"));
     }
     // Headroom for `kuma vm --apply`: image updates transiently need a few
     // GB in the guest. Sparse qcow2, so the host pays nothing up front.
@@ -1710,8 +1715,66 @@ fn find_ssh_pubkey() -> Option<String> {
     None
 }
 
-fn boot_disk(disk: &Path) -> Result<()> {
-    println!("Booting VM (user: kuma, password: kuma; ssh: `ssh -p 2222 kuma@localhost`)...");
+/// The public key the VM should trust: the host's own when it has one,
+/// otherwise a throwaway written beside the disk.
+///
+/// Without the fallback, a host with no key gets a VM reachable only by
+/// password, and nothing says so. That is survivable when a human is
+/// typing, and it is not survivable in `scripts/smoke.sh --boot`, which
+/// calls ssh dozens of times with stderr discarded: every call stops on
+/// a password prompt, so whether the boot stage is interactive depends
+/// on whether the person running it happens to own an ssh key.
+///
+/// A key already in the output directory is reused rather than
+/// regenerated. The disk beside it already trusts that one, and a fresh
+/// pair would lock out every VM a previous run built here.
+fn vm_ssh_key(output: &Path) -> Option<String> {
+    if let Some(key) = find_ssh_pubkey() {
+        return Some(key);
+    }
+    let private = output.join("ssh-key");
+    let public = output.join("ssh-key.pub");
+    if !private.exists() {
+        note("No ssh key in ~/.ssh; generating a throwaway one for this VM...");
+        // Captured, not run: ssh-keygen prints a fingerprint and a block
+        // of randomart nobody asked for. A missing ssh-keygen is not
+        // worth failing the build over, since the console password still
+        // works; the launch message says which way in is available.
+        host_output(&[
+            "ssh-keygen",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            "kuma vm throwaway",
+            "-f",
+            path_str(&private).ok()?,
+        ])
+        .ok()?;
+    }
+    std::fs::read_to_string(&public).ok()
+}
+
+/// The ssh half of the launch message. Derived from what is on disk
+/// rather than from what this run did, so a reused VM directory
+/// describes itself as accurately as a freshly built one.
+fn vm_ssh_hint(output: &Path) -> String {
+    // Asked in the same order vm_ssh_key injects, or the two disagree:
+    // a throwaway left by an earlier run would otherwise be advertised
+    // for a disk that trusts the host key this run just used.
+    let key = output.join("ssh-key");
+    if find_ssh_pubkey().is_some() {
+        "ssh: `ssh -p 2222 kuma@localhost`, using your ~/.ssh key".to_string()
+    } else if key.exists() {
+        format!("ssh: `ssh -p 2222 -i {} kuma@localhost`, throwaway key", key.display())
+    } else {
+        "ssh: console only, no key available".to_string()
+    }
+}
+
+fn boot_disk(disk: &Path, output: &Path) -> Result<()> {
+    println!("Booting VM (console: kuma/kuma; {})...", vm_ssh_hint(output));
     let drive = format!("file={},if=virtio", path_str(disk)?);
     let mut args: Vec<&str> = vec![
         // LIBGL_ALWAYS_SOFTWARE: render virgl on llvmpipe so guest GL work
@@ -1841,12 +1904,27 @@ mod tests {
     /// kuma-vm-timezone at boot), so the absence is pinned here.
     #[test]
     fn vm_config_asks_bib_for_nothing_it_refuses() {
-        let out = super::bib_config_toml();
+        let out = super::bib_config_toml(None);
         assert!(!out.contains("hostname"), "bib rejects it for qcow2");
         assert!(!out.contains("timezone"), "bib rejects it for qcow2");
         // and still carries what bib does support
         assert!(out.contains("[[customizations.user]]"));
         assert!(out.contains("minsize = \"20 GiB\""));
+        // no key to inject means no key line at all, not an empty one
+        assert!(!out.contains("key ="));
+    }
+
+    /// A public key's trailing comment is free text fixed at the moment
+    /// the key was generated, so it can hold anything a hostname or a
+    /// `-C` once held, quotes included. Interpolating it into the
+    /// blueprint would hand bib a file it cannot parse, and the failure
+    /// would surface as a disk build dying rather than as a bad comment.
+    #[test]
+    fn a_pubkey_comment_cannot_break_the_blueprint() {
+        let hostile = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 a \"quoted\\name\"\n";
+        let out = super::bib_config_toml(Some(hostile));
+        let parsed: toml::Value = toml::from_str(&out).expect("blueprint stays valid TOML");
+        assert_eq!(parsed["customizations"]["user"][0]["key"].as_str().unwrap(), hostile.trim());
     }
 
     #[test]
