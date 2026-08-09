@@ -29,16 +29,22 @@ A separate job runs `cargo audit` against the committed `Cargo.lock`, on every
 push and again weekly, because a dependency becomes vulnerable when the
 advisory lands rather than when someone next touches the tree.
 
-**Cutting a release.** Bump `version` in `Cargo.toml`, commit it, then tag:
+**Cutting a release.** Bump `version` in `Cargo.toml`, refresh the lock,
+commit both, then tag:
 
 ```console
-$ git tag -a v0.3.0 -m "kuma v0.3.0"
-$ git push origin v0.3.0
+$ cargo update -p kuma --offline   # Cargo.lock records kuma's own version
+$ git tag -a v0.4.0 -m "kuma v0.4.0"
+$ git push origin v0.4.0
 ```
 
-The tag and `Cargo.toml` have to agree. The release workflow checks and
-fails rather than publishing a binary whose own `--version` contradicts the
-release it sits in.
+`Cargo.lock` is not optional here. It carries the workspace member's version
+too, so bumping only `Cargo.toml` leaves the lock disagreeing and every
+`--locked` call fails, which is most of CI.
+
+The tag and `Cargo.toml` have to agree as well. The release workflow checks
+and fails rather than publishing a binary whose own `--version` contradicts
+the release it sits in.
 
 Push to `main` first and let it go green. A push that touches anything
 other than documentation refreshes the rolling `latest` prerelease, and it

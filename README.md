@@ -141,7 +141,7 @@ $ kuma capture                             # declare what this machine already r
 $ kuma check                               # validate the declaration, build nothing
 $ kuma diff                                # drift: kuma.toml vs image vs machine
 $ kuma doctor                              # machine health, /etc drift, snapshots, GPU, disk
-$ kuma sync                                # converge flatpaks and brew now
+$ kuma sync                                # converge, and update everything installed
 $ kuma snapshot                            # the btrfs snapshots this machine has taken
 $ kuma snapshot --restore ~/notes.md       # bring a path back (dry run; --yes writes)
 $ kuma update --check                      # has the locked base moved?
