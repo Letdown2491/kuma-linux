@@ -1,7 +1,7 @@
 # What a desktop contains
 
 Setting `desktop = "niri"` or `desktop = "cosmic"` installs a set of packages
-you did not name. This is what lands, and what you can do about it.
+you did not name.
 
 For the exact list any declaration produces, run `kuma generate` and read the
 `dnf install` line. That is the authority; this page explains it.

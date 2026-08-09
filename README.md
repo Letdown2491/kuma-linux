@@ -217,8 +217,6 @@ not obvious from them:
 
 ## Not yet
 
-What kuma doesn't do:
-
 - **No published images.** Every image is built locally, so none is
   `bootc switch`-able from anywhere, and no image is signed. The `kuma`
   binary is published and signed; the images it builds are not.

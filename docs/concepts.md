@@ -1,9 +1,5 @@
 # How kuma behaves
 
-The reasoning behind the parts of kuma that are not obvious from the
-verbs. None of this is needed to use it; all of it explains why it does
-what it does.
-
 ## Drift is a fork, not an error
 
 Declarative systems normally treat drift as failure: the machine deviates,
