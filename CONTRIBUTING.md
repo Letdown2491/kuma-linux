@@ -16,6 +16,20 @@ $ scripts/smoke.sh --boot       # all three stages (needs KVM and sudo)
 $ scripts/smoke.sh --boot cosmic
 ```
 
+**Building without a compiler.** The machines most likely to run kuma are
+image-based and ship no compiler, and layering one onto a bootc host to work
+on the tool that builds bootc hosts is the wrong shape.
+`scripts/Containerfile.dev` builds a container that has one. Cargo is not in
+it: that comes from your home directory, so a build inside the container
+shares `target/` and the registry cache with one outside it.
+
+```console
+$ podman build -t kuma-dev-gcc -f scripts/Containerfile.dev .
+$ podman run --rm --userns=keep-id --security-opt label=disable \
+    -v "$HOME:$HOME" -w "$PWD" -e "HOME=$HOME" kuma-dev-gcc \
+    sh -c 'export PATH=$HOME/.cargo/bin:$PATH; cargo test'
+```
+
 CI runs formatting, tests, clippy at `-D warnings`, shellcheck, actionlint,
 and the image stage on the minimal example: a desktop image doesn't fit a
 hosted runner's disk, and the boot stage needs KVM. Run `--boot` locally
