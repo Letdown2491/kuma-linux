@@ -101,12 +101,17 @@ jobs:
 
       - uses: sigstore/cosign-installer@v3
 
+      # One bundle rather than a separate .sig and .pem: cosign deprecated
+      # --output-signature and --output-certificate, and the flags that
+      # read them back are deprecated on the verify side too. Those
+      # commands are quoted in the release notes below, and a release's
+      # notes cannot be corrected once people have them, so this uses the
+      # form that will still be current later.
       - name: sign
         run: |
           set -euo pipefail
           cosign sign-blob --yes \
-            --output-signature '${{ steps.pkg.outputs.name }}.sig' \
-            --output-certificate '${{ steps.pkg.outputs.name }}.pem' \
+            --bundle '${{ steps.pkg.outputs.name }}.bundle' \
             '${{ steps.pkg.outputs.name }}'
 
       # The rolling release is one moving target, so its old assets and tag
@@ -137,8 +142,7 @@ jobs:
 
           ```console
           $ cosign verify-blob \
-              --certificate ${{ steps.pkg.outputs.name }}.pem \
-              --signature ${{ steps.pkg.outputs.name }}.sig \
+              --bundle ${{ steps.pkg.outputs.name }}.bundle \
               --certificate-identity-regexp '^${{ github.server_url }}/${{ github.repository }}/' \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
               ${{ steps.pkg.outputs.name }}
@@ -151,7 +155,6 @@ jobs:
             --target '${{ github.sha }}' \
             '${{ steps.pkg.outputs.name }}' \
             '${{ steps.pkg.outputs.name }}.sha256' \
-            '${{ steps.pkg.outputs.name }}.sig' \
-            '${{ steps.pkg.outputs.name }}.pem'
+            '${{ steps.pkg.outputs.name }}.bundle'
         env:
           GH_TOKEN: ${{ github.token }}
