@@ -2319,11 +2319,9 @@ mod tests {
     fn the_baked_defaults_name_apps_the_examples_install() {
         // shipped by NIRI_PACKAGES, never by a declaration
         const IN_IMAGE: &[&str] = &["thunar", "org.gnome.FileRoller"];
-        let example = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/examples/kuma.toml.example"
-        ))
-        .unwrap();
+        let example =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/niri.toml"))
+                .unwrap();
         let declared: Config = toml::from_str(&example).unwrap();
         let mut checked = 0;
         for line in MIMEAPPS.lines() {
@@ -2336,7 +2334,7 @@ mod tests {
             }
             assert!(
                 declared.packages.flatpak.iter().any(|a| a == app),
-                "{app} handles {mime} but examples/kuma.toml.example doesn't install it"
+                "{app} handles {mime} but examples/niri.toml doesn't install it"
             );
             checked += 1;
         }
@@ -2383,11 +2381,9 @@ mod tests {
             .collect();
         assert!(enabled.contains(&"avahi-daemon.service"), "sanity: kuma enables avahi");
 
-        let example = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/examples/kuma.toml.example"
-        ))
-        .unwrap();
+        let example =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/niri.toml"))
+                .unwrap();
         for line in example.lines() {
             let line = line.trim_start().trim_start_matches('#').trim_start();
             let Some(units) = line.strip_prefix("disable = [") else { continue };
@@ -2732,7 +2728,9 @@ mod tests {
         let mut checked = 0;
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
             let path = entry.path();
-            if !path.extension().is_some_and(|e| e == "example") {
+            if !path.extension().is_some_and(|e| e == "toml")
+                || crate::config::tests::is_local_declaration(&path)
+            {
                 continue;
             }
             let name = path.display().to_string();

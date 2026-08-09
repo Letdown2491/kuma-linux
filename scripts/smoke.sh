@@ -122,7 +122,7 @@ smoke_image() {
     # The lock is written by the build, and the pin is only real if the
     # next build actually resolves it. `generate` prints what a build
     # would do, so it proves the wiring without a second build.
-    local lock="${file%.example}.lock"
+    local lock="${file%.toml}.lock"
     [ -f "$lock" ] || bad "no lock written beside $file"
     grep -q '^digest = "sha256:' "$lock" || bad "lock records no base digest"
     if grep -q '^base *=' "$file"; then
@@ -255,8 +255,8 @@ smoke_boot() {
 
 # --- run ---------------------------------------------------------------
 port=2300
-for file in examples/*.toml.example; do
-    name=$(basename "$file" .toml.example)
+for file in examples/*.toml; do
+    name=$(basename "$file" .toml)
     if [ ${#SELECTED[@]} -gt 0 ] && ! printf '%s\n' "${SELECTED[@]}" | grep -qx "$name"; then
         continue
     fi
@@ -276,7 +276,7 @@ for file in examples/*.toml.example; do
         # CI's fresh checkout does. A pin left lying here would quietly
         # freeze the smoke tests against a base the world has moved past,
         # which is the one thing they exist to notice.
-        rm -f "${file%.example}.lock"
+        rm -f "${file%.toml}.lock"
         [ -d "vm-smoke/$name" ] && sudo rm -rf "vm-smoke/$name"
     fi
 done

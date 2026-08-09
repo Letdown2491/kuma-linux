@@ -37,9 +37,17 @@ desktop = "niri"
 
 # The primary account, created on first boot and converged on every boot
 # after: shell, declared groups, and kuma-managed ssh keys.
-[user]
-name = "me"
-shell = "fish"
+#
+# Commented out so this file is safe to build shareable media from.
+# Declaring a user removes Anaconda's create-a-user screen, so an ISO
+# built from a declaration that names one but sets no password_hash
+# installs a machine whose only account is locked. Left undeclared, the
+# installer asks and the person gets their own account. `kuma vm` needs
+# nothing here either: it injects kuma/kuma into the disk it builds.
+# Uncomment for a machine you are declaring for yourself.
+# [user]
+# name = "me"
+# shell = "fish"
 
 # From `kuma passwd`. Applies only at creation, so change the password on
 # the machine afterward and kuma won't fight you.

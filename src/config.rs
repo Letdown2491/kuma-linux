@@ -366,8 +366,18 @@ fn validate_name(value: &str, field: &str, extra: &[char]) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// The examples now end in `.toml` like any declaration, which makes
+    /// them indistinguishable by extension from a real one someone keeps
+    /// beside them. `.gitignore` reserves exactly two shapes in that
+    /// directory for local declarations, `kuma.toml` and `*.kuma.toml`;
+    /// the example walkers skip both, so a personal declaration can never
+    /// be pulled into a test that asserts what a *committed* example says.
+    pub(crate) fn is_local_declaration(path: &Path) -> bool {
+        path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with("kuma.toml"))
+    }
 
     #[test]
     fn committed_examples_stay_valid() {
@@ -377,7 +387,7 @@ mod tests {
         let mut checked = 0;
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
             let path = entry.path();
-            if !path.extension().is_some_and(|e| e == "example") {
+            if !path.extension().is_some_and(|e| e == "toml") || is_local_declaration(&path) {
                 continue;
             }
             let text = std::fs::read_to_string(&path).unwrap();
@@ -484,7 +494,7 @@ mod tests {
         assert!(config.user.is_some(), "the example shows a declared [user]");
     }
 
-    /// kuma.toml.example says it shows every field the schema accepts,
+    /// niri.toml says it shows every field the schema accepts,
     /// which is a promise a reader can't check and a schema change can
     /// quietly break. `services.disable` and `system.brew` were both
     /// missing when this was written.
@@ -494,11 +504,9 @@ mod tests {
     #[test]
     fn the_full_example_documents_every_field() {
         let schema = serde_json::to_value(schemars::schema_for!(Config)).unwrap();
-        let example = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/examples/kuma.toml.example"
-        ))
-        .unwrap();
+        let example =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/niri.toml"))
+                .unwrap();
 
         // Field names from the schema itself, so a new one is covered the
         // day it lands rather than the day someone remembers.
@@ -525,7 +533,7 @@ mod tests {
                     || line.starts_with(&format!("{field}="))
                     || line.starts_with(&format!("[{field}]"))
             });
-            assert!(documented, "examples/kuma.toml.example never mentions `{field}`");
+            assert!(documented, "examples/niri.toml never mentions `{field}`");
         }
     }
 

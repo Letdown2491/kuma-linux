@@ -38,8 +38,8 @@ enable = true   # hourly read-only btrfs snapshots of /var/home
 ```
 
 A fuller, commented version lives in
-[`examples/`](examples/kuma.toml.example), and a test keeps every example
-valid against the current schema.
+[`examples/`](examples/niri.toml), and a test keeps every example valid
+against the current schema.
 
 **There is no base to name by default.** With `system.base` unset, kuma
 composes its own from Fedora's package repos, starting from Fedora's
