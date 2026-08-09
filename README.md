@@ -9,7 +9,84 @@ You describe a machine in a small `kuma.toml`, and Kuma compiles it into a
 bootable container image. Atomic updates and rollback come from bootc, and
 the packages come from Fedora.
 
-Four principles, in order:
+![Kuma running the niri desktop: a scrollable tiling Wayland session with waybar, kitty, and fastfetch reporting a read-only overlay root](docs/screenshots/niri.jpg)
+
+## Your declaration
+
+```toml
+schema_version = 1
+
+[system]
+desktop = "niri"   # curated sets: "niri" or "cosmic"; omit for headless
+# base = "quay.io/fedora/fedora-bootc:44"   # optional; see below
+
+[user]
+name = "me"
+shell = "fish"
+# password_hash = '$6$...'   # from `kuma passwd`; applies only at creation
+
+[packages]
+rpm = ["fish", "distrobox", "tailscale"]
+flatpak = ["org.mozilla.firefox"]   # from Flathub, converged on boot
+brew = ["ripgrep", "gh"]            # CLI tools, no rebuild needed
+
+[services]
+enable = ["tailscaled.service"]
+
+[snapshots]
+enable = true   # hourly read-only btrfs snapshots of /var/home
+```
+
+A fuller, commented version lives in
+[`examples/`](examples/kuma.toml.example), and a test keeps every example
+valid against the current schema.
+
+**There is no base to name by default.** With `system.base` unset, kuma
+composes its own from Fedora's package repos, starting from Fedora's
+minimal bootc manifest: bootc, systemd, the kernel, dnf, and the hardware
+enablement a real machine needs. Fedora stays the package source; kuma
+builds no packages and no kernels. Name a `base` and kuma builds on that
+image instead, as any bootc image can be.
+
+`[system].firmware` trims the composed base to your hardware. Unset, it
+ships every vendor's, so a machine that declares nothing about its own
+still boots with working GPU, wifi, and audio. LVFS firmware updates
+refresh on a timer; applying them stays a deliberate `fwupdmgr update`.
+
+Machine state stays out of the file by default. Timezone and hostname
+belong to the machine (`timedatectl`, `hostnamectl`) and survive image
+updates; pin them here only when you want every machine built from this
+file to match.
+
+## How this differs
+
+**NixOS and Guix** own the idea: one versioned file, convergence as the
+only way to change anything, rollback for free. Getting there cost them
+an entire package universe. Kuma keeps Fedora as the package source and
+builds no packages and no kernels, so the declarative property arrives
+without an ecosystem to rebuild. Nix's purity guarantees are what you
+give up for that.
+
+**Universal Blue** (Bluefin, Bazzite) ships the same three layers:
+immutable base, flatpaks for apps, Homebrew for CLI tools. The unit of
+configuration is which image you chose. Brewfiles now declare flatpaks
+and formulae together, but `brew bundle` is a command you run rather
+than a loop that runs without you, and its cleanup decides what to
+remove from what is installed rather than from what it installed. Kuma
+converges at boot and on a daily timer, and records what it installed,
+so an app you added yourself stays yours and `kuma capture` offers to
+write it down.
+
+**BlueBuild** builds an image from a recipe and stops at the image. The
+recipe never reaches the running machine. Kuma's keeps working after
+install: `sync` converges, `diff` reports drift across file, image, and
+machine, `kuma.lock` records what the last build resolved to, and
+`capture` turns a change you made by hand into a proposal against the
+declaration instead of an error to erase.
+
+## Principles
+
+In order:
 
 1. **Simple.** The schema stays small and boring. Every field is a promise
    kept forever, so new ones have to earn their place.
@@ -22,9 +99,11 @@ Four principles, in order:
    legal next commands, never a dead end. The image carries the declaration
    it was built from, so a machine can always speak for itself.
 
-**Status.** Kuma is early. It builds, boots, and updates real hardware, and
-it has not been run widely. Schema version 1 is meant to be permanent, so
-the fields below are promises; everything around them can still move. `kuma switch`
+## Status
+
+Kuma is early. It builds, boots, and updates real hardware, and it has not
+been run widely. Schema version 1 is meant to be permanent, so the fields
+above are promises; everything around them can still move. `kuma switch`
 reboots you into a system image, and `bootc` will roll a bad one back, but
 try a declaration in `kuma vm` before a machine you depend on.
 
@@ -81,53 +160,6 @@ $ kuma switch --yes  # bootc switch; takes effect on next boot
 ```
 
 Without `--yes`, `switch` only prints what it would do.
-
-## Your declaration
-
-```toml
-schema_version = 1
-
-[system]
-desktop = "niri"   # curated sets: "niri" or "cosmic"; omit for headless
-# base = "quay.io/fedora/fedora-bootc:44"   # optional; see below
-
-[user]
-name = "me"
-shell = "fish"
-# password_hash = '$6$...'   # from `kuma passwd`; applies only at creation
-
-[packages]
-rpm = ["fish", "distrobox", "tailscale"]
-flatpak = ["org.mozilla.firefox"]   # from Flathub, converged on boot
-brew = ["ripgrep", "gh"]            # CLI tools, no rebuild needed
-
-[services]
-enable = ["tailscaled.service"]
-
-[snapshots]
-enable = true   # hourly read-only btrfs snapshots of /var/home
-```
-
-A fuller, commented version lives in
-[`examples/`](examples/kuma.toml.example), and a test keeps every example
-valid against the current schema.
-
-**There is no base to name by default.** With `system.base` unset, kuma
-composes its own from Fedora's package repos, starting from Fedora's
-minimal bootc manifest: bootc, systemd, the kernel, dnf, and the hardware
-enablement a real machine needs. Fedora stays the package source; kuma
-builds no packages and no kernels. Name a `base` and kuma builds on that
-image instead, as any bootc image can be.
-
-`[system].firmware` trims the composed base to your hardware. Unset, it
-ships every vendor's, so a machine that declares nothing about its own
-still boots with working GPU, wifi, and audio. LVFS firmware updates
-refresh on a timer; applying them stays a deliberate `fwupdmgr update`.
-
-Machine state stays out of the file by default. Timezone and hostname
-belong to the machine (`timedatectl`, `hostnamectl`) and survive image
-updates; pin them here only when you want every machine built from this
-file to match.
 
 ## Day 2
 
