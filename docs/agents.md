@@ -9,8 +9,11 @@ names the legal next commands.
   `doctor --json` and `diff --json` carry findings with their fixes in the
   same shape.
 - **Ask before doing.** `check --json` validates a declaration,
-  `update --check --json` reports whether the base moved, `diff --json`
-  reports drift. All three change nothing.
+  `update --check --json` reports whether the base moved (or, for a
+  composed base, that there is no tag to ask about), `diff --json` reports
+  drift, and `snapshot --json` lists what this machine has kept. All four
+  change nothing, and `snapshot --restore --json` stays a dry run naming
+  what it would overwrite until `--yes`.
 - **Write.** `kuma schema` prints the JSON Schema for `kuma.toml`, generated
   from the same types that parse it, so it cannot drift from reality.
 - **Mutate.** `build`, `switch`, `update`, `rollback`, `sync`, `add`,

@@ -5,9 +5,9 @@
 **Your system is one file.**
 
 Kuma is a declarative layer over [Fedora bootc](https://docs.fedoraproject.org/en-US/bootc/).
-You describe a machine in a small, readable `kuma.toml`, and Kuma compiles it
-into a bootable container image. Atomic updates and rollback come from bootc,
-the packages come from Fedora, and Kuma is the experience on top.
+You describe a machine in a small `kuma.toml`, and Kuma compiles it into a
+bootable container image. Atomic updates and rollback come from bootc, and
+the packages come from Fedora.
 
 Four principles, in order:
 
@@ -26,14 +26,13 @@ Four principles, in order:
 it has not been run widely. Schema version 1 is meant to be permanent, so
 the fields below are promises; everything around them can still move. `kuma switch`
 reboots you into a system image, and `bootc` will roll a bad one back, but
-try a declaration in `kuma vm` before you try it on a machine you need
-tomorrow.
+try a declaration in `kuma vm` before a machine you depend on.
 
 ## Install
 
 Kuma is one self-contained binary: the wallpaper, the greeter config, and
-every desktop asset are compiled into it, so it needs nothing beside it on
-disk. Building it needs a Rust toolchain at 1.85 or newer and a linker.
+every desktop asset are compiled into it. Building it needs a Rust
+toolchain at 1.85 or newer and a linker.
 
 ```console
 $ cargo install --git https://github.com/Letdown2491/kuma-linux --locked
@@ -57,10 +56,9 @@ tested.
 podman. `switch`, `update`, `rollback`, and `doctor` need to be running on a
 bootc machine. `vm` and `iso` need KVM and sudo.
 
-One catch worth knowing before you start: if you already run an image-based
-desktop, which is the obvious place to want this, you probably have podman
-and no compiler. Build kuma in a toolbox or a container and copy the binary
-out. Prebuilt binaries are on the roadmap for exactly this reason.
+If you already run an image-based desktop, the obvious place to want this,
+you probably have podman and no compiler. Build kuma in a toolbox or a
+container and copy the binary out.
 
 ## Quick start
 
@@ -79,8 +77,8 @@ Without `--yes`, `switch` only prints what it would do.
 schema_version = 1
 
 [system]
-base = "quay.io/fedora/fedora-bootc:44"
 desktop = "niri"   # curated sets: "niri" or "cosmic"; omit for headless
+# base = "quay.io/fedora/fedora-bootc:44"   # optional; see below
 
 [user]
 name = "me"
@@ -102,6 +100,18 @@ enable = true   # hourly read-only btrfs snapshots of /var/home
 A fuller, commented version lives in
 [`examples/`](examples/kuma.toml.example), and a test keeps every example
 valid against the current schema.
+
+**There is no base to name by default.** With `system.base` unset, kuma
+composes its own from Fedora's package repos, starting from Fedora's
+minimal bootc manifest: bootc, systemd, the kernel, dnf, and the hardware
+enablement a real machine needs. Fedora stays the package source; kuma
+builds no packages and no kernels. Name a `base` and kuma builds on that
+image instead, as any bootc image can be.
+
+`[system].firmware` trims the composed base to your hardware. Unset, it
+ships every vendor's, so a machine that declares nothing about its own
+still boots with working GPU, wifi, and audio. LVFS firmware updates
+refresh on a timer; applying them stays a deliberate `fwupdmgr update`.
 
 Machine state stays out of the file by default. Timezone and hostname
 belong to the machine (`timedatectl`, `hostnamectl`) and survive image
@@ -133,6 +143,10 @@ $ kuma clean                               # reclaim dangling images, stale base
 `check`, `diff`, `doctor`, and `update --check` change nothing. Everything
 speaks `--json`.
 
+Three more exist for when you need them and never otherwise: `kuma passwd`
+hashes a password for `[user]`, `kuma schema` prints the JSON Schema for
+`kuma.toml`, and `kuma completions fish | source` wires up your shell.
+
 ## Going deeper
 
 The verbs above are the whole interface. These explain the parts that are
@@ -147,24 +161,19 @@ not obvious from them:
 - [Contributing](CONTRIBUTING.md): smoke tests, booting a VM, iterating
   without losing state, and what CI checks.
 
-## Roadmap
+## Not yet
 
-Shipped: the v1 schema and image build, `switch`, `vm`, `iso`, the day-2
-verbs, two curated desktops (niri and COSMIC), declarative users, flatpak
-and brew convergence that takes back only what it installed, declarative
-btrfs snapshots with `kuma snapshot` to reach them, firmware updates via
-fwupd, boot health with automatic rollback, `kuma.lock`, `/etc` drift
-detection, build-and-boot smoke tests, and a JSON surface for agents.
+What kuma doesn't do:
 
-Next:
-
-- [ ] Registry publishing and CI builds, so an image is `bootc switch`-able
-      from anywhere, signed.
-- [ ] Offsite backup to complement `[snapshots]`, which only survives a
-      mistake and not a dead disk. Blocked on where a repo credential
-      lives, since it cannot be the declaration.
-- [ ] Hibernate. A swapfile's size and `resume_offset` are properties of
-      the installed disk, so it needs a first-boot unit rather than an
-      image that already knows the answer.
-- [ ] Flatpak permission overrides, which survive image updates and are
-      the one part of the app layer the declaration cannot see.
+- **No published images.** Everything is built locally. An image isn't
+  `bootc switch`-able from anywhere, and nothing is signed yet.
+- **No prebuilt `kuma` binary.** Getting the tool needs a Rust toolchain
+  and a linker.
+- **No offsite backup.** `[snapshots]` survives a mistake, not a dead
+  disk. Blocked on where a repository credential lives, since it cannot be
+  the declaration.
+- **No hibernate.** A swapfile's size and `resume_offset` are properties
+  of the installed disk, so it needs a first-boot unit rather than an
+  image that already knows the answer.
+- **No flatpak permission overrides.** They survive image updates and are
+  the one part of the app layer a declaration cannot see or restore.
