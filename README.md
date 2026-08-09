@@ -114,6 +114,10 @@ every desktop asset are compiled into it. The published build is static, so
 it needs nothing installed alongside it. This matters on the machines most
 likely to want kuma, which tend to have podman and no compiler.
 
+This is for the machine you build from. A machine running a kuma image
+already has kuma at `/usr/bin/kuma`, baked in by the build that made the
+image, and a copy in `/usr/local/bin` would shadow it.
+
 ```console
 $ curl -LO https://github.com/Letdown2491/kuma-linux/releases/latest/download/kuma-x86_64-unknown-linux-musl
 $ chmod +x kuma-x86_64-unknown-linux-musl
@@ -148,7 +152,8 @@ made does not show up in the image.
 
 **What needs what.** `init`, `check`, `generate`, and `build` need only
 podman. `switch`, `update`, `rollback`, and `doctor` need to be running on a
-bootc machine. `vm` and `iso` need KVM and sudo.
+bootc machine, and a kuma one already has kuma. `vm` and `iso` need KVM and
+sudo.
 
 ## Quick start
 
