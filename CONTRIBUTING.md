@@ -37,6 +37,14 @@ run on a push. The boot stage stays local because its verdict comes from
 booting the disk, which needs KVM and sudo. Run `--boot` locally before
 pushing anything that changes what a machine does at runtime.
 
+Two limits in that list worth knowing before you trust it. shellcheck reads
+`scripts/smoke.sh` and nothing else, so the shell that images actually run
+(the sync units and helpers, which live in Rust string literals in
+`containerfile.rs`) is unchecked; run it by hand against the generated file
+if you touch one. And the image stage proves an image builds, never that it
+works, so anything whose behaviour appears at runtime has no gate on a push
+at all.
+
 actionlint is there because a workflow can be valid YAML and still be
 rejected by Actions, which says so by running no job at all and leaving no
 log to read.
