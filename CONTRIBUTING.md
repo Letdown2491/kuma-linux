@@ -31,9 +31,11 @@ $ podman run --rm --userns=keep-id --security-opt label=disable \
 ```
 
 CI runs formatting, tests, clippy at `-D warnings`, shellcheck, actionlint,
-and the image stage on the minimal example: a desktop image doesn't fit a
-hosted runner's disk, and the boot stage needs KVM. Run `--boot` locally
-before pushing anything that touches image contents.
+and the image stage on every committed example, desktops included. That
+covers the compose and both desktop arms, so the build-time guards in them
+run on a push. The boot stage stays local because its verdict comes from
+booting the disk, which needs KVM and sudo. Run `--boot` locally before
+pushing anything that changes what a machine does at runtime.
 
 actionlint is there because a workflow can be valid YAML and still be
 rejected by Actions, which says so by running no job at all and leaving no
