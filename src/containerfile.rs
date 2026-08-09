@@ -1262,6 +1262,33 @@ pub fn generate(config: &Config) -> String {
         out.push_str(
             "RUN grep -q '\"alacritty\"' /usr/share/doc/niri/default-config.kdl \\\n    && mkdir -p /etc/niri \\\n    && sed -e 's/alacritty/kitty/g' -e '/starts waybar/d' -e '/^spawn-at-startup \"waybar\"$/d' -e '/XF86Audio/d' -e '/XF86MonBrightness/d' -e '/^binds {/r /usr/lib/kuma/niri-binds.kdl' /usr/share/doc/niri/default-config.kdl > /etc/niri/config.kdl \\\n    && cat /usr/lib/kuma/niri-extras.kdl >> /etc/niri/config.kdl \\\n    && niri validate --config /etc/niri/config.kdl\n",
         );
+        // Every "attach a file" button in every app did nothing, silently.
+        //
+        // niri's own portals.conf prefers the GNOME backend for everything
+        // it does not name, and that backend does not implement FileChooser:
+        // it delegates to org.gnome.Nautilus. kuma ships Thunar, so the name
+        // is not activatable and the request dies inside the backend. The
+        // only trace anywhere is "Delegated FileChooser call failed: The
+        // name is not activatable" in the *user* journal, which is why this
+        // survived two desktops and a bare-metal install unnoticed.
+        //
+        // The `default=gnome;gtk;` fallback cannot save it. Fallback is
+        // resolved from the .portal files, gnome.portal advertises
+        // FileChooser, and the failure only happens later, one level down,
+        // where the router cannot see it. So the interface has to be
+        // pointed at gtk by name. gtk implements it for real, is already
+        // installed for Access and Notification, and is already running.
+        //
+        // Derived from niri's file rather than copied beside it: the
+        // highest-precedence file wins outright instead of merging, so a
+        // hand-copy would silently freeze whatever niri's defaults were the
+        // day it was written. Both greps fail the build instead of shipping
+        // a dead picker: the first if niri stops shipping the file this is
+        // derived from, the second if the gtk backend stops implementing
+        // the one interface being routed to it.
+        out.push_str(
+            "RUN grep -q '^\\[preferred\\]' /usr/share/xdg-desktop-portal/niri-portals.conf \\\n    && grep -q 'org.freedesktop.impl.portal.FileChooser' /usr/share/xdg-desktop-portal/portals/gtk.portal \\\n    && mkdir -p /etc/xdg-desktop-portal \\\n    && { cat /usr/share/xdg-desktop-portal/niri-portals.conf; echo 'org.freedesktop.impl.portal.FileChooser=gtk;'; } > /etc/xdg-desktop-portal/niri-portals.conf\n",
+        );
         // Upstream niri-session imports the ENTIRE greeter environment into
         // the systemd user manager — deprecated (warns in the journal every
         // login) and indiscriminate. Scope it: the XDG_* trio is how
@@ -2447,6 +2474,48 @@ mod tests {
         assert!(!niri.iter().any(|p| p == "/etc/hostname"));
         let pinned = etc_paths(&config("schema_version = 1\n[system]\nhostname = \"workbench\"\n"));
         assert!(pinned.iter().any(|p| p == "/etc/hostname"));
+    }
+
+    /// A file picker that never appears, which is what niri shipped until
+    /// this line existed. The GNOME portal backend advertises FileChooser
+    /// and then delegates it to org.gnome.Nautilus, a package kuma does
+    /// not install, so the interface has to be named to the gtk backend
+    /// rather than left to `default=gnome;gtk;` to resolve.
+    ///
+    /// COSMIC is deliberately not given the same treatment: its own
+    /// backend implements FileChooser, verified by reading cosmic.portal
+    /// out of a built COSMIC image. Routing it to gtk there would replace
+    /// a working native picker with a worse one.
+    #[test]
+    fn niri_routes_the_file_chooser_at_a_backend_that_implements_it() {
+        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
+        let conf = "/etc/xdg-desktop-portal/niri-portals.conf";
+        assert!(out.contains("org.freedesktop.impl.portal.FileChooser=gtk;"));
+        assert!(out.contains(conf));
+
+        // Derived from niri's own file, never a hand-copy: the winning
+        // config file replaces rather than merges, so a copy would freeze
+        // whatever the other defaults were the day it was written.
+        assert!(out.contains("cat /usr/share/xdg-desktop-portal/niri-portals.conf"));
+
+        // Both halves of the routing are guarded, because both can rot
+        // without anything else failing: the file this derives from, and
+        // the backend it hands the interface to.
+        assert!(out.contains("grep -q '^\\[preferred\\]'"));
+        assert!(out.contains(
+            "grep -q 'org.freedesktop.impl.portal.FileChooser' \
+             /usr/share/xdg-desktop-portal/portals/gtk.portal"
+        ));
+
+        // Written to /etc, so the drift check owns it like any other file
+        // kuma has an opinion about.
+        let owned = etc_paths(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
+        assert!(owned.iter().any(|p| p == conf));
+
+        // COSMIC's own backend implements it; leave that alone.
+        let cosmic = generate(&config("schema_version = 1\n[system]\ndesktop = \"cosmic\"\n"));
+        assert!(!cosmic.contains("niri-portals.conf"));
+        assert!(!cosmic.contains("FileChooser"));
     }
 
     /// The cheap tier of the smoke tests, and the only one that runs
