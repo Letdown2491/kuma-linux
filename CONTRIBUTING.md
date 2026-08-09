@@ -54,7 +54,8 @@ push and again weekly, because a dependency becomes vulnerable when the
 advisory lands rather than when someone next touches the tree.
 
 **Cutting a release.** Bump `version` in `Cargo.toml`, refresh the lock,
-commit both, then tag:
+rename the `Unreleased` section in `CHANGELOG.md` to the new version, commit
+all three, then tag:
 
 ```console
 $ cargo update -p kuma --offline   # Cargo.lock records kuma's own version
@@ -69,6 +70,17 @@ too, so bumping only `Cargo.toml` leaves the lock disagreeing and every
 The tag and `Cargo.toml` have to agree as well. The release workflow checks
 and fails rather than publishing a binary whose own `--version` contradicts
 the release it sits in.
+
+The changelog is checked twice, once where it can still be fixed cheaply. A
+test fails locally when `Cargo.toml`'s version has no section, and the release
+workflow fails on a tag whose section is missing, because it builds the release
+notes out of that section. Leave a fresh empty `Unreleased` behind for the next
+one: the rolling `latest` reads it, and entries are meant to land in the same
+push as the change they describe.
+
+What goes in it is what changes a machine, not what changed in the tree. Docs,
+tests, and CI stay out. A release with nothing user-facing in it is a release
+whose section says so in one line.
 
 Push to `main` first and let it go green. A push that touches anything
 other than documentation refreshes the rolling `latest` prerelease, and it

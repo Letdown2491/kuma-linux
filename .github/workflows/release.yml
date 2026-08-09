@@ -127,12 +127,48 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      # The notes used to be identical for every release, so the page a
+      # download lands on said nothing about what changed. CHANGELOG.md is
+      # the source: a tag takes its own section, the rolling build takes
+      # Unreleased. A tag with no section fails here rather than shipping
+      # generic notes, which is what keeps the file from rotting, since a
+      # release cannot be cut without writing one. The rolling build does
+      # not fail on an empty Unreleased: nothing user-facing has to have
+      # changed for main to move.
+      #
+      # rolling.yml ignores `**.md`, so editing the section alone does not
+      # republish `latest`. It doesn't need to: the entry lands in the same
+      # push as the change it describes.
+      - name: release notes
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            heading='## ${{ steps.what.outputs.tag }}'
+          else
+            heading='## Unreleased'
+          fi
+          # Prefix match, so the heading can carry a date. Anchored with
+          # index() rather than a regex because a version is full of dots.
+          awk -v h="$heading" '
+            !found && index($0, h) == 1 \
+              && (length($0) == length(h) || substr($0, length(h) + 1, 1) == " ") {
+              found = 1
+              next
+            }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > section.md
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ ! -s section.md ]; then
+            echo "CHANGELOG.md has no ${heading} section; a release nobody can read is not a release" >&2
+            exit 1
+          fi
+
       - name: publish
         run: |
           set -euo pipefail
           gh release create '${{ steps.what.outputs.tag }}' \
             --title '${{ steps.what.outputs.title }}' \
-            --notes "$(cat <<'NOTES'
+            --notes "$(cat section.md; cat <<'NOTES'
           Static `x86_64` binary, no runtime dependencies.
 
           ```console

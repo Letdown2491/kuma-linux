@@ -103,7 +103,8 @@ In order:
 
 Kuma is early. It builds, boots, and updates real hardware, and it has not
 been run widely. Schema version 1 is meant to be permanent, so the fields
-above are promises; everything around them can still move. `kuma switch`
+above are promises; everything around them can still move, and
+[`CHANGELOG.md`](CHANGELOG.md) is where it says what moved. `kuma switch`
 reboots you into a system image, and `bootc` will roll a bad one back, but
 try a declaration in `kuma vm` before a machine you depend on.
 

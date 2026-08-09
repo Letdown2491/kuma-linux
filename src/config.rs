@@ -485,6 +485,30 @@ pub(crate) mod tests {
         );
     }
 
+    /// The release workflow pulls a tag's notes out of CHANGELOG.md and
+    /// refuses to publish without them, which is what stops the file
+    /// rotting. That check runs after the tag exists, and a tag is the one
+    /// thing here that cannot be taken back, so the same question is asked
+    /// where a version bump is still a working tree: the bump moves
+    /// Cargo.toml, Cargo.lock, and the changelog together or it fails.
+    #[test]
+    fn the_changelog_has_a_section_for_this_version() {
+        let changelog =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/CHANGELOG.md")).unwrap();
+        let heading = format!("## v{}", env!("CARGO_PKG_VERSION"));
+        assert!(
+            changelog.lines().any(|l| l == heading || l.starts_with(&format!("{heading} "))),
+            "CHANGELOG.md needs a `{heading}` section before this version can be released"
+        );
+        // The rolling build reads this one, and an absent heading is not an
+        // empty section: awk finds nothing and `latest` silently goes back
+        // to notes that say nothing.
+        assert!(
+            changelog.lines().any(|l| l == "## Unreleased"),
+            "CHANGELOG.md needs an `## Unreleased` section for the rolling release"
+        );
+    }
+
     /// The README's example declaration is the first thing anyone copies,
     /// so it is held to the same bar as the committed examples. It has
     /// been wrong before: it showed `password_hash = '...'` for months,
