@@ -503,6 +503,20 @@ fi
 ///
 /// The uninstall tolerates failure because the state file can name an
 /// app the owner already removed by hand, which is not an error.
+///
+/// Membership and currency are different questions, and only the first
+/// belongs to the declaration. Convergence decides what exists; the
+/// update decides how old it is, and it is deliberately unscoped. An app
+/// the owner installed through the store is theirs to keep, but leaving
+/// it to rot is not respect, it is an unpatched browser. The same call
+/// covers runtimes, which the declared install reaches only when a
+/// declared app happens to demand a newer one.
+///
+/// Ordering is load-bearing. The state file is written before the
+/// update, so a failed update (a flaky network, one broken remote)
+/// cannot leave authority tracking behind and silently strand a removal
+/// until the next successful run. Pruning comes last so the runtimes the
+/// update orphans go in the same pass.
 const FLATPAK_SYNC_SCRIPT: &str = r#"#!/usr/bin/bash
 set -euo pipefail
 declared=/usr/lib/kuma/flatpaks
@@ -514,8 +528,9 @@ while read -r app; do
     grep -qxF "$app" "$declared" \
         || flatpak uninstall --system --assumeyes --noninteractive "$app" || true
 done < "$state"
-flatpak uninstall --system --unused --assumeyes --noninteractive
 cp "$declared" "$state"
+flatpak update --system --assumeyes --noninteractive
+flatpak uninstall --system --unused --assumeyes --noninteractive
 "#;
 
 const FLATHUB_URL: &str = "https://dl.flathub.org/repo/flathub.flatpakrepo";
@@ -1108,6 +1123,15 @@ WantedBy=multi-user.target
 /// and only ever-declared formulae are removal candidates. Ad-hoc `brew
 /// install` is untouched. The flatpak sync learned the same trick after
 /// its scope proxy turned out to be one a store could break.
+///
+/// The upgrade at the end is unscoped on purpose, and it is the one
+/// thing here that reaches past the declaration. Ad-hoc formulae stay
+/// the owner's to keep or remove; they were simply never getting
+/// updated, because the upgrade used to name the declared list. Bare
+/// `brew upgrade` also covers casks, which nothing else in kuma can even
+/// see. It runs after the state file is written so a failure cannot
+/// strand authority tracking, and needs no `brew update` first because
+/// brew auto-updates its taps before upgrading.
 const BREW_SYNC_SCRIPT: &str = r#"#!/usr/bin/bash
 set -euo pipefail
 brew=/home/linuxbrew/.linuxbrew/bin/brew
@@ -1117,7 +1141,6 @@ state=/home/linuxbrew/.linuxbrew/.kuma-brews
 [ -f "$state" ] || : > "$state"
 if [ -s "$declared" ]; then
     xargs -a "$declared" "$brew" install
-    xargs -a "$declared" "$brew" upgrade
 fi
 while read -r formula; do
     grep -qxF "$formula" "$declared" && continue
@@ -1125,6 +1148,7 @@ while read -r formula; do
 done < "$state"
 "$brew" autoremove
 cp "$declared" "$state"
+"$brew" upgrade
 "#;
 
 /// brew refuses to run as root; uid 1000 owns the prefix (brew's
@@ -2117,6 +2141,70 @@ mod tests {
         // convergence ever installed, leaving the owner's apps alone
         assert_eq!(std::fs::read_to_string(dir.path().join("flatpaks")).unwrap(), "");
         assert!(dir.path().join("kuma-flatpak-sync").exists());
+    }
+
+    /// Both syncs keep software current without claiming it. Scoping the
+    /// upgrade to the declared list is what left 13 outdated formulae,
+    /// every store-installed app, and a stale runtime on a real machine
+    /// whose convergence had been running daily the whole time. So the
+    /// upgrade must name nothing: the moment it takes an argument it has
+    /// a scope again, and everything outside that scope rots.
+    ///
+    /// The ordering assertions are the ones worth keeping. Both scripts
+    /// run under `set -euo pipefail`, so an upgrade placed before the
+    /// state file is written would, on any flaky-network run, abort the
+    /// script with authority tracking still describing the previous
+    /// declaration, stranding a removal until some later run happened to
+    /// have working DNS.
+    #[test]
+    fn both_syncs_update_what_they_do_not_own() {
+        // Match whole lines, not offsets into them. Searching for the
+        // command and slicing from the hit hides everything to its left,
+        // so a re-scoped `xargs -a "$declared" flatpak update ...` reads
+        // as unscoped: the assertion holds exactly when the thing it
+        // guards has been undone.
+        let line_of = |script: &'static str, needle: &str| -> (usize, &'static str) {
+            let mut at = 0;
+            for line in script.lines() {
+                if line.contains(needle) {
+                    return (at, line);
+                }
+                at += line.len() + 1;
+            }
+            panic!("{needle} is gone from the sync script");
+        };
+
+        let (flatpak_update, line) = line_of(FLATPAK_SYNC_SCRIPT, "flatpak update");
+        assert!(
+            !line.contains("declared") && !line.contains("xargs"),
+            "the update must be unscoped, or undeclared apps and runtimes never move: {line}"
+        );
+        let (flatpak_state, _) = line_of(FLATPAK_SYNC_SCRIPT, r#"cp "$declared" "$state""#);
+        assert!(
+            flatpak_state < flatpak_update,
+            "authority must be recorded before the update, so a failed update cannot strand it"
+        );
+        // The prune runs last so runtimes the update orphans go with it.
+        let (flatpak_prune, _) = line_of(FLATPAK_SYNC_SCRIPT, "--unused");
+        assert!(
+            flatpak_prune > flatpak_update,
+            "unused runtimes are pruned after the update, not before"
+        );
+
+        let (brew_upgrade, line) = line_of(BREW_SYNC_SCRIPT, r#""$brew" upgrade"#);
+        assert_eq!(
+            line.trim(),
+            r#""$brew" upgrade"#,
+            "bare upgrade takes formulae and casks alike; an argument list takes neither"
+        );
+        let (brew_state, _) = line_of(BREW_SYNC_SCRIPT, r#"cp "$declared" "$state""#);
+        assert!(brew_state < brew_upgrade, "same ordering rule as the flatpak sync");
+
+        // Membership is still the declaration's alone. Widening the
+        // upgrade must not widen the install: only the declared list is
+        // ever installed, in both scripts.
+        assert!(BREW_SYNC_SCRIPT.contains(r#"xargs -a "$declared" "$brew" install"#));
+        assert!(FLATPAK_SYNC_SCRIPT.contains(r#"xargs -r -a "$declared" flatpak install"#));
     }
 
     #[test]

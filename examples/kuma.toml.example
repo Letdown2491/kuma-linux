@@ -3,11 +3,11 @@
 schema_version = 1
 
 [system]
-# Unset — the default — kuma composes its own base from Fedora's package
+# Unset (the default) kuma composes its own base from Fedora's package
 # repos: Fedora's minimal bootc core (kernel, systemd, bootc, dnf) plus
 # hardware enablement, and none of the general-purpose weight
 # fedora-bootc carries. Set it to any bootc image reference to build
-# FROM that instead — the escape hatch for debugging against
+# FROM that instead: the escape hatch for debugging against
 # fedora-bootc, a mirror, or a test tag.
 # base = "quay.io/fedora/fedora-bootc:44"
 
@@ -56,7 +56,8 @@ rpm = ["fish", "git-core", "git-core-doc", "distrobox", "tailscale"]
 # Flathub apps, converged on boot and daily: additions install, removals
 # uninstall. Convergence only ever takes back what it installed, so an
 # app you install yourself stays yours, from a store or the command line,
-# and `kuma capture` offers to write it down here.
+# and `kuma capture` offers to write it down here. Updates are not scoped
+# that way: everything installed is kept current, declared or not.
 flatpak = [
     "org.mozilla.firefox",
     "org.gnome.Loupe",

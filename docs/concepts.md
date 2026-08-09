@@ -33,7 +33,15 @@ people actually have is one file.
 Convergence takes back only what it installed. Boxes above was declared
 once and no longer is, so it is on the removal list; Bazaar you installed
 yourself, so it is undeclared but in no danger. Install apps from a store
-if you like — being undeclared costs reproducibility, never survival.
+if you like: being undeclared costs reproducibility, never survival.
+
+Membership and currency are separate questions, and only the first belongs
+to the declaration. It decides what exists. Keeping software current is
+kuma's job regardless of who installed it, so a store-installed app, an
+ad-hoc `brew install`, and a flatpak runtime are updated on the same
+schedule as a declared app. Nothing is left to rot for the crime of not
+being written down. Each ecosystem's own hold still works if you want to
+stay on a version: `flatpak mask` and `brew pin`.
 
 `kuma capture` prints the proposal and writes nothing until `--yes`; naming
 items captures only those. You review a diff of your *declaration*, not of

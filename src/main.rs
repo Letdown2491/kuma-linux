@@ -142,7 +142,8 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Converge flatpaks and brew to the declaration now, not at next boot
+    /// Converge flatpaks and brew to the declaration and update everything
+    /// installed, now rather than at next boot
     Sync {
         /// Report the result as JSON (progress moves to stderr)
         #[arg(long)]

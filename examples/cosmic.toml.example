@@ -24,7 +24,8 @@ rpm = ["fish", "git-core", "git-core-doc", "distrobox"]
 
 # Converged on boot and daily, and convergence only takes back what it
 # installed: an app you install through a store stays yours until you
-# decide, and `kuma capture` offers to write it down here.
+# decide, and `kuma capture` offers to write it down here. Updates are
+# not scoped that way: everything installed is kept current.
 flatpak = [
     "org.mozilla.firefox",
     "org.gnome.Loupe",
