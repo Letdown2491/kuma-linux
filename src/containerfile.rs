@@ -2175,6 +2175,56 @@ mod tests {
     /// Native desktop ids look exactly like flatpak ids, so the handlers
     /// the desktop set installs are named here rather than inferred.
     /// Everything else in the list has to come from the declaration —
+    /// docs/desktops.md explains the desktop members whose presence is
+    /// not self-evident, and every one of them is a failure someone had
+    /// to diagnose: a silent keyring, a disabled clock, no swap, tofu.
+    /// Dropping one from the set while the page still explains it turns
+    /// the page into a lie about the image, and the reverse hides the
+    /// only written record of why the package is there at all.
+    ///
+    /// Only these are pinned, deliberately. The full inventory's home is
+    /// `kuma generate`, and asking a doc to track seventy packages would
+    /// buy drift in exchange for churn.
+    #[test]
+    fn the_surprising_desktop_packages_are_the_ones_documented() {
+        const EXPLAINED: &[&str] = &[
+            "gnome-keyring-pam",
+            "nss-mdns",
+            "zram-generator-defaults",
+            "glibc-langpack-en",
+            "mesa-vulkan-drivers",
+            "vulkan-loader",
+            "avahi",
+        ];
+        // niri-only: COSMIC's set has no waybar to lose its glyphs, and
+        // fonts follow the arm that renders with them.
+        const EXPLAINED_NIRI: &[&str] =
+            &["fontawesome-6-brands-fonts", "google-noto-sans-cjk-vf-fonts"];
+
+        let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/desktops.md"))
+            .unwrap();
+        // Scoped to the section that does the explaining, not the whole
+        // page. Every package is also named in the inventory tables, so
+        // searching the file would assert only that the word appears
+        // somewhere, which stays true precisely when the explanation is
+        // the thing that got deleted.
+        let why = doc
+            .split_once("## Why these are here")
+            .and_then(|(_, rest)| rest.split_once("\n## "))
+            .map(|(section, _)| section)
+            .expect("docs/desktops.md explains the non-obvious members");
+
+        for pkg in EXPLAINED {
+            assert!(NIRI_PACKAGES.contains(pkg), "{pkg} left the niri set");
+            assert!(COSMIC_PACKAGES.contains(pkg), "{pkg} left the COSMIC set");
+            assert!(why.contains(pkg), "docs/desktops.md stopped explaining {pkg}");
+        }
+        for pkg in EXPLAINED_NIRI {
+            assert!(NIRI_PACKAGES.contains(pkg), "{pkg} left the niri set");
+            assert!(why.contains(pkg), "docs/desktops.md stopped explaining {pkg}");
+        }
+    }
+
     /// and the declaration to check is the niri one, because this file
     /// is only baked on the niri arm.
     #[test]

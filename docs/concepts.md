@@ -81,6 +81,19 @@ Two consequences:
 
 Naming a `base` opts out of all of it: any bootc image can be one.
 
+## A desktop is infrastructure, your declaration is applications
+
+Choosing a desktop installs packages you did not name. That set is session
+infrastructure: the parts that have to exist for a session to function.
+Applications are not in it, even convenient ones, because the two are
+reversible in different ways. Delete a line from your declaration and the
+next convergence uninstalls it; a package in a desktop set has no opt-out,
+so putting one there is a decision you make on behalf of everyone.
+
+You can always add with `packages.rpm`. You cannot subtract from the set.
+[What a desktop contains](desktops.md) lists both arms, explains the
+non-obvious members, and says where that limit bites.
+
 ## kuma.lock
 
 `base = "…/fedora-bootc:44"` names a tag, and tags move. One such move,

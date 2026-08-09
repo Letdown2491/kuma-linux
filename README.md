@@ -167,6 +167,9 @@ not obvious from them:
   than an error, what `kuma.lock` pins and what it only records, how
   `/etc` is merged rather than replaced, and how a bad update rolls itself
   back.
+- [What a desktop contains](docs/desktops.md): what `desktop = "niri"` or
+  `"cosmic"` installs that you didn't name, why the surprising parts are
+  there, and what you can change.
 - [For agents](docs/agents.md): the JSON surface, and why every response
   ends at the legal next commands.
 - [Contributing](CONTRIBUTING.md): smoke tests, booting a VM, iterating
