@@ -2598,6 +2598,51 @@ mod tests {
         assert!(script.contains("usermod -aG"));
     }
 
+    /// `shell` is the one [user] field with two code paths, and only the
+    /// declared one was covered. Undeclared has to mean *absent*, not
+    /// empty: kuma-user-sync guards both its useradd -s and its usermod -s
+    /// on `[ -n "${KUMA_SHELL:-}" ]`, so a `KUMA_SHELL=''` line would
+    /// still take the guard's false branch, but `usermod -s ''` is what a
+    /// later reader would "fix" it into. Pinning absence keeps the two
+    /// halves honest about which one is load-bearing.
+    #[test]
+    fn a_user_with_no_declared_shell_pins_nothing_about_the_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        context("schema_version = 1\n[user]\nname = \"mira\"\n", dir.path());
+        let decl = std::fs::read_to_string(dir.path().join("kuma-user")).unwrap();
+        assert_eq!(decl, "KUMA_USER='mira'\nKUMA_GROUPS='wheel'\n");
+
+        // The build-time guard exists to fail a declaration naming a shell
+        // the packages never install. With no shell named there is nothing
+        // to install and nothing to check, and a stray `test -x /usr/bin/`
+        // would fail every build.
+        let out = generate(&config("schema_version = 1\n[user]\nname = \"mira\"\n"));
+        assert!(!out.contains("test -x /usr/bin/"));
+        // The account is still converged; only the shell claim is dropped.
+        assert!(out.contains("RUN systemctl enable kuma-user-sync.service"));
+    }
+
+    /// The default is the whole point of the field: a declaration that
+    /// names a user and stops must still produce an account that can
+    /// administer the machine, because nothing else in the declaration
+    /// grants sudo. Pinned here because "groups defaults to wheel" reads
+    /// like a convenience and is the only path to root on a fresh install.
+    #[test]
+    fn a_user_who_declares_no_groups_still_lands_in_wheel() {
+        let dir = tempfile::tempdir().unwrap();
+        context("schema_version = 1\n[user]\nname = \"mira\"\n", dir.path());
+        let decl = std::fs::read_to_string(dir.path().join("kuma-user")).unwrap();
+        assert!(decl.contains("KUMA_GROUPS='wheel'\n"));
+
+        // Asking for none is a different answer from asking for nothing,
+        // and the sync script iterates `${KUMA_GROUPS:-}`, so the line has
+        // to be gone rather than empty for the loop to run zero times.
+        let dir = tempfile::tempdir().unwrap();
+        context("schema_version = 1\n[user]\nname = \"mira\"\ngroups = []\n", dir.path());
+        let decl = std::fs::read_to_string(dir.path().join("kuma-user")).unwrap();
+        assert!(!decl.contains("KUMA_GROUPS"));
+    }
+
     /// The hostname must ship as a COPY, never a RUN redirect: buildah
     /// bind-mounts /etc/hostname into RUN containers, so a redirect
     /// writes the runtime mount and the image ships no hostname at all —
