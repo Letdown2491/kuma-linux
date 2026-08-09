@@ -6,12 +6,14 @@ on:
   push:
     tags:
       - "v*"
-    # main is the rolling channel. kuma is consumed by rebuilding
-    # constantly, so waiting for a tag to get a usable binary would mean
-    # the published one is nearly always behind the tree it is meant to
-    # build from.
-    branches:
-      - main
+  # The rolling channel calls this workflow instead of sharing its push
+  # trigger. A path filter on `push` cannot be scoped to branches, so
+  # skipping doc-only builds here would also put the filter in front of
+  # every tag, and a tag usually points at a commit that was already
+  # pushed. What GitHub reports as "changed" for that push is not
+  # something to find out by cutting a release and watching nothing
+  # happen. See rolling.yml.
+  workflow_call:
   workflow_dispatch:
 
 permissions:

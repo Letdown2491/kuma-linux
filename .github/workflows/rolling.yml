@@ -1,0 +1,25 @@
+name: rolling
+
+# main is the rolling channel. kuma is consumed by rebuilding constantly,
+# so waiting for a tag to get a usable binary would mean the published one
+# is nearly always behind the tree it is meant to build from.
+#
+# Documentation is excluded because rebuilding and re-signing an identical
+# binary says a release happened when nothing shipped. Nothing under an
+# ignored path reaches the binary: the assets that do are compiled in from
+# assets/, and ci.yml has no path filter, so the tests that read README.md
+# still run on every push.
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**.md"
+      - LICENSE
+
+jobs:
+  rolling:
+    uses: ./.github/workflows/release.yml
+    permissions:
+      contents: write
+      id-token: write
