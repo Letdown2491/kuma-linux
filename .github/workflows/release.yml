@@ -43,6 +43,7 @@ jobs:
           # every release, so the README could never hold a durable URL,
           # and the version is not lost: the tag has it and the binary
           # reports it.
+          echo "name=kuma-${TARGET}" >> "$GITHUB_OUTPUT"
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             # A tag that disagrees with Cargo.toml would publish a binary
             # whose own --version contradicts the release it sits in. That
@@ -54,17 +55,17 @@ jobs:
             fi
             {
               echo "tag=v${version}"
-              echo "name=kuma-${TARGET}"
-              echo "prerelease=false"
               echo "title=kuma v${version}"
+              echo "publish=true"
             } >> "$GITHUB_OUTPUT"
           else
-            {
-              echo "tag=latest"
-              echo "name=kuma-${TARGET}"
-              echo "prerelease=true"
-              echo "title=Rolling build from main"
-            } >> "$GITHUB_OUTPUT"
+            # Everything above the publish step still runs from main. What
+            # main does not get is a release: the releases page lists
+            # versions, and a rolling entry sitting on top of them says a
+            # version shipped when none did. The binary is still built,
+            # tested, signed, and downloadable — as a workflow artifact,
+            # which is where a build that is not a release belongs.
+            echo "publish=false" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: dtolnay/rust-toolchain@stable
@@ -116,37 +117,33 @@ jobs:
             --bundle '${{ steps.pkg.outputs.name }}.bundle' \
             '${{ steps.pkg.outputs.name }}'
 
-      # The rolling release is one moving target, so its old assets and tag
-      # are cleared first. Deleting the tag matters: gh reuses an existing
-      # one and the release would keep pointing at the commit it was first
-      # cut from.
-      - name: clear the rolling release
-        if: steps.what.outputs.tag == 'latest'
-        run: |
-          gh release delete latest --yes --cleanup-tag || true
-        env:
-          GH_TOKEN: ${{ github.token }}
+      # A build from main is not a release, so it does not get one. It is
+      # still the whole release path up to this point — same test, same
+      # target, same packaging, same signature — which is what makes every
+      # push to main a rehearsal of what a tag will do. The artifact keeps
+      # the binary reachable for anyone who wants main before a tag, and
+      # expires on its own instead of accumulating on the releases page.
+      - name: keep the build without releasing it
+        if: steps.what.outputs.publish != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.pkg.outputs.name }}
+          path: |
+            ${{ steps.pkg.outputs.name }}
+            ${{ steps.pkg.outputs.name }}.sha256
+            ${{ steps.pkg.outputs.name }}.bundle
+          if-no-files-found: error
 
       # The notes used to be identical for every release, so the page a
       # download lands on said nothing about what changed. CHANGELOG.md is
-      # the source: a tag takes its own section, the rolling build takes
-      # Unreleased. A tag with no section fails here rather than shipping
-      # generic notes, which is what keeps the file from rotting, since a
-      # release cannot be cut without writing one. The rolling build does
-      # not fail on an empty Unreleased: nothing user-facing has to have
-      # changed for main to move.
-      #
-      # rolling.yml ignores `**.md`, so editing the section alone does not
-      # republish `latest`. It doesn't need to: the entry lands in the same
-      # push as the change it describes.
+      # the source, and a tag with no section fails here rather than
+      # shipping generic notes. That is what keeps the file from rotting:
+      # a release cannot be cut without writing one.
       - name: release notes
+        if: steps.what.outputs.publish == 'true'
         run: |
           set -euo pipefail
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            heading='## ${{ steps.what.outputs.tag }}'
-          else
-            heading='## Unreleased'
-          fi
+          heading='## ${{ steps.what.outputs.tag }}'
           # Prefix match, so the heading can carry a date. Anchored with
           # index() rather than a regex because a version is full of dots.
           awk -v h="$heading" '
@@ -158,12 +155,13 @@ jobs:
             found && /^## / { exit }
             found { print }
           ' CHANGELOG.md > section.md
-          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ ! -s section.md ]; then
+          if [ ! -s section.md ]; then
             echo "CHANGELOG.md has no ${heading} section; a release nobody can read is not a release" >&2
             exit 1
           fi
 
       - name: publish
+        if: steps.what.outputs.publish == 'true'
         run: |
           set -euo pipefail
           gh release create '${{ steps.what.outputs.tag }}' \
@@ -189,7 +187,6 @@ jobs:
           Built from `${{ github.sha }}`.
           NOTES
           )" \
-            ${{ steps.what.outputs.prerelease == 'true' && '--prerelease' || '' }} \
             --target '${{ github.sha }}' \
             '${{ steps.pkg.outputs.name }}' \
             '${{ steps.pkg.outputs.name }}.sha256' \

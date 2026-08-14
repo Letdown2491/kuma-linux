@@ -500,12 +500,12 @@ pub(crate) mod tests {
             changelog.lines().any(|l| l == heading || l.starts_with(&format!("{heading} "))),
             "CHANGELOG.md needs a `{heading}` section before this version can be released"
         );
-        // The rolling build reads this one, and an absent heading is not an
-        // empty section: awk finds nothing and `latest` silently goes back
-        // to notes that say nothing.
+        // Where the next release's notes accumulate. Without the heading
+        // there is nowhere for an entry to land in the same push as its
+        // change, and a section written at tag time is written from memory.
         assert!(
             changelog.lines().any(|l| l == "## Unreleased"),
-            "CHANGELOG.md needs an `## Unreleased` section for the rolling release"
+            "CHANGELOG.md needs an `## Unreleased` section for the next release's notes"
         );
     }
 

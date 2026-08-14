@@ -75,18 +75,23 @@ The changelog is checked twice, once where it can still be fixed cheaply. A
 test fails locally when `Cargo.toml`'s version has no section, and the release
 workflow fails on a tag whose section is missing, because it builds the release
 notes out of that section. Leave a fresh empty `Unreleased` behind for the next
-one: the rolling `latest` reads it, and entries are meant to land in the same
-push as the change they describe.
+one: entries are meant to land in the same push as the change they describe,
+and a section written at tag time is a section written from memory.
 
 What goes in it is what changes a machine, not what changed in the tree. Docs,
 tests, and CI stay out. A release with nothing user-facing in it is a release
 whose section says so in one line.
 
-Push to `main` first and let it go green. A push that touches anything
-other than documentation refreshes the rolling `latest` prerelease, and it
-calls the release workflow rather than copying it, so main is a complete
-rehearsal of every step a tag will run. A problem surfaces there while it
-costs nothing, instead of once a tag already exists.
+Push to `main` first and let it go green. A push that touches anything other
+than documentation runs the release workflow itself rather than a copy of it,
+so main is a complete rehearsal of every step a tag will run: the same test on
+the release target, the same packaging, the same signature. It stops one step
+short, publishing nothing, and keeps the binary as a workflow artifact
+instead. A problem surfaces there while it costs nothing, instead of once a
+tag already exists.
+
+The releases page only ever lists tagged versions. A rolling entry on top of
+them reads as a version that shipped, and none did.
 
 A release is one static `x86_64` binary, its checksum, and a Sigstore
 bundle. The asset name carries no version on purpose: that is what keeps

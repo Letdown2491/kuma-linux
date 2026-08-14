@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-Built continuously as the `latest` prerelease.
+Entries land with the change they describe; the next tag takes this section
+as its release notes.
 
 ## v0.5.0 (2026-08-13)
 

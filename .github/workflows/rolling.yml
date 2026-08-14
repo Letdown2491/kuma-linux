@@ -1,14 +1,16 @@
 name: rolling
 
-# main is the rolling channel. kuma is consumed by rebuilding constantly,
-# so waiting for a tag to get a usable binary would mean the published one
-# is nearly always behind the tree it is meant to build from.
+# main runs the release path without releasing anything. It calls
+# release.yml rather than copying it, so every push compiles, tests on the
+# release target, packages, and signs exactly as a tag will, and a problem
+# surfaces here where it costs nothing instead of once a tag exists, which
+# is the one thing that cannot be taken back. The binary lands as a
+# workflow artifact; the releases page lists versions and nothing else.
 #
 # Documentation is excluded because rebuilding and re-signing an identical
-# binary says a release happened when nothing shipped. Nothing under an
-# ignored path reaches the binary: the assets that do are compiled in from
-# assets/, and ci.yml has no path filter, so the tests that read README.md
-# still run on every push.
+# binary rehearses nothing. Nothing under an ignored path reaches the
+# binary: the assets that do are compiled in from assets/, and ci.yml has
+# no path filter, so the tests that read README.md still run on every push.
 on:
   push:
     branches:
