@@ -12,6 +12,7 @@ use crate::state::{action_json, print_actions, Action};
 use anyhow::{bail, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const BREW: &str = "/home/linuxbrew/.linuxbrew/bin/brew";
 const BREW_CELLAR: &str = "/home/linuxbrew/.linuxbrew/Cellar";
@@ -692,6 +693,59 @@ fn doctor_json(findings: &[Finding]) -> serde_json::Value {
     })
 }
 
+/// When a booted image stops being merely old and starts being worth
+/// saying out loud. Fedora moves the kernel every couple of weeks, so a
+/// month means at least one missed and usually two. Nothing here applies
+/// anything: an image update replaces the whole OS and needs a reboot,
+/// which is a human's call. Knowing is what a machine can automate.
+const STALE_IMAGE_DAYS: u64 = 30;
+
+/// Epoch seconds from an RFC 3339 timestamp. Everything after the
+/// minutes is ignored — seconds, fractional seconds, and the offset —
+/// because bootc writes UTC and none of it can move an answer measured
+/// in days. The inverse of lock.rs's formatter, which hand-rolls the
+/// same civil-date arithmetic in the other direction, and hand-rolled
+/// here for the same reason: one timestamp is not worth a date crate.
+fn epoch_from_rfc3339(stamp: &str) -> Option<i64> {
+    let (date, time) = stamp.split_once('T')?;
+    let mut fields = date.split('-');
+    let year = leading_number(fields.next()?)?;
+    let month = leading_number(fields.next()?)?;
+    let day = leading_number(fields.next()?)?;
+    let mut clock = time.split(':');
+    let hour = leading_number(clock.next()?)?;
+    let minute = leading_number(clock.next()?)?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 {
+        return None;
+    }
+    // Howard Hinnant's days_from_civil, the inverse of the era shift in
+    // lock.rs: March-based years, so the leap day lands last.
+    let shifted = if month <= 2 { year - 1 } else { year };
+    let era = shifted.div_euclid(400);
+    let yoe = shifted - era * 400;
+    let mp = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + hour * 3_600 + minute * 60)
+}
+
+/// The digits a field starts with: `"56Z"` is a seconds field, `"34"` a
+/// minutes one, and both have to parse the same way.
+fn leading_number(field: &str) -> Option<i64> {
+    let digits: String = field.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+/// Whole days between an RFC 3339 timestamp and now. A timestamp in the
+/// future (clock skew, a machine that booted before its RTC was set)
+/// reads as zero rather than as an enormous unsigned number.
+fn days_since(stamp: &str) -> Option<u64> {
+    let then = epoch_from_rfc3339(stamp)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
+    Some(now.saturating_sub(then).max(0) as u64 / 86_400)
+}
+
 /// bootc status needs root; a sudo prompt out of `kuma doctor` is the
 /// price of seeing the deployment at all, same as `kuma switch` pays.
 fn check_deployment(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
@@ -741,6 +795,34 @@ fn check_deployment(report: &mut impl FnMut(Grade, &str, String, Option<Action>)
         detail.push_str("; rollback available (kuma rollback)");
     }
     report(Grade::Ok, "deployment", detail, fix);
+
+    // How old the running bytes are. On a machine that only updates when
+    // asked, nothing else on it will ever mention this: the flatpak and
+    // brew timers converge their own layers daily and say so, while the
+    // kernel underneath them waits for a human. bootc carries the image's
+    // creation time, and an image that never recorded one is no answer
+    // rather than a wrong one.
+    if let Some(days) =
+        booted.pointer("/image/timestamp").and_then(|v| v.as_str()).and_then(days_since)
+    {
+        // A staged deployment is a newer image already waiting and the
+        // reboot that takes it is named above; a second alarm for a fire
+        // already out is how a health check teaches people to skim it.
+        let stale = days >= STALE_IMAGE_DAYS && staged.is_none();
+        let detail = match days {
+            0 => "booted image was built today".to_string(),
+            1 => "booted image is 1 day old".to_string(),
+            days => format!("booted image is {days} days old"),
+        };
+        let fix = stale.then(|| {
+            Action::new(
+                "update",
+                "kuma update",
+                "recompose against the repos' current packages and rebuild",
+            )
+        });
+        report(if stale { Grade::Warn } else { Grade::Ok }, "deployment", detail, fix);
+    }
 
     // A build that was never switched to is the easy thing to forget.
     // Two storages are in play: the rootless build, and root's copy that
@@ -1267,6 +1349,60 @@ mod tests {
 
     fn set(items: &[&str]) -> BTreeSet<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The epoch values come from `date -u -d … +%s`. A date crate would
+    /// have brought its own tests; a hand-rolled civil-from-days needs
+    /// these, and the leap-year cases are where that arithmetic breaks.
+    #[test]
+    fn rfc3339_parses_to_the_same_instant_date_reports() {
+        assert_eq!(epoch_from_rfc3339("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(epoch_from_rfc3339("2026-08-13T00:00:00Z"), Some(1_786_579_200));
+        assert_eq!(epoch_from_rfc3339("2026-07-04T13:45:00Z"), Some(1_783_172_700));
+        // 2000 is a leap year (divisible by 400), 1900 was not.
+        assert_eq!(epoch_from_rfc3339("2000-03-01T00:00:00Z"), Some(951_868_800));
+        assert_eq!(epoch_from_rfc3339("2024-02-29T00:00:00Z"), Some(1_709_164_800));
+    }
+
+    /// bootc's timestamp is chrono-serialized, so the tail varies with
+    /// what the image recorded. Everything past the minutes is noise to a
+    /// number of days, and none of it may turn a real answer into None.
+    #[test]
+    fn the_tail_of_a_timestamp_is_ignored_not_fatal() {
+        let plain = epoch_from_rfc3339("2026-08-13T00:00:00Z");
+        assert_eq!(epoch_from_rfc3339("2026-08-13T00:00:00.123456789Z"), plain);
+        assert_eq!(epoch_from_rfc3339("2026-08-13T00:00:00+00:00"), plain);
+        assert_eq!(epoch_from_rfc3339("2026-08-13T00:00Z"), plain);
+    }
+
+    /// An unreadable timestamp has to read as "no answer". The failure
+    /// this guards is a garbage field parsing to *some* number and a
+    /// machine being told its image is fifty years old.
+    #[test]
+    fn a_timestamp_that_isnt_one_is_no_answer() {
+        for bad in [
+            "",
+            "2026-08-13",
+            "not-a-date",
+            "2026-13-01T00:00:00Z", // month 13
+            "2026-08-32T00:00:00Z", // day 32
+            "2026-08-13T24:00:00Z", // hour 24
+            "2026-08-13T00:60:00Z", // minute 60
+            "2026-08-13Tmorning",
+        ] {
+            assert_eq!(epoch_from_rfc3339(bad), None, "{bad}");
+        }
+    }
+
+    /// Clock skew is real on a machine whose RTC hasn't been set yet, and
+    /// the subtraction is unsigned: without the floor, an image stamped
+    /// one hour in the future reads as some hundred-million days old and
+    /// doctor screams about it.
+    #[test]
+    fn a_future_timestamp_is_zero_days_old_not_an_enormous_number() {
+        assert_eq!(days_since("2099-01-01T00:00:00Z"), Some(0));
+        assert_eq!(days_since("1970-01-02T00:00:00Z").map(|d| d > 20_000), Some(true));
+        assert_eq!(days_since("nonsense"), None);
     }
 
     /// This decides whether a failed systemd-remount-fs is excused, so a

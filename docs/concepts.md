@@ -77,11 +77,11 @@ Two consequences:
   firmware, so a machine that declares nothing about its hardware still
   boots with working GPU, wifi, and audio. Name what your hardware needs
   and the rest stays out of the image.
-- **`kuma update --check` has no tag to ask about.** A composed base has
-  no upstream tag whose movement can be checked, and the repos underneath
-  it move continuously. It reports that rather than a "current" it cannot
-  establish; `kuma update` recomposes against the repos as they are now,
-  and the lock diff shows what moved.
+- **`kuma update --check` asks the repos, not a tag.** A composed base has
+  no upstream tag whose movement can be checked, and every package in it
+  is in play, because an update recomposes the whole thing. So the check
+  asks dnf what has a newer version in the repos and which of those carry
+  security advisories. Seconds, and it builds nothing.
 
 Naming a `base` opts out of all of it: any bootc image can be one.
 
@@ -184,13 +184,61 @@ base  sha256:9f3ca81b2e4d -> sha256:a71b04ef9c33
 rpm   36 changed, 2 added
 
 $ kuma update --check
-quay.io/fedora/fedora-bootc:44 is current (sha256:1650030cbdb1).
+The base is composed locally from Fedora's repos (localhost/kuma-base:m26ccdd18fd07).
+20 packages have moved in the repos since this machine booted its image.
+      kernel 7.1.7-200.fc44.x86_64 -> 7.1.8-200.fc44.x86_64 (important)
+      sqlite-libs 3.51.2-1.fc44.x86_64 -> 3.51.2-2.fc44.x86_64 (important)
+      linux-firmware 20260622-1.fc44.noarch -> 20260810-1.fc44.noarch (moderate)
+      ripgrep 14.1.1-4.fc44.x86_64 -> 15.2.0-1.fc44.x86_64
+      waybar 0.15.0-1.fc44.x86_64 -> 0.15.0-2.fc44.x86_64
+rpm   20 moved, 16 with security advisories (5 important, 11 moderate)
 ```
 
-For a named base, `--check` is one registry query: no pull, no build. It
-reports only whether the base moved, because that is the only question
-with an honest cheap answer. For a composed one there is no such question,
-and it says so instead.
+For a named base, `--check` is one registry query and reports only whether
+the base moved: a rebuild layers with `dnf install` rather than upgrading,
+so the base's own packages cannot move underneath you. A composed base has
+no tag to ask about and every package in play, so the check asks dnf
+instead, worst advisory first.
+
+It asks the running machine when there is one, which means it does not
+care how kuma got installed and needs no image in podman storage; a host
+that isn't a kuma machine gets asked about the image it builds, and the
+output says which answered. Repo metadata is cached under
+`~/.cache/kuma/dnf`, so the first run takes about half a minute and the
+rest take seconds. No root either way.
+
+It is a prediction. dnf reports what it would upgrade; a recompose runs
+its own depsolve, which can also add or drop packages an upgrade query
+never sees. The lock diff afterwards is the record of what happened.
+
+## What updates itself, and what waits for you
+
+Flatpaks and brew formulae converge on a daily timer: what the declaration
+names gets installed, what is already there gets updated, and what
+convergence installed but the declaration no longer names gets removed.
+They are per-package, reversible, and live the moment they land, so there
+is nothing to gain by making you ask first.
+
+The image is the opposite on every count. An update replaces the entire OS
+at once and applies on the next boot, so putting it on a timer buys either
+surprise reboots or a queue of staged deployments nobody has booted while
+the machine reports itself up to date. Kuma stages nothing you did not ask
+for, and `kuma update` stays yours to run.
+
+What is automated is knowing when to run it:
+
+- `kuma update --check` asks the repos what has moved since this image was
+  built, security advisories first. Seconds, and it builds nothing.
+- `kuma doctor` reports how old the booted image is and warns past a
+  month, which on Fedora means at least one kernel you did not take.
+
+```console
+warn  deployment: booted image is 41 days old
+      → kuma update   recompose against the repos' current packages and rebuild
+```
+
+Neither one applies anything. The machine watches the clock; you decide
+when to reboot into a new one.
 
 ## /etc is merged, not replaced
 

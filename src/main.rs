@@ -8,6 +8,7 @@ mod inspect;
 mod lock;
 mod snapshot;
 mod state;
+mod updates;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -135,7 +136,8 @@ enum Cmd {
         #[arg(long, default_value = DEFAULT_TAG)]
         tag: String,
         /// Ask whether the locked base has moved, and change nothing.
-        /// One registry round-trip; no pull, no build.
+        /// One round-trip to the registry, or to Fedora's repos for a
+        /// composed base's kernel; no pull, no build.
         // --tag too: a check builds nothing, so there is no image for a
         // tag to name, and silently ignoring one is how a flag comes to
         // mean nothing.
@@ -891,17 +893,25 @@ fn stage(tag: &str) -> Result<bool> {
 /// the cached base, so a same-tag base (fedora-bootc:44) never moves
 /// without it. Unlike `kuma switch`, an unchanged system is a normal
 /// outcome here, not an error.
-/// The cheap question: has the base this declaration is pinned to moved?
+/// The cheap questions: has the base moved, and what would a rebuild
+/// pick up?
 ///
-/// Deliberately the only question it answers. "Would a rebuild change my
-/// packages" looks like it belongs here and doesn't: kuma's Containerfile
-/// runs `dnf install`, not `dnf upgrade`, so a rebuild never moves the
-/// base's existing packages, and `dnf check-update` inside the image
-/// would list hundreds a rebuild would leave exactly where they are.
-/// Narrowing it to the declared list is closer and still wrong, because
-/// their dependencies move too and aren't enumerable without doing the
-/// resolve, which is a build. The lock's diff already answers that
-/// honestly, afterwards.
+/// Which of those can be answered depends on how the base is built, and
+/// the split is not cosmetic:
+///
+/// - **A declared base** is a tag, so the question is whether the tag
+///   moved: one registry round-trip. Its packages are not in play, since
+///   kuma's Containerfile runs `dnf install` rather than `dnf upgrade`
+///   and a rebuild leaves what the base already shipped exactly where it
+///   is. Asking dnf what could upgrade would list hundreds of packages a
+///   rebuild would not touch.
+/// - **A composed base** has no tag, and every package in it is in play,
+///   because `kuma update` recomposes the whole thing from the repos. So
+///   the useful question is the wide one, and dnf answers it from repo
+///   metadata in seconds: see updates.rs.
+///
+/// A prediction either way. The lock diff after the update is what
+/// actually happened, and this never claims to be that.
 ///
 /// Note this is the *builder's* check. A machine running a published
 /// image asks bootc instead, and `bootc upgrade --check` already exists.
@@ -915,32 +925,57 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
         // honest answer is what an update would do, not a fake "current".
         let lock = lock::for_config(config_path);
         let manifest_changed = lock.as_ref().is_some_and(|lock| &lock.base.reference != base);
+        let source = update_source();
+        note(&format!("Asking dnf what has moved in the repos ({})...", source.name()));
+        let moved = updates::moved(&source);
         let update = Action::new(
             "update",
             "kuma update",
             "recompose and rebuild; the lock diff shows what moved",
         );
+        // An update is worth offering when something would come of it, or
+        // when nobody could establish that it wouldn't. A confident "you
+        // are current" is the one case with nothing to suggest.
+        let actions: Vec<Action> = match &moved {
+            Ok(moved) if moved.is_empty() && !manifest_changed => Vec::new(),
+            _ => vec![update],
+        };
         if json {
             println!(
                 "{}",
                 serde_json::json!({
                     "ok": true, "composed": true, "locked": lock.is_some(),
                     "base": base, "manifest_changed": manifest_changed,
-                    "actions": [action_json(&update)],
+                    "updates": match &moved {
+                        Ok(moved) => serde_json::json!({
+                            "checked": true, "source": source.name(),
+                            "moved": updates::moves_json(moved),
+                            "security": updates::security_count(moved),
+                        }),
+                        Err(err) => serde_json::json!({
+                            "checked": false, "source": source.name(),
+                            "error": err.to_string(),
+                        }),
+                    },
+                    "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
                 })
             );
+            return Ok(());
+        }
+        if manifest_changed {
+            println!("The base manifest changed since the lock: the next build composes a new base ({base}).");
         } else {
-            if manifest_changed {
-                println!("The base manifest changed since the lock: the next build composes a new base ({base}).");
-            } else {
-                println!("The base is composed locally from Fedora's repos ({base}).");
-            }
-            println!(
-                "There is no upstream tag to compare against; `kuma update` \
-                 recomposes against the repos' current packages."
-            );
+            println!("The base is composed locally from Fedora's repos ({base}).");
+        }
+        match &moved {
+            Ok(moved) => print_moves(moved, &source),
+            // Named rather than silent: a check that quietly drops half
+            // its answer reads exactly like a clean bill.
+            Err(err) => println!("What has moved could not be checked ({err})."),
+        }
+        if !actions.is_empty() {
             println!();
-            print_actions(&[update]);
+            print_actions(&actions);
         }
         return Ok(());
     }
@@ -1069,6 +1104,65 @@ fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
 /// (it is the only pin), but the package churn underneath it is what
 /// makes a broken update bisectable, so a bounded sample of it prints
 /// too; the lock has the rest, and `git diff kuma.lock` is the full story.
+/// Which rpmdb the repos get compared against.
+///
+/// A machine that runs kuma has the better answer and always has it: its
+/// own rpmdb describes what is booted right now, needs no image in podman
+/// storage, and so does not care whether kuma arrived by ISO, by `kuma
+/// switch`, or by a rebase. A host that is not a kuma machine has to be
+/// asked about the image it builds instead, because its rpmdb describes a
+/// system this declaration does not govern.
+///
+/// The case this reads wrong is a kuma machine building for a *different*
+/// machine, where the local rpmdb answers about the wrong system. Rare
+/// enough to accept, and the output names which system answered.
+fn update_source() -> updates::Source {
+    if Path::new(state::BAKED_CONFIG).exists() {
+        updates::Source::Machine
+    } else {
+        updates::Source::Image(DEFAULT_TAG.to_string())
+    }
+}
+
+/// The lock diff's vocabulary, for a diff that hasn't happened yet.
+fn print_moves(moved: &[updates::Move], source: &updates::Source) {
+    let since = source.since();
+    if moved.is_empty() {
+        println!("Nothing has moved in the repos since {since}.");
+        return;
+    }
+    println!("{} packages have moved in the repos since {since}.", moved.len());
+    // Twice the lock diff's limit. That one summarizes a base bump, where
+    // the count is the story; this one is read to decide whether to
+    // update at all, and the package that decides it is often near the
+    // bottom (a compositor, a shell tool) rather than in the CVEs.
+    const SHOWN: usize = 20;
+    for item in moved.iter().take(SHOWN) {
+        let severity = match item.severity {
+            Some(severity) => format!(" ({severity})"),
+            None => String::new(),
+        };
+        println!("      {} {} -> {}{}", item.name, item.from, item.to, severity);
+    }
+    if moved.len() > SHOWN {
+        println!("      ... and {} more", moved.len() - SHOWN);
+    }
+    let security = updates::security_count(moved);
+    if security == 0 {
+        println!("rpm   {} moved, none with a security advisory", moved.len());
+        return;
+    }
+    let by_severity: Vec<String> = updates::by_severity(moved)
+        .values()
+        .map(|(severity, n)| format!("{n} {severity}"))
+        .collect();
+    println!(
+        "rpm   {} moved, {security} with security advisories ({})",
+        moved.len(),
+        by_severity.join(", ")
+    );
+}
+
 fn print_lock_diff(moved: Option<&lock::LockDiff>) {
     let Some(moved) = moved else { return };
     if moved.is_empty() {

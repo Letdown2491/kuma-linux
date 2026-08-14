@@ -9,8 +9,8 @@ names the legal next commands.
   `doctor --json` and `diff --json` carry findings with their fixes in the
   same shape.
 - **Ask before doing.** `check --json` validates a declaration,
-  `update --check --json` reports whether the base moved (or, for a
-  composed base, that there is no tag to ask about), `diff --json` reports
+  `update --check --json` reports whether the base moved (or, for a composed
+  base, every package that has and its advisory severity), `diff --json` reports
   drift, and `snapshot --json` lists what this machine has kept. All four
   change nothing, and `snapshot --restore --json` stays a dry run naming
   what it would overwrite until `--yes`.

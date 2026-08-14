@@ -180,11 +180,11 @@ $ kuma remove org.mozilla.firefox          # drop from whichever list declares i
 $ kuma capture                             # declare what this machine already runs
 $ kuma check                               # validate the declaration, build nothing
 $ kuma diff                                # drift: kuma.toml vs image vs machine
-$ kuma doctor                              # machine health, /etc drift, snapshots, GPU, disk
+$ kuma doctor                              # machine health, image age, /etc drift, snapshots, GPU
 $ kuma sync                                # converge, and update everything installed
 $ kuma snapshot                            # the btrfs snapshots this machine has taken
 $ kuma snapshot --restore ~/notes.md       # bring a path back (dry run; --yes writes)
-$ kuma update --check                      # has the locked base moved?
+$ kuma update --check                      # what has moved in the repos, security first
 $ kuma update --yes                        # rebuild on the latest base, stage it
 $ kuma rollback --yes                      # boot order back to the previous deployment
 $ kuma clean                               # reclaim dangling images, stale bases, build leftovers

@@ -342,7 +342,7 @@ pub fn resolved_rpms(tag: &str) -> Result<BTreeMap<String, String>> {
 
 /// rpm's own field separator, so no NVRA guessing: package names contain
 /// dashes (python3-dbus) and splitting one apart by hand gets it wrong.
-fn parse_rpm_query(out: &str) -> BTreeMap<String, String> {
+pub fn parse_rpm_query(out: &str) -> BTreeMap<String, String> {
     out.lines()
         .filter_map(|line| line.trim().split_once(' '))
         .map(|(name, evr)| (name.to_string(), evr.to_string()))

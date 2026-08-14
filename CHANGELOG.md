@@ -4,8 +4,35 @@
 
 Built continuously as the `latest` prerelease.
 
+## v0.5.0 (2026-08-13)
+
+The machine notices when its own bytes went stale. Taking a new kernel is
+still something you ask for.
+
 ### Behavior
 
+- `kuma update --check` reports every package that has moved, for a composed
+  base. It asks dnf which installed packages have a newer version in the repos
+  and which of those carry security advisories, then prints them worst first
+  with a `20 moved, 16 with security advisories (5 important, 11 moderate)`
+  summary. Seconds, and it builds nothing. Previously a composed base had no
+  cheap question at all and the check could only say so. A declared base still
+  reports whether its tag moved, because a rebuild layers rather than upgrades
+  and its packages are not in play.
+- The check asks the running machine when there is one, so it does not care
+  whether kuma arrived by ISO, `kuma switch`, or a rebase, and needs no image
+  in podman storage. A host that is not a kuma machine is asked about the image
+  it builds instead. The output names which of the two answered.
+- Repo metadata for that check is cached under `~/.cache/kuma/dnf`, about
+  140MB. The first run fills it and takes roughly half a minute; later runs
+  re-check freshness and answer in a few seconds. Nothing needs root: the
+  default dnf state directory would have, and a check that prompts for a
+  password is a check nobody runs.
+- `kuma doctor` reports how old the booted image is and warns past 30 days,
+  which on Fedora means at least one kernel you did not take. Nothing applies
+  an update on a schedule: an image update replaces the whole OS and lands on
+  the next boot, so it stays a decision. A machine with a newer deployment
+  already staged is told to reboot rather than warned twice.
 - Bare `kuma` reports when an image was built by a different kuma than the one
   running. Images record their builder in the `io.kuma.builder` label, and an
   image without the label counts as different, so this fires on machines built
