@@ -130,10 +130,8 @@ that checks it came from this repository's release workflow.
 [`SECURITY.md`](SECURITY.md) has that command, what a declaration trusts, and
 where to report a vulnerability.
 
-The `latest` prerelease is the same binary built from the current `main`,
-for tracking the tree between releases.
-
-Building it yourself needs a Rust toolchain at 1.85 or newer and a linker:
+Building `main` yourself needs a Rust toolchain at 1.85 or newer and a
+linker:
 
 ```console
 $ cargo install --git https://github.com/Letdown2491/kuma-linux --locked
