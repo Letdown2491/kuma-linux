@@ -76,10 +76,24 @@ jobs:
       - name: audit for personal information
         run: ./scripts/publish-audit.sh "${{ steps.ref.outputs.local }}"
 
+      - uses: sigstore/cosign-installer@v3
+        if: ${{ !inputs.allow_unsigned }}
+
+      # Twice, because they do not share a credential store. podman writes
+      # its auth file under XDG_RUNTIME_DIR; cosign reads Docker's
+      # keychain at ~/.docker/config.json and would find nothing there.
+      # Signing pushes a signature artifact to the registry, so it needs
+      # write access whether or not the package is public, and the failure
+      # without this arrives at the one step that cannot be rehearsed.
       - name: log in to ghcr
         run: |
+          set -euo pipefail
           echo "${{ secrets.GITHUB_TOKEN }}" \
             | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          if [ "${{ inputs.allow_unsigned }}" != "true" ]; then
+            echo "${{ secrets.GITHUB_TOKEN }}" \
+              | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
+          fi
 
       # Refused rather than warned about. An image people rebase onto
       # without a signature is one they cannot verify at all, and a
@@ -103,9 +117,6 @@ jobs:
         run: |
           podman tag "${{ steps.ref.outputs.local }}" "${{ steps.ref.outputs.remote }}"
           podman push "${{ steps.ref.outputs.remote }}"
-
-      - uses: sigstore/cosign-installer@v3
-        if: ${{ !inputs.allow_unsigned }}
 
       - name: sign
         id: sign
