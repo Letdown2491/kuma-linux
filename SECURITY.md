@@ -115,13 +115,22 @@ don't expose one to a network.
 `[user]` rides along into it, password hash included. `kuma iso` says so when
 it happens. Build shareable media from a declaration with no `[user]`.
 
+`kuma iso --live` does not carry the declared account into the live session:
+it creates its own passwordless `liveuser` with passwordless sudo, which
+exists only inside the ISO's read-only filesystem and never reaches an
+installed machine. A declared `[user]` is still baked into the image the ISO
+was built from, so the sentence above still applies to what gets installed.
+The live session also runs SELinux permissive, for the reason recorded in
+`src/liveiso.rs`; an installed machine is enforcing from its first boot.
+
 ## What runs as root
 
 `init`, `check`, `generate`, and `build` need only rootless podman.
 
 `switch`, `update`, `rollback`, and `sync` call `bootc` and `systemctl` under
-sudo. `vm` and `iso` need sudo because bootc-image-builder runs as root. Kuma
-asks for sudo at those points and nowhere else.
+sudo. `vm` and `iso` need sudo because bootc-image-builder runs as root, with
+one exception: `iso --live` never calls it, and so never asks. Kuma asks for
+sudo at those points and nowhere else.
 
 ## Not yet
 

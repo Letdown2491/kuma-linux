@@ -5,6 +5,7 @@ mod containerfile;
 mod edit;
 mod host;
 mod inspect;
+mod liveiso;
 mod lock;
 mod snapshot;
 mod state;
@@ -121,7 +122,7 @@ enum Cmd {
         #[arg(long, conflicts_with_all = ["no_run", "rebuild"])]
         apply: bool,
     },
-    /// Build an Anaconda installer ISO from the image (USB stick, GNOME Boxes)
+    /// Build an installer ISO from the image (USB stick, GNOME Boxes)
     Iso {
         /// Image tag to build the installer from
         #[arg(long, default_value = DEFAULT_TAG)]
@@ -129,6 +130,12 @@ enum Cmd {
         /// Directory for the generated ISO
         #[arg(long, default_value = "iso")]
         output: PathBuf,
+        /// Build live media instead: the image is its own installer
+        /// environment, so the ISO is roughly a gigabyte smaller and
+        /// boots to a desktop you can try before installing. Installing
+        /// from it pulls the image over the network.
+        #[arg(long)]
+        live: bool,
     },
     /// Pull the latest base image, rebuild, and stage the result
     Update {
@@ -345,7 +352,13 @@ fn run(
         Cmd::Vm { tag, output, no_run, rebuild, apply } => {
             vm(&tag, &output, no_run, rebuild, apply)
         }
-        Cmd::Iso { tag, output } => iso(config_path, &tag, &output),
+        Cmd::Iso { tag, output, live } => {
+            if live {
+                live_iso(config_path, &tag, &output)
+            } else {
+                iso(config_path, &tag, &output)
+            }
+        }
         Cmd::Update { tag, check, yes, json: _ } => {
             let path = read_config_path(config_path, explicit, !json);
             if check {
@@ -1616,6 +1629,103 @@ fn iso(config_path: &Path, tag: &str, output: &Path) -> Result<()> {
     let iso_path = output.join("bootiso/install.iso");
     println!("ISO ready: {}", iso_path.display());
     println!("Boot it in GNOME Boxes, or write it to a USB stick with e.g. `sudo dd if={} of=/dev/sdX bs=4M status=progress`.", iso_path.display());
+    Ok(())
+}
+
+/// The container the ISO is assembled inside. Fedora rather than the
+/// kuma image itself: mksquashfs and xorriso are build tools that no
+/// kuma machine should carry, and installing them into a throwaway
+/// container keeps them off both the host and the media.
+const ISO_BUILD_IMAGE: &str = "registry.fedoraproject.org/fedora:44";
+
+/// The tag the live root filesystem is built under. Distinct from the
+/// image being shipped, and disposable: it exists between the two
+/// podman calls below and is worth nothing afterwards.
+const LIVE_TAG: &str = "localhost/kuma-live:latest";
+
+/// Build live installer media: the image is its own installer
+/// environment, so the ISO carries one root filesystem instead of two.
+/// See `liveiso` for why this is assembled here rather than by
+/// bootc-image-builder.
+///
+/// Unlike the Anaconda path this needs no root. bib runs as root and
+/// reads root's containers-storage; everything here is podman doing
+/// what podman does rootless, which is worth preserving: build media
+/// that needs a password is one more reason not to build it.
+fn live_iso(config_path: &Path, tag: &str, output: &Path) -> Result<()> {
+    let config = Config::load(config_path)?;
+    if host_output(&["podman", "image", "exists", tag]).is_err() {
+        bail!("no image {tag}. Build it first:\n\n  kuma build\n");
+    }
+    std::fs::create_dir_all(output)
+        .with_context(|| format!("cannot create {}", output.display()))?;
+    let output = std::fs::canonicalize(output)?;
+
+    let dir = tempfile::tempdir().context("cannot create ISO build directory")?;
+    let containerfile = dir.path().join("Containerfile");
+    std::fs::write(&containerfile, liveiso::live_containerfile(&config, tag))?;
+    let script = dir.path().join("build-iso");
+    std::fs::write(&script, liveiso::BUILD_ISO_SCRIPT)?;
+    std::fs::write(dir.path().join("live-hostname"), format!("{}\n", liveiso::LIVE_HOSTNAME))?;
+    // The running binary, for the same reason `build` stages it: the
+    // live layer writes a marker only a kuma new enough to read it can
+    // act on, so the two have to travel together.
+    let self_exe = std::env::current_exe().context("cannot locate the running kuma binary")?;
+    std::fs::copy(&self_exe, dir.path().join("kuma"))
+        .with_context(|| format!("staging {} into the build context", self_exe.display()))?;
+
+    note("Building the live root filesystem (kuma plus a live boot's dracut modules)...");
+    run_host(&[
+        "podman",
+        "build",
+        "-t",
+        LIVE_TAG,
+        "-f",
+        path_str(&containerfile)?,
+        path_str(dir.path())?,
+    ])?;
+
+    // The live image is mounted rather than exported: podman assembles
+    // the merged filesystem itself, so nothing here unpacks 3 GB into a
+    // temp directory first.
+    let script_mount = format!("{}:/src/build-iso:ro", path_str(&script)?);
+    let rootfs_mount = format!("type=image,source={LIVE_TAG},dst=/rootfs");
+    let out_mount = format!("{}:/output", path_str(&output)?);
+    note("Assembling the ISO (squashing the root filesystem takes a while)...");
+    run_host(&[
+        "podman",
+        "run",
+        "--rm",
+        "--security-opt",
+        "label=disable",
+        "-v",
+        &script_mount,
+        "--mount",
+        &rootfs_mount,
+        "-v",
+        &out_mount,
+        ISO_BUILD_IMAGE,
+        "/usr/bin/bash",
+        "/src/build-iso",
+        liveiso::ISO_LABEL,
+    ])?;
+
+    let iso_path = output.join(format!("{}.iso", liveiso::ISO_LABEL));
+    let size = std::fs::metadata(&iso_path).map(|m| m.len()).unwrap_or(0);
+    println!("\nISO ready: {} ({:.2} GB)", iso_path.display(), size as f64 / 1e9);
+    println!(
+        "It boots to a live {} session as '{}'. Media for trying kuma, not yet for\ninstalling it: installing pulls the image this was built from, and kuma\npublishes none.",
+        match config.system.desktop {
+            config::Desktop::Cosmic => "COSMIC",
+            config::Desktop::Niri => "niri",
+            config::Desktop::None => "console",
+        },
+        liveiso::LIVE_USER
+    );
+    println!(
+        "Write it to a USB stick with e.g. `sudo dd if={} of=/dev/sdX bs=4M status=progress`.",
+        iso_path.display()
+    );
     Ok(())
 }
 

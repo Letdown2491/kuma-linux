@@ -154,7 +154,7 @@ made does not show up in the image.
 **What needs what.** `init`, `check`, `generate`, and `build` need only
 podman. `switch`, `update`, `rollback`, and `doctor` need to be running on a
 bootc machine, and a kuma one already has kuma. `vm` and `iso` need KVM and
-sudo.
+sudo, except `iso --live`, which needs neither.
 
 ## Quick start
 

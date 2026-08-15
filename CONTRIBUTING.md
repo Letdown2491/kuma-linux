@@ -122,6 +122,19 @@ stick. Kuma-owned choices are preseeded; the rest is interactive. A declared
 `[user]` rides into the installer, and `kuma iso` says so when it happens,
 so build shareable media from a declaration without one.
 
+`kuma iso --live` builds the other shape: the image is its own installer
+environment, so the ISO carries one root filesystem instead of two and comes
+out around a gigabyte smaller. It boots to a live desktop as `liveuser`, and
+needs no sudo, because nothing in that path runs bootc-image-builder.
+
+Two things follow from carrying no second copy of the image. Installing from
+it pulls one over the network, and since kuma publishes no images yet, there
+is no install path from it at all: it is media for trying kuma. `kuma` says
+so in the live session. And the live session runs SELinux permissive, since a
+container image's real labels are not reachable through a podman mount. Both
+are explained where they are set, in `src/liveiso.rs`. It is UEFI-only, so
+give a test VM UEFI firmware.
+
 **Inspecting an image.** It's a normal OCI image:
 `podman run --rm -it localhost/kuma:latest bash`.
 

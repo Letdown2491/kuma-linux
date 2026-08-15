@@ -5,6 +5,40 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+### Behavior
+
+- `kuma iso --live` builds live installer media in which the image is its own
+  installer environment. The existing Anaconda ISO carries two root
+  filesystems that share nothing, Fedora's installer and kuma's image, which
+  measured about 2.4 GB against GitHub's 2 GB cap on a release asset. The
+  live ISO carries one. It boots to a desktop as `liveuser` so hardware can
+  be tried before anything is written to a disk, and it needs no sudo,
+  because nothing in the path runs bootc-image-builder.
+- It is media for trying kuma, not yet for installing it. Carrying no second
+  copy of the image means installing pulls the image the media was built
+  from, and kuma publishes none, so there is no install path from it today.
+  `kuma` says so in the live session rather than offering a command that
+  would fail, and gains a `live` state for the purpose: the classifier used
+  to read installer media as a build workspace and report `in-sync, nothing
+  pending` on the one medium where something is.
+- The live session runs SELinux permissive, because a container image's real
+  file labels are not reachable through any podman mount; an installed
+  machine is labelled by bootc and is enforcing from its first boot.
+- `kuma doctor` learned the same distinction. The live layer masks the
+  convergence timers on purpose, and doctor grades a machine on those timers
+  running, so it reported deliberate design as failed checks. It now
+  separates installer media, a booted kuma machine, and a kuma image that is
+  not booted as a deployment, which also stops a `podman run` of the image
+  from failing checks it was never going to pass.
+- Live media carries no identity: its own `liveuser` rather than the
+  declaration's account, and its own hostname rather than the one baked from
+  `system.hostname`, which otherwise greeted a stranger with the name of the
+  machine that built the media.
+- The live ISO is UEFI-only. BIOS boot needs an El Torito image built with
+  grub2-mkimage, and shipping the i386-pc modules without one produces media
+  that carries BIOS machinery and still cannot boot a BIOS machine.
+- `kuma iso` without `--live` is unchanged.
+
 ## v0.5.0 (2026-08-13)
 
 The machine notices when its own bytes went stale. Taking a new kernel is
