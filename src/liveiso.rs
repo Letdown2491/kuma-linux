@@ -265,13 +265,16 @@ pub fn live_containerfile(config: &Config, base_tag: &str) -> String {
     // and the live session never starts at all. Deleting from the header
     // to end of file is safe because kuma's generator appends that table
     // last, and a no-op when the declaration never set one.
+    //
+    // Which greeter and which session command come from containerfile,
+    // the same constants the declared-user path uses. Copying them would
+    // mean a session command could change and break autologin here only,
+    // in the copy nothing in CI ever boots.
     let (file, command) = match config.system.desktop {
-        Desktop::Niri => ("/etc/greetd/config.toml", "niri-session"),
-        // cosmic-greeter authenticates against its own file, and the
-        // niri arm's greetd config exists in this image too as a
-        // dependency, so writing there would look healthy and prove
-        // nothing. Same trap the keyring PAM fix hit.
-        Desktop::Cosmic => ("/etc/greetd/cosmic-greeter.toml", "start-cosmic"),
+        Desktop::Niri => (crate::containerfile::GREETD_CONF, crate::containerfile::NIRI_SESSION),
+        Desktop::Cosmic => {
+            (crate::containerfile::COSMIC_GREETER_CONF, crate::containerfile::COSMIC_SESSION)
+        }
         // A desktopless image has no greeter to autologin into. The live
         // session is a console, and the account is still there to use.
         Desktop::None => return out,

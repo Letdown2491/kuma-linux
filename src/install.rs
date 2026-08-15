@@ -216,7 +216,7 @@ pub fn disks_from_lsblk(json: &str) -> Result<Vec<Disk>> {
 /// In-use disks stay on the list, marked and refused, rather than being
 /// hidden. Hiding them makes somebody wonder where their disk went and
 /// look for it among the ones that are left.
-pub fn choose_disk(disks: &[Disk]) -> Result<String> {
+pub fn choose_disk(mut disks: Vec<Disk>) -> Result<Disk> {
     use std::io::{IsTerminal, Write};
     if !std::io::stdin().is_terminal() {
         bail!("no --disk given, and nothing to ask: pass --disk when not on a terminal");
@@ -262,7 +262,10 @@ pub fn choose_disk(disks: &[Disk]) -> Result<String> {
                     println!("{} is in use at {}.", disk.path, disk.mounts.join(", "));
                     continue;
                 }
-                return Ok(disk.path.clone());
+                // The whole Disk, not its path: what it knows about being
+                // mounted is the same question the objection check asks,
+                // and asking twice is how two answers start to differ.
+                return Ok(disks.swap_remove(n - 1));
             }
             _ => println!("Answer with a number from the list, or q to stop."),
         }

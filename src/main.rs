@@ -29,6 +29,12 @@ pub(crate) const DEFAULT_TAG: &str = "localhost/kuma:latest";
 /// costs the honesty of naming an image that may not be published yet,
 /// which the dry run states rather than hides, and which fails at the
 /// pull rather than silently.
+///
+/// Bound to what publish.yml actually pushes by a test, because the two
+/// are written in different languages and nothing else compares them: get
+/// the owner, the package name or the tag scheme out of step and the
+/// installer's default points at nothing, which is only discovered by
+/// somebody trying to install.
 pub(crate) const PUBLISHED_IMAGE: &str = "ghcr.io/letdown2491/kuma:niri";
 
 /// The root filesystem bib puts in the disks it builds. Required at all
@@ -1701,14 +1707,21 @@ fn install(
     // whole shape is that a response names the next move, and
     // `kuma install --disk /dev/???` is not a move anyone can take.
     let chosen;
-    let disk: &Path = match disk {
-        Some(disk) => disk,
+    // The picker already asked lsblk what is mounted where. Carrying its
+    // answer to the objection check rather than asking again is not about
+    // the second process: it means there is one account of whether a disk
+    // is in use, and the guard on the only irreversible verb here cannot
+    // disagree with the list somebody chose from.
+    let (disk, known_mounts): (&Path, Option<String>) = match disk {
+        Some(disk) => (disk, None),
         None => {
             let listing =
                 host_output_any(&["lsblk", "-J", "-o", "NAME,SIZE,MODEL,TYPE,MOUNTPOINTS"])
                     .context("cannot list disks: pass --disk")?;
-            chosen = PathBuf::from(install::choose_disk(&install::disks_from_lsblk(&listing)?)?);
-            &chosen
+            let picked = install::choose_disk(install::disks_from_lsblk(&listing)?)?;
+            let mounts = picked.mounts.join("\n");
+            chosen = PathBuf::from(picked.path);
+            (&chosen, Some(mounts))
         }
     };
     let disk_str = path_str(disk)?;
@@ -1721,7 +1734,10 @@ fn install(
     // tolerated rather than fatal: an absent lsblk leaves the mount-table
     // check doing the work, and refusing to install because a tool is
     // missing would be its own kind of wrong.
-    let lsblk = host_output_any(&["lsblk", "-no", "MOUNTPOINTS", disk_str]).unwrap_or_default();
+    let lsblk = match known_mounts {
+        Some(mounts) => mounts,
+        None => host_output_any(&["lsblk", "-no", "MOUNTPOINTS", disk_str]).unwrap_or_default(),
+    };
     let objections = install::disk_objections(disk_str, &mounts, &lsblk);
     if !objections.is_empty() {
         bail!(
@@ -1743,15 +1759,20 @@ fn install(
     // the one legal move out of it. An agent that follows affordances
     // will be handed `kuma install` on live media once there is an image
     // to install, so it has to be able to read the answer.
-    if json && !yes {
+    // Named once. It is the string somebody copies to destroy a disk, so
+    // two spellings of it is two chances to get one wrong.
+    let confirm = {
         let flags = if image == PUBLISHED_IMAGE {
             format!("--disk {}", disk.display())
         } else {
             format!("--disk {} --image {image}", disk.display())
         };
+        format!("kuma install {flags} --yes")
+    };
+    if json && !yes {
         let action = Action::new(
             "install",
-            format!("kuma install {flags} --yes"),
+            confirm.clone(),
             "ask for an account and hostname, then write it",
         );
         println!(
@@ -1788,18 +1809,7 @@ fn install(
              no staged deployment to discard, no rollback slot.\n",
             disk.display()
         );
-        // Naming --image only when it is not the default: an edge is
-        // worth less the more of it somebody has to read past.
-        let flags = if image == PUBLISHED_IMAGE {
-            format!("--disk {}", disk.display())
-        } else {
-            format!("--disk {} --image {image}", disk.display())
-        };
-        print_actions(&[Action::new(
-            "install",
-            format!("kuma install {flags} --yes"),
-            "ask those, then write it",
-        )]);
+        print_actions(&[Action::new("install", confirm, "ask those, then write it")]);
         return Ok(());
     }
 
@@ -1855,7 +1865,7 @@ fn install(
     // published image rather than at this throwaway tag, so `kuma update`
     // has something real to fetch.
     note("Installing (this destroys the disk)...");
-    run_host(&[
+    let wrote = run_host(&[
         "sudo",
         "podman",
         "run",
@@ -1876,7 +1886,20 @@ fn install(
         "--target-imgref",
         image,
         disk_str,
-    ])?;
+    ]);
+
+    // That layer holds the password hash, so it does not get to outlive
+    // the install. It is a tagged image, which means `kuma clean` would
+    // never collect it: the prune it runs takes dangling images only, and
+    // this one inherits its base's label while keeping a name. On live
+    // media it would die with the RAM; installing a second disk from a
+    // running machine is a real thing to do, and there it would sit in
+    // container storage indefinitely.
+    //
+    // Before the error is raised, and ignoring its own, so a failed
+    // install does not leave the hash behind either.
+    let _ = host_output(&["podman", "rmi", "-f", INSTALL_TAG]);
+    wrote?;
 
     let reboot = Action::new(
         "reboot",
@@ -2402,6 +2425,36 @@ mod tests {
     fn the_cli_definition_is_coherent() {
         use clap::CommandFactory;
         super::Cli::command().debug_assert();
+    }
+
+    /// The installer's default image and the workflow that publishes it
+    /// are the same string written in two languages, and nothing else
+    /// compares them. Get the owner, the package name or the tag scheme
+    /// out of step and `kuma install` defaults to a ref that does not
+    /// exist, which is discovered by somebody trying to install rather
+    /// than by anything here.
+    #[test]
+    fn the_default_image_is_the_one_the_workflow_publishes() {
+        let workflow = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/.github/workflows/publish.yml"
+        ))
+        .unwrap();
+        // The workflow lowercases the owner and takes the tag from its
+        // `example` input, so compare against what that produces for the
+        // desktop the default names.
+        let (repo, tag) = super::PUBLISHED_IMAGE.rsplit_once(':').unwrap();
+        let owner = repo.strip_prefix("ghcr.io/").unwrap().strip_suffix("/kuma").unwrap();
+        assert!(
+            workflow.contains(r#"echo "remote=ghcr.io/$owner/kuma:${{ inputs.example }}""#),
+            "publish.yml no longer builds the ref this test knows how to check"
+        );
+        assert!(
+            workflow.contains(&format!("options: [{tag}, "))
+                || workflow.contains(&format!(", {tag}]")),
+            "publish.yml cannot publish the tag `{tag}` that kuma install defaults to"
+        );
+        assert_eq!(owner, owner.to_lowercase(), "ghcr rejects an uppercase path");
     }
 
     /// `kuma update --json` is how an agent learns what an update did to

@@ -317,16 +317,31 @@ command = "tuigreet --time --remember --greeting 'Welcome to Kuma' --cmd niri-se
 user = "greetd"
 "#;
 
+/// What starts a session, and where each greeter reads it from.
+///
+/// Shared with `liveiso`, which autologins its own throwaway account the
+/// same way. Two copies of these strings means a session command can
+/// change and break autologin in exactly one of the two places, and the
+/// live one is the copy no CI boots.
+pub(crate) const NIRI_SESSION: &str = "niri-session";
+pub(crate) const COSMIC_SESSION: &str = "start-cosmic";
+pub(crate) const GREETD_CONF: &str = "/etc/greetd/config.toml";
+/// cosmic-greeter authenticates against its own file. greetd's exists in
+/// a COSMIC image too, pulled in as a dependency, so writing there would
+/// look healthy and prove nothing.
+pub(crate) const COSMIC_GREETER_CONF: &str = "/etc/greetd/cosmic-greeter.toml";
+
 /// greetd's initial_session is exactly autologin semantics: straight
 /// into the desktop at boot, greeter on logout.
+pub(crate) fn initial_session(command: &str, user: &str) -> String {
+    format!("\n[initial_session]\ncommand = \"{command}\"\nuser = \"{user}\"\n")
+}
+
 fn greetd_config(config: &Config) -> String {
     let mut out = GREETD_CONFIG.to_string();
     if let Some(user) = &config.user {
         if user.autologin {
-            out.push_str(&format!(
-                "\n[initial_session]\ncommand = \"niri-session\"\nuser = \"{}\"\n",
-                user.name
-            ));
+            out.push_str(&initial_session(NIRI_SESSION, &user.name));
         }
     }
     out
