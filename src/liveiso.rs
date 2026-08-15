@@ -61,6 +61,24 @@ pub const LIVE_HOSTNAME: &str = "kuma";
 /// bad first impression and simply untrue.
 pub const LIVE_MARKER: &str = "/usr/lib/kuma/live";
 
+/// What makes container storage work on a live root.
+///
+/// The whole file rather than a drop-in: containers-storage reads one
+/// storage.conf and has no conf.d, so this replaces Fedora's. It says
+/// the same thing Fedora's does apart from the mount program, and it
+/// exists only inside the ISO, so no installed machine inherits it.
+pub const LIVE_STORAGE_CONF: &str = "\
+# Written by kuma for live media. The live root is an overlayfs, and the
+# overlay driver cannot stack on one without a mount program.
+[storage]
+driver = \"overlay\"
+runroot = \"/run/containers/storage\"
+graphroot = \"/var/lib/containers/storage\"
+
+[storage.options.overlay]
+mount_program = \"/usr/bin/fuse-overlayfs\"
+";
+
 /// The account a live session logs in as.
 ///
 /// A published image declares no `[user]` on purpose, since `[user]` is a
@@ -111,6 +129,27 @@ pub fn live_containerfile(config: &Config, base_tag: &str) -> String {
     out.push_str("    test \"$(echo \"$kver\" | wc -l)\" -eq 1; \\\n");
     out.push_str("    dracut --force --no-hostonly --add dmsquash-live \\\n");
     out.push_str("      \"/usr/lib/modules/$kver/initramfs.img\" \"$kver\"\n\n");
+
+    // podman cannot work at all in a live session without this.
+    //
+    // The live root is an overlayfs, and podman's native overlay driver
+    // refuses to stack overlay on overlay: "'overlay' is not supported
+    // over overlayfs, a mount_program is required". fuse-overlayfs is
+    // that mount program. Without it `kuma install` dies before it
+    // reaches a disk, because pulling the image it installs needs
+    // container storage like anything else does.
+    //
+    // Configured explicitly rather than left to auto-detection. podman
+    // does look for fuse-overlayfs when native overlay is unsupported,
+    // but the install path runs both rootless (the derived layer) and
+    // under sudo (bootc install), and a fallback that silently differs
+    // between the two is not something to discover on somebody else's
+    // hardware.
+    out.push_str(
+        "RUN dnf install -y --setopt=install_weak_deps=False fuse-overlayfs \\\n \
+         && dnf clean all\n",
+    );
+    out.push_str("COPY live-storage.conf /etc/containers/storage.conf\n\n");
 
     // A browser, in the live layer only.
     //
@@ -534,6 +573,23 @@ mod tests {
         assert!(out.contains("COPY live-hostname /etc/hostname"));
         assert!(!out.contains("motherbox"));
         assert!(!out.contains("RUN echo"), "a redirect never reaches the layer");
+    }
+
+    /// Found by running `kuma install --yes` in a live session, which
+    /// died before touching a disk: "'overlay' is not supported over
+    /// overlayfs, a mount_program is required". The live root IS an
+    /// overlayfs, so podman cannot do anything at all there without
+    /// fuse-overlayfs, and installing needs podman to pull the image it
+    /// installs. Nothing about this is visible from a build.
+    #[test]
+    fn container_storage_works_on_an_overlay_root() {
+        let out = super::live_containerfile(
+            &config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"),
+            "t",
+        );
+        assert!(out.contains("fuse-overlayfs"));
+        assert!(out.contains("COPY live-storage.conf /etc/containers/storage.conf"));
+        assert!(super::LIVE_STORAGE_CONF.contains("mount_program = \"/usr/bin/fuse-overlayfs\""));
     }
 
     /// doctor grades a machine on convergence timers the live layer

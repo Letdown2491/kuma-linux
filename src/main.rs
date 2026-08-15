@@ -1870,6 +1870,7 @@ fn live_iso(config_path: &Path, tag: &str, output: &Path) -> Result<()> {
     let script = dir.path().join("build-iso");
     std::fs::write(&script, liveiso::BUILD_ISO_SCRIPT)?;
     std::fs::write(dir.path().join("live-hostname"), format!("{}\n", liveiso::LIVE_HOSTNAME))?;
+    std::fs::write(dir.path().join("live-storage.conf"), liveiso::LIVE_STORAGE_CONF)?;
     // The running binary, for the same reason `build` stages it: the
     // live layer writes a marker only a kuma new enough to read it can
     // act on, so the two have to travel together.
