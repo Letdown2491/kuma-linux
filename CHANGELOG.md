@@ -5,6 +5,31 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+### Behavior
+
+- `[system].shell` declares the login shell accounts on a machine get, and
+  `kuma install` reads it from the declaration baked into whatever it is
+  installing. It exists because `[user].shell` describes a person, and
+  shareable media declares no person: an image could install fish and have
+  no way to say to use it, so the first machine installed from one came up
+  with fish present and bash configured. `--shell` overrides it, and a
+  shell the image does not install fails the build rather than the login,
+  which is the guard a declared user's shell has always had.
+- The composed base ships `ncurses`. `ncurses-base` is terminfo and
+  `ncurses-libs` is the library, and neither owns `/usr/bin/clear`, so a
+  desktop with a terminal had no `clear`, `tput` or `reset`.
+- `kuma install` takes a file as its target, installing to a disk image
+  through a loopback device. Producing a disk image is worth doing on its
+  own, and it is also the only way to exercise the installer on a machine
+  with no spare disk: from live media the image being installed has to land
+  in a RAM-backed overlay first, which needs more memory than most laptops
+  have.
+- `kuma install` names the root filesystem explicitly. kuma composes its
+  own base and ships no bootc install config, so bootc had no default to
+  read and stopped with "No root filesystem specified". btrfs rather than
+  ext4, because `[snapshots]` is btrfs-only and reinstalling is the only
+  way to change a machine's mind about that.
+
 ## v0.6.0 (2026-08-14)
 
 Media somebody else can boot, and a machine somebody else can log into.

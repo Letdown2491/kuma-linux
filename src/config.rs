@@ -133,6 +133,22 @@ pub struct System {
     pub firmware: Option<Vec<String>>,
     #[serde(default)]
     pub desktop: Desktop,
+    /// The login shell accounts made on this machine get, when nothing
+    /// else says otherwise.
+    ///
+    /// Separate from `[user].shell` on purpose. That one describes a
+    /// person, so shareable media cannot carry it: a published image
+    /// declares no `[user]` at all, which left an image that installs
+    /// fish with no way to say "and use it". This is a property of the
+    /// image rather than of anybody, so it survives that rule, and
+    /// `kuma install` reads it from the declaration baked into whatever
+    /// it is installing.
+    ///
+    /// Not defaulted to a shell kuma ships, because kuma ships none:
+    /// fish and the rest come from a declaration's package list, so a
+    /// default would refuse to install any image that omitted it.
+    #[serde(default)]
+    pub shell: Option<String>,
     /// Homebrew in /home/linuxbrew: imperative CLI tools that survive image
     /// updates and need no reboot. Installed by a first-boot service.
     #[serde(default)]
@@ -253,6 +269,11 @@ impl Config {
         }
         if let Some(locale) = &self.system.locale {
             validate_name(locale, "system.locale", &['_', '.', '-', '@'])?;
+        }
+        // Same character rules as user.shell: both end up as
+        // /usr/bin/<name> in a shell fragment the boot converger sources.
+        if let Some(shell) = &self.system.shell {
+            validate_name(shell, "system.shell", &['-'])?;
         }
         if let Some(user) = &self.user {
             validate_name(&user.name, "user.name", &['-', '_'])?;

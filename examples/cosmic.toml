@@ -11,6 +11,12 @@ schema_version = 1
 # identity on top.
 desktop = "cosmic"
 
+# The login shell accounts on this machine get. Separate from
+# [user].shell because that describes a person and this describes the
+# image: media you hand to somebody declares no user, and without this
+# an image that installs fish had no way to say to use it.
+shell = "fish"
+
 # Commented out so this file is safe to build shareable media from, the
 # same as niri.toml. A declared account is a property of the image, so it
 # rides into every machine built from it, password hash included.

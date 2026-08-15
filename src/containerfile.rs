@@ -1759,6 +1759,15 @@ pub fn generate(config: &Config) -> String {
         }
     }
 
+    // A declared system shell gets the same build-time guard a declared
+    // user's does, and needs it more: nothing on a published image will
+    // notice it is wrong until an installer creates an account with it,
+    // by which point a disk has been written. Same placement reasoning,
+    // after the rpm layer that would install it.
+    if let Some(shell) = &config.system.shell {
+        out.push_str(&format!("RUN test -x /usr/bin/{shell}\n"));
+    }
+
     // /etc/hostname ships in every image because DEFAULT_HOSTNAME can't
     // win: the initrd's dracut-built os-release still says "fedora", its
     // systemd sets the kernel hostname first, and the real root won't
@@ -2595,6 +2604,25 @@ mod tests {
         // unit that fails on every boot of a userless image.
         assert!(USER_SYNC_SCRIPT.contains("elif [ -f /usr/lib/kuma/user ]"));
         assert!(USER_SYNC_SCRIPT.contains(r#"[ -n "${KUMA_USER:-}" ] || exit 0"#));
+    }
+
+    /// A shell the image does not install locks every account made on
+    /// that machine out of logging in, and on a published image nothing
+    /// notices until an installer has already written a disk. Same
+    /// guard the declared user's shell has always had, applied to the
+    /// field shareable media can actually carry.
+    #[test]
+    fn a_declared_system_shell_is_checked_at_build_time() {
+        let out = generate(&config(
+            "schema_version = 1\n[system]\nshell = \"fish\"\n[packages]\nrpm = [\"fish\"]\n",
+        ));
+        assert!(out.contains("RUN test -x /usr/bin/fish"));
+        // After the layer that would install it, or the guard fails on
+        // an image that was going to be fine.
+        let rpm_at = out.find("keepcache=1 fish").unwrap();
+        assert!(rpm_at < out.find("RUN test -x /usr/bin/fish").unwrap());
+        // And nothing is emitted when nothing is declared.
+        assert!(!generate(&config("schema_version = 1")).contains("test -x /usr/bin/"));
     }
 
     /// Machine state beats image content, the same way it does for

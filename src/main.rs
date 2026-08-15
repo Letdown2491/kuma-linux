@@ -1875,6 +1875,16 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         }
     }
 
+    // `--shell` beats what the image declares, which beats the system
+    // default. Read from the declaration baked into the image being
+    // installed, so an image that installs fish can say to use it
+    // without declaring a person to use it as.
+    let shell = shell.or_else(|| {
+        host_output(&["podman", "run", "--rm", image, "cat", crate::state::BAKED_CONFIG])
+            .ok()
+            .and_then(|text| toml::from_str::<Config>(&text).ok())
+            .and_then(|declared| declared.system.shell)
+    });
     let account = install::ask_account(user, groups, shell)?;
     let hostname = install::ask_hostname(hostname)?;
     let dir = tempfile::tempdir().context("cannot create install directory")?;
