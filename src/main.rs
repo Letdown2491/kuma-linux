@@ -2440,14 +2440,22 @@ mod tests {
             "/.github/workflows/publish.yml"
         ))
         .unwrap();
-        // The workflow lowercases the owner and takes the tag from its
-        // `example` input, so compare against what that produces for the
-        // desktop the default names.
+        // Assert the shape, not the spelling. The first version of this
+        // matched one literal line of YAML and broke the moment that line
+        // was rewritten to add a second tag, which is a test failing over
+        // its own phrasing rather than over anything being wrong. What
+        // has to hold is that the workflow builds `ghcr.io/<owner>/kuma`,
+        // tags it with its `example` input, and can produce the tag the
+        // installer defaults to.
         let (repo, tag) = super::PUBLISHED_IMAGE.rsplit_once(':').unwrap();
         let owner = repo.strip_prefix("ghcr.io/").unwrap().strip_suffix("/kuma").unwrap();
         assert!(
-            workflow.contains(r#"echo "remote=ghcr.io/$owner/kuma:${{ inputs.example }}""#),
-            "publish.yml no longer builds the ref this test knows how to check"
+            workflow.contains(r#"repo="ghcr.io/$owner/kuma""#),
+            "publish.yml no longer builds a ghcr.io/<owner>/kuma reference"
+        );
+        assert!(
+            workflow.contains(r#"echo "remote=$repo:${{ inputs.example }}""#),
+            "publish.yml no longer tags the image with its example input"
         );
         assert!(
             workflow.contains(&format!("options: [{tag}, "))
@@ -2455,6 +2463,10 @@ mod tests {
             "publish.yml cannot publish the tag `{tag}` that kuma install defaults to"
         );
         assert_eq!(owner, owner.to_lowercase(), "ghcr rejects an uppercase path");
+        // The default tracks rather than pins: the pinned tag carries a
+        // version, and pointing installs at one would freeze every new
+        // machine on whatever was current when this line was written.
+        assert!(!tag.contains(char::is_numeric), "the default should be the moving tag");
     }
 
     /// `kuma update --json` is how an agent learns what an update did to
