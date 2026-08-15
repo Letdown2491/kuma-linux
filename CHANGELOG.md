@@ -5,8 +5,50 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+## v0.6.0 (2026-08-14)
+
+Media somebody else can boot, and a machine somebody else can log into.
+
 ### Behavior
 
+- `kuma install --disk /dev/X --image REF` installs kuma onto a disk. The
+  account is the whole difficulty it solves: a published image declares no
+  `[user]`, because the image is shared and the person is not, so a machine
+  installed from one has no account, no root password, and no way in.
+  Anaconda's create-a-user screen used to cover that and live media has no
+  Anaconda. So the installer asks, writes `/etc/kuma/user` on the target, and
+  `kuma-user-sync` creates the account at first boot exactly as it does for a
+  declared one. The installer does not create users; it writes down what the
+  machine converges to.
+- Getting that file onto the target needs no post-install mounting. `bootc
+  install` copies the filesystem of the container it runs inside, so kuma
+  derives a one-layer image carrying the file and installs from that, while
+  `--target-imgref` records the published image as what the machine fetches
+  for later updates. The installed system has an account and still tracks the
+  public tag.
+- Whole-disk only, and destructive. `bootc install to-disk` owns the
+  partitioning, so there is no cryptsetup and no custom layout yet;
+  passphrase LUKS needs `to-filesystem` and kuma owning the storage. Dry run
+  by default like every kuma verb that changes something, and unlike the
+  others this one cannot be undone: no staged deployment to discard, no
+  rollback slot. It refuses a disk with anything in use on it, asking `lsblk`
+  rather than only `/proc/mounts`, because the mount table names the mapper
+  device for an encrypted root and a fully encrypted disk would otherwise
+  look idle while running.
+- `kuma-user-sync` now reads `/etc/kuma/user` in preference to the baked
+  `/usr/lib/kuma/user`, and ships in every image rather than only when an
+  account is declared. `/usr` is the image and `/etc` is machine state, the
+  line kuma draws everywhere else: on a personal image the account is
+  declaration, on a shared one it cannot be. It is a no-op with neither file
+  present.
+- The composed base ships firmware for Intel wifi and SOF audio, which it
+  never had. The set was curated with `dnf repoquery --recommends
+  linux-firmware`, which returns 13 packages and which the list matched
+  exactly: the transcription was right and the method was wrong, because
+  nothing recommends `iwlwifi` or `alsa-sof` at all. A typical Intel laptop
+  booted a kuma image with no wireless and no sound, and since installing
+  pulls over the network, could not install either. Adds five packages for
+  103 MiB.
 - `kuma iso --live` builds live installer media in which the image is its own
   installer environment. The existing Anaconda ISO carries two root
   filesystems that share nothing, Fedora's installer and kuma's image, which

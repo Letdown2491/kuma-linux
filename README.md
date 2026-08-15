@@ -154,7 +154,9 @@ made does not show up in the image.
 **What needs what.** `init`, `check`, `generate`, and `build` need only
 podman. `switch`, `update`, `rollback`, and `doctor` need to be running on a
 bootc machine, and a kuma one already has kuma. `vm` and `iso` need KVM and
-sudo, except `iso --live`, which needs neither.
+sudo, except `iso --live`, which needs neither. `install` needs sudo and a
+disk you are willing to lose: it is the one command here that cannot be
+undone.
 
 ## Quick start
 

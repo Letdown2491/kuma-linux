@@ -347,7 +347,7 @@ fn validate_password_hash(hash: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_name(value: &str, field: &str, extra: &[char]) -> Result<()> {
+pub(crate) fn validate_name(value: &str, field: &str, extra: &[char]) -> Result<()> {
     if value.is_empty() {
         bail!("{field} contains an empty entry");
     }

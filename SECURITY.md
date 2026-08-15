@@ -129,8 +129,17 @@ The live session also runs SELinux permissive, for the reason recorded in
 
 `switch`, `update`, `rollback`, and `sync` call `bootc` and `systemctl` under
 sudo. `vm` and `iso` need sudo because bootc-image-builder runs as root, with
-one exception: `iso --live` never calls it, and so never asks. Kuma asks for
-sudo at those points and nowhere else.
+one exception: `iso --live` never calls it, and so never asks. `install` runs
+`bootc install` in a privileged container with `/dev` bound in, which is what
+writing a disk requires. Kuma asks for sudo at those points and nowhere else.
+
+`kuma install` asks for a password and writes its hash to `/etc/kuma/user` on
+the target, mode 0600, where `kuma-user-sync` reads it at first boot. The
+password is never passed as an argument, so it does not reach `ps` or a shell
+history; piped stdin takes the account name and password as two lines. The
+hash is the same sha512-crypt at 656k rounds `kuma passwd` produces. Unlike a
+declared `[user]`, it is written to the machine rather than baked into the
+image, so it is not published by publishing the image.
 
 ## Not yet
 

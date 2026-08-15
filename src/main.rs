@@ -5,6 +5,7 @@ mod containerfile;
 mod edit;
 mod host;
 mod inspect;
+mod install;
 mod liveiso;
 mod lock;
 mod snapshot;
@@ -121,6 +122,24 @@ enum Cmd {
         /// then reboot); /var (flatpaks, brew, homes) persists
         #[arg(long, conflicts_with_all = ["no_run", "rebuild"])]
         apply: bool,
+    },
+    /// Install kuma onto a disk, destroying everything on it
+    Install {
+        /// Disk to install onto. Everything on it is destroyed.
+        #[arg(long)]
+        disk: PathBuf,
+        /// Image to install, and to fetch updates from afterwards
+        #[arg(long)]
+        image: String,
+        /// Account to create on the installed machine's first boot
+        #[arg(long)]
+        user: Option<String>,
+        /// Groups for that account
+        #[arg(long, default_value = "wheel")]
+        groups: String,
+        /// Do it. Without this, print the plan and change nothing.
+        #[arg(long)]
+        yes: bool,
     },
     /// Build an installer ISO from the image (USB stick, GNOME Boxes)
     Iso {
@@ -351,6 +370,10 @@ fn run(
         Cmd::Switch { tag, yes, json: _ } => switch(&tag, yes, json),
         Cmd::Vm { tag, output, no_run, rebuild, apply } => {
             vm(&tag, &output, no_run, rebuild, apply)
+        }
+        Cmd::Install { disk, image, user, groups, yes } => {
+            let groups = groups.split(',').filter(|g| !g.is_empty()).map(String::from).collect();
+            install(&disk, &image, user, groups, yes)
         }
         Cmd::Iso { tag, output, live } => {
             if live {
@@ -1629,6 +1652,124 @@ fn iso(config_path: &Path, tag: &str, output: &Path) -> Result<()> {
     let iso_path = output.join("bootiso/install.iso");
     println!("ISO ready: {}", iso_path.display());
     println!("Boot it in GNOME Boxes, or write it to a USB stick with e.g. `sudo dd if={} of=/dev/sdX bs=4M status=progress`.", iso_path.display());
+    Ok(())
+}
+
+/// The tag the account-carrying layer is built under. Thrown away with
+/// the install; nothing keeps it.
+const INSTALL_TAG: &str = "localhost/kuma-install:latest";
+
+/// Install kuma onto a disk. See `install` for why the account is the
+/// hard part and why it arrives as an image layer.
+///
+/// Dry run by default, like every kuma verb that changes something, and
+/// unlike every other one this change cannot be undone: there is no
+/// staged deployment to discard and no rollback slot to return to. So
+/// the plan is printed in full, the objections are checked before
+/// anything is built, and `--yes` is the only thing that writes.
+fn install(
+    disk: &Path,
+    image: &str,
+    user: Option<String>,
+    groups: Vec<String>,
+    yes: bool,
+) -> Result<()> {
+    let disk_str = path_str(disk)?;
+
+    // Objections first: no point asking for a password before saying the
+    // disk cannot be used.
+    let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
+    // Sees through LUKS and LVM, which /proc/mounts cannot. Failure is
+    // tolerated rather than fatal: an absent lsblk leaves the mount-table
+    // check doing the work, and refusing to install because a tool is
+    // missing would be its own kind of wrong.
+    let lsblk = host_output_any(&["lsblk", "-no", "MOUNTPOINTS", disk_str]).unwrap_or_default();
+    let objections = install::disk_objections(disk_str, &mounts, &lsblk);
+    if !objections.is_empty() {
+        bail!(
+            "refusing to install to {}:\n  {}\n\nUnmount it, or pick another disk.",
+            disk.display(),
+            objections.join("\n  ")
+        );
+    }
+    if !disk.exists() {
+        bail!("no such device: {}", disk.display());
+    }
+
+    println!("Install plan");
+    println!("  disk     {}  (everything on it is destroyed)", disk.display());
+    println!("  image    {image}");
+    println!("  updates  fetched from {image} afterwards");
+    if !yes {
+        println!(
+            "\nNothing has been changed. This is the one kuma verb with no way back:\n\
+             no staged deployment to discard, no rollback slot. Re-run with --yes."
+        );
+        print_actions(&[Action::new(
+            "install",
+            format!("kuma install --disk {} --image {image} --yes", disk.display()),
+            "write it, destroying the disk",
+        )]);
+        return Ok(());
+    }
+
+    let account = install::ask_account(user, groups)?;
+    let dir = tempfile::tempdir().context("cannot create install directory")?;
+    std::fs::write(dir.path().join("kuma-user"), install::user_file(&account))?;
+    let containerfile = dir.path().join("Containerfile");
+    std::fs::write(&containerfile, install::install_containerfile(image))?;
+
+    note("Preparing the image with the account...");
+    run_host(&[
+        "podman",
+        "build",
+        "-t",
+        INSTALL_TAG,
+        "-f",
+        path_str(&containerfile)?,
+        path_str(dir.path())?,
+    ])?;
+
+    // Runs from inside the derived image, because that is how bootc
+    // install works: it copies the filesystem of the container it is in.
+    // --target-imgref is what keeps the installed machine pointed at the
+    // published image rather than at this throwaway tag, so `kuma update`
+    // has something real to fetch.
+    note("Installing (this destroys the disk)...");
+    run_host(&[
+        "sudo",
+        "podman",
+        "run",
+        "--rm",
+        "--privileged",
+        "--pid=host",
+        "--security-opt",
+        "label=disable",
+        "-v",
+        "/dev:/dev",
+        "-v",
+        "/var/lib/containers:/var/lib/containers",
+        INSTALL_TAG,
+        "bootc",
+        "install",
+        "to-disk",
+        "--wipe",
+        "--target-imgref",
+        image,
+        disk_str,
+    ])?;
+
+    println!("\nInstalled {image} to {}.", disk.display());
+    println!(
+        "The account '{}' is created on first boot by kuma-user-sync, from\n\
+         /etc/kuma/user written onto the target.",
+        account.name
+    );
+    print_actions(&[Action::new(
+        "reboot",
+        "sudo systemctl reboot",
+        "boot the installed machine (remove the install media first)",
+    )]);
     Ok(())
 }
 

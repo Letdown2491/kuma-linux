@@ -581,9 +581,36 @@ WantedBy=multi-user.target
 /// password hash applies only at creation — passwords are machine state.
 /// Groups converge additively so imperative grants (docker, libvirt)
 /// made on the machine survive.
+/// Two sources, and which one wins is the whole point.
+///
+/// /usr is the image and /etc is machine state, the line kuma draws
+/// everywhere else, and a user belongs on both sides of it depending on
+/// who the image is for. On a personal image the account is declaration:
+/// it is baked, and every machine built from that image is meant to have
+/// it. On a *published* image it cannot be, because the image is shared
+/// and the person is not — so a published image declares no [user] at
+/// all, and a machine installed from one would have no account, no root
+/// password, and no way in.
+///
+/// So an installer writes /etc/kuma/user on the target and this prefers
+/// it. Same fields, same converger, machine state instead of image
+/// content. It also gives a machine that rebased onto kuma a way to
+/// declare an account without rebuilding anything.
 const USER_SYNC_SCRIPT: &str = r#"#!/usr/bin/bash
 set -euo pipefail
-. /usr/lib/kuma/user
+# shellcheck disable=SC1091  # both sources are written by kuma, not present here
+# Machine state wins over image content. Neither is an error: this unit
+# ships in every image now, including ones that declare no account,
+# because a published image is exactly that and still needs the converger
+# present for whatever writes /etc/kuma/user later.
+if [ -f /etc/kuma/user ]; then
+    . /etc/kuma/user
+elif [ -f /usr/lib/kuma/user ]; then
+    . /usr/lib/kuma/user
+else
+    exit 0
+fi
+[ -n "${KUMA_USER:-}" ] || exit 0
 if ! id -u "$KUMA_USER" &>/dev/null; then
     args=(-m)
     [ -n "${KUMA_SHELL:-}" ] && args+=(-s "$KUMA_SHELL")
@@ -1668,20 +1695,27 @@ pub fn generate(config: &Config) -> String {
             "\nRUN test -e /usr/share/zoneinfo/{tz} && ln -sfn /usr/share/zoneinfo/{tz} /etc/localtime\n"
         ));
     }
+    // The converger ships in EVERY image, including ones that declare no
+    // account. A published image declares none by design, and a machine
+    // installed from it has no account and no root password, so something
+    // has to write /etc/kuma/user on the target and something has to act
+    // on it at first boot. Shipping the unit only when the image already
+    // knows the answer is what made that impossible.
+    //
+    // It is a no-op with neither file present, so a desktop image built
+    // from a userless declaration gains one oneshot that exits 0.
+    out.push_str("\nCOPY --chmod=755 kuma-user-sync /usr/libexec/kuma-user-sync\n");
+    out.push_str("COPY kuma-user-sync.service /usr/lib/systemd/system/kuma-user-sync.service\n");
+    out.push_str("RUN systemctl enable kuma-user-sync.service\n");
     if let Some(user) = &config.user {
         // 600: only the root-run sync service reads this, and it can carry
         // the password hash — no reason to hand that to every local user.
-        out.push_str("\nCOPY --chmod=600 kuma-user /usr/lib/kuma/user\n");
-        out.push_str("COPY --chmod=755 kuma-user-sync /usr/libexec/kuma-user-sync\n");
-        out.push_str(
-            "COPY kuma-user-sync.service /usr/lib/systemd/system/kuma-user-sync.service\n",
-        );
+        out.push_str("COPY --chmod=600 kuma-user /usr/lib/kuma/user\n");
         if let Some(shell) = &user.shell {
             // after the rpm layer, so a shell the config forgot to install
             // fails the build instead of locking the account out at login
             out.push_str(&format!("RUN test -x /usr/bin/{shell}\n"));
         }
-        out.push_str("RUN systemctl enable kuma-user-sync.service\n");
         if !user.ssh_keys.is_empty() {
             out.push_str(&format!("COPY kuma-user-keys /etc/kuma/keys/{}\n", user.name));
             out.push_str("COPY kuma-sshd-keys.conf /etc/ssh/sshd_config.d/40-kuma-keys.conf\n");
@@ -1854,6 +1888,11 @@ pub fn write_context(
             snapshot_timer(&config.snapshots.interval),
         )?;
     }
+    // Unconditional, like the Containerfile lines that copy them: the
+    // converger has to be present in an image that declares no account,
+    // because that is the image an installer writes /etc/kuma/user onto.
+    std::fs::write(dir.join("kuma-user-sync"), USER_SYNC_SCRIPT)?;
+    std::fs::write(dir.join("kuma-user-sync.service"), USER_SYNC_SERVICE)?;
     if let Some(user) = &config.user {
         let mut decl = format!("KUMA_USER='{}'\n", user.name);
         if let Some(shell) = &user.shell {
@@ -1866,8 +1905,6 @@ pub fn write_context(
             decl.push_str(&format!("KUMA_PASSWORD_HASH='{hash}'\n"));
         }
         std::fs::write(dir.join("kuma-user"), decl)?;
-        std::fs::write(dir.join("kuma-user-sync"), USER_SYNC_SCRIPT)?;
-        std::fs::write(dir.join("kuma-user-sync.service"), USER_SYNC_SERVICE)?;
         if !user.ssh_keys.is_empty() {
             let mut keys = user.ssh_keys.join("\n");
             keys.push('\n');
@@ -2506,8 +2543,32 @@ mod tests {
         let check_at = out.find("RUN test -x /usr/bin/fish").unwrap();
         assert!(rpm_at < check_at);
 
+        // A declaration with no [user] bakes no ACCOUNT, but it does ship
+        // the converger. That distinction is the whole point: a published
+        // image declares no account on purpose, and a machine installed
+        // from one has none and no root password either, so an installer
+        // writes /etc/kuma/user on the target and something has to act on
+        // it at first boot. Shipping the unit only when the image already
+        // knew the answer is what made that impossible.
         let out = generate(&config("schema_version = 1"));
-        assert!(!out.contains("kuma-user"));
+        assert!(!out.contains("/usr/lib/kuma/user"), "no account data without a declared one");
+        assert!(!out.contains("kuma-user-keys"));
+        assert!(out.contains("RUN systemctl enable kuma-user-sync.service"));
+        // ... and it is a no-op with neither file present, rather than a
+        // unit that fails on every boot of a userless image.
+        assert!(USER_SYNC_SCRIPT.contains("elif [ -f /usr/lib/kuma/user ]"));
+        assert!(USER_SYNC_SCRIPT.contains("else\n    exit 0"));
+    }
+
+    /// Machine state beats image content, the same way it does for
+    /// hostname and timezone. On a personal image the account is
+    /// declaration and gets baked; on a shared one it cannot be, because
+    /// the image is shared and the person is not.
+    #[test]
+    fn a_written_user_file_outranks_the_baked_one() {
+        let etc = USER_SYNC_SCRIPT.find("/etc/kuma/user").unwrap();
+        let usr = USER_SYNC_SCRIPT.find("/usr/lib/kuma/user").unwrap();
+        assert!(etc < usr, "the machine's own file has to be tried first");
     }
 
     #[test]
