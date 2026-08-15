@@ -1907,6 +1907,41 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     // `kuma iso` met this first and this helper already solved it.
     sync_image_to_root(INSTALL_TAG, dir.path())?;
 
+    // The same guard the declared path gets at build time, moved to the
+    // only moment the installer can apply it.
+    //
+    // `useradd -s /usr/bin/nonsense` does not fail. It creates the
+    // account with a shell that is not there, and the machine comes up
+    // unable to log anybody in, which is the precise failure this verb
+    // exists to prevent. A declaration gets `RUN test -x /usr/bin/<shell>`
+    // and fails the build; an installer has no build to fail, so it asks
+    // the image instead. Before anything is written to the disk.
+    if let Some(shell) = &account.shell {
+        if host_output(&[
+            "podman",
+            "run",
+            "--rm",
+            INSTALL_TAG,
+            "test",
+            "-x",
+            &format!("/usr/bin/{shell}"),
+        ])
+        .is_err()
+        {
+            let shells = host_output(&["podman", "run", "--rm", INSTALL_TAG, "cat", "/etc/shells"])
+                .unwrap_or_default();
+            let available: Vec<&str> =
+                shells.lines().filter_map(|l| l.trim().strip_prefix("/usr/bin/")).collect();
+            bail!(
+                "{image} has no /usr/bin/{shell}\n\n\
+                 The account would be created with a shell that is not there, and\n\
+                 nobody could log in. Shells this image has: {}\n\n\
+                 Declare the one you want in the image's packages, or drop --shell.",
+                if available.is_empty() { "none listed".into() } else { available.join(", ") }
+            );
+        }
+    }
+
     note("Installing (this destroys the disk)...");
     let mut run = vec![
         "sudo",
