@@ -41,16 +41,38 @@ pub const COMPOSE_ENV: &str = crate::config::DEFAULT_BASE;
 /// selinux, tpm2, microcode, dracut, composefs. Maintained by Fedora.
 const MINIMAL_MANIFEST: &str = "/usr/share/doc/bootc-base-imagectl/manifests/minimal/manifest.yaml";
 
-/// Every per-vendor firmware package Fedora splits out of
-/// linux-firmware (they are *recommends* of it, and the minimal core
-/// sets `recommends: false`, so nothing pulls them implicitly). This
-/// is the curated broad set a base ships by default: a machine that
+/// The per-vendor firmware a base ships by default, so a machine that
 /// declares nothing about its hardware still boots with working GPU,
 /// wifi, and audio. `system.firmware` trims it to named members.
 ///
-/// Curated against Fedora 44: `dnf repoquery --recommends
-/// linux-firmware`. Revisit on release bumps.
+/// **Do not rebuild this list from `dnf repoquery --recommends
+/// linux-firmware` alone.** That was how it was first curated, it
+/// returns exactly 13 packages, and the list matched them perfectly:
+/// the transcription was right and the method was wrong. Intel's wifi
+/// and audio firmware are recommended by `linux-firmware` and by
+/// nothing else either (`--whatrecommends iwlwifi-mvm-firmware` is
+/// empty), because Fedora expects comps groups to name them. The
+/// result was a "broad" set with no iwlwifi and no SOF, so every Intel
+/// laptop booted a published image with no wireless and no sound, and
+/// since installing pulls over the network, could not install either.
+/// Found by asking whether the ISO works on hardware that is not the
+/// author's; invisible before that, because the one declaration anybody
+/// booted pinned `firmware` to three AMD/MediaTek packages.
+///
+/// So: recommends, PLUS the explicitly-named gaps below. Server NICs,
+/// TV tuners and SDRs are deliberately absent; this is consumer
+/// hardware coverage, not every blob Fedora packages.
+///
+/// Curated against Fedora 44. Revisit on release bumps, and when you
+/// do, check a real laptop rather than the dependency graph.
 pub const FIRMWARE_PACKAGES: &[&str] = &[
+    // Named explicitly: nothing recommends these.
+    "alsa-sof-firmware",    // audio on essentially every modern Intel/AMD laptop
+    "intel-vsc-firmware",   // MIPI webcams on recent Intel laptops
+    "iwlwifi-dvm-firmware", // Intel wifi, older generations
+    "iwlwifi-mld-firmware", // Intel wifi, newest generations
+    "iwlwifi-mvm-firmware", // Intel wifi, the bulk of the last decade
+    // Recommends of linux-firmware.
     "amd-gpu-firmware",
     "amd-ucode-firmware",
     "atheros-firmware",
