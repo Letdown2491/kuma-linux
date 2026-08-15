@@ -137,6 +137,7 @@ pub const REQUIRED_TOOLS: &[(&str, &str)] = &[
     ("wipefs", "util-linux"),
     ("sfdisk", "util-linux"),
     ("blkid", "util-linux"),
+    ("findmnt", "util-linux"),
     ("fstrim", "util-linux"),
     ("udevadm", "systemd-udev"),
     ("mkfs.vfat", "dosfstools"),
@@ -286,6 +287,8 @@ cleanup() {
     btrfs subvolume delete "$fsmnt/@STORE@" >/dev/null 2>&1 || true
     umount "$fsmnt" 2>/dev/null || true
     rm -f "${conf:-}" 2>/dev/null || true
+    # Before the filesystem it lives on goes away.
+    if [ -n "${bound_tmp:-}" ]; then umount /var/tmp 2>/dev/null || true; fi
     rm -rf "$fsmnt/tmp" 2>/dev/null || true
     rmdir "$mnt" "$fsmnt" 2>/dev/null || true
     if [ -n "$loop" ]; then losetup -d "$loop" 2>/dev/null || true; fi
@@ -342,6 +345,23 @@ mkdir -p /var/lib/containers/storage
 # path rather than by whether some library reads an environment.
 export TMPDIR="$fsmnt/tmp"
 mkdir -p "$TMPDIR"
+
+# And bootc's half of it, which neither of the above reaches. bootc does
+# the ostree import from the host mount namespace, which is what
+# --pid=host is for, so the /var/tmp it writes to is this session's and
+# not the container's: passing TMPDIR in and mounting the container's
+# /var/tmp both leave it writing to the same RAM overlay it always was.
+#
+# Only when that directory is memory. A machine with a real /var/tmp
+# needs no help, and quietly moving somebody's temporary directory onto
+# a disk being installed is not a thing to do for no reason.
+bound_tmp=""
+case "$(findmnt -no FSTYPE --target /var/tmp)" in
+    tmpfs|overlay|ramfs)
+        mount --bind "$TMPDIR" /var/tmp
+        bound_tmp=1
+        ;;
+esac
 podman --root "$store" --runroot /run/kuma-install --storage-driver overlay \
     --storage-opt additionalimagestore=/var/lib/containers/storage \
     build -q -t @TAG@ -f "$ctx/Containerfile" "$ctx" >/dev/null
@@ -620,6 +640,13 @@ mod tests {
         // doing the ostree import writes big files there by decision
         // rather than by environment.
         assert!(script.contains(r#"-v "$TMPDIR:/var/tmp""#));
+        // And on the host, because bootc imports from the host mount
+        // namespace and sees none of the above. Conditional, so a
+        // machine with a real /var/tmp keeps it.
+        assert!(script.contains(r#"mount --bind "$TMPDIR" /var/tmp"#));
+        assert!(script.contains("tmpfs|overlay|ramfs"));
+        let bind_at = script.find(r#"mount --bind "$TMPDIR""#).unwrap();
+        assert!(bind_at < script.find("build -q").unwrap(), "bound before anything pulls");
         // bootc refuses a LABEL= for /boot however well formed, and says
         // so only once the disk has been formatted.
         assert!(script.contains(r#"--boot-mount-spec "UUID=$boot_uuid""#));
