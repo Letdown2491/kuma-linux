@@ -137,6 +137,7 @@ pub const REQUIRED_TOOLS: &[(&str, &str)] = &[
     ("wipefs", "util-linux"),
     ("sfdisk", "util-linux"),
     ("blkid", "util-linux"),
+    ("fstrim", "util-linux"),
     ("udevadm", "systemd-udev"),
     ("mkfs.vfat", "dosfstools"),
     ("mkfs.ext4", "e2fsprogs"),
@@ -380,11 +381,22 @@ podman --root "$store" --runroot /run/kuma-install --storage-driver overlay \
     @TAG@ \
     bootc install to-filesystem \
         --source-imgref "containers-storage:@TAG@" \
+        --skip-finalize \
         --root-mount-spec "LABEL=root" \
         --boot-mount-spec "UUID=$boot_uuid" \
         --karg "rootflags=subvol=@SUBVOL@" \
         --target-imgref "$updates" \
         "$mnt"
+
+# What --skip-finalize skipped, minus the part that cannot work here.
+# Finalizing ends by remounting the target read-only, and the target is
+# mounted three times over by then: this script has the filesystem top
+# level and the subvolume, and the container has a bind of both. The
+# remount fails with `mount point is busy` after a complete and correct
+# install. The trim is the half worth keeping, because it is what lets a
+# disk image stay sparse, and it is an optimisation rather than a step
+# an install depends on.
+fstrim "$mnt" >/dev/null 2>&1 || true
 "##;
 
 #[cfg(test)]
