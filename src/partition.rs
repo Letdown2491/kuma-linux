@@ -116,6 +116,16 @@ pub fn plan(disk_bytes: u64, encrypt: bool) -> Result<Vec<Partition>> {
     ])
 }
 
+/// The subvolume the installed root lives in.
+///
+/// Named in three places that have to agree: the subvolume created at
+/// install, the mount the installer does, and the kernel argument the
+/// machine boots with. One constant so they cannot drift.
+pub const ROOT_SUBVOL: &str = "root";
+
+/// Where the container store goes while installing. Deleted afterwards.
+pub const STORE_SUBVOL: &str = "store";
+
 /// The device node for a partition of this disk.
 ///
 /// `/dev/sda` numbers its partitions `sda1`, and `/dev/nvme0n1` numbers
@@ -157,9 +167,10 @@ pub fn format_script(plan: &[Partition]) -> String {
          # here: /dev/sda numbers its partitions sda1 and /dev/nvme0n1\n\
          # numbers them nvme0n1p1, and one implementation of that rule,\n\
          # in Rust where it is tested, beats a second one in shell.\n\
-         esp=${3:?esp device}\n\
-         boot=${4:?boot device}\n\
-         root=${5:?root device}\n\n\
+         fsmnt=${3:?where to mount the filesystem top level}\n\
+         esp=${4:?esp device}\n\
+         boot=${5:?boot device}\n\
+         root=${6:?root device}\n\n\
          # A partition table with anything left of an old one is how a\n\
          # stale signature survives to confuse a later probe.\n\
          wipefs --all --force \"$dev\" >/dev/null\n\
@@ -183,19 +194,34 @@ pub fn format_script(plan: &[Partition]) -> String {
          partprobe \"$dev\" 2>/dev/null || true\n\
          udevadm settle\n\n",
     );
-    out.push_str(
+    out.push_str(&format!(
         "mkfs.vfat -F32 -n EFI-SYSTEM \"$esp\" >/dev/null\n\
          mkfs.ext4 -q -F -L boot \"$boot\"\n\
          mkfs.btrfs -q -f -L root \"$root\"\n\n\
+         # Two subvolumes, and the second one is why this is btrfs work\n\
+         # rather than a plain mkfs. bootc install to-filesystem requires\n\
+         # the root it is given to be empty, and --replace wipe would\n\
+         # destroy anything left there, so the container store cannot sit\n\
+         # inside the target. It sits beside it: `root` is what gets\n\
+         # installed and looks empty, `store` holds the image being\n\
+         # pulled, on the target disk rather than in the RAM a live\n\
+         # session would otherwise have to find. It is deleted when the\n\
+         # install finishes.\n\
+         mkdir -p \"$fsmnt\"\n\
+         mount \"$root\" \"$fsmnt\"\n\
+         btrfs subvolume create \"$fsmnt/{ROOT_SUBVOL}\" >/dev/null\n\
+         btrfs subvolume create \"$fsmnt/{STORE_SUBVOL}\" >/dev/null\n\n\
          # Mounted in the order bootc expects to find them: the root\n\
-         # first, then what hangs off it.\n\
+         # first, then what hangs off it. subvol=root, which is also what\n\
+         # the installed machine will be told to mount, so the karg and\n\
+         # this line have to say the same thing.\n\
          mkdir -p \"$mnt\"\n\
-         mount \"$root\" \"$mnt\"\n\
+         mount -o subvol={ROOT_SUBVOL} \"$root\" \"$mnt\"\n\
          mkdir -p \"$mnt/boot\"\n\
          mount \"$boot\" \"$mnt/boot\"\n\
          mkdir -p \"$mnt/boot/efi\"\n\
-         mount \"$esp\" \"$mnt/boot/efi\"\n",
-    );
+         mount \"$esp\" \"$mnt/boot/efi\"\n"
+    ));
     out
 }
 
@@ -289,6 +315,21 @@ mod tests {
             let p = plan(40 * 1024 * 1024 * 1024, false).unwrap();
             std::fs::write(path, format_script(&p)).unwrap();
         }
+    }
+
+    /// The subvolume is named in three places that must agree: created
+    /// by the script, mounted by the script, and named in the kernel
+    /// argument the installed machine boots with. If they drift, the
+    /// install succeeds and the machine cannot find its root.
+    #[test]
+    fn the_root_subvolume_is_named_once() {
+        let script = format_script(&plan(40 * 1024 * 1024 * 1024, false).unwrap());
+        assert!(script.contains(&format!("subvolume create \"$fsmnt/{ROOT_SUBVOL}\"")));
+        assert!(script.contains(&format!("mount -o subvol={ROOT_SUBVOL}")));
+        // The store is a sibling, never inside the target: bootc requires
+        // an empty root and --replace wipe would destroy it.
+        assert!(script.contains(&format!("subvolume create \"$fsmnt/{STORE_SUBVOL}\"")));
+        assert_ne!(ROOT_SUBVOL, STORE_SUBVOL);
     }
 
     /// The sizes a person compares against the disk they are losing.
