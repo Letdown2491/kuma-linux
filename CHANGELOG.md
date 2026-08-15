@@ -15,6 +15,14 @@ as its release notes.
   with fish present and bash configured. `--shell` overrides it, and a
   shell the image does not install fails the build rather than the login,
   which is the guard a declared user's shell has always had.
+- `kuma install` refuses a `localhost/` image, and gained `--update-from`
+  for the case that refusal would otherwise block. The installed machine
+  records what it was installed from as where updates come from, and
+  `localhost` there means the machine itself, which has no registry: it
+  installs fine, boots fine, works fine, and fails the first time it is
+  asked to take a new image. Installing a local build while tracking a
+  published tag is a real thing to want, so it is now spelled out rather
+  than stumbled into.
 - The composed base ships `ncurses`. `ncurses-base` is terminfo and
   `ncurses-libs` is the library, and neither owns `/usr/bin/clear`, so a
   desktop with a terminal had no `clear`, `tput` or `reset`.

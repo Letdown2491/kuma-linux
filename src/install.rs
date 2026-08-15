@@ -35,6 +35,10 @@ use anyhow::{bail, Context, Result};
 /// apart by position is a poor place to get one wrong.
 pub struct Request {
     pub image: String,
+    /// What the installed machine fetches updates from, when that is not
+    /// the image being installed. Installing a locally built image and
+    /// tracking the published tag is the case this exists for.
+    pub update_from: Option<String>,
     pub user: Option<String>,
     pub groups: Vec<String>,
     pub hostname: Option<String>,
@@ -179,6 +183,29 @@ pub fn disk_objections(
         }
     }
     out
+}
+
+/// Why this reference cannot be what a machine updates from.
+///
+/// `localhost/...` is not a registry anybody else can reach: on the
+/// installed machine it means that machine, which has no registry
+/// running, so the first `kuma update` fails with a connection refused
+/// naming a host nobody meant. The image installs fine and the machine
+/// is stranded on it forever, which is worth catching before a disk is
+/// written rather than weeks later.
+pub fn unreachable_update_source(reference: &str) -> Option<String> {
+    if reference.starts_with("localhost/") {
+        return Some(format!(
+            "{reference} is local to the machine running this install.\n\n\
+             The installed machine records it as where updates come from, and\n\
+             `localhost` there means itself. It has no registry, so it would\n\
+             never update.\n\n\
+             Install a published image, or keep this one and say where the\n\
+             machine should update from:\n\n  \
+             --update-from ghcr.io/<owner>/kuma:niri"
+        ));
+    }
+    None
 }
 
 /// A disk somebody might install onto, as `lsblk` describes it.
@@ -480,6 +507,18 @@ tmpfs /tmp tmpfs rw 0 0
     /// stand down for it, and every other check has to stay: a disk
     /// image someone has mounted is exactly as bad to overwrite as a
     /// disk, and more likely to be in use without being noticed.
+    /// A machine that cannot update is not a machine anybody wants, and
+    /// nothing about the install says so: it succeeds, boots, works, and
+    /// fails the first time it is asked to take a new image.
+    #[test]
+    fn a_local_image_cannot_be_what_a_machine_updates_from() {
+        assert!(unreachable_update_source("localhost/kuma:latest").is_some());
+        assert!(unreachable_update_source("ghcr.io/someone/kuma:niri").is_none());
+        // Not a prefix match on the word: a registry that merely starts
+        // with those letters is somebody's real host.
+        assert!(unreachable_update_source("localhost.example.com/kuma:v1").is_none());
+    }
+
     #[test]
     fn a_file_target_is_allowed_but_not_excused() {
         assert!(disk_objections("/var/tmp/kuma.raw", "", "", true).is_empty());

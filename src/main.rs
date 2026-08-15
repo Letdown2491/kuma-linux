@@ -148,6 +148,11 @@ enum Cmd {
         /// Image to install, and to fetch updates from afterwards
         #[arg(long, default_value = PUBLISHED_IMAGE)]
         image: String,
+        /// Where the installed machine fetches updates from, if that is
+        /// not the image being installed. For installing a local build
+        /// while tracking a published tag.
+        #[arg(long)]
+        update_from: Option<String>,
         /// Account to create on the installed machine's first boot
         #[arg(long)]
         user: Option<String>,
@@ -398,9 +403,10 @@ fn run(
         Cmd::Vm { tag, output, no_run, rebuild, apply } => {
             vm(&tag, &output, no_run, rebuild, apply)
         }
-        Cmd::Install { disk, image, user, groups, hostname, shell, yes, json } => {
+        Cmd::Install { disk, image, update_from, user, groups, hostname, shell, yes, json } => {
             let groups = groups.split(',').filter(|g| !g.is_empty()).map(String::from).collect();
-            let request = install::Request { image, user, groups, hostname, shell, yes, json };
+            let request =
+                install::Request { image, update_from, user, groups, hostname, shell, yes, json };
             install(disk.as_deref(), request)
         }
         Cmd::Iso { tag, output, live } => {
@@ -1712,8 +1718,24 @@ const INSTALL_FILESYSTEM: &str = "btrfs";
 /// the plan is printed in full, the objections are checked before
 /// anything is built, and `--yes` is the only thing that writes.
 fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
-    let install::Request { image: image_owned, user, groups, hostname, shell, yes, json } = request;
+    let install::Request {
+        image: image_owned,
+        update_from,
+        user,
+        groups,
+        hostname,
+        shell,
+        yes,
+        json,
+    } = request;
     let image = image_owned.as_str();
+    // What the machine fetches updates from, which is the image being
+    // installed unless told otherwise.
+    let updates_owned = update_from.unwrap_or_else(|| image_owned.clone());
+    let updates = updates_owned.as_str();
+    if let Some(why) = install::unreachable_update_source(updates) {
+        bail!("refusing to install: {why}");
+    }
     // No --disk means ask, and asking means listing. A verb whose only
     // entry point is a device path is one a person cannot walk through:
     // on live media they would have to know about lsblk, know which of
@@ -1824,7 +1846,7 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         "  image    {image}  ({})",
         if local { "in local storage" } else { "pulled when you confirm" }
     );
-    println!("  updates  fetched from {image} afterwards");
+    println!("  updates  fetched from {updates} afterwards");
     // Shown because it cannot be changed afterwards and it decides
     // whether `[snapshots]` can ever work on the machine being made.
     println!("  root fs  {INSTALL_FILESYSTEM}  (snapshots need btrfs)");
@@ -1988,7 +2010,7 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     if to_file {
         run.push("--via-loopback");
     }
-    run.extend(["--target-imgref", image, disk_str]);
+    run.extend(["--target-imgref", updates, disk_str]);
     let wrote = run_host(&run);
 
     // That layer holds the password hash, so it does not get to outlive
