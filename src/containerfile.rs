@@ -592,7 +592,7 @@ WantedBy=multi-user.target
 /// all, and a machine installed from one would have no account, no root
 /// password, and no way in.
 ///
-/// So an installer writes /etc/kuma/user on the target and this prefers
+/// So an installer writes /var/lib/kuma/user on the target and this prefers
 /// it. Same fields, same converger, machine state instead of image
 /// content. It also gives a machine that rebased onto kuma a way to
 /// declare an account without rebuilding anything.
@@ -602,14 +602,36 @@ set -euo pipefail
 # Machine state wins over image content. Neither is an error: this unit
 # ships in every image now, including ones that declare no account,
 # because a published image is exactly that and still needs the converger
-# present for whatever writes /etc/kuma/user later.
-if [ -f /etc/kuma/user ]; then
-    . /etc/kuma/user
+# present for whatever an installer writes later.
+#
+# /var, not /etc, and the difference is not cosmetic. bootc populates /var
+# from the image once at install and never touches it again, which is
+# exactly what install-time state needs. /etc is three-way merged on every
+# update: a file the installer shipped as image content sits in that
+# deployment's /usr/etc unmodified, and the published image it updates
+# from has no such file, so the merge deletes it. The account would
+# survive (it is created at first boot) while the thing describing it
+# vanished, and the machine would quietly stop matching what was written
+# down.
+if [ -f /var/lib/kuma/user ]; then
+    . /var/lib/kuma/user
 elif [ -f /usr/lib/kuma/user ]; then
     . /usr/lib/kuma/user
-else
-    exit 0
 fi
+
+# Written by `kuma install`, for the same reason and with one extra step.
+# /etc/hostname IS image content (every kuma image bakes one), so writing
+# it here makes it a local modification, which is what survives the merge.
+# Shipping it in the installer's layer instead would revert to the
+# published image's hostname on the first update.
+if [ -f /var/lib/kuma/hostname ]; then
+    want=$(cat /var/lib/kuma/hostname)
+    if [ -n "$want" ] && [ "$(cat /etc/hostname 2>/dev/null)" != "$want" ]; then
+        echo "$want" > /etc/hostname
+        hostnamectl set-hostname "$want" 2>/dev/null || true
+    fi
+fi
+
 [ -n "${KUMA_USER:-}" ] || exit 0
 if ! id -u "$KUMA_USER" &>/dev/null; then
     args=(-m)
@@ -1698,7 +1720,7 @@ pub fn generate(config: &Config) -> String {
     // The converger ships in EVERY image, including ones that declare no
     // account. A published image declares none by design, and a machine
     // installed from it has no account and no root password, so something
-    // has to write /etc/kuma/user on the target and something has to act
+    // has to write /var/lib/kuma/user on the target and something has to act
     // on it at first boot. Shipping the unit only when the image already
     // knows the answer is what made that impossible.
     //
@@ -1890,7 +1912,7 @@ pub fn write_context(
     }
     // Unconditional, like the Containerfile lines that copy them: the
     // converger has to be present in an image that declares no account,
-    // because that is the image an installer writes /etc/kuma/user onto.
+    // because that is the image an installer writes /var/lib/kuma/user onto.
     std::fs::write(dir.join("kuma-user-sync"), USER_SYNC_SCRIPT)?;
     std::fs::write(dir.join("kuma-user-sync.service"), USER_SYNC_SERVICE)?;
     if let Some(user) = &config.user {
@@ -2547,7 +2569,7 @@ mod tests {
         // the converger. That distinction is the whole point: a published
         // image declares no account on purpose, and a machine installed
         // from one has none and no root password either, so an installer
-        // writes /etc/kuma/user on the target and something has to act on
+        // writes /var/lib/kuma/user on the target and something has to act on
         // it at first boot. Shipping the unit only when the image already
         // knew the answer is what made that impossible.
         let out = generate(&config("schema_version = 1"));
@@ -2557,18 +2579,45 @@ mod tests {
         // ... and it is a no-op with neither file present, rather than a
         // unit that fails on every boot of a userless image.
         assert!(USER_SYNC_SCRIPT.contains("elif [ -f /usr/lib/kuma/user ]"));
-        assert!(USER_SYNC_SCRIPT.contains("else\n    exit 0"));
+        assert!(USER_SYNC_SCRIPT.contains(r#"[ -n "${KUMA_USER:-}" ] || exit 0"#));
     }
 
     /// Machine state beats image content, the same way it does for
     /// hostname and timezone. On a personal image the account is
     /// declaration and gets baked; on a shared one it cannot be, because
     /// the image is shared and the person is not.
+    ///
+    /// /var rather than /etc, and that is the load-bearing half. bootc
+    /// fills /var from the image once at install and never again, while
+    /// /etc is three-way merged on every update: a file an installer
+    /// shipped as image content is not a local modification, so merging
+    /// against a published image that has no such file DELETES it. The
+    /// account would outlive the file describing it, and the converger
+    /// would quietly stop maintaining groups and shell.
     #[test]
-    fn a_written_user_file_outranks_the_baked_one() {
-        let etc = USER_SYNC_SCRIPT.find("/etc/kuma/user").unwrap();
+    fn a_written_user_file_outranks_the_baked_one_and_lives_where_updates_cannot_reach() {
+        let var = USER_SYNC_SCRIPT.find("/var/lib/kuma/user").unwrap();
         let usr = USER_SYNC_SCRIPT.find("/usr/lib/kuma/user").unwrap();
-        assert!(etc < usr, "the machine's own file has to be tried first");
+        assert!(var < usr, "the machine's own file has to be tried first");
+        assert!(
+            !USER_SYNC_SCRIPT.contains("/etc/kuma/user"),
+            "/etc is merged on update; the installer's file would be deleted"
+        );
+    }
+
+    /// /etc/hostname is image content, so writing it at boot is what
+    /// makes it a local modification and therefore what survives the
+    /// merge. Shipping it in the installer's layer instead reverts to the
+    /// published image's hostname on the first update.
+    #[test]
+    fn a_written_hostname_is_applied_at_boot_not_shipped_as_image_content() {
+        assert!(USER_SYNC_SCRIPT.contains("/var/lib/kuma/hostname"));
+        assert!(USER_SYNC_SCRIPT.contains("> /etc/hostname"));
+        // Ahead of the account guard, so a machine that named itself but
+        // declared no account still gets its name.
+        let host = USER_SYNC_SCRIPT.find("/var/lib/kuma/hostname").unwrap();
+        let guard = USER_SYNC_SCRIPT.find(r#"[ -n "${KUMA_USER:-}" ] || exit 0"#).unwrap();
+        assert!(host < guard);
     }
 
     #[test]

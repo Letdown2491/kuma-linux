@@ -16,7 +16,7 @@ Media somebody else can boot, and a machine somebody else can log into.
   `[user]`, because the image is shared and the person is not, so a machine
   installed from one has no account, no root password, and no way in.
   Anaconda's create-a-user screen used to cover that and live media has no
-  Anaconda. So the installer asks, writes `/etc/kuma/user` on the target, and
+  Anaconda. So the installer asks, writes `/var/lib/kuma/user` on the target, and
   `kuma-user-sync` creates the account at first boot exactly as it does for a
   declared one. The installer does not create users; it writes down what the
   machine converges to.
@@ -51,12 +51,27 @@ Media somebody else can boot, and a machine somebody else can log into.
   rather than only `/proc/mounts`, because the mount table names the mapper
   device for an encrypted root and a fully encrypted disk would otherwise
   look idle while running.
-- `kuma-user-sync` now reads `/etc/kuma/user` in preference to the baked
+- `kuma-user-sync` now reads `/var/lib/kuma/user` in preference to the baked
   `/usr/lib/kuma/user`, and ships in every image rather than only when an
-  account is declared. `/usr` is the image and `/etc` is machine state, the
-  line kuma draws everywhere else: on a personal image the account is
-  declaration, on a shared one it cannot be. It is a no-op with neither file
-  present.
+  account is declared. On a personal image the account is declaration and
+  gets baked; on a shared one it cannot be, because the image is shared and
+  the person is not. It is a no-op with neither file present.
+- `/var` rather than `/etc`, and the difference is not cosmetic. bootc fills
+  `/var` from the image once at install and never touches it again, while
+  `/etc` is three-way merged on every update. A file an installer ships as
+  image content is not a local modification, so merging against a published
+  image that has no such file deletes it: the account would have outlived the
+  file describing it, and the converger would have quietly stopped
+  maintaining groups and shell. The hostname has the same problem and the
+  opposite fix, since `/etc/hostname` *is* image content: it is written at
+  first boot from `/var/lib/kuma/hostname`, which is what makes it a local
+  modification and therefore what survives.
+- `kuma install` asks for a hostname too. A published image cannot know one,
+  so every machine installed from one would otherwise answer to the same
+  name.
+- Without `--yes` it describes what `--yes` will ask for rather than asking.
+  A dry run that collected a name and a password and threw them away would
+  look like an install right up until it silently was not one.
 - The composed base ships firmware for Intel wifi and SOF audio, which it
   never had. The set was curated with `dnf repoquery --recommends
   linux-firmware`, which returns 13 packages and which the list matched

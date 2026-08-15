@@ -148,6 +148,9 @@ enum Cmd {
         /// Groups for that account
         #[arg(long, default_value = "wheel")]
         groups: String,
+        /// Hostname for the installed machine
+        #[arg(long)]
+        hostname: Option<String>,
         /// Do it. Without this, print the plan and change nothing.
         #[arg(long)]
         yes: bool,
@@ -382,9 +385,9 @@ fn run(
         Cmd::Vm { tag, output, no_run, rebuild, apply } => {
             vm(&tag, &output, no_run, rebuild, apply)
         }
-        Cmd::Install { disk, image, user, groups, yes } => {
+        Cmd::Install { disk, image, user, groups, hostname, yes } => {
             let groups = groups.split(',').filter(|g| !g.is_empty()).map(String::from).collect();
-            install(disk.as_deref(), &image, user, groups, yes)
+            install(disk.as_deref(), &image, user, groups, hostname, yes)
         }
         Cmd::Iso { tag, output, live } => {
             if live {
@@ -1683,6 +1686,7 @@ fn install(
     image: &str,
     user: Option<String>,
     groups: Vec<String>,
+    hostname: Option<String>,
     yes: bool,
 ) -> Result<()> {
     // No --disk means ask, and asking means listing. A verb whose only
@@ -1739,9 +1743,20 @@ fn install(
     );
     println!("  updates  fetched from {image} afterwards");
     if !yes {
+        // Describe, do not rehearse. The interview belongs behind --yes,
+        // so a dry run that asked for a name and a password it then threw
+        // away would be theatre: it would look like an install right up
+        // until it silently was not one. Saying what --yes asks for costs
+        // three lines and leaves nobody surprised by a prompt.
+        println!("\nNothing has been changed. Re-run with --yes and kuma will ask for:");
+        println!("\n  an account name and password   created on the first boot of the");
+        println!("                                 installed machine, since a published");
+        println!("                                 image declares no account");
+        println!("  a hostname                     defaults to {}", install::DEFAULT_HOSTNAME);
         println!(
-            "\nNothing has been changed. This is the one kuma verb with no way back:\n\
-             no staged deployment to discard, no rollback slot. Re-run with --yes."
+            "\nand then destroy {}. This is the one kuma verb with no way back:\n\
+             no staged deployment to discard, no rollback slot.\n",
+            disk.display()
         );
         // Naming --image only when it is not the default: an edge is
         // worth less the more of it somebody has to read past.
@@ -1753,14 +1768,16 @@ fn install(
         print_actions(&[Action::new(
             "install",
             format!("kuma install {flags} --yes"),
-            "write it, destroying the disk",
+            "ask those, then write it",
         )]);
         return Ok(());
     }
 
     let account = install::ask_account(user, groups)?;
+    let hostname = install::ask_hostname(hostname)?;
     let dir = tempfile::tempdir().context("cannot create install directory")?;
     std::fs::write(dir.path().join("kuma-user"), install::user_file(&account))?;
+    std::fs::write(dir.path().join("kuma-hostname"), format!("{hostname}\n"))?;
     let containerfile = dir.path().join("Containerfile");
     std::fs::write(&containerfile, install::install_containerfile(image))?;
 
@@ -1807,7 +1824,7 @@ fn install(
     println!("\nInstalled {image} to {}.", disk.display());
     println!(
         "The account '{}' is created on first boot by kuma-user-sync, from\n\
-         /etc/kuma/user written onto the target.",
+         /var/lib/kuma/user written onto the target.",
         account.name
     );
     print_actions(&[Action::new(

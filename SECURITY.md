@@ -171,8 +171,13 @@ one exception: `iso --live` never calls it, and so never asks. `install` runs
 `bootc install` in a privileged container with `/dev` bound in, which is what
 writing a disk requires. Kuma asks for sudo at those points and nowhere else.
 
-`kuma install` asks for a password and writes its hash to `/etc/kuma/user` on
-the target, mode 0600, where `kuma-user-sync` reads it at first boot. The
+`kuma install` asks for a password and writes its hash to
+`/var/lib/kuma/user` on the target, mode 0600, where `kuma-user-sync` reads
+it at first boot. `/var` rather than `/etc` because bootc fills `/var` from
+the image once at install and never touches it again, while `/etc` is
+three-way merged on every update: a file an installer shipped as image
+content is not a local modification, so merging against a published image
+that has no such file would delete it. The
 password is never passed as an argument, so it does not reach `ps` or a shell
 history; piped stdin takes the account name and password as two lines. The
 hash is the same sha512-crypt at 656k rounds `kuma passwd` produces. Unlike a
