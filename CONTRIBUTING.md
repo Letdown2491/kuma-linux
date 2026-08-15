@@ -135,6 +135,23 @@ container image's real labels are not reachable through a podman mount. Both
 are explained where they are set, in `src/liveiso.rs`. It is UEFI-only, so
 give a test VM UEFI firmware.
 
+**Installing.** `kuma install` writes an image to a disk and asks for the
+account the machine creates on first boot, since a published image declares
+none. Run it with no `--disk` and it lists what it found. It is the only
+command here with no way back, so it dry-runs by default and refuses a disk
+with anything in use on it, asking `lsblk` rather than only `/proc/mounts`
+because an encrypted root is named by its mapper device in the mount table.
+
+**Publishing an image.** `.github/workflows/publish.yml`, manual dispatch
+only. It builds from a committed example, runs `scripts/publish-audit.sh`
+against the result *before* touching the registry, and refuses to push
+unsigned unless asked to. The audit is the interesting part: a published
+image must carry no account, no hostname, no ssh keys, and no build paths in
+the baked binary, and four of those five come from building it from a
+declaration with no `[user]`. The fifth does not, which is why the check
+exists rather than a rule in a document. Run it locally against any image:
+`./scripts/publish-audit.sh localhost/kuma:latest`.
+
 **Inspecting an image.** It's a normal OCI image:
 `podman run --rm -it localhost/kuma:latest bash`.
 

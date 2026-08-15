@@ -1,0 +1,149 @@
+# Publish a kuma image to ghcr.
+#
+# Manual only, on purpose. A published image is the one artifact here that
+# strangers pull and boot, and the first ones should go out when somebody
+# decides to, not as a side effect of a tag. Tag-triggered publishing is
+# the eventual shape and costs one `on: push: tags:` block when the flow
+# has been run a few times by hand.
+#
+# What this buys, and it is worth being clear that it is the cheap half:
+# somebody already on an atomic Fedora can `bootc switch` to this image
+# and keep their accounts, because those live in /var/home. Installing
+# from live media is the other half and needs `kuma install`, which needs
+# this to exist first: there is nothing to install until something is
+# published.
+name: publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      example:
+        description: Declaration to build from
+        type: choice
+        options: [niri, cosmic]
+        default: niri
+      allow_unsigned:
+        description: >-
+          Publish without a cosign signature. Off by default: an unsigned
+          image can only be rebased onto with ostree-unverified-registry,
+          which verifies nothing.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The binary is baked into the image by `kuma build`, so its build
+      # paths ride along into everything published. Same remap as
+      # release.yml; scripts/publish-audit.sh fails on any that survive.
+      - name: build kuma
+        env:
+          RUSTFLAGS: >-
+            --remap-path-prefix=${{ github.workspace }}=/kuma
+            --remap-path-prefix=/home/runner/.cargo/registry=/cargo
+        run: cargo build --locked --release
+
+      # Lowercased because ghcr rejects an uppercase path, and the owner
+      # here is not.
+      - name: name the image
+        id: ref
+        run: |
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "remote=ghcr.io/$owner/kuma:${{ inputs.example }}" >> "$GITHUB_OUTPUT"
+          echo "local=localhost/kuma-publish:${{ inputs.example }}" >> "$GITHUB_OUTPUT"
+
+      # Composes its own base, so this is the long step. The declaration
+      # is a committed example precisely because it declares no [user] and
+      # no hostname; the audit below is what enforces that rather than
+      # trusting the file to stay that way.
+      - name: build the image
+        run: |
+          ./target/release/kuma build \
+            --config "examples/${{ inputs.example }}.toml" \
+            --tag "${{ steps.ref.outputs.local }}"
+
+      # Before the registry, never after. A published image cannot be
+      # unpublished from anybody who already pulled it.
+      - name: audit for personal information
+        run: ./scripts/publish-audit.sh "${{ steps.ref.outputs.local }}"
+
+      - name: log in to ghcr
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      # Refused rather than warned about. An image people rebase onto
+      # without a signature is one they cannot verify at all, and a
+      # workflow that quietly publishes the weaker thing is how that
+      # becomes permanent. `allow_unsigned` makes it a decision.
+      - name: require a signing key
+        if: ${{ !inputs.allow_unsigned }}
+        env:
+          KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::No COSIGN_PRIVATE_KEY secret."
+            echo "Generate one with 'cosign generate-key-pair', add the private"
+            echo "half as COSIGN_PRIVATE_KEY and its password as"
+            echo "COSIGN_PASSWORD, and commit the public half so machines can"
+            echo "verify. Or re-run with allow_unsigned to publish anyway."
+            exit 1
+          fi
+
+      - name: push
+        run: |
+          podman tag "${{ steps.ref.outputs.local }}" "${{ steps.ref.outputs.remote }}"
+          podman push "${{ steps.ref.outputs.remote }}"
+
+      - uses: sigstore/cosign-installer@v3
+        if: ${{ !inputs.allow_unsigned }}
+
+      - name: sign
+        if: ${{ !inputs.allow_unsigned }}
+        env:
+          COSIGN_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # By digest, not by tag: a tag can move between the push above
+          # and the signature, and a signature on a tag says nothing about
+          # which bytes were signed.
+          digest=$(podman inspect --format '{{index .RepoDigests 0}}' \
+                     "${{ steps.ref.outputs.remote }}")
+          cosign sign --key env://COSIGN_KEY --yes "$digest"
+        # A key pair rather than keyless, decided against the alternative:
+        # a policy.json sigstoreSigned requirement takes one of keyPath,
+        # fulcio or pki, and the fulcio block needs both oidcIssuer and
+        # subjectEmail. A GitHub Actions certificate carries no email, only
+        # a URI SAN naming the workflow, so no policy can express "signed
+        # by kuma's release workflow". The release binary stays keyless
+        # because `cosign verify-blob` has no such constraint.
+
+      - name: summary
+        run: |
+          # shellcheck disable=SC2016  # Actions substitutes its own
+          # expressions before the shell runs, so single quotes here are
+          # what keeps the markdown backticks literal.
+          {
+            echo "### Published"
+            echo
+            echo '`${{ steps.ref.outputs.remote }}`'
+            echo
+            if [ "${{ inputs.allow_unsigned }}" = "true" ]; then
+              echo "**Unsigned.** Rebasing onto it verifies nothing."
+            fi
+            echo "Rebase from an atomic Fedora with:"
+            echo
+            echo '```'
+            echo "sudo bootc switch ${{ steps.ref.outputs.remote }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
