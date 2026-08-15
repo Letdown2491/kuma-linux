@@ -11,7 +11,7 @@ Media somebody else can boot, and a machine somebody else can log into.
 
 ### Behavior
 
-- `kuma install --disk /dev/X --image REF` installs kuma onto a disk. The
+- `kuma install` installs kuma onto a disk, with no arguments required. The
   account is the whole difficulty it solves: a published image declares no
   `[user]`, because the image is shared and the person is not, so a machine
   installed from one has no account, no root password, and no way in.
@@ -35,6 +35,13 @@ Media somebody else can boot, and a machine somebody else can log into.
   scripting, but a verb whose only entry point is a device path is one
   nobody can walk through, and an affordance that reads `kuma install --disk
   /dev/???` is not a move anyone can take.
+- `--image` defaults to the published image for the same reason. Requiring
+  it left the verb unusable from the one place it exists for: somebody on
+  live media has no way to know a registry path, and `kuma install` on its
+  own answered with a flag error. The plan says whether that image is in
+  local storage or will be pulled when you confirm, which is a question
+  worth answering before the step that destroys a disk, and it is asked of
+  podman rather than of a registry so a dry run stays offline.
 - Whole-disk only, and destructive. `bootc install to-disk` owns the
   partitioning, so there is no cryptsetup and no custom layout yet;
   passphrase LUKS needs `to-filesystem` and kuma owning the storage. Dry run

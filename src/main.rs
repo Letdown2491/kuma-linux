@@ -21,6 +21,16 @@ use std::path::{Path, PathBuf};
 
 pub(crate) const DEFAULT_TAG: &str = "localhost/kuma:latest";
 
+/// What `kuma install` writes when nobody names an image.
+///
+/// A required `--image` made the whole verb unusable from the place it
+/// exists for: somebody on live media has no way to know a registry path,
+/// and `kuma install` on its own answered with a clap error. Defaulting
+/// costs the honesty of naming an image that may not be published yet,
+/// which the dry run states rather than hides, and which fails at the
+/// pull rather than silently.
+pub(crate) const PUBLISHED_IMAGE: &str = "ghcr.io/letdown2491/kuma:niri";
+
 /// The root filesystem bib puts in the disks it builds. Required at all
 /// because fedora-bootc images declare no default and bib fails with
 /// "missing required info: DefaultRootFs" without one.
@@ -130,7 +140,7 @@ enum Cmd {
         #[arg(long)]
         disk: Option<PathBuf>,
         /// Image to install, and to fetch updates from afterwards
-        #[arg(long)]
+        #[arg(long, default_value = PUBLISHED_IMAGE)]
         image: String,
         /// Account to create on the installed machine's first boot
         #[arg(long)]
@@ -1716,18 +1726,33 @@ fn install(
         bail!("no such device: {}", disk.display());
     }
 
+    // Defaulting --image means the plan can name one that is not there,
+    // so say which it is. Cheap and local: podman answers from storage
+    // without touching a registry, and a dry run that reaches out to the
+    // network to describe itself would be a surprise of its own.
+    let local = host_output(&["podman", "image", "exists", image]).is_ok();
     println!("Install plan");
     println!("  disk     {}  (everything on it is destroyed)", disk.display());
-    println!("  image    {image}");
+    println!(
+        "  image    {image}  ({})",
+        if local { "in local storage" } else { "pulled when you confirm" }
+    );
     println!("  updates  fetched from {image} afterwards");
     if !yes {
         println!(
             "\nNothing has been changed. This is the one kuma verb with no way back:\n\
              no staged deployment to discard, no rollback slot. Re-run with --yes."
         );
+        // Naming --image only when it is not the default: an edge is
+        // worth less the more of it somebody has to read past.
+        let flags = if image == PUBLISHED_IMAGE {
+            format!("--disk {}", disk.display())
+        } else {
+            format!("--disk {} --image {image}", disk.display())
+        };
         print_actions(&[Action::new(
             "install",
-            format!("kuma install --disk {} --image {image} --yes", disk.display()),
+            format!("kuma install {flags} --yes"),
             "write it, destroying the disk",
         )]);
         return Ok(());
