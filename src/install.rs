@@ -347,9 +347,11 @@ pub fn choose_disk(mut disks: Vec<Disk>) -> Result<Disk> {
 
 /// Ask for the account the target will create at first boot.
 ///
-/// Piped stdin reads name and password as two lines, which keeps the
-/// verb scriptable and keeps a password out of argv where `ps` would
-/// show it. There is no `--password` flag for that reason.
+/// Not a terminal: the name comes from `--user` and stdin supplies the
+/// password, one line, nothing else. That is what keeps the password out
+/// of argv where `ps` would show it, and it is why there is no
+/// `--password` flag. Omitting `--user` there is an error rather than a
+/// prompt nobody is present to answer.
 pub fn ask_account(
     name: Option<String>,
     groups: Vec<String>,

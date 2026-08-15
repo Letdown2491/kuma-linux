@@ -286,6 +286,7 @@ cleanup() {
     btrfs subvolume delete "$fsmnt/@STORE@" >/dev/null 2>&1 || true
     umount "$fsmnt" 2>/dev/null || true
     rm -f "${conf:-}" 2>/dev/null || true
+    rm -rf "$fsmnt/tmp" 2>/dev/null || true
     rmdir "$mnt" "$fsmnt" 2>/dev/null || true
     if [ -n "$loop" ]; then losetup -d "$loop" 2>/dev/null || true; fi
 }
@@ -321,6 +322,15 @@ esac
 # the layer holding the password hash would stay on the installed disk.
 store="$fsmnt/@STORE@"
 mkdir -p /var/lib/containers/storage
+
+# Podman stages every pulled blob in TMPDIR before it reaches the store,
+# and on live media TMPDIR is the RAM-backed overlay: the pull dies with
+# `no space left on device` while the store it is pulling into has tens
+# of gigabytes free. Putting the store on the target is only half the
+# job; the staging has to land there too, or the memory ceiling this
+# whole path exists to remove is still there in a different place.
+export TMPDIR="$fsmnt/tmp"
+mkdir -p "$TMPDIR"
 podman --root "$store" --runroot /run/kuma-install --storage-driver overlay \
     --storage-opt additionalimagestore=/var/lib/containers/storage \
     build -q -t @TAG@ -f "$ctx/Containerfile" "$ctx" >/dev/null
@@ -583,6 +593,11 @@ mod tests {
         // subvolume per layer and the cleanup delete would fail on a
         // non-empty one, leaving the hash on the installed disk.
         assert!(script.contains("--storage-driver overlay"));
+        // The store on the target is half the memory story. Podman
+        // stages blobs in TMPDIR first, and on live media that is RAM.
+        assert!(script.contains(r#"export TMPDIR="$fsmnt/tmp""#));
+        let tmp_at = script.find("export TMPDIR").unwrap();
+        assert!(tmp_at < script.find("build -q").unwrap(), "set before the pull");
         // bootc refuses a LABEL= for /boot however well formed, and says
         // so only once the disk has been formatted.
         assert!(script.contains(r#"--boot-mount-spec "UUID=$boot_uuid""#));
