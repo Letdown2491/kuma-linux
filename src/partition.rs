@@ -136,6 +136,7 @@ pub const REQUIRED_TOOLS: &[(&str, &str)] = &[
     ("losetup", "util-linux"),
     ("wipefs", "util-linux"),
     ("sfdisk", "util-linux"),
+    ("blkid", "util-linux"),
     ("udevadm", "systemd-udev"),
     ("mkfs.vfat", "dosfstools"),
     ("mkfs.ext4", "e2fsprogs"),
@@ -361,10 +362,15 @@ runroot = "/run/kuma-install"
 additionalimagestores = ["/var/lib/kuma-host-store/storage"]
 STORAGE
 
+# bootc requires /boot by UUID and says so outright: a LABEL= there is
+# refused, however well formed. The root is different, and takes the
+# label: a disk that moves between machines keeps both, but the label is
+# what the printed layout named and what somebody reading the mount
+# table will recognise.
+boot_uuid=$(blkid -s UUID -o value "$boot")
+
 # bootc copies the filesystem of the container it runs in, so it runs in
-# the derived image and is handed the target already mounted. The root is
-# named by LABEL rather than by device, because a disk that moves between
-# machines keeps its labels and loses its device names.
+# the derived image and is handed the target already mounted.
 podman --root "$store" --runroot /run/kuma-install --storage-driver overlay \
     --storage-opt additionalimagestore=/var/lib/containers/storage \
     run --rm --privileged --pid=host --security-opt label=disable \
@@ -375,7 +381,7 @@ podman --root "$store" --runroot /run/kuma-install --storage-driver overlay \
     bootc install to-filesystem \
         --source-imgref "containers-storage:@TAG@" \
         --root-mount-spec "LABEL=root" \
-        --boot-mount-spec "LABEL=boot" \
+        --boot-mount-spec "UUID=$boot_uuid" \
         --karg "rootflags=subvol=@SUBVOL@" \
         --target-imgref "$updates" \
         "$mnt"
@@ -565,6 +571,10 @@ mod tests {
         // subvolume per layer and the cleanup delete would fail on a
         // non-empty one, leaving the hash on the installed disk.
         assert!(script.contains("--storage-driver overlay"));
+        // bootc refuses a LABEL= for /boot however well formed, and says
+        // so only once the disk has been formatted.
+        assert!(script.contains(r#"--boot-mount-spec "UUID=$boot_uuid""#));
+        assert!(!script.contains("LABEL=boot"));
     }
 
     /// The sizes a person compares against the disk they are losing.
