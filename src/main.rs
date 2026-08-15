@@ -8,6 +8,7 @@ mod inspect;
 mod install;
 mod liveiso;
 mod lock;
+mod partition;
 mod snapshot;
 mod state;
 mod updates;
