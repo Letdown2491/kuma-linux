@@ -28,11 +28,29 @@
 
 use anyhow::{bail, Context, Result};
 
+/// What was asked for, before any of it is checked.
+///
+/// A struct rather than eight positional parameters: this is the one
+/// verb here that cannot be undone, and a call whose arguments are told
+/// apart by position is a poor place to get one wrong.
+pub struct Request {
+    pub image: String,
+    pub user: Option<String>,
+    pub groups: Vec<String>,
+    pub hostname: Option<String>,
+    pub shell: Option<String>,
+    pub yes: bool,
+    pub json: bool,
+}
+
 /// What the person answered, and what the target will converge to.
 pub struct Account {
     pub name: String,
     pub password_hash: String,
     pub groups: Vec<String>,
+    /// None means whatever `useradd` defaults to, which is what a
+    /// declaration that names no shell also gets.
+    pub shell: Option<String>,
 }
 
 /// The file `kuma-user-sync` sources, in the format it already reads.
@@ -43,6 +61,13 @@ pub struct Account {
 /// from one whose declaration named the account.
 pub fn user_file(account: &Account) -> String {
     let mut out = format!("KUMA_USER='{}'\n", account.name);
+    // Same key the baked declaration writes, so the converger cannot
+    // tell the two apart. Absent rather than empty when unset: the sync
+    // script tests `[ -n "${KUMA_SHELL:-}" ]`, so an empty value would
+    // read as "set" and hand useradd nothing.
+    if let Some(shell) = &account.shell {
+        out.push_str(&format!("KUMA_SHELL='/usr/bin/{shell}'\n"));
+    }
     if !account.groups.is_empty() {
         out.push_str(&format!("KUMA_GROUPS='{}'\n", account.groups.join(" ")));
     }
@@ -108,10 +133,19 @@ pub const DEFAULT_HOSTNAME: &str = "kuma";
 /// a spare disk. Every other kuma verb is reversible: `switch` stages,
 /// `rollback` exists, a bad build is a build. This one is not, so the
 /// checks that stop it are the part worth being sure of.
-pub fn disk_objections(disk: &str, proc_mounts: &str, lsblk_mountpoints: &str) -> Vec<String> {
+pub fn disk_objections(
+    disk: &str,
+    proc_mounts: &str,
+    lsblk_mountpoints: &str,
+    to_file: bool,
+) -> Vec<String> {
     let mut out = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
-    if !disk.starts_with("/dev/") {
+    // A file target is a disk image, written through a loopback device.
+    // It is not a device path and must not be judged as one, but the
+    // mount checks below still run: a disk image that is currently
+    // mounted somewhere is exactly as bad to overwrite as a disk.
+    if !to_file && !disk.starts_with("/dev/") {
         out.push(format!("{disk} is not a device path"));
     }
 
@@ -277,7 +311,11 @@ pub fn choose_disk(mut disks: Vec<Disk>) -> Result<Disk> {
 /// Piped stdin reads name and password as two lines, which keeps the
 /// verb scriptable and keeps a password out of argv where `ps` would
 /// show it. There is no `--password` flag for that reason.
-pub fn ask_account(name: Option<String>, groups: Vec<String>) -> Result<Account> {
+pub fn ask_account(
+    name: Option<String>,
+    groups: Vec<String>,
+    shell: Option<String>,
+) -> Result<Account> {
     use std::io::IsTerminal;
     let interactive = std::io::stdin().is_terminal();
     let name = match name {
@@ -307,7 +345,10 @@ pub fn ask_account(name: Option<String>, groups: Vec<String>) -> Result<Account>
     if password.is_empty() {
         bail!("empty password: the installed machine would have no way in");
     }
-    Ok(Account { name, password_hash: crate::hash_password(&password)?, groups })
+    if let Some(shell) = &shell {
+        crate::config::validate_name(shell, "user.shell", &['.', '-', '_'])?;
+    }
+    Ok(Account { name, password_hash: crate::hash_password(&password)?, groups, shell })
 }
 
 #[cfg(test)]
@@ -319,6 +360,7 @@ mod tests {
             name: "mira".into(),
             password_hash: "$6$abc$def".into(),
             groups: vec!["wheel".into()],
+            shell: Some("fish".into()),
         }
     }
 
@@ -331,6 +373,11 @@ mod tests {
         assert!(text.contains("KUMA_USER='mira'"));
         assert!(text.contains("KUMA_GROUPS='wheel'"));
         assert!(text.contains("KUMA_PASSWORD_HASH='$6$abc$def'"));
+        assert!(text.contains("KUMA_SHELL='/usr/bin/fish'"));
+        // Unset means absent, not empty: the sync script treats an empty
+        // KUMA_SHELL as set and would pass useradd nothing.
+        let bare = Account { shell: None, ..account() };
+        assert!(!user_file(&bare).contains("KUMA_SHELL"));
         // Shell-sourceable: one KEY='value' per line, nothing else.
         for line in text.lines() {
             assert!(line.contains("='"), "not a shell assignment: {line}");
@@ -349,14 +396,14 @@ mod tests {
 /dev/sr0 /run/initramfs/live iso9660 ro 0 0
 tmpfs /tmp tmpfs rw 0 0
 ";
-        let objections = disk_objections("/dev/nvme0n1", mounts, "");
+        let objections = disk_objections("/dev/nvme0n1", mounts, "", false);
         assert_eq!(objections.len(), 2, "both partitions of the target");
 
         // A different disk is not an objection just because it exists.
-        assert!(disk_objections("/dev/sda", mounts, "").is_empty());
+        assert!(disk_objections("/dev/sda", mounts, "", false).is_empty());
         // ... and the partition-suffix match must not fire on a disk
         // whose name merely starts the same way.
-        assert!(disk_objections("/dev/nvme0", mounts, "").is_empty());
+        assert!(disk_objections("/dev/nvme0", mounts, "", false).is_empty());
     }
 
     /// The case /proc/mounts cannot see, and the one most likely to be
@@ -370,11 +417,11 @@ tmpfs /tmp tmpfs rw 0 0
 /dev/mapper/luks-f5d1fc89 /var btrfs rw 0 0
 ";
         assert!(
-            disk_objections("/dev/nvme0n1", mounts, "").is_empty(),
+            disk_objections("/dev/nvme0n1", mounts, "", false).is_empty(),
             "the mount table genuinely cannot see this, which is the point"
         );
         let lsblk = "/var\n/sysroot\n\n/boot\n";
-        let objections = disk_objections("/dev/nvme0n1", mounts, lsblk);
+        let objections = disk_objections("/dev/nvme0n1", mounts, lsblk, false);
         assert_eq!(objections.len(), 3, "blank lines are unmounted partitions");
         assert!(objections.iter().all(|o| o.contains("in use at")));
     }
@@ -383,7 +430,7 @@ tmpfs /tmp tmpfs rw 0 0
     #[test]
     fn the_two_sources_do_not_double_report() {
         let mounts = "/dev/sda1 /boot ext4 rw 0 0\n";
-        let objections = disk_objections("/dev/sda", mounts, "/boot\n");
+        let objections = disk_objections("/dev/sda", mounts, "/boot\n", false);
         assert_eq!(objections.len(), 1);
     }
 
@@ -424,8 +471,23 @@ tmpfs /tmp tmpfs rw 0 0
 
     #[test]
     fn a_path_that_is_not_a_device_is_an_objection() {
-        assert!(!disk_objections("nvme0n1", "", "").is_empty());
-        assert!(!disk_objections("/home/me/disk.img", "", "").is_empty());
+        assert!(!disk_objections("nvme0n1", "", "", false).is_empty());
+        assert!(!disk_objections("/home/me/disk.img", "", "", false).is_empty());
+    }
+
+    /// Installing to a file is installing to a disk image, which bootc
+    /// writes through a loopback device. The device-path rule has to
+    /// stand down for it, and every other check has to stay: a disk
+    /// image someone has mounted is exactly as bad to overwrite as a
+    /// disk, and more likely to be in use without being noticed.
+    #[test]
+    fn a_file_target_is_allowed_but_not_excused() {
+        assert!(disk_objections("/var/tmp/kuma.raw", "", "", true).is_empty());
+        let mounted = "/dev/loop0 /mnt/img ext4 rw 0 0\n";
+        assert!(
+            !disk_objections("/var/tmp/kuma.raw", mounted, "/mnt/img\n", true).is_empty(),
+            "a mounted image is still in use"
+        );
     }
 
     /// The account rides in as a layer rather than being written after

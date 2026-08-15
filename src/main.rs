@@ -154,6 +154,10 @@ enum Cmd {
         /// Groups for that account
         #[arg(long, default_value = "wheel")]
         groups: String,
+        /// Login shell for that account, e.g. fish. Must be a shell the
+        /// image installs; without it the account gets the system default.
+        #[arg(long)]
+        shell: Option<String>,
         /// Hostname for the installed machine
         #[arg(long)]
         hostname: Option<String>,
@@ -394,9 +398,10 @@ fn run(
         Cmd::Vm { tag, output, no_run, rebuild, apply } => {
             vm(&tag, &output, no_run, rebuild, apply)
         }
-        Cmd::Install { disk, image, user, groups, hostname, yes, json } => {
+        Cmd::Install { disk, image, user, groups, hostname, shell, yes, json } => {
             let groups = groups.split(',').filter(|g| !g.is_empty()).map(String::from).collect();
-            install(disk.as_deref(), &image, user, groups, hostname, yes, json)
+            let request = install::Request { image, user, groups, hostname, shell, yes, json };
+            install(disk.as_deref(), request)
         }
         Cmd::Iso { tag, output, live } => {
             if live {
@@ -1682,6 +1687,22 @@ fn iso(config_path: &Path, tag: &str, output: &Path) -> Result<()> {
 /// the install; nothing keeps it.
 const INSTALL_TAG: &str = "localhost/kuma-install:latest";
 
+/// The root filesystem `kuma install` creates.
+///
+/// Needed at all because kuma composes its own base and ships no
+/// /usr/lib/bootc/install config, so bootc has no default to read and
+/// stops with "No root filesystem specified". The same absence is why
+/// `kuma vm` passes --rootfs to bootc-image-builder.
+///
+/// btrfs rather than the ext4 that BIB_ROOTFS uses, and the difference
+/// is not taste. `[snapshots]` is btrfs-only, so a machine installed on
+/// ext4 could never use a feature kuma ships, and reinstalling is the
+/// only way to change its mind. BIB_ROOTFS is ext4 for a reason that
+/// does not apply here: repeated loopback disk builds collide on
+/// osbuild's pinned filesystem UUIDs, which is a property of building
+/// many disks, not of installing one machine.
+const INSTALL_FILESYSTEM: &str = "btrfs";
+
 /// Install kuma onto a disk. See `install` for why the account is the
 /// hard part and why it arrives as an image layer.
 ///
@@ -1690,15 +1711,9 @@ const INSTALL_TAG: &str = "localhost/kuma-install:latest";
 /// staged deployment to discard and no rollback slot to return to. So
 /// the plan is printed in full, the objections are checked before
 /// anything is built, and `--yes` is the only thing that writes.
-fn install(
-    disk: Option<&Path>,
-    image: &str,
-    user: Option<String>,
-    groups: Vec<String>,
-    hostname: Option<String>,
-    yes: bool,
-    json: bool,
-) -> Result<()> {
+fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
+    let install::Request { image: image_owned, user, groups, hostname, shell, yes, json } = request;
+    let image = image_owned.as_str();
     // No --disk means ask, and asking means listing. A verb whose only
     // entry point is a device path is one a person cannot walk through:
     // on live media they would have to know about lsblk, know which of
@@ -1725,6 +1740,15 @@ fn install(
         }
     };
     let disk_str = path_str(disk)?;
+    // A regular file target means a disk image, which bootc writes
+    // through a loopback device. Worth supporting rather than working
+    // around: producing a disk image is a real thing to want, and it is
+    // also the only way to exercise this verb end to end on a machine
+    // with no spare disk. On live media the image being installed has to
+    // land in a RAM-backed overlay first, which caps the whole path at
+    // roughly 14 GB of memory; installing to a file from an ordinary
+    // machine puts podman's storage on a real disk and lifts that.
+    let to_file = disk.is_file();
 
     // Objections first: no point asking for a password before saying the
     // disk cannot be used. The picker refuses an in-use disk too, but
@@ -1738,7 +1762,7 @@ fn install(
         Some(mounts) => mounts,
         None => host_output_any(&["lsblk", "-no", "MOUNTPOINTS", disk_str]).unwrap_or_default(),
     };
-    let objections = install::disk_objections(disk_str, &mounts, &lsblk);
+    let objections = install::disk_objections(disk_str, &mounts, &lsblk, to_file);
     if !objections.is_empty() {
         bail!(
             "refusing to install to {}:\n  {}\n\nUnmount it, or pick another disk.",
@@ -1787,12 +1811,23 @@ fn install(
         return Ok(());
     }
     println!("Install plan");
-    println!("  disk     {}  (everything on it is destroyed)", disk.display());
+    // "file", not "image": the line under it is the container image,
+    // and two rows labelled the same thing in a plan somebody reads
+    // before destroying something is a poor place to save a word.
+    println!(
+        "  {}     {}  (everything {} it is destroyed)",
+        if to_file { "file" } else { "disk" },
+        disk.display(),
+        if to_file { "in" } else { "on" }
+    );
     println!(
         "  image    {image}  ({})",
         if local { "in local storage" } else { "pulled when you confirm" }
     );
     println!("  updates  fetched from {image} afterwards");
+    // Shown because it cannot be changed afterwards and it decides
+    // whether `[snapshots]` can ever work on the machine being made.
+    println!("  root fs  {INSTALL_FILESYSTEM}  (snapshots need btrfs)");
     if !yes {
         // Describe, do not rehearse. The interview belongs behind --yes,
         // so a dry run that asked for a name and a password it then threw
@@ -1840,7 +1875,7 @@ fn install(
         }
     }
 
-    let account = install::ask_account(user, groups)?;
+    let account = install::ask_account(user, groups, shell)?;
     let hostname = install::ask_hostname(hostname)?;
     let dir = tempfile::tempdir().context("cannot create install directory")?;
     std::fs::write(dir.path().join("kuma-user"), install::user_file(&account))?;
@@ -1864,8 +1899,16 @@ fn install(
     // --target-imgref is what keeps the installed machine pointed at the
     // published image rather than at this throwaway tag, so `kuma update`
     // has something real to fetch.
+    // Into root's storage, because the next command is `sudo podman run`
+    // and root keeps its own store. The build above was rootless, so
+    // without this root finds nothing named localhost/kuma-install and
+    // falls back to pulling it from a registry called "localhost",
+    // failing with a TLS error naming a host nobody meant. `kuma vm` and
+    // `kuma iso` met this first and this helper already solved it.
+    sync_image_to_root(INSTALL_TAG, dir.path())?;
+
     note("Installing (this destroys the disk)...");
-    let wrote = run_host(&[
+    let mut run = vec![
         "sudo",
         "podman",
         "run",
@@ -1878,15 +1921,30 @@ fn install(
         "/dev:/dev",
         "-v",
         "/var/lib/containers:/var/lib/containers",
+    ];
+    // The file lives on the host, so the container needs to see the
+    // directory holding it, and bootc needs telling that the target is a
+    // file rather than a device.
+    let parent_mount;
+    if to_file {
+        let parent = disk.parent().unwrap_or(Path::new("/"));
+        parent_mount = format!("{0}:{0}", path_str(parent)?);
+        run.extend(["-v", &parent_mount]);
+    }
+    run.extend([
         INSTALL_TAG,
         "bootc",
         "install",
         "to-disk",
         "--wipe",
-        "--target-imgref",
-        image,
-        disk_str,
+        "--filesystem",
+        INSTALL_FILESYSTEM,
     ]);
+    if to_file {
+        run.push("--via-loopback");
+    }
+    run.extend(["--target-imgref", image, disk_str]);
+    let wrote = run_host(&run);
 
     // That layer holds the password hash, so it does not get to outlive
     // the install. It is a tagged image, which means `kuma clean` would
@@ -1901,6 +1959,10 @@ fn install(
     let _ = host_output(&["podman", "rmi", "-f", INSTALL_TAG]);
     wrote?;
 
+    // A disk image is not booted by rebooting: that would restart the
+    // machine that built it. The next move genuinely differs, so the
+    // response says which one it is rather than one sentence that is
+    // right half the time.
     let reboot = Action::new(
         "reboot",
         "sudo systemctl reboot",
@@ -1914,6 +1976,25 @@ fn install(
                 "user": account.name, "hostname": hostname,
                 "actions": [action_json(&reboot)],
             })
+        );
+        return Ok(());
+    }
+    if to_file && !json {
+        println!("\nInstalled {image} to {}.", disk.display());
+        println!(
+            "The account '{}' is created on first boot by kuma-user-sync, from\n\
+             /var/lib/kuma/user written onto the target. The hostname is '{hostname}'.",
+            account.name
+        );
+        println!(
+            "\nBoot it with UEFI firmware, which a disk image needs and a plain\n\
+             qemu invocation does not supply:\n\n  \
+             cp /usr/share/edk2/ovmf/OVMF_VARS.fd /var/tmp/kuma-vars.fd\n  \
+             qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 4096 \\\n    \
+             -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd \\\n    \
+             -drive if=pflash,format=raw,file=/var/tmp/kuma-vars.fd \\\n    \
+             -drive file={},format=raw,if=virtio",
+            disk.display()
         );
         return Ok(());
     }

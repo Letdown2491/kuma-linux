@@ -138,6 +138,9 @@ packages:
   - chrony          # NTP; the desktop enables chronyd.service
   - openssh-server  # remote access; VMs and smoke tests ssh in
   - passwd          # password management
+  - ncurses         # clear, tput, reset: ncurses-base ships terminfo and
+                    # ncurses-libs the library, but the commands every
+                    # interactive shell assumes live in neither
   - cryptsetup      # LUKS unlock at boot
   - fwupd           # LVFS firmware updates; security maintenance on real
                     # hardware, and nothing else in the image can do it
