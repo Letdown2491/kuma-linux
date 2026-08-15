@@ -267,6 +267,7 @@ updates=${3:?where the installed machine fetches updates from}
 mnt=$(mktemp -d)
 fsmnt=$(mktemp -d)
 loop=""
+conf=""
 
 # Unwinds wherever it stopped. A failure that leaves the target mounted
 # and a loop device attached makes the next attempt fail for a different
@@ -277,6 +278,7 @@ cleanup() {
     # account's password hash, and it must not survive the install.
     btrfs subvolume delete "$fsmnt/@STORE@" >/dev/null 2>&1 || true
     umount "$fsmnt" 2>/dev/null || true
+    rm -f "${conf:-}" 2>/dev/null || true
     rmdir "$mnt" "$fsmnt" 2>/dev/null || true
     if [ -n "$loop" ]; then losetup -d "$loop" 2>/dev/null || true; fi
 }
@@ -311,9 +313,28 @@ esac
 # store afterwards would then fail on a subvolume that is not empty, and
 # the layer holding the password hash would stay on the installed disk.
 store="$fsmnt/@STORE@"
+mkdir -p /var/lib/containers/storage
 podman --root "$store" --runroot /run/kuma-install --storage-driver overlay \
     --storage-opt additionalimagestore=/var/lib/containers/storage \
     build -q -t @TAG@ -f "$ctx/Containerfile" "$ctx" >/dev/null
+
+# bootc does not merely copy the filesystem of the container it runs in;
+# it looks the image up in container storage first, to record what the
+# machine was installed from. It looks in the default graphroot as seen
+# from inside the container, which is not where this store is, and the
+# failure reads `no such object` followed by a digest. So the store is
+# mounted where bootc will look for it, and the host's store beside it,
+# named as an additional image store for the case where the image being
+# installed was built here rather than pulled.
+conf=$(mktemp)
+cat > "$conf" <<'STORAGE'
+[storage]
+driver = "overlay"
+graphroot = "/var/lib/containers/storage"
+runroot = "/run/containers/storage"
+[storage.options]
+additionalimagestores = ["/var/lib/kuma-host-store/storage"]
+STORAGE
 
 # bootc copies the filesystem of the container it runs in, so it runs in
 # the derived image and is handed the target already mounted. The root is
@@ -323,6 +344,9 @@ podman --root "$store" --runroot /run/kuma-install --storage-driver overlay \
     --storage-opt additionalimagestore=/var/lib/containers/storage \
     run --rm --privileged --pid=host --security-opt label=disable \
     -v /dev:/dev -v "$mnt:$mnt" -v "$fsmnt:$fsmnt" \
+    -v "$store:/var/lib/containers/storage" \
+    -v /var/lib/containers:/var/lib/kuma-host-store \
+    -v "$conf:/etc/containers/storage.conf:ro" \
     @TAG@ \
     bootc install to-filesystem \
         --root-mount-spec "LABEL=root" \
