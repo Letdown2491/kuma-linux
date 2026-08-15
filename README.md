@@ -198,6 +198,27 @@ Three more exist for when you need them and never otherwise: `kuma passwd`
 hashes a password for `[user]`, `kuma schema` prints the JSON Schema for
 `kuma.toml`, and `kuma completions fish | source` wires up your shell.
 
+## Putting it on a machine
+
+```console
+$ kuma vm                 # boot the image in a disposable QEMU VM
+$ kuma iso --live         # bootable media: the image is its own live session
+$ kuma install            # write an image to a disk (destructive)
+```
+
+`iso --live` builds media that boots to a working desktop before anything
+is written to a disk, because the ISO's root filesystem *is* the image
+rather than an installer beside it. `kuma iso` without `--live` builds
+Anaconda media instead, which is about a gigabyte larger for the same
+system.
+
+`install` asks which disk, then for an account and a hostname, because a
+shared image cannot declare either: the image is shared and you are not. It
+writes them down and the machine creates them on its first boot, the same
+way a declared `[user]` works. It is the one verb here that cannot be
+undone, so it dry-runs by default and refuses a disk with anything mounted
+on it.
+
 ## Going deeper
 
 The verbs above are the whole interface. These explain the parts that are

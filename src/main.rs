@@ -154,6 +154,8 @@ enum Cmd {
         /// Do it. Without this, print the plan and change nothing.
         #[arg(long)]
         yes: bool,
+        #[arg(long)]
+        json: bool,
     },
     /// Build an installer ISO from the image (USB stick, GNOME Boxes)
     Iso {
@@ -324,7 +326,8 @@ fn main() -> Result<()> {
             | Cmd::Clean { json }
             | Cmd::Add { json, .. }
             | Cmd::Capture { json, .. }
-            | Cmd::Remove { json, .. } => *json,
+            | Cmd::Remove { json, .. }
+            | Cmd::Install { json, .. } => *json,
             _ => false,
         };
     let mutating = matches!(
@@ -385,9 +388,9 @@ fn run(
         Cmd::Vm { tag, output, no_run, rebuild, apply } => {
             vm(&tag, &output, no_run, rebuild, apply)
         }
-        Cmd::Install { disk, image, user, groups, hostname, yes } => {
+        Cmd::Install { disk, image, user, groups, hostname, yes, json } => {
             let groups = groups.split(',').filter(|g| !g.is_empty()).map(String::from).collect();
-            install(disk.as_deref(), &image, user, groups, hostname, yes)
+            install(disk.as_deref(), &image, user, groups, hostname, yes, json)
         }
         Cmd::Iso { tag, output, live } => {
             if live {
@@ -1688,6 +1691,7 @@ fn install(
     groups: Vec<String>,
     hostname: Option<String>,
     yes: bool,
+    json: bool,
 ) -> Result<()> {
     // No --disk means ask, and asking means listing. A verb whose only
     // entry point is a device path is one a person cannot walk through:
@@ -1735,6 +1739,32 @@ fn install(
     // without touching a registry, and a dry run that reaches out to the
     // network to describe itself would be a surprise of its own.
     let local = host_output(&["podman", "image", "exists", image]).is_ok();
+    // The dry run is a resource like every other read: state, facts, and
+    // the one legal move out of it. An agent that follows affordances
+    // will be handed `kuma install` on live media once there is an image
+    // to install, so it has to be able to read the answer.
+    if json && !yes {
+        let flags = if image == PUBLISHED_IMAGE {
+            format!("--disk {}", disk.display())
+        } else {
+            format!("--disk {} --image {image}", disk.display())
+        };
+        let action = Action::new(
+            "install",
+            format!("kuma install {flags} --yes"),
+            "ask for an account and hostname, then write it",
+        );
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true, "installed": false, "dry_run": true,
+                "disk": disk_str, "image": image, "image_local": local,
+                "asks": ["account name", "password", "hostname"],
+                "actions": [action_json(&action)],
+            })
+        );
+        return Ok(());
+    }
     println!("Install plan");
     println!("  disk     {}  (everything on it is destroyed)", disk.display());
     println!(
@@ -1848,17 +1878,29 @@ fn install(
         disk_str,
     ])?;
 
-    println!("\nInstalled {image} to {}.", disk.display());
-    println!(
-        "The account '{}' is created on first boot by kuma-user-sync, from\n\
-         /var/lib/kuma/user written onto the target.",
-        account.name
-    );
-    print_actions(&[Action::new(
+    let reboot = Action::new(
         "reboot",
         "sudo systemctl reboot",
         "boot the installed machine (remove the install media first)",
-    )]);
+    );
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true, "installed": true, "disk": disk_str, "image": image,
+                "user": account.name, "hostname": hostname,
+                "actions": [action_json(&reboot)],
+            })
+        );
+        return Ok(());
+    }
+    println!("\nInstalled {image} to {}.", disk.display());
+    println!(
+        "The account '{}' is created on first boot by kuma-user-sync, from\n\
+         /var/lib/kuma/user written onto the target. The hostname is '{hostname}'.",
+        account.name
+    );
+    print_actions(&[reboot]);
     Ok(())
 }
 

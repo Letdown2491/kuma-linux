@@ -265,6 +265,24 @@ warn  etc: local edits shadow the image: /etc/environment. These win over
 The cure is `cp`, not `rm`: a deletion is itself a local modification and
 carries forward as one.
 
+The same merge has a second edge, and it decides where machine state can
+live. A file that an image ships lands in `/usr/etc`, so it is not a local
+modification. If a later image drops that file, the merge drops it from
+`/etc` too. Anything written once and expected to outlive updates therefore
+cannot arrive as image content in `/etc`.
+
+That is why `kuma install` writes the account it asks for to
+`/var/lib/kuma/user` rather than `/etc/kuma/user`. bootc fills `/var` from
+the image once, at install, and never touches it again, which is exactly
+what install-time answers need. The hostname has the same problem and the
+opposite cure: `/etc/hostname` *is* image content, so the installed machine
+writes it at first boot from `/var/lib/kuma/hostname`, and writing it is
+what makes it a local modification and therefore what survives.
+
+So the rule has three parts, not two: `/usr` is the image, `/etc` is
+machine state the image also has an opinion about, and `/var` is machine
+state it does not.
+
 There is deliberately no `kuma capture` for this. Package drift is a fork
 because a package is your choice; `/etc` content is kuma's curation, so an
 edit worth keeping belongs in the image rather than in your declaration.
