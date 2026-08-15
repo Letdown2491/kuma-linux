@@ -108,6 +108,7 @@ jobs:
         if: ${{ !inputs.allow_unsigned }}
 
       - name: sign
+        id: sign
         if: ${{ !inputs.allow_unsigned }}
         env:
           COSIGN_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
@@ -119,6 +120,7 @@ jobs:
           # which bytes were signed.
           digest=$(podman inspect --format '{{index .RepoDigests 0}}' \
                      "${{ steps.ref.outputs.remote }}")
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
           cosign sign --key env://COSIGN_KEY --yes "$digest"
         # A key pair rather than keyless, decided against the alternative:
         # a policy.json sigstoreSigned requirement takes one of keyPath,
@@ -127,6 +129,20 @@ jobs:
         # a URI SAN naming the workflow, so no policy can express "signed
         # by kuma's release workflow". The release binary stays keyless
         # because `cosign verify-blob` has no such constraint.
+
+      # Against the COMMITTED public key, not the secret that just signed.
+      #
+      # A wrong COSIGN_PASSWORD fails at the step above and is obvious. A
+      # cosign.pub that does not match COSIGN_PRIVATE_KEY is not: signing
+      # succeeds, the image publishes, and verification fails on every
+      # machine that tries, forever, with nothing in this run to suggest
+      # why. This is the only place the two halves are ever compared.
+      - name: verify the signature with the key people will use
+        if: ${{ !inputs.allow_unsigned }}
+        run: |
+          set -euo pipefail
+          cosign verify --key cosign.pub "${{ steps.sign.outputs.digest }}" >/dev/null
+          echo "cosign.pub verifies what COSIGN_PRIVATE_KEY signed"
 
       - name: summary
         run: |
