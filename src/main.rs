@@ -1690,26 +1690,6 @@ fn iso(config_path: &Path, tag: &str, output: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The tag the account-carrying layer is built under. Thrown away with
-/// the install; nothing keeps it.
-const INSTALL_TAG: &str = "localhost/kuma-install:latest";
-
-/// The root filesystem `kuma install` creates.
-///
-/// Needed at all because kuma composes its own base and ships no
-/// /usr/lib/bootc/install config, so bootc has no default to read and
-/// stops with "No root filesystem specified". The same absence is why
-/// `kuma vm` passes --rootfs to bootc-image-builder.
-///
-/// btrfs rather than the ext4 that BIB_ROOTFS uses, and the difference
-/// is not taste. `[snapshots]` is btrfs-only, so a machine installed on
-/// ext4 could never use a feature kuma ships, and reinstalling is the
-/// only way to change its mind. BIB_ROOTFS is ext4 for a reason that
-/// does not apply here: repeated loopback disk builds collide on
-/// osbuild's pinned filesystem UUIDs, which is a property of building
-/// many disks, not of installing one machine.
-const INSTALL_FILESYSTEM: &str = "btrfs";
-
 /// Install kuma onto a disk. See `install` for why the account is the
 /// hard part and why it arrives as an image layer.
 ///
@@ -1797,6 +1777,22 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         bail!("no such device: {}", disk.display());
     }
 
+    // The layout is decided here, ahead of the interview, because a disk
+    // too small to hold a system is an objection like a mounted one and
+    // belongs with the others. It also has to be printed: it cannot be
+    // changed afterwards without reinstalling.
+    let disk_bytes = if to_file {
+        std::fs::metadata(disk).map(|meta| meta.len()).context("cannot size the target file")?
+    } else {
+        host_output(&["lsblk", "-bndo", "SIZE", disk_str])
+            .ok()
+            .and_then(|text| text.trim().parse::<u64>().ok())
+            .with_context(|| format!("cannot read the size of {}", disk.display()))?
+    };
+    let disk_mib = disk_bytes / (1024 * 1024);
+    let layout = partition::plan(disk_bytes, false)
+        .with_context(|| format!("cannot install to {}", disk.display()))?;
+
     // Defaulting --image means the plan can name one that is not there,
     // so say which it is. Cheap and local: podman answers from storage
     // without touching a registry, and a dry run that reaches out to the
@@ -1828,6 +1824,14 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
                 "ok": true, "installed": false, "dry_run": true,
                 "disk": disk_str, "image": image, "image_local": local,
                 "asks": ["account name", "password", "hostname"],
+                // The one decision here that cannot be revised later, so
+                // an agent reading this resource can see it before
+                // agreeing to it rather than only in the prose plan.
+                "layout": layout.iter().map(|part| serde_json::json!({
+                    "label": part.label,
+                    "size": part.size_text(disk_mib),
+                    "purpose": part.purpose,
+                })).collect::<Vec<_>>(),
                 "actions": [action_json(&action)],
             })
         );
@@ -1848,9 +1852,19 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         if local { "in local storage" } else { "pulled when you confirm" }
     );
     println!("  updates  fetched from {updates} afterwards");
-    // Shown because it cannot be changed afterwards and it decides
-    // whether `[snapshots]` can ever work on the machine being made.
-    println!("  root fs  {INSTALL_FILESYSTEM}  (snapshots need btrfs)");
+    // Shown in full because none of it can be changed afterwards, and
+    // because btrfs is load-bearing rather than taste: `[snapshots]` is
+    // btrfs-only, so a machine installed on anything else could never
+    // use a feature kuma ships.
+    println!("  layout   GPT, btrfs root (snapshots need btrfs):");
+    for part in &layout {
+        println!(
+            "             {:<10} {:>5}  {}",
+            part.label,
+            part.size_text(disk_mib),
+            part.purpose
+        );
+    }
     if !yes {
         // Describe, do not rehearse. The interview belongs behind --yes,
         // so a dry run that asked for a name and a password it then threw
@@ -1898,139 +1912,33 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         }
     }
 
-    // `--shell` beats what the image declares, which beats the system
-    // default. Read from the declaration baked into the image being
-    // installed, so an image that installs fish can say to use it
-    // without declaring a person to use it as.
-    let shell = shell.or_else(|| {
-        host_output(&["podman", "run", "--rm", image, "cat", crate::state::BAKED_CONFIG])
-            .ok()
-            .and_then(|text| toml::from_str::<Config>(&text).ok())
-            .and_then(|declared| declared.system.shell)
-    });
+    // `--shell` beats what the image declares, and saying nothing leaves
+    // the image's own answer standing: the converger sources the baked
+    // /usr/lib/kuma/user first and the installer's file second, so an
+    // omitted KUMA_SHELL is [system].shell surviving rather than a
+    // default being applied. Deliberately not read here. Reading it
+    // would mean running the image, running it would mean pulling it,
+    // and on live media a pull lands in a RAM-backed overlay, which is
+    // the ceiling this whole install path exists to get out from under.
     let account = install::ask_account(user, groups, shell)?;
     let hostname = install::ask_hostname(hostname)?;
     let dir = tempfile::tempdir().context("cannot create install directory")?;
     std::fs::write(dir.path().join("kuma-user"), install::user_file(&account))?;
     std::fs::write(dir.path().join("kuma-hostname"), format!("{hostname}\n"))?;
-    let containerfile = dir.path().join("Containerfile");
-    std::fs::write(&containerfile, install::install_containerfile(image))?;
+    std::fs::write(
+        dir.path().join("Containerfile"),
+        install::install_containerfile(image, account.shell.as_deref()),
+    )?;
+    let script = dir.path().join("install");
+    std::fs::write(&script, partition::install_script(&layout))?;
 
-    note("Preparing the image with the account...");
-    run_host(&[
-        "podman",
-        "build",
-        "-t",
-        INSTALL_TAG,
-        "-f",
-        path_str(&containerfile)?,
-        path_str(dir.path())?,
-    ])?;
+    // The script runs as root and reads this directory, and a tempdir is
+    // 0700 for whoever created it.
+    run_host(&["sudo", "chmod", "-R", "a+rX", path_str(dir.path())?])?;
 
-    // Runs from inside the derived image, because that is how bootc
-    // install works: it copies the filesystem of the container it is in.
-    // --target-imgref is what keeps the installed machine pointed at the
-    // published image rather than at this throwaway tag, so `kuma update`
-    // has something real to fetch.
-    // Into root's storage, because the next command is `sudo podman run`
-    // and root keeps its own store. The build above was rootless, so
-    // without this root finds nothing named localhost/kuma-install and
-    // falls back to pulling it from a registry called "localhost",
-    // failing with a TLS error naming a host nobody meant. `kuma vm` and
-    // `kuma iso` met this first and this helper already solved it.
-    sync_image_to_root(INSTALL_TAG, dir.path())?;
+    note("Partitioning, formatting and installing (this destroys the target)...");
+    run_host(&["sudo", "bash", path_str(&script)?, disk_str, path_str(dir.path())?, updates])?;
 
-    // The same guard the declared path gets at build time, moved to the
-    // only moment the installer can apply it.
-    //
-    // `useradd -s /usr/bin/nonsense` does not fail. It creates the
-    // account with a shell that is not there, and the machine comes up
-    // unable to log anybody in, which is the precise failure this verb
-    // exists to prevent. A declaration gets `RUN test -x /usr/bin/<shell>`
-    // and fails the build; an installer has no build to fail, so it asks
-    // the image instead. Before anything is written to the disk.
-    if let Some(shell) = &account.shell {
-        if host_output(&[
-            "podman",
-            "run",
-            "--rm",
-            INSTALL_TAG,
-            "test",
-            "-x",
-            &format!("/usr/bin/{shell}"),
-        ])
-        .is_err()
-        {
-            let shells = host_output(&["podman", "run", "--rm", INSTALL_TAG, "cat", "/etc/shells"])
-                .unwrap_or_default();
-            let available: Vec<&str> =
-                shells.lines().filter_map(|l| l.trim().strip_prefix("/usr/bin/")).collect();
-            bail!(
-                "{image} has no /usr/bin/{shell}\n\n\
-                 The account would be created with a shell that is not there, and\n\
-                 nobody could log in. Shells this image has: {}\n\n\
-                 Declare the one you want in the image's packages, or drop --shell.",
-                if available.is_empty() { "none listed".into() } else { available.join(", ") }
-            );
-        }
-    }
-
-    note("Installing (this destroys the disk)...");
-    let mut run = vec![
-        "sudo",
-        "podman",
-        "run",
-        "--rm",
-        "--privileged",
-        "--pid=host",
-        "--security-opt",
-        "label=disable",
-        "-v",
-        "/dev:/dev",
-        "-v",
-        "/var/lib/containers:/var/lib/containers",
-    ];
-    // The file lives on the host, so the container needs to see the
-    // directory holding it, and bootc needs telling that the target is a
-    // file rather than a device.
-    let parent_mount;
-    if to_file {
-        let parent = disk.parent().unwrap_or(Path::new("/"));
-        parent_mount = format!("{0}:{0}", path_str(parent)?);
-        run.extend(["-v", &parent_mount]);
-    }
-    run.extend([
-        INSTALL_TAG,
-        "bootc",
-        "install",
-        "to-disk",
-        "--wipe",
-        "--filesystem",
-        INSTALL_FILESYSTEM,
-    ]);
-    if to_file {
-        run.push("--via-loopback");
-    }
-    run.extend(["--target-imgref", updates, disk_str]);
-    let wrote = run_host(&run);
-
-    // That layer holds the password hash, so it does not get to outlive
-    // the install. It is a tagged image, which means `kuma clean` would
-    // never collect it: the prune it runs takes dangling images only, and
-    // this one inherits its base's label while keeping a name. On live
-    // media it would die with the RAM; installing a second disk from a
-    // running machine is a real thing to do, and there it would sit in
-    // container storage indefinitely.
-    //
-    // Before the error is raised, and ignoring its own, so a failed
-    // install does not leave the hash behind either.
-    let _ = host_output(&["podman", "rmi", "-f", INSTALL_TAG]);
-    wrote?;
-
-    // A disk image is not booted by rebooting: that would restart the
-    // machine that built it. The next move genuinely differs, so the
-    // response says which one it is rather than one sentence that is
-    // right half the time.
     let reboot = Action::new(
         "reboot",
         "sudo systemctl reboot",

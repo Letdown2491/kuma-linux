@@ -215,9 +215,11 @@ system.
 `install` asks which disk, then for an account and a hostname, because a
 shared image cannot declare either: the image is shared and you are not. It
 writes them down and the machine creates them on its first boot, the same
-way a declared `[user]` works. It is the one verb here that cannot be
-undone, so it dry-runs by default and refuses a disk with anything mounted
-on it.
+way a declared `[user]` works. It partitions the disk itself, so the plan
+it prints is the layout it will write: an ESP, a `/boot` outside the root
+so encryption stays a later decision rather than a reinstall, and a btrfs
+root. It is the one verb here that cannot be undone, so it dry-runs by
+default and refuses a disk with anything mounted on it.
 
 ## Going deeper
 

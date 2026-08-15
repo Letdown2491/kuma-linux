@@ -15,16 +15,6 @@
 //! besides: partitions kuma made are partitions kuma can mount before
 //! pulling, so the image lands on the target disk rather than in RAM.
 
-// Nothing calls this yet, and that is deliberate rather than an
-// oversight. `kuma install` still hands partitioning to
-// `bootc install to-disk`, so printing this layout in the plan would
-// describe a disk kuma does not create. The layout is worth agreeing on
-// before the code that writes it exists, because a partition table is
-// the one thing here that cannot be revised afterwards, so it lands
-// first and alone. The allow comes off in the commit that formats a
-// disk with it.
-#![allow(dead_code)]
-
 use anyhow::{bail, Result};
 
 /// Fedora's own ESP size, and the one Anaconda gives a kuma machine
@@ -126,25 +116,12 @@ pub const ROOT_SUBVOL: &str = "root";
 /// Where the container store goes while installing. Deleted afterwards.
 pub const STORE_SUBVOL: &str = "store";
 
-/// The device node for a partition of this disk.
+/// The tag the account-carrying layer is built under.
 ///
-/// `/dev/sda` numbers its partitions `sda1`, and `/dev/nvme0n1` numbers
-/// them `nvme0n1p1`, and the difference is whether the disk name already
-/// ends in a digit. Loop devices follow the nvme rule, which is why a
-/// test against a disk image exercises the same branch a real NVMe does
-/// rather than the easier one.
-///
-/// Deliberately not /dev/disk/by-partlabel: those names are global, and
-/// an installer runs on a machine that may already have a partition
-/// labelled `root`. Deriving from the parent cannot pick up somebody
-/// else's disk.
-pub fn device_for(disk: &str, index: usize) -> String {
-    if disk.ends_with(|c: char| c.is_ascii_digit()) {
-        format!("{disk}p{index}")
-    } else {
-        format!("{disk}{index}")
-    }
-}
+/// Never leaves the target: it is built into a store that lives on a
+/// subvolume the cleanup trap deletes, so the layer holding a password
+/// hash cannot outlive the install even when the install fails.
+pub const INSTALL_TAG: &str = "localhost/kuma-install:latest";
 
 /// Partition and format a disk, then mount it ready for bootc.
 ///
@@ -163,10 +140,10 @@ pub fn format_script(plan: &[Partition]) -> String {
          set -euo pipefail\n\
          dev=${1:?device to partition}\n\
          mnt=${2:?where to mount the result}\n\
-         # The partition nodes are computed by the caller, not derived\n\
-         # here: /dev/sda numbers its partitions sda1 and /dev/nvme0n1\n\
-         # numbers them nvme0n1p1, and one implementation of that rule,\n\
-         # in Rust where it is tested, beats a second one in shell.\n\
+         # The partition nodes are passed in rather than derived here:\n\
+         # a file target is reached through a loop device that does not\n\
+         # exist until the caller attaches it, so the name cannot be\n\
+         # known before then.\n\
          fsmnt=${3:?where to mount the filesystem top level}\n\
          esp=${4:?esp device}\n\
          boot=${5:?boot device}\n\
@@ -248,6 +225,7 @@ pub fn install_script(plan: &[Partition]) -> String {
     INSTALL_TEMPLATE
         .replace("@FORMAT@", &format_body)
         .replace("@STORE@", STORE_SUBVOL)
+        .replace("@TAG@", INSTALL_TAG)
         .replace("@SUBVOL@", ROOT_SUBVOL)
 }
 
@@ -300,13 +278,25 @@ esac
 # copying it here first. That store is read-only to podman, so a pull
 # still lands on the target.
 store="$fsmnt/@STORE@"
-podman --root "$store" --runroot /run/kuma-install     --storage-opt additionalimagestore=/var/lib/containers/storage     build -q -t localhost/kuma-install:latest -f "$ctx/Containerfile" "$ctx" >/dev/null
+podman --root "$store" --runroot /run/kuma-install \
+    --storage-opt additionalimagestore=/var/lib/containers/storage \
+    build -q -t @TAG@ -f "$ctx/Containerfile" "$ctx" >/dev/null
 
 # bootc copies the filesystem of the container it runs in, so it runs in
 # the derived image and is handed the target already mounted. The root is
 # named by LABEL rather than by device, because a disk that moves between
 # machines keeps its labels and loses its device names.
-podman --root "$store" --runroot /run/kuma-install     --storage-opt additionalimagestore=/var/lib/containers/storage     run --rm --privileged --pid=host --security-opt label=disable     -v /dev:/dev -v "$mnt:$mnt" -v "$fsmnt:$fsmnt"     localhost/kuma-install:latest     bootc install to-filesystem         --root-mount-spec "LABEL=root"         --boot-mount-spec "LABEL=boot"         --karg "rootflags=subvol=@SUBVOL@"         --target-imgref "$updates"         "$mnt"
+podman --root "$store" --runroot /run/kuma-install \
+    --storage-opt additionalimagestore=/var/lib/containers/storage \
+    run --rm --privileged --pid=host --security-opt label=disable \
+    -v /dev:/dev -v "$mnt:$mnt" -v "$fsmnt:$fsmnt" \
+    @TAG@ \
+    bootc install to-filesystem \
+        --root-mount-spec "LABEL=root" \
+        --boot-mount-spec "LABEL=boot" \
+        --karg "rootflags=subvol=@SUBVOL@" \
+        --target-imgref "$updates" \
+        "$mnt"
 "##;
 
 #[cfg(test)]
@@ -357,13 +347,32 @@ mod tests {
     /// nvme0n1p1. Loop devices follow the nvme rule, so a test against a
     /// disk image exercises the same branch a real NVMe does rather than
     /// the easier one.
+    ///
+    /// Checked by running the script's own case statement rather than by
+    /// reimplementing it: the rule has to be applied after the loop
+    /// device is attached, so shell is where it lives, and a Rust copy
+    /// of it would be a second implementation that could agree with the
+    /// test while disagreeing with the script.
     #[test]
     fn partition_nodes_follow_the_rule_for_each_kind_of_disk() {
-        assert_eq!(device_for("/dev/sda", 1), "/dev/sda1");
-        assert_eq!(device_for("/dev/vda", 3), "/dev/vda3");
-        assert_eq!(device_for("/dev/nvme0n1", 1), "/dev/nvme0n1p1");
-        assert_eq!(device_for("/dev/loop0", 2), "/dev/loop0p2");
-        assert_eq!(device_for("/dev/mmcblk0", 3), "/dev/mmcblk0p3");
+        let case = INSTALL_TEMPLATE
+            .split_once("case \"$dev\" in")
+            .map(|(_, rest)| rest.split_once("esac").unwrap().0)
+            .map(|body| format!("case \"$dev\" in{body}esac\necho \"$esp $boot $root\""))
+            .unwrap();
+        for (dev, want) in [
+            ("/dev/sda", "/dev/sda1 /dev/sda2 /dev/sda3"),
+            ("/dev/vda", "/dev/vda1 /dev/vda2 /dev/vda3"),
+            ("/dev/nvme0n1", "/dev/nvme0n1p1 /dev/nvme0n1p2 /dev/nvme0n1p3"),
+            ("/dev/loop0", "/dev/loop0p1 /dev/loop0p2 /dev/loop0p3"),
+            ("/dev/mmcblk0", "/dev/mmcblk0p1 /dev/mmcblk0p2 /dev/mmcblk0p3"),
+        ] {
+            let out = std::process::Command::new("bash")
+                .args(["-c", &format!("dev={dev}\n{case}")])
+                .output()
+                .expect("bash");
+            assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), want, "for {dev}");
+        }
     }
 
     /// The script destroys everything it touches, so what it contains is

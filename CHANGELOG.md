@@ -7,14 +7,16 @@ as its release notes.
 
 ### Behavior
 
-- `[system].shell` declares the login shell accounts on a machine get, and
-  `kuma install` reads it from the declaration baked into whatever it is
-  installing. It exists because `[user].shell` describes a person, and
-  shareable media declares no person: an image could install fish and have
-  no way to say to use it, so the first machine installed from one came up
-  with fish present and bash configured. `--shell` overrides it, and a
-  shell the image does not install fails the build rather than the login,
-  which is the guard a declared user's shell has always had.
+- `[system].shell` declares the login shell accounts on a machine get. It
+  exists because `[user].shell` describes a person, and shareable media
+  declares no person: an image could install fish and have no way to say to
+  use it, so the first machine installed from one came up with fish present
+  and bash configured. A machine installed from that image inherits it
+  without the installer having to read the image, because `kuma-user-sync`
+  now sources the baked account file first and the installer's file second,
+  taking each key from the later one. `--shell` overrides it, and a shell
+  the image does not install fails the build rather than the login, which
+  is the guard a declared user's shell has always had.
 - `kuma install` refuses a `localhost/` image, and gained `--update-from`
   for the case that refusal would otherwise block. The installed machine
   records what it was installed from as where updates come from, and
@@ -26,17 +28,24 @@ as its release notes.
 - The composed base ships `ncurses`. `ncurses-base` is terminfo and
   `ncurses-libs` is the library, and neither owns `/usr/bin/clear`, so a
   desktop with a terminal had no `clear`, `tput` or `reset`.
+- `kuma install` partitions the disk itself rather than handing it to
+  `bootc install to-disk`, and the plan prints the layout it is about to
+  write: a 600M ESP, a 2G `/boot`, and the rest as a btrfs root holding two
+  subvolumes. Two things follow from owning it. `/boot` is outside the root
+  even unencrypted, because GRUB reads a kernel before anything is
+  unlocked, so passphrase LUKS becomes a change to what lives inside the
+  third partition rather than a different disk shape somebody would have to
+  reinstall into. And the container store goes on the target instead of in
+  memory: installing from live media used to pull the image into a
+  RAM-backed overlay, which failed on an 8G machine and on a 10G one, and
+  now needs no more RAM than booting the media does.
+- A disk smaller than 16G is refused before anything is asked, with the
+  arithmetic that makes it too small, rather than partway through an
+  install.
 - `kuma install` takes a file as its target, installing to a disk image
   through a loopback device. Producing a disk image is worth doing on its
-  own, and it is also the only way to exercise the installer on a machine
-  with no spare disk: from live media the image being installed has to land
-  in a RAM-backed overlay first, which needs more memory than most laptops
-  have.
-- `kuma install` names the root filesystem explicitly. kuma composes its
-  own base and ships no bootc install config, so bootc had no default to
-  read and stopped with "No root filesystem specified". btrfs rather than
-  ext4, because `[snapshots]` is btrfs-only and reinstalling is the only
-  way to change a machine's mind about that.
+  own, and it is also how the installer gets exercised end to end on a
+  machine with no spare disk.
 
 ## v0.6.0 (2026-08-14)
 

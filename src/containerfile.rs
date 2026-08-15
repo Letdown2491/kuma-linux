@@ -628,10 +628,19 @@ set -euo pipefail
 # survive (it is created at first boot) while the thing describing it
 # vanished, and the machine would quietly stop matching what was written
 # down.
-if [ -f /var/lib/kuma/user ]; then
-    . /var/lib/kuma/user
-elif [ -f /usr/lib/kuma/user ]; then
+if [ -f /usr/lib/kuma/user ]; then
     . /usr/lib/kuma/user
+fi
+if [ -f /var/lib/kuma/user ]; then
+    # The installer answers for the person; the image still answers for
+    # itself. Clearing the account keys first means an image that
+    # declared a user cannot lend its name, password or groups to the
+    # account somebody typed at install time. KUMA_SHELL is the one key
+    # deliberately left to carry over: [system].shell describes the
+    # image, not a person, so an image that installs fish says so once
+    # and an installer that was told nothing about shells inherits it.
+    unset KUMA_USER KUMA_PASSWORD_HASH KUMA_GROUPS
+    . /var/lib/kuma/user
 fi
 
 # Written by `kuma install`, for the same reason and with one extra step.
@@ -2602,7 +2611,7 @@ mod tests {
         assert!(out.contains("RUN systemctl enable kuma-user-sync.service"));
         // ... and it is a no-op with neither file present, rather than a
         // unit that fails on every boot of a userless image.
-        assert!(USER_SYNC_SCRIPT.contains("elif [ -f /usr/lib/kuma/user ]"));
+        assert!(USER_SYNC_SCRIPT.contains("if [ -f /usr/lib/kuma/user ]"));
         assert!(USER_SYNC_SCRIPT.contains(r#"[ -n "${KUMA_USER:-}" ] || exit 0"#));
     }
 
@@ -2639,9 +2648,21 @@ mod tests {
     /// would quietly stop maintaining groups and shell.
     #[test]
     fn a_written_user_file_outranks_the_baked_one_and_lives_where_updates_cannot_reach() {
-        let var = USER_SYNC_SCRIPT.find("/var/lib/kuma/user").unwrap();
-        let usr = USER_SYNC_SCRIPT.find("/usr/lib/kuma/user").unwrap();
-        assert!(var < usr, "the machine's own file has to be tried first");
+        // Both are sourced, machine state second, so the later
+        // assignments win key by key. Whole-file precedence was wrong in
+        // one direction that mattered: an image declares [system].shell
+        // and no person, an installer writes a person and was told
+        // nothing about shells, and skipping the image's file entirely
+        // made a machine whose shell nobody had asked for.
+        let usr = USER_SYNC_SCRIPT.find(". /usr/lib/kuma/user").unwrap();
+        let var = USER_SYNC_SCRIPT.find(". /var/lib/kuma/user").unwrap();
+        assert!(usr < var, "the machine's own file has to be sourced last");
+        // The keys that describe a person do not carry over, so an image
+        // that named one cannot lend its password to somebody else's
+        // account.
+        let unset = USER_SYNC_SCRIPT.find("unset KUMA_USER").unwrap();
+        assert!(usr < unset && unset < var);
+        assert!(!USER_SYNC_SCRIPT.contains("unset KUMA_SHELL"), "[system].shell is the image's");
         assert!(
             !USER_SYNC_SCRIPT.contains("/etc/kuma/user"),
             "/etc is merged on update; the installer's file would be deleted"
