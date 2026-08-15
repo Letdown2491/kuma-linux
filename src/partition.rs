@@ -318,20 +318,25 @@ podman --root "$store" --runroot /run/kuma-install --storage-driver overlay \
     --storage-opt additionalimagestore=/var/lib/containers/storage \
     build -q -t @TAG@ -f "$ctx/Containerfile" "$ctx" >/dev/null
 
-# bootc does not merely copy the filesystem of the container it runs in;
-# it looks the image up in container storage first, to record what the
-# machine was installed from. It looks in the default graphroot as seen
-# from inside the container, which is not where this store is, and the
-# failure reads `no such object` followed by a digest. So the store is
-# mounted where bootc will look for it, and the host's store beside it,
-# named as an additional image store for the case where the image being
-# installed was built here rather than pulled.
+# bootc does not merely copy the filesystem of the container it runs in.
+# It reads /run/.containerenv, takes the image ID podman recorded there,
+# and asks container storage what that ID is, so it can record what the
+# machine was installed from. Asking means the default store as seen
+# from inside the container, which this store is not, and the failure
+# reads `no such object` followed by a digest, after the disk has
+# already been partitioned and formatted.
+#
+# --source-imgref skips that discovery and names the source outright.
+# The store is reachable inside the container because $fsmnt is mounted
+# at the same path, so one config describes it for both: the host's
+# store is an additional image store, which is what lets an image built
+# here rather than pulled resolve its base layers.
 conf=$(mktemp)
-cat > "$conf" <<'STORAGE'
+cat > "$conf" <<STORAGE
 [storage]
 driver = "overlay"
-graphroot = "/var/lib/containers/storage"
-runroot = "/run/containers/storage"
+graphroot = "$store"
+runroot = "/run/kuma-install"
 [storage.options]
 additionalimagestores = ["/var/lib/kuma-host-store/storage"]
 STORAGE
@@ -344,11 +349,11 @@ podman --root "$store" --runroot /run/kuma-install --storage-driver overlay \
     --storage-opt additionalimagestore=/var/lib/containers/storage \
     run --rm --privileged --pid=host --security-opt label=disable \
     -v /dev:/dev -v "$mnt:$mnt" -v "$fsmnt:$fsmnt" \
-    -v "$store:/var/lib/containers/storage" \
     -v /var/lib/containers:/var/lib/kuma-host-store \
     -v "$conf:/etc/containers/storage.conf:ro" \
     @TAG@ \
     bootc install to-filesystem \
+        --source-imgref "containers-storage:@TAG@" \
         --root-mount-spec "LABEL=root" \
         --boot-mount-spec "LABEL=boot" \
         --karg "rootflags=subvol=@SUBVOL@" \
