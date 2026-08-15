@@ -54,12 +54,27 @@ jobs:
 
       # Lowercased because ghcr rejects an uppercase path, and the owner
       # here is not.
+      # Two tags for one image: a moving one to track, and a pinned one
+      # to go back to. `:niri` means "the current niri image", which is
+      # what somebody rebasing wants and is also useless for saying "the
+      # one that worked last week": every publish overwrites what it
+      # means. kuma.lock exists because kuma cares about pinning what a
+      # build came from; the images it produces had no equivalent.
+      #
+      # The version comes from Cargo.toml, so a publish cannot label
+      # itself something the binary inside it disagrees with.
       - name: name the image
         id: ref
         run: |
+          set -euo pipefail
           owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          echo "remote=ghcr.io/$owner/kuma:${{ inputs.example }}" >> "$GITHUB_OUTPUT"
-          echo "local=localhost/kuma-publish:${{ inputs.example }}" >> "$GITHUB_OUTPUT"
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          repo="ghcr.io/$owner/kuma"
+          {
+            echo "remote=$repo:${{ inputs.example }}"
+            echo "pinned=$repo:${{ inputs.example }}-$version"
+            echo "local=localhost/kuma-publish:${{ inputs.example }}"
+          } >> "$GITHUB_OUTPUT"
 
       # Composes its own base, so this is the long step. The declaration
       # is a committed example precisely because it declares no [user] and
@@ -123,7 +138,11 @@ jobs:
         run: |
           set -euo pipefail
           podman tag "${{ steps.ref.outputs.local }}" "${{ steps.ref.outputs.remote }}"
+          podman tag "${{ steps.ref.outputs.local }}" "${{ steps.ref.outputs.pinned }}"
           podman push --digestfile digest.txt "${{ steps.ref.outputs.remote }}"
+          # Same manifest, so the same digest and the one signature below
+          # covers both tags.
+          podman push "${{ steps.ref.outputs.pinned }}"
           echo "digest=$(cat digest.txt)" >> "$GITHUB_OUTPUT"
 
       - name: sign
@@ -162,8 +181,10 @@ jobs:
         if: ${{ !inputs.allow_unsigned }}
         run: |
           set -euo pipefail
-          cosign verify --key cosign.pub "${{ steps.ref.outputs.remote }}" >/dev/null
-          echo "cosign.pub verifies the image the tag actually resolves to"
+          for ref in "${{ steps.ref.outputs.remote }}" "${{ steps.ref.outputs.pinned }}"; do
+            cosign verify --key cosign.pub "$ref" >/dev/null
+            echo "verified: $ref"
+          done
 
       - name: summary
         run: |
@@ -173,7 +194,8 @@ jobs:
           {
             echo "### Published"
             echo
-            echo '`${{ steps.ref.outputs.remote }}`'
+            echo '`${{ steps.ref.outputs.remote }}`  (moves)'
+            echo '`${{ steps.ref.outputs.pinned }}`  (pinned)'
             echo
             if [ "${{ inputs.allow_unsigned }}" = "true" ]; then
               echo "**Unsigned.** Rebasing onto it verifies nothing."
