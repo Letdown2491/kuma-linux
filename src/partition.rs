@@ -247,6 +247,8 @@ loop=""
 # reason than the first one did, which is how an afternoon disappears.
 cleanup() {
     umount -R "$mnt" 2>/dev/null || true
+    # Not tidiness: that subvolume holds the image layer carrying the
+    # account's password hash, and it must not survive the install.
     btrfs subvolume delete "$fsmnt/@STORE@" >/dev/null 2>&1 || true
     umount "$fsmnt" 2>/dev/null || true
     rmdir "$mnt" "$fsmnt" 2>/dev/null || true
@@ -277,8 +279,13 @@ esac
 # additionalimagestore so a locally built image can be installed without
 # copying it here first. That store is read-only to podman, so a pull
 # still lands on the target.
+#
+# The driver is named rather than detected, because the target is btrfs
+# and podman's btrfs driver makes a subvolume per layer. Deleting the
+# store afterwards would then fail on a subvolume that is not empty, and
+# the layer holding the password hash would stay on the installed disk.
 store="$fsmnt/@STORE@"
-podman --root "$store" --runroot /run/kuma-install \
+podman --root "$store" --runroot /run/kuma-install --storage-driver overlay \
     --storage-opt additionalimagestore=/var/lib/containers/storage \
     build -q -t @TAG@ -f "$ctx/Containerfile" "$ctx" >/dev/null
 
@@ -286,7 +293,7 @@ podman --root "$store" --runroot /run/kuma-install \
 # the derived image and is handed the target already mounted. The root is
 # named by LABEL rather than by device, because a disk that moves between
 # machines keeps its labels and loses its device names.
-podman --root "$store" --runroot /run/kuma-install \
+podman --root "$store" --runroot /run/kuma-install --storage-driver overlay \
     --storage-opt additionalimagestore=/var/lib/containers/storage \
     run --rm --privileged --pid=host --security-opt label=disable \
     -v /dev:/dev -v "$mnt:$mnt" -v "$fsmnt:$fsmnt" \
@@ -448,6 +455,11 @@ mod tests {
         assert!(script.contains("--root \"$store\""));
         // No placeholder survived substitution.
         assert!(!script.contains('@'), "an @PLACEHOLDER@ was left unreplaced");
+        // The store holds a layer with a password hash in it, so the
+        // driver is pinned: podman's btrfs driver would make a
+        // subvolume per layer and the cleanup delete would fail on a
+        // non-empty one, leaving the hash on the installed disk.
+        assert!(script.contains("--storage-driver overlay"));
     }
 
     /// The sizes a person compares against the disk they are losing.
