@@ -113,26 +113,31 @@ jobs:
             exit 1
           fi
 
+      # --digestfile, because the registry decides the digest and podman
+      # only finds out by being told. `podman inspect .RepoDigests` reports
+      # the LOCAL manifest, which is not what the registry stored once
+      # podman recompressed layers on the way up, and signing that gives a
+      # signature for a manifest nobody can fetch.
       - name: push
+        id: push
         run: |
+          set -euo pipefail
           podman tag "${{ steps.ref.outputs.local }}" "${{ steps.ref.outputs.remote }}"
-          podman push "${{ steps.ref.outputs.remote }}"
+          podman push --digestfile digest.txt "${{ steps.ref.outputs.remote }}"
+          echo "digest=$(cat digest.txt)" >> "$GITHUB_OUTPUT"
 
       - name: sign
-        id: sign
         if: ${{ !inputs.allow_unsigned }}
         env:
           COSIGN_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
         run: |
           set -euo pipefail
-          # By digest, not by tag: a tag can move between the push above
-          # and the signature, and a signature on a tag says nothing about
-          # which bytes were signed.
-          digest=$(podman inspect --format '{{index .RepoDigests 0}}' \
-                     "${{ steps.ref.outputs.remote }}")
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          cosign sign --key env://COSIGN_KEY --yes "$digest"
+          # By digest, not by tag: a tag can move between the push and the
+          # signature, and a signature on a tag says nothing about which
+          # bytes were signed. The digest comes from the push itself.
+          cosign sign --key env://COSIGN_KEY --yes \
+            "${{ steps.ref.outputs.remote }}@${{ steps.push.outputs.digest }}"
         # A key pair rather than keyless, decided against the alternative:
         # a policy.json sigstoreSigned requirement takes one of keyPath,
         # fulcio or pki, and the fulcio block needs both oidcIssuer and
@@ -141,19 +146,24 @@ jobs:
         # by kuma's release workflow". The release binary stays keyless
         # because `cosign verify-blob` has no such constraint.
 
-      # Against the COMMITTED public key, not the secret that just signed.
+      # By TAG, with the committed public key: exactly the command
+      # SECURITY.md gives a stranger, run against the registry rather than
+      # against anything this job computed.
       #
-      # A wrong COSIGN_PASSWORD fails at the step above and is obvious. A
-      # cosign.pub that does not match COSIGN_PRIVATE_KEY is not: signing
-      # succeeds, the image publishes, and verification fails on every
-      # machine that tries, forever, with nothing in this run to suggest
-      # why. This is the only place the two halves are ever compared.
-      - name: verify the signature with the key people will use
+      # That is the whole point, and the earlier version got it wrong. It
+      # verified the same digest string the sign step had produced, so when
+      # that digest turned out to name a manifest the registry did not
+      # have, cosign found the signature it had just written and passed.
+      # The step meant to catch a silent signing failure shared the
+      # failure's input and confirmed it. Verifying the tag resolves
+      # through the registry, so it can only pass if what people pull is
+      # what was signed.
+      - name: verify the way a stranger would
         if: ${{ !inputs.allow_unsigned }}
         run: |
           set -euo pipefail
-          cosign verify --key cosign.pub "${{ steps.sign.outputs.digest }}" >/dev/null
-          echo "cosign.pub verifies what COSIGN_PRIVATE_KEY signed"
+          cosign verify --key cosign.pub "${{ steps.ref.outputs.remote }}" >/dev/null
+          echo "cosign.pub verifies the image the tag actually resolves to"
 
       - name: summary
         run: |
