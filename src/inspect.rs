@@ -549,13 +549,37 @@ fn fstab_declares_root(text: &str) -> bool {
     })
 }
 
+/// Is this installer media rather than a machine?
+///
+/// A marker file, not an inference. The tempting test is "a kuma image
+/// that is not ostree-booted", but that is also true of `podman run` on
+/// the image and of an image being built, and a check that quietly
+/// changes its mind about what it is looking at is worse than one that
+/// asks. The live layer writes this; nothing else does.
+fn live_media() -> bool {
+    Path::new(crate::liveiso::LIVE_MARKER).exists()
+}
+
+/// A kuma machine that kuma actually converges: the image is kuma's AND
+/// it was booted as a deployment. The second half is what separates a
+/// running machine from live media or a container of the same image, and
+/// it is the condition kuma's own boot units already use.
+fn booted_kuma_machine() -> bool {
+    Path::new("/usr/lib/kuma").is_dir() && Path::new("/run/ostree-booted").exists()
+}
+
 pub fn doctor(json: bool) -> Result<()> {
     let mut findings: Vec<Finding> = Vec::new();
     let mut report = |grade: Grade, name: &str, detail: String, fix: Option<Action>| {
         findings.push(Finding { grade, name: name.to_string(), detail, fix });
     };
 
-    check_deployment(&mut report);
+    let live = live_media();
+    // Live media has no deployment by design, so asking about one can
+    // only produce a warning about a fact rather than a problem.
+    if !live {
+        check_deployment(&mut report);
+    }
 
     match host_output_any(&["systemctl", "--failed", "--plain", "--no-legend"]) {
         Ok(out) if out.is_empty() => {
@@ -607,11 +631,35 @@ pub fn doctor(json: bool) -> Result<()> {
         Err(_) => report(Grade::Warn, "units", "systemctl unavailable".into(), None),
     }
 
-    if Path::new("/usr/lib/kuma").is_dir() {
+    // Three different places kuma can be asked how a machine is doing,
+    // and only one of them has a machine.
+    //
+    // The checks below all grade a system kuma converges: timers that
+    // should be running, a bootloader that should count boot attempts,
+    // an /etc that should match the image. Live media runs none of that
+    // on purpose and an unbooted image has not started yet, so reporting
+    // those as failures states a deliberate design as a fault. That
+    // matters most exactly where it looked worst: the first `kuma
+    // doctor` a newcomer runs is the one inside the live session.
+    if live {
+        report(
+            Grade::Ok,
+            "live media",
+            "running from installer media; nothing converges and nothing persists".into(),
+            None,
+        );
+    } else if booted_kuma_machine() {
         check_convergence(&mut report);
         check_snapshots(&mut report);
         check_boot_health(&mut report);
         check_etc_drift(&mut report);
+    } else if Path::new("/usr/lib/kuma").is_dir() {
+        report(
+            Grade::Warn,
+            "kuma",
+            "a kuma image, but not booted as a deployment; convergence checks skipped".into(),
+            None,
+        );
     } else {
         report(
             Grade::Warn,

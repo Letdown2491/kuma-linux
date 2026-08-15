@@ -171,6 +171,10 @@ struct Observed {
     config: ConfigFact,
     image: Option<ImageFact>,
     machine: MachineFact,
+    /// Running from installer media. A field rather than a probe inside
+    /// `classify`, so the classifier stays a pure function of what was
+    /// observed and this state is testable without an ISO.
+    live: bool,
 }
 
 struct Snapshot {
@@ -278,6 +282,7 @@ fn observe(config_path: &Path) -> Observed {
         config,
         image,
         machine: observe_machine(),
+        live: Path::new(crate::liveiso::LIVE_MARKER).exists(),
     }
 }
 
@@ -343,6 +348,33 @@ fn count(drift: &mut Vec<String>, n: usize, what: &str) {
 /// order; the first that holds names the state, and every condition that
 /// holds contributes its edges. Pure, so it's testable without a machine.
 fn classify(obs: &Observed) -> Snapshot {
+    // Live media returns before anything else is considered, rather than
+    // claiming first and letting the rest contribute edges like every
+    // other state does.
+    //
+    // The reason is that the other branches read this session as a
+    // developer's workstation and are each individually right about it:
+    // there is no bootc deployment, `localhost/kuma:latest` is genuinely
+    // not in podman storage, and the declaration genuinely has not been
+    // built here. Together they produced `state: in-sync - nothing
+    // pending` with a single `kuma init` edge, on the one medium where
+    // the person reading is most likely to be a stranger and the answer
+    // "nothing pending" is most wrong. Nothing else is worth saying here,
+    // so nothing else is said.
+    if obs.live {
+        return Snapshot {
+            state: "live",
+            headline: "running from installer media; nothing here persists".into(),
+            facts: live_facts(obs),
+            // No edges, and that is the honest answer rather than a gap.
+            // Installing means pulling the image this media was built
+            // from, and kuma publishes no images yet, so there is no
+            // command that would work. An affordance that fails is worse
+            // than an absence that is stated. This becomes the install
+            // edge the moment there is something to pull.
+            actions: Vec::new(),
+        };
+    }
     let mut state: Option<(&'static str, String)> = None;
     let mut actions: Vec<Action> = Vec::new();
     let mut claim = |s: &'static str, headline: String| {
@@ -469,6 +501,31 @@ fn classify(obs: &Observed) -> Snapshot {
     Snapshot { state, headline, facts: facts_of(obs), actions }
 }
 
+/// The three facts that mean something on installer media.
+///
+/// The ordinary `machine` line would say "not a bootc machine
+/// (build/test workspace)", which is true of the mechanism and wrong
+/// about the situation.
+fn live_facts(obs: &Observed) -> [(&'static str, String); 3] {
+    let config = match &obs.config {
+        ConfigFact::Loaded { rpm, flatpak, brew } | ConfigFact::Baked { rpm, flatpak, brew } => {
+            format!("{rpm} rpm, {flatpak} flatpak, {brew} brew; what this media would install")
+        }
+        _ => "none carried".to_string(),
+    };
+    // The same three names the other states use, because `json_of` maps
+    // them by position and docs/agents.md promises those keys. Only what
+    // they say changes.
+    [
+        ("config", config),
+        ("image", "this media's own filesystem, read-only; edits live in RAM".into()),
+        (
+            "machine",
+            "none yet; installing pulls the published image, and kuma publishes none".into(),
+        ),
+    ]
+}
+
 fn facts_of(obs: &Observed) -> [(&'static str, String); 3] {
     let config = match &obs.config {
         ConfigFact::Missing => format!("none ({} not found)", obs.config_path),
@@ -527,7 +584,35 @@ mod tests {
     use super::*;
 
     fn workspace(config: ConfigFact, image: Option<ImageFact>, machine: MachineFact) -> Observed {
-        Observed { config_path: "kuma.toml".into(), config, image, machine }
+        Observed { config_path: "kuma.toml".into(), config, image, machine, live: false }
+    }
+
+    /// What a stranger sees. Every fact a live session presents to the
+    /// ordinary classifier is individually true and collectively says
+    /// "developer's laptop, nothing to do": no bootc deployment, no
+    /// image in podman storage, a declaration never built here. That
+    /// combination used to render as `in-sync - nothing pending` with a
+    /// `kuma init` edge, on the one medium whose whole purpose is that
+    /// something is pending.
+    #[test]
+    fn live_media_outranks_every_reading_of_a_workspace() {
+        let mut obs = workspace(
+            ConfigFact::Baked { rpm: 6, flatpak: 7, brew: 7 },
+            None,
+            MachineFact::NotBootc,
+        );
+        assert_eq!(classify(&obs).state, "in-sync");
+
+        obs.live = true;
+        let snap = classify(&obs);
+        assert_eq!(snap.state, "live");
+        assert!(snap.headline.contains("nothing here persists"));
+        // No edge is the honest answer while there is nothing to pull;
+        // an affordance that fails is worse than a stated absence.
+        assert!(snap.actions.is_empty(), "no install path exists until an image is published");
+        assert!(!snap.facts.iter().any(|(_, d)| d.contains("build/test workspace")));
+        // The keys docs/agents.md promises, whatever the state.
+        assert_eq!(snap.facts.map(|(name, _)| name), ["config", "image", "machine"]);
     }
 
     /// The bug this exists to prevent: capture's dry run printed `kuma
