@@ -286,6 +286,10 @@ fn observe(config_path: &Path) -> Observed {
     }
 }
 
+/// What convergence installed, and therefore all it may remove. The same
+/// file `kuma diff` reads; the brew half has always had its equivalent.
+const FLATPAK_STATE: &str = "/var/lib/kuma/flatpaks-installed";
+
 fn observe_machine() -> MachineFact {
     if !Path::new("/run/ostree-booted").exists() {
         return MachineFact::NotBootc;
@@ -298,14 +302,24 @@ fn observe_machine() -> MachineFact {
 
     // The baked lists are what convergence follows, so drift against them
     // is exactly what the next sync run would change.
+    //
+    // Removals are scoped the way convergence scopes them: only apps kuma
+    // installed can be taken back, which is what the record at
+    // /var/lib/kuma/flatpaks-installed is for. Counting every undeclared
+    // app instead described the model kuma had before it stopped removing
+    // things it never installed, so a machine with an app from a store
+    // read as drifted here while `kuma diff` correctly called it yours,
+    // and the summary an agent reads first was the pessimistic one.
     if let Ok(baked) = std::fs::read_to_string("/usr/lib/kuma/flatpaks") {
         if let Ok(installed) =
             host_output(&["flatpak", "list", "--system", "--app", "--columns=application"])
         {
             let baked = to_set(&baked);
             let installed = to_set(&installed);
+            let ours = std::fs::read_to_string(FLATPAK_STATE).unwrap_or_default();
+            let ours = to_set(&ours);
             count(&mut drift, baked.difference(&installed).count(), "flatpak(s) to install");
-            count(&mut drift, installed.difference(&baked).count(), "flatpak(s) to remove");
+            count(&mut drift, removals(&installed, &ours, &baked), "flatpak(s) to remove");
         }
     }
     // Installed brews are Cellar directory names — a filesystem read, not a
@@ -326,9 +340,7 @@ fn observe_machine() -> MachineFact {
                 declared.difference(&installed).count(),
                 "brew formula(e) to install",
             );
-            let removals =
-                installed.iter().filter(|f| ever.contains(*f) && !declared.contains(*f)).count();
-            count(&mut drift, removals, "brew formula(e) to remove");
+            count(&mut drift, removals(&installed, &ever, &declared), "brew formula(e) to remove");
         }
     }
     let deployed_id = std::fs::read_to_string(DEPLOYED_ID_FILE)
@@ -336,6 +348,18 @@ fn observe_machine() -> MachineFact {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     MachineFact::Kuma { staged, drift, deployed_id }
+}
+
+/// What convergence would take back: it is installed, kuma is the one
+/// that installed it, and the declaration no longer names it.
+///
+/// The same rule for flatpaks and for brew formulae, in one place because
+/// they drifted apart once: the brew half consulted its record of what it
+/// had installed and the flatpak half counted every undeclared app, so a
+/// machine with an app from a store looked drifted to the summary and
+/// correct to `kuma diff`.
+fn removals<T: Ord>(installed: &BTreeSet<T>, ours: &BTreeSet<T>, declared: &BTreeSet<T>) -> usize {
+    installed.iter().filter(|item| ours.contains(*item) && !declared.contains(*item)).count()
 }
 
 fn count(drift: &mut Vec<String>, n: usize, what: &str) {
@@ -589,6 +613,30 @@ mod tests {
 
     fn workspace(config: ConfigFact, image: Option<ImageFact>, machine: MachineFact) -> Observed {
         Observed { config_path: "kuma.toml".into(), config, image, machine, live: false }
+    }
+
+    /// Convergence takes back only what it installed, and this is the
+    /// count that says so before anything runs. It got this wrong for
+    /// flatpaks while getting it right for brew: an app installed from a
+    /// store counted as one to remove, so bare `kuma` reported drift on a
+    /// machine `kuma diff` called clean, and the two disagreed in the
+    /// direction that makes somebody think their apps are about to go.
+    #[test]
+    fn only_what_kuma_installed_can_be_taken_back() {
+        let installed = BTreeSet::from(["org.gnome.Boxes", "org.mozilla.firefox", "io.mpv.Mpv"]);
+        let declared = BTreeSet::from(["org.mozilla.firefox"]);
+        // Firefox and mpv arrived through kuma; Boxes is the owner's.
+        let ours = BTreeSet::from(["org.mozilla.firefox", "io.mpv.Mpv"]);
+        assert_eq!(removals(&installed, &ours, &declared), 1, "mpv only: Boxes is not kuma's");
+
+        // Nothing kuma installed is undeclared, so nothing is pending
+        // however much else is on the machine.
+        let ours = BTreeSet::from(["org.mozilla.firefox"]);
+        assert_eq!(removals(&installed, &ours, &declared), 0);
+
+        // And the record being absent (a machine that has never converged)
+        // is not a licence to remove everything.
+        assert_eq!(removals(&installed, &BTreeSet::new(), &declared), 0);
     }
 
     /// What a stranger sees. Every fact a live session presents to the

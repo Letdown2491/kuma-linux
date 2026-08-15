@@ -5,6 +5,16 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+### Behavior
+
+- Bare `kuma` counts a flatpak as pending removal only when kuma installed
+  it, which is the rule convergence has followed since it stopped taking
+  back what it never installed. It was still counting every undeclared app,
+  so a machine with anything from a store reported drift that `kuma diff`
+  correctly called yours, and the two disagreed in the direction that makes
+  somebody think their apps are about to be uninstalled. The brew half had
+  always been right; both now read one rule.
+
 ## v0.7.0 (2026-08-15)
 
 Kuma installs itself, from media it made, onto a disk it partitioned.
