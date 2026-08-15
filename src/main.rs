@@ -2089,7 +2089,7 @@ fn live_iso(config_path: &Path, tag: &str, output: &Path) -> Result<()> {
     let size = std::fs::metadata(&iso_path).map(|m| m.len()).unwrap_or(0);
     println!("\nISO ready: {} ({:.2} GB)", iso_path.display(), size as f64 / 1e9);
     println!(
-        "It boots to a live {} session as '{}'. Media for trying kuma, not yet for\ninstalling it: installing pulls the image this was built from, and kuma\npublishes none.",
+        "It boots to a live {} session as '{}', and `kuma install` from inside it\nwrites a machine to a disk. Installing pulls the published image over the\nnetwork rather than copying this media, so the ISO carries one system\nrather than two.",
         match config.system.desktop {
             config::Desktop::Cosmic => "COSMIC",
             config::Desktop::Niri => "niri",

@@ -39,6 +39,10 @@ as its release notes.
   memory: installing from live media used to pull the image into a
   RAM-backed overlay, which failed on an 8G machine and on a 10G one, and
   now needs no more RAM than booting the media does.
+- A live session now offers `kuma install` as its one affordance, and the
+  ISO no longer says installing from it is impossible. Both were true when
+  written: there was no published image to pull, so an empty action list
+  and a stated absence beat an affordance that fails. There is one now.
 - A disk smaller than 16G is refused before anything is asked, with the
   arithmetic that makes it too small, and so is a machine missing any of
   the tools the install needs, named with the package that carries each

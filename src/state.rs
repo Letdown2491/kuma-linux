@@ -366,13 +366,20 @@ fn classify(obs: &Observed) -> Snapshot {
             state: "live",
             headline: "running from installer media; nothing here persists".into(),
             facts: live_facts(obs),
-            // No edges, and that is the honest answer rather than a gap.
-            // Installing means pulling the image this media was built
-            // from, and kuma publishes no images yet, so there is no
-            // command that would work. An affordance that fails is worse
-            // than an absence that is stated. This becomes the install
-            // edge the moment there is something to pull.
-            actions: Vec::new(),
+            // One edge, and it exists only because there is now a
+            // published image to pull. While there was not, an empty
+            // list was the honest answer: an affordance that fails is
+            // worse than an absence that is stated.
+            //
+            // Bare `kuma install`, with no device path, because that is
+            // the form a stranger can act on: it lists the disks it
+            // found and asks. It is also a dry run, so following it
+            // prints the plan rather than destroying anything.
+            actions: vec![Action::new(
+                "install",
+                "kuma install",
+                "write this system to a disk (it asks which, and shows the plan first)",
+            )],
         };
     }
     let mut state: Option<(&'static str, String)> = None;
@@ -519,10 +526,7 @@ fn live_facts(obs: &Observed) -> [(&'static str, String); 3] {
     [
         ("config", config),
         ("image", "this media's own filesystem, read-only; edits live in RAM".into()),
-        (
-            "machine",
-            "none yet; installing pulls the published image, and kuma publishes none".into(),
-        ),
+        ("machine", format!("none yet; `kuma install` writes one from {}", crate::PUBLISHED_IMAGE)),
     ]
 }
 
@@ -607,9 +611,14 @@ mod tests {
         let snap = classify(&obs);
         assert_eq!(snap.state, "live");
         assert!(snap.headline.contains("nothing here persists"));
-        // No edge is the honest answer while there is nothing to pull;
-        // an affordance that fails is worse than a stated absence.
-        assert!(snap.actions.is_empty(), "no install path exists until an image is published");
+        // The one move a live session has. It was deliberately absent
+        // while kuma published nothing to install; now that it does, the
+        // medium whose whole purpose is that something is pending has to
+        // name it. Bare, because a stranger cannot be expected to know a
+        // device path, and `kuma install --disk /dev/???` is not a move
+        // anyone can take.
+        assert_eq!(snap.actions.len(), 1);
+        assert_eq!(snap.actions[0].cmd, "kuma install");
         assert!(!snap.facts.iter().any(|(_, d)| d.contains("build/test workspace")));
         // The keys docs/agents.md promises, whatever the state.
         assert_eq!(snap.facts.map(|(name, _)| name), ["config", "image", "machine"]);
