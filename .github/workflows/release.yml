@@ -173,6 +173,35 @@ jobs:
             exit 1
           fi
 
+          # Unwrap the paragraphs before publishing.
+          #
+          # A release body is not rendered the way a .md file in the repo
+          # is. GitHub treats it like an issue comment, where every
+          # newline becomes a line break, so CHANGELOG.md's 78-column hard
+          # wrapping arrives as text that stops ragged at half the page
+          # while the docs beside it look fine. The file should stay
+          # wrapped; what gets published should not be.
+          #
+          # Joins a line onto the one before it unless that line starts
+          # something: a blank, a heading, a list item, a table row, or a
+          # fence. Inside a fence nothing is touched, because reflowing a
+          # command is how a release ships one nobody can paste.
+          awk '
+            /^```/ { fence = !fence; flush(); print; next }
+            fence  { print; next }
+            /^[[:space:]]*$/ || /^#/ || /^\|/ { flush(); print; next }
+            # A list item starts a buffer rather than printing: its own
+            # continuation lines have to join onto it, not follow it.
+            /^[-*+] / || /^[0-9]+\. / { flush(); buf = $0; next }
+            {
+              sub(/^[[:space:]]+/, "")
+              buf = (buf == "" ? $0 : buf " " $0)
+              next
+            }
+            END { flush() }
+            function flush() { if (buf != "") { print buf; buf = "" } }
+          ' section.md > reflowed.md && mv reflowed.md section.md
+
       - name: publish
         if: steps.what.outputs.publish == 'true'
         run: |
