@@ -264,8 +264,13 @@ target=${1:?disk or disk image to install onto}
 ctx=${2:?build context holding the Containerfile and the answers}
 updates=${3:?where the installed machine fetches updates from}
 
-mnt=$(mktemp -d)
-fsmnt=$(mktemp -d)
+# Fixed paths, not mktemp. These have to be reachable by that name from
+# inside a container as well as out here, so a name chosen at random by
+# one of them is a name the other has to be told; /run is tmpfs, root
+# only, and gone at reboot whatever this script manages to leave behind.
+mnt=/run/kuma-target
+fsmnt=/run/kuma-targetfs
+mkdir -p "$mnt" "$fsmnt"
 loop=""
 conf=""
 
@@ -317,6 +322,21 @@ mkdir -p /var/lib/containers/storage
 podman --root "$store" --runroot /run/kuma-install --storage-driver overlay \
     --storage-opt additionalimagestore=/var/lib/containers/storage \
     build -q -t @TAG@ -f "$ctx/Containerfile" "$ctx" >/dev/null
+
+# bootc is handed the target path and opens it, and if the bind did not
+# arrive it says so only after the disk has been partitioned, formatted
+# and written to: `Opening target root directory ...: No such file or
+# directory`, with nothing to say the mount was the problem. Asked here
+# instead, of the same image that is about to do the install, where it
+# costs a second and names what is actually wrong.
+if ! podman --root "$store" --runroot /run/kuma-install --storage-driver overlay \
+    --storage-opt additionalimagestore=/var/lib/containers/storage \
+    run --rm --privileged --security-opt label=disable \
+    -v "$mnt:$mnt" @TAG@ test -d "$mnt"; then
+    echo "kuma: $mnt is mounted out here but not visible inside a container." >&2
+    echo "kuma: installing would have failed after the disk was formatted." >&2
+    exit 1
+fi
 
 # bootc does not merely copy the filesystem of the container it runs in.
 # It reads /run/.containerenv, takes the image ID podman recorded there,
