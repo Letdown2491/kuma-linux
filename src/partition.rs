@@ -323,12 +323,16 @@ esac
 store="$fsmnt/@STORE@"
 mkdir -p /var/lib/containers/storage
 
-# Podman stages every pulled blob in TMPDIR before it reaches the store,
-# and on live media TMPDIR is the RAM-backed overlay: the pull dies with
-# `no space left on device` while the store it is pulling into has tens
-# of gigabytes free. Putting the store on the target is only half the
-# job; the staging has to land there too, or the memory ceiling this
-# whole path exists to remove is still there in a different place.
+# Every blob is staged in TMPDIR before it reaches its destination, by
+# the pull here and again by the ostree import bootc does inside the
+# container. Unset, that is /var/tmp, which on live media is the
+# RAM-backed overlay: both die with `no space left on device` while the
+# disk they are filling has sixty gigabytes free. Putting the store on
+# the target is a third of the job.
+#
+# This path works from both sides of the container because it is under
+# /run, mounted out here and bind-mounted in there under the same name,
+# which is why those paths are fixed rather than mktemp names.
 export TMPDIR="$fsmnt/tmp"
 mkdir -p "$TMPDIR"
 podman --root "$store" --runroot /run/kuma-install --storage-driver overlay \
@@ -385,6 +389,7 @@ boot_uuid=$(blkid -s UUID -o value "$boot")
 podman --root "$store" --runroot /run/kuma-install --storage-driver overlay \
     --storage-opt additionalimagestore=/var/lib/containers/storage \
     run --rm --privileged --pid=host --security-opt label=disable \
+    --env TMPDIR="$TMPDIR" \
     -v /dev:/dev -v "$mnt:$mnt" -v "$fsmnt:$fsmnt" \
     -v /var/lib/containers:/var/lib/kuma-host-store \
     -v "$conf:/etc/containers/storage.conf:ro" \
@@ -598,6 +603,11 @@ mod tests {
         assert!(script.contains(r#"export TMPDIR="$fsmnt/tmp""#));
         let tmp_at = script.find("export TMPDIR").unwrap();
         assert!(tmp_at < script.find("build -q").unwrap(), "set before the pull");
+        // And carried into the container, because bootc stages the
+        // ostree import there and inherits none of this shell's
+        // environment. Missing it, the import writes to the host's
+        // /var/tmp, which on live media is RAM.
+        assert!(script.contains(r#"--env TMPDIR="$TMPDIR""#));
         // bootc refuses a LABEL= for /boot however well formed, and says
         // so only once the disk has been formatted.
         assert!(script.contains(r#"--boot-mount-spec "UUID=$boot_uuid""#));
