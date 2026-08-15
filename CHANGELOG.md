@@ -41,7 +41,10 @@ Media somebody else can boot, and a machine somebody else can log into.
   own answered with a flag error. The plan says whether that image is in
   local storage or will be pulled when you confirm, which is a question
   worth answering before the step that destroys a disk, and it is asked of
-  podman rather than of a registry so a dry run stays offline.
+  podman rather than of a registry so a dry run stays offline. With `--yes`
+  it then checks the image is actually reachable before asking anything,
+  because podman only discovers a missing image when the build reaches out,
+  which is one typed password and a bare `exit status 125` later.
 - Whole-disk only, and destructive. `bootc install to-disk` owns the
   partitioning, so there is no cryptsetup and no custom layout yet;
   passphrase LUKS needs `to-filesystem` and kuma owning the storage. Dry run

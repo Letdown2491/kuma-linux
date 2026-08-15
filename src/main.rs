@@ -1773,6 +1773,33 @@ fn install(
         return Ok(());
     }
 
+    // Before the interview, not after it.
+    //
+    // Installing pulls this image, and podman only discovers it is not
+    // there when the build reaches out, which is several minutes and one
+    // typed password later. What that looks like is `error creating build
+    // container: unable to copy from source` and exit 125, after being
+    // asked to choose an account. Half a second of skopeo turns that into
+    // a sentence, before anything is asked.
+    //
+    // Skipped when the image is already local, and skipped rather than
+    // fatal when skopeo is missing: a check that cannot run is not a
+    // reason to refuse an install that would have worked.
+    if !local {
+        note(&format!("Checking {image} is reachable..."));
+        if let Err(why) = host_output(&["skopeo", "inspect", "--raw", &format!("docker://{image}")])
+        {
+            if host_output_any(&["skopeo", "--version"]).is_ok() {
+                bail!(
+                    "cannot reach {image}\n\n{why}\n\n\
+                     Installing pulls that image, so it has to exist and be readable\n\
+                     from here. A 403 or 404 usually means it is not published yet, or\n\
+                     is private. Pass --image to install a different one."
+                );
+            }
+        }
+    }
+
     let account = install::ask_account(user, groups)?;
     let hostname = install::ask_hostname(hostname)?;
     let dir = tempfile::tempdir().context("cannot create install directory")?;
