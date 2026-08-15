@@ -333,6 +333,13 @@ mkdir -p /var/lib/containers/storage
 # This path works from both sides of the container because it is under
 # /run, mounted out here and bind-mounted in there under the same name,
 # which is why those paths are fixed rather than mktemp names.
+#
+# The environment variable is not enough on its own. containers/image
+# writes big files to /var/tmp by a deliberate decision, precisely
+# because /tmp is usually a tmpfs, so for that half it ignores what
+# TMPDIR says and the import fails anyway. /var/tmp inside the container
+# is therefore mounted from the target, which decides the question by
+# path rather than by whether some library reads an environment.
 export TMPDIR="$fsmnt/tmp"
 mkdir -p "$TMPDIR"
 podman --root "$store" --runroot /run/kuma-install --storage-driver overlay \
@@ -390,6 +397,7 @@ podman --root "$store" --runroot /run/kuma-install --storage-driver overlay \
     --storage-opt additionalimagestore=/var/lib/containers/storage \
     run --rm --privileged --pid=host --security-opt label=disable \
     --env TMPDIR="$TMPDIR" \
+    -v "$TMPDIR:/var/tmp" \
     -v /dev:/dev -v "$mnt:$mnt" -v "$fsmnt:$fsmnt" \
     -v /var/lib/containers:/var/lib/kuma-host-store \
     -v "$conf:/etc/containers/storage.conf:ro" \
@@ -608,6 +616,10 @@ mod tests {
         // environment. Missing it, the import writes to the host's
         // /var/tmp, which on live media is RAM.
         assert!(script.contains(r#"--env TMPDIR="$TMPDIR""#));
+        // And the same directory over /var/tmp, because the library
+        // doing the ostree import writes big files there by decision
+        // rather than by environment.
+        assert!(script.contains(r#"-v "$TMPDIR:/var/tmp""#));
         // bootc refuses a LABEL= for /boot however well formed, and says
         // so only once the disk has been formatted.
         assert!(script.contains(r#"--boot-mount-spec "UUID=$boot_uuid""#));
