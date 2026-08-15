@@ -45,6 +45,13 @@ as its release notes.
   one. Both are objections, and objections come before the interview: the
   alternative is a wiped partition table and `command not found` one typed
   password later, which is how this check came to exist.
+- The line `kuma install` prints for booting a disk image now names a
+  3D-capable device, which is the difference between a desktop and a black
+  screen. niri allocates through GBM, and `-vga std` is display-only: the
+  greeter is text on a VT and comes up on anything, so the failure arrives
+  after a correct username and password and looks like a broken install.
+  `kuma vm` had this right and the message did not, so both now read from
+  one place.
 - `kuma install` takes a file as its target, installing to a disk image
   through a loopback device. Producing a disk image is worth doing on its
   own, and it is also how the installer gets exercised end to end on a

@@ -1990,13 +1990,9 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         );
         println!(
             "\nBoot it with UEFI firmware, which a disk image needs and a plain\n\
-             qemu invocation does not supply:\n\n  \
-             cp /usr/share/edk2/ovmf/OVMF_VARS.fd /var/tmp/kuma-vars.fd\n  \
-             qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 4096 \\\n    \
-             -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd \\\n    \
-             -drive if=pflash,format=raw,file=/var/tmp/kuma-vars.fd \\\n    \
-             -drive file={},format=raw,if=virtio",
-            disk.display()
+             qemu invocation does not supply, and with a 3D-capable device,\n\
+             without which the desktop logs in to a black screen:\n\n{}",
+            disk_image_boot_hint(disk)
         );
         return Ok(());
     }
@@ -2426,6 +2422,41 @@ fn vm_ssh_hint(output: &Path) -> String {
     }
 }
 
+/// What a kuma desktop needs from qemu to render anything at all.
+///
+/// niri allocates through GBM and needs a 3D-capable device. Plain
+/// `-vga std` or `-vga virtio` is display-only, and the failure is
+/// quiet in the worst way: the greeter is text on a VT and comes up
+/// fine, then the session that follows it renders nowhere. What that
+/// looks like is a correct username and password followed by a black
+/// screen, which reads like a broken install and is not one.
+const VM_GPU_ARGS: [&str; 4] = ["-device", "virtio-vga-gl", "-display", "gtk,gl=on"];
+
+/// Renders virgl on llvmpipe, so guest GL work never reaches the host
+/// GPU driver. A bad guest submission can otherwise wedge the real GPU
+/// and take the host session down with it.
+const VM_GPU_ENV: &str = "LIBGL_ALWAYS_SOFTWARE=1";
+
+/// How to boot a disk image kuma installed, for somebody who has one and
+/// no VM manager in front of them.
+///
+/// Two things a plain qemu line does not supply and this one does: UEFI
+/// firmware, without which the disk does not boot at all, and a
+/// 3D-capable device, without which it boots to a black screen after the
+/// login. Both were learned the same way, by booting one.
+fn disk_image_boot_hint(disk: &Path) -> String {
+    format!(
+        "  cp /usr/share/edk2/ovmf/OVMF_VARS.fd /var/tmp/kuma-vars.fd\n  \
+         env {VM_GPU_ENV} qemu-system-x86_64 -machine q35,accel=kvm -cpu host -m 4096 \\\n    \
+         -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd \\\n    \
+         -drive if=pflash,format=raw,file=/var/tmp/kuma-vars.fd \\\n    \
+         -drive file={},format=raw,if=virtio \\\n    \
+         {}",
+        disk.display(),
+        VM_GPU_ARGS.join(" ")
+    )
+}
+
 fn boot_disk(disk: &Path, output: &Path) -> Result<()> {
     println!("Booting VM (console: kuma/kuma; {})...", vm_ssh_hint(output));
     let drive = format!("file={},if=virtio", path_str(disk)?);
@@ -2434,7 +2465,7 @@ fn boot_disk(disk: &Path, output: &Path) -> Result<()> {
         // never reaches the host GPU driver — a bad guest submission can
         // otherwise wedge the real GPU and take the host session down.
         "env",
-        "LIBGL_ALWAYS_SOFTWARE=1",
+        VM_GPU_ENV,
         "qemu-system-x86_64",
         "-enable-kvm",
         "-cpu",
@@ -2445,13 +2476,6 @@ fn boot_disk(disk: &Path, output: &Path) -> Result<()> {
         "4096",
         "-drive",
         &drive,
-        // virtio-vga-gl + gl=on (virgl): niri's GBM allocator needs a real
-        // 3D-capable device; plain -vga virtio is display-only and leaves
-        // the compositor with no output.
-        "-device",
-        "virtio-vga-gl",
-        "-display",
-        "gtk,gl=on",
         // 127.0.0.1 bind: without it qemu listens on every interface and
         // the whole LAN can ssh into the default-credential test user.
         "-nic",
@@ -2466,6 +2490,10 @@ fn boot_disk(disk: &Path, output: &Path) -> Result<()> {
         "-device",
         "virtserialport,chardev=vdagent,name=com.redhat.spice.0",
     ];
+    // Named once, because `kuma install` has to tell somebody the same
+    // thing in prose and a VM that renders nothing is indistinguishable
+    // from one that did not boot.
+    args.extend(VM_GPU_ARGS);
     // Mirror the host timezone into the guest (adopted at boot by
     // kuma-vm-timezone; bib ignores [customizations.timezone] for qcow2).
     let fw_cfg = host_timezone().map(|tz| format!("name=opt/org.kuma.tz,string={tz}"));
@@ -2481,6 +2509,26 @@ fn path_str(path: &Path) -> Result<&str> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// A disk image that boots to a black screen after a correct
+    /// password is indistinguishable from a broken install, and the
+    /// only thing standing between somebody and that afternoon is this
+    /// line of text. It has to carry both of the things a plain qemu
+    /// invocation does not supply.
+    #[test]
+    fn the_boot_hint_supplies_firmware_and_a_gpu() {
+        let hint = disk_image_boot_hint(Path::new("/var/tmp/kuma-target.raw"));
+        assert!(hint.contains("OVMF_CODE.fd"), "no firmware, no boot at all");
+        assert!(hint.contains("OVMF_VARS.fd"));
+        assert!(hint.contains("/var/tmp/kuma-target.raw"));
+        // The half that took a black screen to find.
+        for arg in VM_GPU_ARGS {
+            assert!(hint.contains(arg), "missing {arg}");
+        }
+        assert!(hint.contains(VM_GPU_ENV), "guest GL would reach the host GPU");
+    }
+
     /// The deletion policy for composed bases, without a podman: only
     /// tags shaped like kuma's own content tags go, and never one the
     /// declaration or its lock still points at.
