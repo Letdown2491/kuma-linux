@@ -46,7 +46,7 @@ pub struct Partition {
     pub label: &'static str,
     /// None means "the rest of the disk".
     pub size_mib: Option<u64>,
-    /// sgdisk type code.
+    /// sfdisk type alias, which it expands to the GPT type GUID.
     pub type_code: &'static str,
     /// What it is for, in words, for the plan a person reads.
     pub purpose: &'static str,
@@ -88,19 +88,19 @@ pub fn plan(disk_bytes: u64, encrypt: bool) -> Result<Vec<Partition>> {
         Partition {
             label: "EFI-SYSTEM",
             size_mib: Some(ESP_MIB),
-            type_code: "ef00",
+            type_code: "uefi",
             purpose: "bootloader, read by the firmware",
         },
         Partition {
             label: "boot",
             size_mib: Some(BOOT_MIB),
-            type_code: "8300",
+            type_code: "linux",
             purpose: "kernels and initramfs, outside any encryption",
         },
         Partition {
             label: "root",
             size_mib: None,
-            type_code: "8300",
+            type_code: "linux",
             purpose: if encrypt { "LUKS, holding a btrfs root" } else { "btrfs root" },
         },
     ])
@@ -122,6 +122,27 @@ pub const STORE_SUBVOL: &str = "store";
 /// subvolume the cleanup trap deletes, so the layer holding a password
 /// hash cannot outlive the install even when the install fails.
 pub const INSTALL_TAG: &str = "localhost/kuma-install:latest";
+
+/// Everything the install script calls that a machine might not have,
+/// and the package that carries it.
+///
+/// Checked before the interview rather than discovered partway through,
+/// because the alternative is what `sgdisk` did: the disk gets wiped, a
+/// password gets typed, and the script stops with `command not found`
+/// and exit 127. Every one of these is on a kuma image already; the list
+/// exists because the installer also runs on machines that are not kuma
+/// ones, and because a missing tool should name its package.
+pub const REQUIRED_TOOLS: &[(&str, &str)] = &[
+    ("losetup", "util-linux"),
+    ("wipefs", "util-linux"),
+    ("sfdisk", "util-linux"),
+    ("udevadm", "systemd-udev"),
+    ("mkfs.vfat", "dosfstools"),
+    ("mkfs.ext4", "e2fsprogs"),
+    ("mkfs.btrfs", "btrfs-progs"),
+    ("btrfs", "btrfs-progs"),
+    ("podman", "podman"),
+];
 
 /// Partition and format a disk, then mount it ready for bootc.
 ///
@@ -150,25 +171,30 @@ pub fn format_script(plan: &[Partition]) -> String {
          root=${6:?root device}\n\n\
          # A partition table with anything left of an old one is how a\n\
          # stale signature survives to confuse a later probe.\n\
-         wipefs --all --force \"$dev\" >/dev/null\n\
-         sgdisk --zap-all \"$dev\" >/dev/null\n\n",
+         wipefs --all --force \"$dev\" >/dev/null\n\n\
+         # One call, not one per partition, and sfdisk rather than the\n\
+         # gdisk family: sfdisk is util-linux, which every bootc machine\n\
+         # already has, and gdisk is a package a kuma image does not\n\
+         # ship, so the installer could not run on the media built to\n\
+         # run it. Writing the table in one call also means a failure\n\
+         # leaves the old table rather than half of a new one.\n\
+         sfdisk --wipe always --quiet \"$dev\" <<'PARTITIONS'\n\
+         label: gpt\n",
     );
-    for (i, part) in plan.iter().enumerate() {
-        let n = i + 1;
-        let end = match part.size_mib {
-            Some(mib) => format!("+{mib}M"),
-            None => "0".to_string(),
+    for part in plan {
+        let size = match part.size_mib {
+            Some(mib) => format!("size={mib}MiB, "),
+            // The last one takes what is left, which sfdisk does by
+            // being told no size at all.
+            None => String::new(),
         };
-        out.push_str(&format!(
-            "sgdisk -n {n}:0:{end} -t {n}:{} -c {n}:{} \"$dev\" >/dev/null\n",
-            part.type_code, part.label
-        ));
+        out.push_str(&format!("{size}type={}, name=\"{}\"\n", part.type_code, part.label));
     }
     out.push_str(
-        "\n# The kernel learns about the new table asynchronously, and\n\
+        "PARTITIONS\n\n\
+         # The kernel learns about the new table asynchronously, and\n\
          # mkfs on a node that does not exist yet fails in a way that\n\
          # reads like a bad disk.\n\
-         partprobe \"$dev\" 2>/dev/null || true\n\
          udevadm settle\n\n",
     );
     out.push_str(&format!(
@@ -382,6 +408,27 @@ mod tests {
         }
     }
 
+    /// A tool the script calls and the list does not name is one that
+    /// fails after the disk is gone. This is the check that made itself
+    /// necessary: `sgdisk` was called by a script running on media that
+    /// had no gdisk, and nothing said so until the table was already
+    /// wiped.
+    #[test]
+    fn every_tool_the_script_calls_is_declared() {
+        let script = install_script(&plan(40 * 1024 * 1024 * 1024, false).unwrap());
+        for (tool, _) in REQUIRED_TOOLS {
+            assert!(script.contains(tool), "{tool} is declared but never called");
+        }
+        // The other direction cannot be checked by parsing shell without
+        // writing a shell parser, so it is checked against the tools
+        // that were actually reached for and are not there: gdisk and
+        // parted are packages a kuma image does not ship, and reaching
+        // for either again would fail the same way.
+        for absent in ["sgdisk", "partprobe", "parted", "cgdisk"] {
+            assert!(!script.contains(absent), "{absent} is not on a kuma machine");
+        }
+    }
+
     /// The script destroys everything it touches, so what it contains is
     /// worth pinning: the wipe before the table, a partition line per
     /// entry in the plan, and the settle without which mkfs runs against
@@ -391,11 +438,20 @@ mod tests {
         let p = plan(40 * 1024 * 1024 * 1024, false).unwrap();
         let script = format_script(&p);
         assert!(script.contains("wipefs --all"));
-        assert!(script.contains("sgdisk --zap-all"));
-        assert_eq!(script.matches("sgdisk -n ").count(), 3, "one per partition");
-        assert!(script.contains("-n 1:0:+600M"));
-        assert!(script.contains("-n 2:0:+2048M"));
-        assert!(script.contains("-n 3:0:0"), "root takes the remainder");
+        // One table written in one call, so a failure leaves the old one
+        // rather than half of a new one.
+        assert_eq!(script.matches("sfdisk --wipe always").count(), 1);
+        assert!(script.contains("label: gpt"));
+        assert!(script.contains(r#"size=600MiB, type=uefi, name="EFI-SYSTEM""#));
+        assert!(script.contains(r#"size=2048MiB, type=linux, name="boot""#));
+        assert!(script.contains(r#"type=linux, name="root""#));
+        assert!(
+            !script.contains(r#"size=0MiB, type=linux, name="root""#),
+            "root takes the remainder, which sfdisk spells as no size at all"
+        );
+        // The heredoc terminator has to sit at column 0 or the script is
+        // one unterminated string.
+        assert!(script.contains("\nPARTITIONS\n"));
         assert!(script.contains("udevadm settle"));
         // Mounted root first, then what hangs off it.
         let root_at = script.find(r#"mount "$root""#).unwrap();
@@ -440,7 +496,7 @@ mod tests {
         // The formatting half is carried, not re-described.
         assert!(script.contains("wipefs --all"));
         assert!(script.contains("mkfs.btrfs"));
-        assert_eq!(script.matches("sgdisk -n ").count(), 3);
+        assert_eq!(script.matches("sfdisk --wipe always").count(), 1);
         // Nothing of the sub-script's own preamble came with it.
         assert_eq!(script.matches("#!/usr/bin/bash").count(), 1);
         assert_eq!(script.matches("set -euo pipefail").count(), 1);

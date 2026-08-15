@@ -40,8 +40,11 @@ as its release notes.
   RAM-backed overlay, which failed on an 8G machine and on a 10G one, and
   now needs no more RAM than booting the media does.
 - A disk smaller than 16G is refused before anything is asked, with the
-  arithmetic that makes it too small, rather than partway through an
-  install.
+  arithmetic that makes it too small, and so is a machine missing any of
+  the tools the install needs, named with the package that carries each
+  one. Both are objections, and objections come before the interview: the
+  alternative is a wiped partition table and `command not found` one typed
+  password later, which is how this check came to exist.
 - `kuma install` takes a file as its target, installing to a disk image
   through a loopback device. Producing a disk image is worth doing on its
   own, and it is also how the installer gets exercised end to end on a

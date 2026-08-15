@@ -1777,6 +1777,32 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         bail!("no such device: {}", disk.display());
     }
 
+    // With the objections, for the same reason they are: this is the
+    // verb that cannot be undone, so everything that would stop it stops
+    // it before anything is typed. `sgdisk` taught this the expensive
+    // way, wiping a table and then failing with exit 127 one password
+    // later.
+    let missing: Vec<String> = partition::REQUIRED_TOOLS
+        .iter()
+        .filter(|(tool, _)| {
+            // Not `command -v`: this runs under sudo, whose PATH is not
+            // the one asking. Both directories, because a machine that
+            // has not merged /sbin still exists.
+            !["/usr/bin", "/usr/sbin", "/bin", "/sbin"]
+                .iter()
+                .any(|dir| Path::new(dir).join(tool).exists())
+        })
+        .map(|(tool, package)| format!("{tool}  (dnf install {package})"))
+        .collect();
+    if !missing.is_empty() {
+        bail!(
+            "cannot install from this machine: {} missing\n  {}\n\n\
+             Installing partitions and formats the target, and these are what does it.",
+            if missing.len() == 1 { "a tool is" } else { "tools are" },
+            missing.join("\n  ")
+        );
+    }
+
     // The layout is decided here, ahead of the interview, because a disk
     // too small to hold a system is an objection like a mounted one and
     // belongs with the others. It also has to be printed: it cannot be
