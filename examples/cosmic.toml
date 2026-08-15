@@ -1,21 +1,27 @@
-# A Kuma system definition for the COSMIC desktop. See
-# kuma.toml.example for every field the schema accepts.
+# A Kuma system definition for the COSMIC desktop. See niri.toml for
+# every field the schema accepts.
 schema_version = 1
 
 [system]
 # No `base` key: kuma composes its own from Fedora's repos. Name a bootc
-# image here only as an escape hatch (see kuma.toml.example).
+# image here only as an escape hatch (see niri.toml).
 
 # System76's full desktop: panel, launcher, settings, files, terminal.
 # It curates itself upstream, so kuma adds only hardware enablement and
 # identity on top.
 desktop = "cosmic"
 
-# COSMIC's first-boot setup wizard never appears: the account and the
-# defaults are declared here instead.
-[user]
-name = "me"
-shell = "fish"
+# Commented out so this file is safe to build shareable media from, the
+# same as niri.toml. A declared account is a property of the image, so it
+# rides into every machine built from it, password hash included.
+#
+# COSMIC ships no first-boot setup wizard here, so a machine built from
+# this file as it stands has no account at all. That is correct for media
+# you hand to someone else and wrong for a machine you are declaring for
+# yourself: uncomment for the second.
+# [user]
+# name = "me"
+# shell = "fish"
 # password_hash = '$6$...'   # from `kuma passwd`
 # autologin = true           # straight to the desktop at boot
 

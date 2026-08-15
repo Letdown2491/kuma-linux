@@ -17,6 +17,19 @@ repository = "https://github.com/Letdown2491/kuma-linux"
 pkg-url = "{ repo }/releases/download/v{ version }/kuma-{ target }"
 pkg-fmt = "bin"
 
+# No `[profile.release] trim-paths`, and it is not an oversight: the
+# feature is still unstable as of Cargo 1.97, and an unstable profile key
+# is a hard manifest parse error rather than a warning, so adding it
+# breaks every build on every toolchain that is not nightly. Tried, and it
+# failed exactly that way.
+#
+# The problem it would have solved is real: rustc records source paths so
+# panics can name a file, `kuma build` bakes the running binary into every
+# image, and a binary built in someone's home carries that path forever.
+# It is handled with `--remap-path-prefix` in RUSTFLAGS where the release
+# artifacts are built, and enforced by scripts/publish-audit.sh, which
+# fails on any home path it finds in a baked binary.
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

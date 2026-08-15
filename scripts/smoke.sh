@@ -394,6 +394,42 @@ for file in examples/*.toml; do
     tag="localhost/kuma-smoke-$name:latest"
     port=$((port + 1))
 
+    # The boot stage builds from the example plus a [user] block, not from
+    # the example as committed.
+    #
+    # Every committed example leaves [user] commented out, deliberately: a
+    # declared account is a property of the image, so it rides into any
+    # media built from that file, password hash included. That safety costs
+    # the one thing the boot stage most needs to check. The account is made
+    # at first boot by kuma-user-sync, so a wrong shell or a missing group
+    # could ship in every image kuma builds and every assertion here would
+    # print "no [user] declared, so nothing to converge" and pass.
+    #
+    # Appending rather than editing keeps this honest about what it tests:
+    # the file is the example, plus exactly the block being exercised. It
+    # costs no extra build, since --boot already runs the image stage.
+    #
+    # bash, not the example's own shell: /usr/bin/fish is only in the
+    # desktop sets, and a declared shell emits a build-time `test -x`
+    # guard that would fail the minimal image. No password_hash, because
+    # nothing here logs in as this account; it asks the machine about it
+    # from the shell `kuma vm` already provides.
+    if [ $BOOT -eq 1 ]; then
+        booted_file="vm-smoke/$name.toml"
+        mkdir -p vm-smoke
+        cp "$file" "$booted_file"
+        cat >>"$booted_file" <<'EOF'
+
+# Appended by scripts/smoke.sh so the boot stage has an account to check.
+[user]
+name = "smoketest"
+shell = "bash"
+groups = ["wheel"]
+ssh_keys = ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIsmoketestnotarealkey smoke@kuma"]
+EOF
+        file=$booted_file
+    fi
+
     note "$name"
     if (smoke_image "$file" "$tag" && { [ $BOOT -eq 0 ] || smoke_boot "$file" "$tag" "$name" "$port"; }); then
         PASS+=("$name")
@@ -409,6 +445,7 @@ for file in examples/*.toml; do
         # which is the one thing they exist to notice.
         rm -f "${file%.toml}.lock"
         [ -d "vm-smoke/$name" ] && sudo rm -rf "vm-smoke/$name"
+        [ $BOOT -eq 1 ] && rm -f "vm-smoke/$name.toml"
     fi
 done
 

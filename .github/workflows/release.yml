@@ -86,7 +86,20 @@ jobs:
       # dynamically link. That is what lets it run on an image-based
       # desktop that has podman and no toolchain, which is the machine
       # most likely to want it.
+      # remap-path-prefix, because rustc records source paths so a panic
+      # can name a file, and `kuma build` bakes this binary into every
+      # image it produces. Without it a published image carries the
+      # absolute paths of whoever built the binary, which on a laptop is
+      # their username. `[profile.release] trim-paths` would be the tidy
+      # way and is still unstable in Cargo 1.97, where an unstable profile
+      # key is a hard manifest error rather than a warning, so it cannot
+      # be used yet. scripts/publish-audit.sh fails on any home path that
+      # survives.
       - name: build
+        env:
+          RUSTFLAGS: >-
+            --remap-path-prefix=${{ github.workspace }}=/kuma
+            --remap-path-prefix=/home/runner/.cargo/registry=/cargo
         run: cargo build --locked --release --target "$TARGET"
 
       - name: package
