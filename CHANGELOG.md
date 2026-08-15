@@ -5,6 +5,10 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+## v0.7.0 (2026-08-15)
+
+Kuma installs itself, from media it made, onto a disk it partitioned.
+
 ### Behavior
 
 - `[system].shell` declares the login shell accounts on a machine get. It
