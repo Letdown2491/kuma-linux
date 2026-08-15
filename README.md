@@ -212,8 +212,11 @@ rather than an installer beside it. `kuma iso` without `--live` builds
 Anaconda media instead, which is about a gigabyte larger for the same
 system.
 
-`install` asks which disk, then for an account and a hostname, because a
-shared image cannot declare either: the image is shared and you are not. It
+`install` pulls `ghcr.io/letdown2491/kuma:niri` unless `--image` names
+another, so a machine can be installed from media without building
+anything first. It asks which disk, then for an account and a hostname,
+because a shared image cannot declare either: the image is shared and you
+are not. It
 writes them down and the machine creates them on its first boot, the same
 way a declared `[user]` works. It partitions the disk itself, so the plan
 it prints is the layout it will write: an ESP, a `/boot` outside the root
@@ -240,9 +243,10 @@ not obvious from them:
 
 ## Not yet
 
-- **No published images.** Every image is built locally, so none is
-  `bootc switch`-able from anywhere, and no image is signed. The `kuma`
-  binary is published and signed; the images it builds are not.
+- **No encryption at install.** The layout `kuma install` writes puts
+  `/boot` outside the root so a passphrase can be added later without a
+  different disk shape, but the installer does not offer one yet, so an
+  encrypted machine still has to be installed by something else.
 - **No offsite backup.** `[snapshots]` survives a mistake, not a dead
   disk. Blocked on where a repository credential lives, since it cannot be
   the declaration.

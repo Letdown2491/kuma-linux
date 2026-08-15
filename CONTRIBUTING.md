@@ -128,16 +128,20 @@ out around a gigabyte smaller. It boots to a live desktop as `liveuser`, and
 needs no sudo, because nothing in that path runs bootc-image-builder.
 
 Two things follow from carrying no second copy of the image. Installing from
-it pulls one over the network, and since kuma publishes no images yet, there
-is no install path from it at all: it is media for trying kuma. `kuma` says
-so in the live session. And the live session runs SELinux permissive, since a
-container image's real labels are not reachable through a podman mount. Both
-are explained where they are set, in `src/liveiso.rs`. It is UEFI-only, so
-give a test VM UEFI firmware.
+it pulls one over the network rather than copying the media, which is why
+the live session's one affordance is `kuma install` and why it needs a
+network. And the live session runs SELinux permissive, since a container
+image's real labels are not reachable through a podman mount. Both are
+explained where they are set, in `src/liveiso.rs`. It is UEFI-only, so give
+a test VM UEFI firmware, and a 3D-capable one (`-device virtio-vga-gl
+-display gtk,gl=on`) or the desktop renders nowhere.
 
-**Installing.** `kuma install` writes an image to a disk and asks for the
-account the machine creates on first boot, since a published image declares
-none. Run it with no `--disk` and it lists what it found. It is the only
+**Installing.** `kuma install` partitions a disk, writes an image to it, and
+asks for the account the machine creates on first boot, since a published
+image declares none. Run it with no `--disk` and it lists what it found.
+The whole destructive half is one generated script (`src/partition.rs`),
+which unwinds itself on failure and can be dumped for shellcheck:
+`KUMA_DUMP_SCRIPT=/tmp/install.sh cargo test dump_the_script`. It is the only
 command here with no way back, so it dry-runs by default and refuses a disk
 with anything in use on it, asking `lsblk` rather than only `/proc/mounts`
 because an encrypted root is named by its mapper device in the mount table.

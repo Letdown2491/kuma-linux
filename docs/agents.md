@@ -13,7 +13,9 @@ names the legal next commands.
   `live` and the facts describe media rather than a machine. Nothing is
   converging there and nothing persists, so most of what `doctor` grades
   does not apply and it reports one line instead of failing checks that
-  were never going to pass.
+  were never going to pass. Its one action is `kuma install`, bare: the
+  disk is not knowable from there, so the affordance is the form that
+  lists what it found and asks.
 - **Ask before doing.** `check --json` validates a declaration,
   `update --check --json` reports whether the base moved (or, for a composed
   base, every package that has and its advisory severity), `diff --json` reports
@@ -32,8 +34,9 @@ names the legal next commands.
   on `--yes` and even then only stage a deployment. `install` writes a disk
   immediately and cannot be undone: no staged deployment to discard, no
   rollback slot. It still dry-runs by default, and its dry run reports the
-  disk, the image, whether that image is already local, and what it will
-  ask a person for (`asks`) before `--yes` does anything. It refuses a disk
+  disk, the image, whether that image is already local, the partition
+  `layout` it will write, and what it will ask a person for (`asks`)
+  before `--yes` does anything. It refuses a disk
   with anything mounted on it, and it is the only verb here that prompts:
   with `--user`, `--hostname` and `--disk` given, the password is the one
   remaining answer and is read from stdin rather than a flag, so it never
