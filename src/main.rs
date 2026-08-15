@@ -126,8 +126,9 @@ enum Cmd {
     /// Install kuma onto a disk, destroying everything on it
     Install {
         /// Disk to install onto. Everything on it is destroyed.
+        /// Omit it and kuma lists what it found and asks.
         #[arg(long)]
-        disk: PathBuf,
+        disk: Option<PathBuf>,
         /// Image to install, and to fetch updates from afterwards
         #[arg(long)]
         image: String,
@@ -373,7 +374,7 @@ fn run(
         }
         Cmd::Install { disk, image, user, groups, yes } => {
             let groups = groups.split(',').filter(|g| !g.is_empty()).map(String::from).collect();
-            install(&disk, &image, user, groups, yes)
+            install(disk.as_deref(), &image, user, groups, yes)
         }
         Cmd::Iso { tag, output, live } => {
             if live {
@@ -1668,16 +1669,35 @@ const INSTALL_TAG: &str = "localhost/kuma-install:latest";
 /// the plan is printed in full, the objections are checked before
 /// anything is built, and `--yes` is the only thing that writes.
 fn install(
-    disk: &Path,
+    disk: Option<&Path>,
     image: &str,
     user: Option<String>,
     groups: Vec<String>,
     yes: bool,
 ) -> Result<()> {
+    // No --disk means ask, and asking means listing. A verb whose only
+    // entry point is a device path is one a person cannot walk through:
+    // on live media they would have to know about lsblk, know which of
+    // two names is theirs, and get it right first time. That also makes
+    // the affordance nameable, which matters more than it sounds: kuma's
+    // whole shape is that a response names the next move, and
+    // `kuma install --disk /dev/???` is not a move anyone can take.
+    let chosen;
+    let disk: &Path = match disk {
+        Some(disk) => disk,
+        None => {
+            let listing =
+                host_output_any(&["lsblk", "-J", "-o", "NAME,SIZE,MODEL,TYPE,MOUNTPOINTS"])
+                    .context("cannot list disks: pass --disk")?;
+            chosen = PathBuf::from(install::choose_disk(&install::disks_from_lsblk(&listing)?)?);
+            &chosen
+        }
+    };
     let disk_str = path_str(disk)?;
 
     // Objections first: no point asking for a password before saying the
-    // disk cannot be used.
+    // disk cannot be used. The picker refuses an in-use disk too, but
+    // --disk skips the picker entirely, so this is the check that counts.
     let mounts = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
     // Sees through LUKS and LVM, which /proc/mounts cannot. Failure is
     // tolerated rather than fatal: an absent lsblk leaves the mount-table

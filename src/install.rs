@@ -26,7 +26,7 @@
 //! the one that had to exist first, because without it a published image
 //! installs to a machine nobody can log into.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 /// What the person answered, and what the target will converge to.
 pub struct Account {
@@ -108,6 +108,128 @@ pub fn disk_objections(disk: &str, proc_mounts: &str, lsblk_mountpoints: &str) -
         }
     }
     out
+}
+
+/// A disk somebody might install onto, as `lsblk` describes it.
+pub struct Disk {
+    pub path: String,
+    pub size: String,
+    pub model: String,
+    /// Everything mounted anywhere on it, found through partitions and
+    /// through LUKS and LVM children. Non-empty means refuse.
+    pub mounts: Vec<String>,
+}
+
+/// The disks worth offering, from `lsblk -J -o NAME,SIZE,MODEL,TYPE,MOUNTPOINTS`.
+///
+/// Pure over the JSON so the list a person chooses from is testable
+/// without spare hardware, which matters more here than usual: choosing
+/// wrong is not recoverable.
+///
+/// zram and loop devices are dropped. Both report `type: "disk"`, and
+/// neither is a thing anyone can install onto: one is compressed RAM,
+/// the other is a file. A list that offers them invites a mistake in the
+/// one place a mistake is permanent.
+pub fn disks_from_lsblk(json: &str) -> Result<Vec<Disk>> {
+    fn mounts_of(node: &serde_json::Value, out: &mut Vec<String>) {
+        if let Some(points) = node.get("mountpoints").and_then(|v| v.as_array()) {
+            for point in points.iter().filter_map(|p| p.as_str()) {
+                if !point.is_empty() {
+                    out.push(point.to_string());
+                }
+            }
+        }
+        // Recursive, because the mount that matters is usually two levels
+        // down: a partition holding a LUKS container holding the root.
+        for child in node.get("children").and_then(|v| v.as_array()).into_iter().flatten() {
+            mounts_of(child, out);
+        }
+    }
+
+    let root: serde_json::Value =
+        serde_json::from_str(json).context("cannot read the disk list from lsblk")?;
+    let mut out = Vec::new();
+    for dev in root.get("blockdevices").and_then(|v| v.as_array()).into_iter().flatten() {
+        if dev.get("type").and_then(|v| v.as_str()) != Some("disk") {
+            continue;
+        }
+        let name = dev.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+        if name.is_empty() || name.starts_with("zram") || name.starts_with("loop") {
+            continue;
+        }
+        let mut mounts = Vec::new();
+        mounts_of(dev, &mut mounts);
+        out.push(Disk {
+            path: format!("/dev/{name}"),
+            size: dev.get("size").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
+            model: dev.get("model").and_then(|v| v.as_str()).unwrap_or("").trim().to_string(),
+            mounts,
+        });
+    }
+    Ok(out)
+}
+
+/// Ask which disk, listing what was found.
+///
+/// Never picks for you, not even when exactly one disk is free. Every
+/// other kuma verb can be undone; this one writes a partition table.
+/// A single-candidate machine is also the most likely place for the one
+/// disk to be the one you are running from.
+///
+/// In-use disks stay on the list, marked and refused, rather than being
+/// hidden. Hiding them makes somebody wonder where their disk went and
+/// look for it among the ones that are left.
+pub fn choose_disk(disks: &[Disk]) -> Result<String> {
+    use std::io::{IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        bail!("no --disk given, and nothing to ask: pass --disk when not on a terminal");
+    }
+    if disks.is_empty() {
+        bail!("no disks found to install onto");
+    }
+    println!("\nDisks on this machine:\n");
+    for (index, disk) in disks.iter().enumerate() {
+        let model = if disk.model.is_empty() { String::new() } else { format!("  {}", disk.model) };
+        // Naming every mount is unreadable and adds nothing: an encrypted
+        // root reports seven, and the reader needs to know the disk is
+        // busy, not the shape of its filesystem tree.
+        let state = if disk.mounts.is_empty() {
+            String::new()
+        } else {
+            let shown = disk.mounts.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
+            let rest = disk.mounts.len().saturating_sub(2);
+            let more = if rest > 0 { format!(" and {rest} more") } else { String::new() };
+            format!("   in use at {shown}{more}  (refused)")
+        };
+        println!("  {}  {:<14} {:>8}{}{}", index + 1, disk.path, disk.size, model, state);
+    }
+    let free = disks.iter().filter(|d| d.mounts.is_empty()).count();
+    if free == 0 {
+        bail!("every disk here is in use; nothing can be installed onto safely");
+    }
+    loop {
+        print!("\nWhich disk should kuma install onto? [1-{}, or q] ", disks.len());
+        std::io::stdout().flush()?;
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            bail!("no answer");
+        }
+        let answer = line.trim();
+        if answer.eq_ignore_ascii_case("q") {
+            bail!("nothing was changed");
+        }
+        match answer.parse::<usize>() {
+            Ok(n) if n >= 1 && n <= disks.len() => {
+                let disk = &disks[n - 1];
+                if !disk.mounts.is_empty() {
+                    println!("{} is in use at {}.", disk.path, disk.mounts.join(", "));
+                    continue;
+                }
+                return Ok(disk.path.clone());
+            }
+            _ => println!("Answer with a number from the list, or q to stop."),
+        }
+    }
 }
 
 /// Ask for the account the target will create at first boot.
@@ -223,6 +345,41 @@ tmpfs /tmp tmpfs rw 0 0
         let mounts = "/dev/sda1 /boot ext4 rw 0 0\n";
         let objections = disk_objections("/dev/sda", mounts, "/boot\n");
         assert_eq!(objections.len(), 1);
+    }
+
+    /// zram reports `type: "disk"` and would otherwise appear in a list
+    /// somebody picks from with no undo. It is compressed RAM.
+    #[test]
+    fn the_disk_list_offers_only_things_that_can_be_installed_onto() {
+        let json = r#"{"blockdevices":[
+          {"name":"zram0","size":"8G","model":null,"type":"disk","mountpoints":["[SWAP]"]},
+          {"name":"loop0","size":"1G","model":null,"type":"disk","mountpoints":[]},
+          {"name":"sr0","size":"1.5G","model":"QEMU DVD-ROM","type":"rom","mountpoints":["/run/initramfs/live"]},
+          {"name":"sda","size":"932G","model":"ST1000LM035 ","type":"disk","mountpoints":[]}
+        ]}"#;
+        let disks = disks_from_lsblk(json).unwrap();
+        assert_eq!(disks.len(), 1, "zram, loop and the optical drive are not targets");
+        assert_eq!(disks[0].path, "/dev/sda");
+        assert_eq!(disks[0].model, "ST1000LM035", "lsblk pads the model");
+        assert!(disks[0].mounts.is_empty());
+    }
+
+    /// The mount that decides it is usually two levels down: a partition
+    /// holding a LUKS container holding the root. A list built from the
+    /// top level alone shows the running system's disk as free.
+    #[test]
+    fn a_disk_is_in_use_when_anything_nested_under_it_is_mounted() {
+        let json = r#"{"blockdevices":[
+          {"name":"nvme0n1","size":"476.9G","model":"Micron","type":"disk","mountpoints":[],
+           "children":[
+             {"name":"nvme0n1p1","size":"600M","type":"part","mountpoints":["/boot/efi"]},
+             {"name":"nvme0n1p3","size":"474G","type":"part","mountpoints":[],
+              "children":[{"name":"luks-abc","size":"474G","type":"crypt","mountpoints":["/sysroot","/var"]}]}
+           ]}
+        ]}"#;
+        let disks = disks_from_lsblk(json).unwrap();
+        assert_eq!(disks.len(), 1);
+        assert_eq!(disks[0].mounts, vec!["/boot/efi", "/sysroot", "/var"]);
     }
 
     #[test]

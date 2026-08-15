@@ -26,6 +26,15 @@ Media somebody else can boot, and a machine somebody else can log into.
   `--target-imgref` records the published image as what the machine fetches
   for later updates. The installed system has an account and still tracks the
   public tag.
+- Run it with no `--disk` and it lists the disks it found and asks. Disks
+  with anything mounted on them stay on the list, marked and refused, rather
+  than being hidden, because hiding a disk makes somebody look for it among
+  the ones that are left. It never picks for you, not even when exactly one
+  disk is free: a single-candidate machine is the most likely place for that
+  one disk to be the one you are running from. The flags remain for
+  scripting, but a verb whose only entry point is a device path is one
+  nobody can walk through, and an affordance that reads `kuma install --disk
+  /dev/???` is not a move anyone can take.
 - Whole-disk only, and destructive. `bootc install to-disk` owns the
   partitioning, so there is no cryptsetup and no custom layout yet;
   passphrase LUKS needs `to-filesystem` and kuma owning the storage. Dry run
