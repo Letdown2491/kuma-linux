@@ -12,6 +12,7 @@
 #   check     parse and validate the declaration          (no podman)
 #   image     build it and inspect the built layers       (podman)
 #   install   write an encrypted disk and verify it       (podman + sudo)
+#             offline, through a loop device
 #   boot      make a disk, boot it headless, ask the      (podman + kvm + sudo)
 #             machine whether the boot was healthy
 #   published install an image kuma published and boot    (podman + kvm + sudo
@@ -30,6 +31,8 @@
 #   scripts/smoke.sh --boot minimal    # just one, by example name
 #   scripts/smoke.sh --keep            # leave images and disks behind
 #   scripts/smoke.sh --published ghcr.io/letdown2491/kuma:niri
+#   scripts/smoke.sh --published <image> --encrypted   # LUKS, unlocked
+#                                                      # at the console
 #
 # --published builds nothing and reads no example: it installs what is on
 # the registry and boots the result, so it is the only stage that can go
@@ -64,6 +67,7 @@ BOOT=0
 INSTALL=0
 PUBLISHED=""
 UPGRADE_TO=""
+ENCRYPTED=0
 KEEP=0
 SELECTED=()
 
@@ -73,6 +77,7 @@ while [ $# -gt 0 ]; do
         --install) INSTALL=1 ;;
         --published) PUBLISHED=${2:?--published needs an image reference}; shift ;;
         --upgrade-to) UPGRADE_TO=${2:?--upgrade-to needs an image reference}; shift ;;
+        --encrypted) ENCRYPTED=1 ;;
         --keep) KEEP=1 ;;
         -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
         -*) echo "unknown flag: $1" >&2; exit 2 ;;
@@ -413,6 +418,8 @@ smoke_published() {
     local log="$dir/console.log"
     local user="smoketest"
     local pass="smoke-account-password"
+    local disk_pass="smoke-disk-passphrase"
+    local sock="$dir/console.sock"
 
     mkdir -p "$dir"
     rm -f "$raw"
@@ -437,15 +444,24 @@ smoke_published() {
         esac
     fi
 
-    # One line on stdin, not two: without --encrypt the interview never
-    # asks for a disk passphrase, and only the account password is left.
+    # One line on stdin without --encrypt, two with: the interview asks
+    # for the disk passphrase first and the account password second, and
+    # neither is ever a flag.
+    local encrypt_args=() answers
+    if [ $ENCRYPTED -eq 1 ]; then
+        encrypt_args=(--encrypt)
+        answers=$(printf '%s\n%s\n' "$disk_pass" "$pass")
+    else
+        answers=$(printf '%s\n' "$pass")
+    fi
+
     echo "   .. installing $image (needs sudo; this is the slow part)"
-    printf '%s\n' "$pass" \
+    printf '%s\n' "$answers" \
         | "$KUMA" install --disk "$raw" --image "$image" \
-            "${update_from[@]}" \
+            "${update_from[@]}" "${encrypt_args[@]}" \
             --user "$user" --hostname smoketest --yes >/dev/null \
         || bad "installing $image failed"
-    ok "installed $image"
+    ok "installed $image${encrypt_args[*]:+ (encrypted)}"
 
     # A console the serial log can actually capture.
     #
@@ -501,6 +517,17 @@ smoke_published() {
     [ -f "$ovmf_vars" ] || bad "found $ovmf_code but no $ovmf_vars beside it"
     cp "$ovmf_vars" "$dir/OVMF_VARS.fd"
 
+    # A console that can be typed into, not only read.
+    #
+    # `-serial file:` is write-only, which is fine until something has to
+    # answer a prompt. An encrypted root stops in the initramfs asking
+    # for a passphrase, so the socket form is what makes booting one
+    # testable at all; the chardev logs to the same file either way, so
+    # the artifact is unchanged. Both cases use it, because two console
+    # paths would mean the encrypted one is the only one nobody exercises.
+    local serial=(-chardev "socket,id=con,path=$sock,server=on,wait=off,logfile=$log"
+                  -serial chardev:con)
+
     qemu-system-x86_64 \
         -enable-kvm -cpu host -smp 4 -m 4096 \
         -machine q35 \
@@ -509,12 +536,24 @@ smoke_published() {
         -drive "file=$raw,if=virtio,format=raw" \
         -device "$QEMU_VGA" -display "$QEMU_DISPLAY" \
         -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$port-:22" \
-        -serial "file:$log" &
+        "${serial[@]}" &
     local qemu=$!
+
+    # Typed while the boot is still in the initramfs, so this runs beside
+    # the wait below rather than before it.
+    local unlocker=0
+    if [ $ENCRYPTED -eq 1 ]; then
+        echo "   .. answering the passphrase prompt on the console"
+        scripts/console-unlock.py "$sock" "$disk_pass" 420 \
+            >"$dir/unlock.log" 2>&1 &
+        unlocker=$!
+    fi
     # EXIT rather than RETURN, for the reason smoke_boot gives: a failed
-    # assertion leaves this subshell without ever returning.
+    # assertion leaves this subshell without ever returning. The unlocker
+    # goes with it, or a failed encrypted run leaves a python process
+    # holding a socket in a directory the cleanup is about to delete.
     # shellcheck disable=SC2064
-    trap "kill $qemu 2>/dev/null || true" EXIT
+    trap "kill $qemu $unlocker 2>/dev/null || true" EXIT
 
     # Password auth, because `kuma install` has no way to plant a key:
     # the account it creates exists only on the installed machine and
@@ -547,6 +586,20 @@ smoke_published() {
     await_healthy_boot "$qemu" "$log" \
         "installed machine booted and is reachable" \
         "greenboot says this boot is healthy"
+
+    # Reaching ssh at all proves the root was unlocked, but not that the
+    # passphrase did it: a machine that never encrypted anything also
+    # boots. So the claim is checked against what the console actually
+    # saw, which is the difference between testing encryption and testing
+    # that a disk boots.
+    if [ $ENCRYPTED -eq 1 ]; then
+        kill "$unlocker" 2>/dev/null || true
+        wait "$unlocker" 2>/dev/null || true
+        grep -q 'typed the passphrase' "$dir/unlock.log" 2>/dev/null \
+            || { cat "$dir/unlock.log" >&2 2>/dev/null || true
+                 bad "no passphrase prompt appeared; console at $log"; }
+        ok "the encrypted root unlocked from a passphrase typed at the console"
+    fi
 
     # The reason this stage exists. A `kuma install` root is btrfs, so
     # "not btrfs" is a failure rather than a question that does not arise.

@@ -114,6 +114,53 @@ jobs:
           path: vm-smoke/published/console.log
           if-no-files-found: warn
 
+  # 0.8's headline feature, booted for the first time.
+  #
+  # Encrypted installs were verified thoroughly and entirely offline: the
+  # LUKS header, the passphrase, the kargs and the account file all read
+  # through a loop device. What that cannot answer is the only question a
+  # person has, which is whether the machine comes up when you type the
+  # passphrase. Nothing had ever booted one, which made the headline
+  # feature of 0.8 the one shipped thing with no boot coverage at all.
+  #
+  # Runs against the published image rather than a build: encryption is a
+  # property of the install, not of the image, so this needs no compose
+  # and adds no build time.
+  encrypted-boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked
+      - uses: ./.github/actions/kvm
+        with:
+          sshpass: "true"
+
+      - name: install an encrypted disk, then unlock it at the console
+        env:
+          QEMU_VGA: virtio-vga
+          QEMU_DISPLAY: none
+        run: |
+          ./scripts/smoke.sh --encrypted \
+            --published "${{ inputs.image || 'ghcr.io/letdown2491/kuma:niri' }}"
+
+      - name: guest console
+        if: failure()
+        run: |
+          tail -200 vm-smoke/published/console.log || true
+          echo "=== what the unlocker saw ==="
+          cat vm-smoke/published/unlock.log || true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: console-encrypted
+          path: |
+            vm-smoke/published/console.log
+            vm-smoke/published/unlock.log
+          if-no-files-found: warn
+
   # Can a machine installed at one version reach a later one? Nothing has
   # ever asked. Every other check builds and boots a single image, so
   # "an existing machine survives moving forward" has been a promise
