@@ -407,6 +407,31 @@ smoke_published() {
         || bad "installing $image failed"
     ok "installed $image"
 
+    # A console the serial log can actually capture.
+    #
+    # The image sets no console= karg, correctly: a desktop has no reason
+    # to log to a serial port. The consequence here is that the worst
+    # failure produces the least evidence — a machine that never boots
+    # writes firmware and GRUB output and then nothing, which is exactly
+    # what a UEFI/BIOS mismatch looked like: a zero-byte log and a
+    # seven-minute ssh timeout with no way to tell them apart. Added to
+    # the installed disk rather than the image, so it is a property of
+    # the thing under test here and not of what kuma ships.
+    local kloop kboot
+    kloop=$(sudo losetup -fP --show "$raw") || bad "cannot attach $raw to add a console karg"
+    kboot="$dir/bootmnt"
+    mkdir -p "$kboot"
+    if sudo mount "${kloop}p2" "$kboot" 2>/dev/null; then
+        sudo sed -i 's/^options .*/& console=ttyS0/' "$kboot"/loader/entries/*.conf 2>/dev/null \
+            && ok "serial console added to the boot entry" \
+            || echo "   .. no loader entry to add a console to; the log will be firmware only" >&2
+        sudo umount "$kboot"
+    else
+        echo "   .. could not mount /boot; the log will be firmware only" >&2
+    fi
+    sudo losetup -d "$kloop"
+    rmdir "$kboot" 2>/dev/null || true
+
     # UEFI firmware, and this is not optional. `kuma install` writes a GPT
     # with an ESP, which is a UEFI layout; qemu defaults to SeaBIOS, which
     # finds nothing bootable and says so on the VGA console that
@@ -537,17 +562,22 @@ smoke_published() {
         gsudo systemd-analyze critical-chain kuma-home-subvol.service >&2 2>&1 || true
     }
 
-    # A converger that ran and correctly declined is a different fault
-    # from one that died, and `systemctl is-system-running` calls both
-    # "degraded", which this stage accepts as settled. So ask about this
-    # unit by name rather than letting a failure hide in the aggregate.
-    # This is the one that fires in practice: the unit FAILS on the boots
-    # where /var/home stays a directory, which is why every theory about
-    # some other unit writing there first was looking in the wrong place.
-    if [ "$(guest systemctl is-failed kuma-home-subvol.service)" = failed ]; then
-        home_evidence
-        bad "kuma-home-subvol.service failed; console at $log"
+    # Every converger kuma ships, not one named unit.
+    #
+    # `systemctl is-system-running` reports a unit that died and a unit
+    # that declined identically as "degraded", and this stage accepts
+    # degraded as settled, so a dead converger hides in the aggregate.
+    # kuma-home-subvol was found that way only because it was asked about
+    # by name, after hiding for an unknown number of releases. Asking
+    # about the whole family costs nothing and catches the next one.
+    local failed_kuma
+    failed_kuma=$(guest systemctl list-units --failed --plain --no-legend \
+        | awk '{print $1}' | grep '^kuma-' || true)
+    if [ -n "$failed_kuma" ]; then
+        case "$failed_kuma" in *kuma-home-subvol*) home_evidence ;; esac
+        bad "failed kuma units: $(echo "$failed_kuma" | tr '\n' ' ')(console at $log)"
     fi
+    ok "no kuma unit failed"
 
     if [ -z "$UPGRADE_TO" ]; then
         if [ "$home_was_subvol" != yes ]; then
@@ -565,6 +595,24 @@ smoke_published() {
         ok "/var/home is its own subvolume before upgrading"
     else
         ok "/var/home is NOT a subvolume on $image (inode $home_inode), which is what upgrading is being asked about"
+    fi
+
+    # The machine's own verdict, not this script's reading of it.
+    #
+    # Everything above asks a question this harness knows how to ask.
+    # doctor asks every question kuma knows how to ask, so checking that
+    # it finds nothing failing means each check added to doctor becomes a
+    # boot assertion with no change here. Skipped in the upgrade path,
+    # where the whole point is a machine installed before a fix and
+    # therefore known to be deficient; that path checks doctor's verdict
+    # on the specific thing it is testing instead.
+    if [ -z "$UPGRADE_TO" ]; then
+        local doctor_failing
+        doctor_failing=$(gsudo kuma doctor --json \
+            | python3 -c 'import sys,json; print(" ".join(c["name"] for c in json.load(sys.stdin)["checks"] if c["grade"] == "fail"))' \
+            2>/dev/null || true)
+        [ -z "$doctor_failing" ] || bad "kuma doctor fails: $doctor_failing"
+        ok "kuma doctor finds nothing failing"
     fi
 
     # The account the installer was told to make, on the machine it made
