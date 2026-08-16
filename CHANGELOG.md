@@ -5,6 +5,10 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+## v0.8.1 (2026-08-16)
+
+The snapshot timer takes a snapshot.
+
 ### Fixed
 
 - The snapshot script asks `findmnt` which filesystem holds the target
