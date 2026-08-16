@@ -5,6 +5,16 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+### Fixed
+
+- The greeter health check no longer passes a greeter that is crash
+  looping. It sampled `display-manager.service` once, and a unit with
+  `Restart=` is briefly active on every retry, so a machine nobody could
+  log in to reached `greenboot-success.target` in 15 seconds and the
+  greeter gave up four seconds later. It now requires the greeter to still
+  be up a moment after it comes up, and treats a unit that has exhausted
+  its restarts as failed immediately rather than polling a corpse for two
+  minutes.
 ### Behavior
 
 - Bare `kuma` counts a flatpak as pending removal only when kuma installed

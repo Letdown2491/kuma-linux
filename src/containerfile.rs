@@ -863,11 +863,30 @@ const GREETER_CHECK: &str = r#"#!/usr/bin/bash
 # this check and its Restart= may be mid-retry, so only the deadline
 # decides. DO NOT wait on graphical.target here: it waits for
 # multi-user.target, which waits for this check: instant deadlock.
+#
+# Active once is not the same as running. greetd's Restart= makes a
+# crash loop look healthy to a single sample: a machine whose greeter
+# died five times in four seconds passed this check green, because the
+# poll happened to land inside one of the retries. So the greeter has to
+# be up, and still up a moment later, and a unit that has given up
+# entirely is a failure now rather than in two minutes.
 set -u
 deadline=$(( SECONDS + 120 ))
-until systemctl --quiet is-active display-manager.service; do
+settle=5
+while true; do
+    if systemctl --quiet is-failed display-manager.service; then
+        echo "display-manager.service failed to start"
+        exit 1
+    fi
+    if systemctl --quiet is-active display-manager.service; then
+        sleep "$settle"
+        if systemctl --quiet is-active display-manager.service; then
+            exit 0
+        fi
+        echo "display-manager.service did not stay up; still waiting"
+    fi
     if (( SECONDS >= deadline )); then
-        echo "display-manager.service not active after 120s"
+        echo "display-manager.service not running after 120s"
         exit 1
     fi
     sleep 3
@@ -2337,6 +2356,53 @@ mod tests {
         context("schema_version = 1\n[system]\ndesktop = \"cosmic\"\n", dir.path());
         let script = std::fs::read_to_string(dir.path().join("kuma-greeter-check")).unwrap();
         assert!(script.starts_with("#!/usr/bin/bash"));
+    }
+
+    /// A greeter that starts, dies, and is restarted is not a greeter.
+    ///
+    /// This was found on a real installed machine: greenboot reached its
+    /// success target at 15.8s while greetd was on restart 3 of 5, and
+    /// gave up at 19.5s. Nobody could log in and boot health said green,
+    /// which is the one outcome this check exists to prevent.
+    #[test]
+    fn the_greeter_check_fails_a_crash_looping_greeter() {
+        // Sampled twice with a gap, so one lucky retry cannot pass it.
+        assert_eq!(GREETER_CHECK.matches("is-active display-manager.service").count(), 2);
+        assert!(GREETER_CHECK.contains("sleep \"$settle\""));
+        // And a unit that has exhausted its restarts fails now rather
+        // than after two minutes of polling something already dead.
+        assert!(GREETER_CHECK.contains("is-failed display-manager.service"));
+
+        // Run it against stub systemctls, since a check that has never
+        // executed is a check nobody has tested.
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let script = dir.path().join("check");
+        std::fs::write(
+            &script,
+            GREETER_CHECK.replace("SECONDS + 120", "SECONDS + 4").replace("settle=5", "settle=1"),
+        )
+        .unwrap();
+        for (name, body, want) in [
+            ("healthy", "case \"$1\" in is-failed) exit 3 ;; *) exit 0 ;; esac", true),
+            // is-failed answers yes: the unit gave up.
+            ("dead", "case \"$1\" in is-failed) exit 0 ;; *) exit 3 ;; esac", false),
+            // Never active, never failed: the deadline decides.
+            ("absent", "exit 3", false),
+        ] {
+            std::fs::write(bin.join("systemctl"), format!("#!/usr/bin/bash\nshift\n{body}\n"))
+                .unwrap();
+            let mut perms = std::fs::metadata(bin.join("systemctl")).unwrap().permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+            std::fs::set_permissions(bin.join("systemctl"), perms).unwrap();
+            let out = std::process::Command::new("bash")
+                .arg(&script)
+                .env("PATH", format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()))
+                .output()
+                .expect("bash");
+            assert_eq!(out.status.success(), want, "{name}: {:?}", out);
+        }
     }
 
     #[test]
