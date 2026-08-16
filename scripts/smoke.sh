@@ -602,6 +602,14 @@ EOF
 
     if [ $KEEP -eq 0 ]; then
         podman rmi -f "$tag" >/dev/null 2>&1 || true
+        # And root's copy, which is a different store with the same tag.
+        # `kuma vm` syncs the image there for bootc-image-builder and
+        # nothing ever took it away, so tags from old runs sat in root
+        # storage for days. That is not only 7GB of nobody's business: an
+        # install resolves this tag against root's store, so a stale copy
+        # there means a stage can pass having installed an image from
+        # last week. It did, before this line existed.
+        sudo podman rmi -f "$tag" >/dev/null 2>&1 || true
         # The lock goes too, so a local run resolves the current base like
         # CI's fresh checkout does. A pin left lying here would quietly
         # freeze the smoke tests against a base the world has moved past,
