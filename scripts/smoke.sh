@@ -7,13 +7,15 @@
 # a machine (every example compiles to an image that keeps kuma's floor);
 # this is the part that needs real podman, real bootc, and a real boot.
 #
-# Four stages, cheapest first:
+# Five stages, cheapest first:
 #
-#   check   parse and validate the declaration            (no podman)
-#   image   build it and inspect the built layers         (podman)
-#   install write an encrypted disk and verify it         (podman + sudo)
-#   boot    make a disk, boot it headless, ask the        (podman + kvm + sudo)
-#           machine whether the boot was healthy
+#   check     parse and validate the declaration          (no podman)
+#   image     build it and inspect the built layers       (podman)
+#   install   write an encrypted disk and verify it       (podman + sudo)
+#   boot      make a disk, boot it headless, ask the      (podman + kvm + sudo)
+#             machine whether the boot was healthy
+#   published install an image kuma published and boot    (podman + kvm + sudo
+#             the disk that install wrote                  + sshpass + network)
 #
 # The boot stage's verdict is greenboot's own: the same check that decides
 # whether this machine would roll an update back is the one that decides
@@ -27,6 +29,11 @@
 #   scripts/smoke.sh --install         # check, image and install
 #   scripts/smoke.sh --boot minimal    # just one, by example name
 #   scripts/smoke.sh --keep            # leave images and disks behind
+#   scripts/smoke.sh --published ghcr.io/letdown2491/kuma:niri
+#
+# --published builds nothing and reads no example: it installs what is on
+# the registry and boots the result, so it is the only stage that can go
+# red without anyone having committed anything.
 #
 # --install is separate from --boot rather than another step of it: it is
 # the only stage that needs no KVM, and it answers a different question.
@@ -55,6 +62,7 @@ QEMU_DISPLAY=${QEMU_DISPLAY:-egl-headless}
 QEMU_VGA=${QEMU_VGA:-virtio-vga-gl}
 BOOT=0
 INSTALL=0
+PUBLISHED=""
 KEEP=0
 SELECTED=()
 
@@ -62,6 +70,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --boot) BOOT=1 ;;
         --install) INSTALL=1 ;;
+        --published) PUBLISHED=${2:?--published needs an image reference}; shift ;;
         --keep) KEEP=1 ;;
         -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
         -*) echo "unknown flag: $1" >&2; exit 2 ;;
@@ -334,6 +343,121 @@ smoke_install() {
     ok "disk verified"
 }
 
+# --- stage: published --------------------------------------------------
+#
+# Installs an image kuma published, then boots the disk that install
+# wrote. Every other stage here builds its own image from the tree, so
+# this is the only one that asks whether what is on the registry works,
+# and the only one that can fail because of something nobody committed.
+# It lives behind its own flag and its own workflow for that reason.
+#
+# It also reaches a branch nothing else does. `smoke_boot` already asks
+# whether /var/home is its own btrfs subvolume, and on a
+# bootc-image-builder disk it never can be: those roots are ext4 (see
+# BIB_ROOTFS), so the check correctly says the question does not arise
+# and has therefore never once run in anger. **Only `kuma install` writes
+# btrfs**, so booting an installed disk is the only way that assertion
+# executes, and `kuma-home-subvol` is the only thing standing between
+# `[snapshots]` and an hourly timer that snapshots nothing.
+#
+# Deliberately NOT encrypted, and this is a constraint rather than an
+# omission: an encrypted root stops at boot for a passphrase, and nothing
+# is there to type it. The encrypted path is covered by `smoke_install`,
+# which reads the disk through a loop device instead of booting it.
+smoke_published() {
+    local image=$1 name=$2 port=$3
+    local dir="vm-smoke/$name"
+    local raw="$dir/disk.raw"
+    local log="$dir/console.log"
+    local user="smoketest"
+    local pass="smoke-account-password"
+
+    mkdir -p "$dir"
+    rm -f "$raw"
+    truncate -s 24G "$raw"
+
+    # One line on stdin, not two: without --encrypt the interview never
+    # asks for a disk passphrase, and only the account password is left.
+    echo "   .. installing $image (needs sudo; this is the slow part)"
+    printf '%s\n' "$pass" \
+        | "$KUMA" install --disk "$raw" --image "$image" \
+            --user "$user" --hostname smoketest --yes >/dev/null \
+        || bad "installing $image failed"
+    ok "installed $image"
+
+    qemu-system-x86_64 \
+        -enable-kvm -cpu host -smp 4 -m 4096 \
+        -drive "file=$raw,if=virtio,format=raw" \
+        -device "$QEMU_VGA" -display "$QEMU_DISPLAY" \
+        -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$port-:22" \
+        -serial "file:$log" &
+    local qemu=$!
+    # EXIT rather than RETURN, for the reason smoke_boot gives: a failed
+    # assertion leaves this subshell without ever returning.
+    # shellcheck disable=SC2064
+    trap "kill $qemu 2>/dev/null || true" EXIT
+
+    # Password auth, because `kuma install` has no way to plant a key:
+    # the account it creates exists only on the installed machine and
+    # nothing has ever logged into it. PubkeyAuthentication=no keeps a
+    # runner's own agent from being offered first and eating the attempt.
+    local ssh_opts=(-p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+                    -o ConnectTimeout=5 -o LogLevel=ERROR
+                    -o PubkeyAuthentication=no -o PreferredAuthentications=password
+                    "$user@127.0.0.1")
+    # shellcheck disable=SC2029  # client-side expansion is the point.
+    guest() { sshpass -p "$pass" ssh "${ssh_opts[@]}" "$@" 2>/dev/null; }
+
+    echo "   .. waiting for ssh on $port"
+    local deadline=$((SECONDS + 420))
+    until guest true; do
+        kill -0 $qemu 2>/dev/null || bad "qemu died; console at $log"
+        [ $SECONDS -lt $deadline ] || bad "no ssh within 420s; console at $log"
+        sleep 5
+    done
+    ok "installed machine booted and is reachable"
+
+    echo "   .. waiting for the boot to settle"
+    deadline=$((SECONDS + 600))
+    until [[ "$(guest systemctl is-system-running)" =~ ^(running|degraded)$ ]]; do
+        [ $SECONDS -lt $deadline ] || bad "boot never settled; console at $log"
+        sleep 10
+    done
+
+    local verdict
+    verdict=$(guest systemctl is-active greenboot-healthcheck.service || true)
+    [ "$verdict" = active ] || bad "greenboot verdict: $verdict (console at $log)"
+    ok "greenboot says this boot is healthy"
+
+    # The reason this stage exists. Unconditional here, unlike the copy
+    # in smoke_boot: a `kuma install` root is btrfs, so "not btrfs" is a
+    # failure rather than a question that does not arise.
+    local home_fs home_inode
+    home_fs=$(guest findmnt -no FSTYPE -T /var/home)
+    [ "$home_fs" = btrfs ] || bad "/var/home is $home_fs on an installed disk; expected btrfs"
+    home_inode=$(guest stat -c %i /var/home)
+    [ "$home_inode" = 256 ] \
+        || bad "/var/home is not a subvolume (inode $home_inode); snapshots would take nothing"
+    ok "/var/home is its own subvolume"
+
+    # The account the installer was told to make, on the machine it made
+    # it on. Nothing before this stage has booted a disk whose user came
+    # from the install interview rather than from a declaration.
+    guest id "$user" >/dev/null || bad "$user does not exist on the installed machine"
+    guest id -nG "$user" | tr ' ' '\n' | grep -qx wheel || bad "$user is not in wheel"
+    [ "$(guest hostnamectl hostname)" = smoketest ] || bad "hostname did not converge"
+    ok "the installed account and hostname converged"
+
+    echo "   .. powering off"
+    guest sudo -n systemctl poweroff >/dev/null 2>&1 || true
+    local waited=0
+    while kill -0 $qemu 2>/dev/null && [ $waited -lt 30 ]; do sleep 1; waited=$((waited + 1)); done
+    kill $qemu 2>/dev/null || true
+    wait $qemu 2>/dev/null || true
+    trap - EXIT
+    [ $KEEP -eq 1 ] || sudo rm -rf "$dir"
+}
+
 # --- stage: boot -------------------------------------------------------
 smoke_boot() {
     local file=$1 tag=$2 name=$3 port=$4
@@ -591,6 +715,27 @@ smoke_boot() {
 
 # --- run ---------------------------------------------------------------
 port=2300
+
+# The published stage answers a question about the registry, not about
+# the examples, so it runs on its own and returns rather than joining the
+# loop below. Nothing here builds an image.
+if [ -n "$PUBLISHED" ]; then
+    note "published: $PUBLISHED"
+    if (smoke_published "$PUBLISHED" published "$port"); then
+        PASS+=("published")
+    else
+        FAIL+=("published")
+    fi
+    note "summary"
+    [ ${#PASS[@]} -gt 0 ] && printf '   pass: %s\n' "${PASS[*]}"
+    if [ ${#FAIL[@]} -gt 0 ]; then
+        printf '   FAIL: %s\n' "${FAIL[*]}"
+        exit 1
+    fi
+    printf '\n   all good\n'
+    exit 0
+fi
+
 for file in examples/*.toml; do
     name=$(basename "$file" .toml)
     if [ ${#SELECTED[@]} -gt 0 ] && ! printf '%s\n' "${SELECTED[@]}" | grep -qx "$name"; then
