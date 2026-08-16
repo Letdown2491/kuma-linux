@@ -63,6 +63,13 @@ describes what a machine is, and picking a network is not that.
 
 ## COSMIC
 
+COSMIC is experimental. It is built on every push like every other example, so
+it compiles and its build-time checks run, and it does boot. What it does not
+get is the verification niri gets: the checks that install kuma to a disk and
+then boot it and interrogate the running machine are run against niri on every
+change, and against COSMIC when someone remembers. Treat it as the second
+desktop in the order it is verified, not only in the order it is listed.
+
 Much shorter, because COSMIC curates itself. `cosmic-session` hard-requires
 the coherent desktop (compositor, panel, applets, settings, files, terminal,
 notifications, OSD, screenshot, portal, fonts), so kuma names the session plus

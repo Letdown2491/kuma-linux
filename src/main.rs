@@ -1954,22 +1954,12 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     // later. cryptsetup joins the list only for an encrypted install,
     // because refusing a plain one for want of it would be a check
     // inventing a requirement.
-    let required = partition::REQUIRED_TOOLS.iter().chain(if encrypt {
-        partition::ENCRYPT_TOOLS
-    } else {
-        &[]
-    });
-    let missing: Vec<String> = required
-        .filter(|(tool, _)| {
-            // Not `command -v`: this runs under sudo, whose PATH is not
-            // the one asking. Both directories, because a machine that
-            // has not merged /sbin still exists.
-            !["/usr/bin", "/usr/sbin", "/bin", "/sbin"]
-                .iter()
-                .any(|dir| Path::new(dir).join(tool).exists())
-        })
-        .map(|(tool, package)| format!("{tool}  (dnf install {package})"))
+    let required: Vec<(&str, &str)> = partition::REQUIRED_TOOLS
+        .iter()
+        .chain(if encrypt { partition::ENCRYPT_TOOLS } else { &[] })
+        .copied()
         .collect();
+    let missing = partition::missing_tools(&required, partition::TOOL_DIRS);
     if !missing.is_empty() {
         bail!(
             "cannot install from this machine: {} missing\n  {}\n\n\

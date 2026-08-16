@@ -28,7 +28,7 @@ words? [The glossary](docs/glossary.md) defines each in a line.
 schema_version = 1
 
 [system]
-desktop = "niri"   # curated sets: "niri" or "cosmic"; omit for headless
+desktop = "niri"   # "niri", or "cosmic" (experimental); omit for headless
 
 [user]
 name = "me"

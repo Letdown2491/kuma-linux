@@ -16,6 +16,7 @@
 //! pulling, so the image lands on the target disk rather than in RAM.
 
 use anyhow::{bail, Result};
+use std::path::Path;
 
 /// Fedora's own ESP size, and the one Anaconda gives a kuma machine
 /// today. Big enough for several vendors' shim and grub builds, small
@@ -165,6 +166,36 @@ pub const REQUIRED_TOOLS: &[(&str, &str)] = &[
 /// base names it, for exactly this), so the list matters on the machines
 /// that are not kuma ones.
 pub const ENCRYPT_TOOLS: &[(&str, &str)] = &[("cryptsetup", "cryptsetup")];
+
+/// Where a tool has to live to count as installed.
+///
+/// Not `$PATH`: this runs under sudo, whose PATH is not the one asking.
+/// `/sbin` and `/usr/sbin` are listed beside `/bin` and `/usr/bin`
+/// because a machine that has not merged `/sbin` still exists.
+///
+/// `/usr/local` is here because refusing to look there means refusing to
+/// see a tool the operator installed exactly the way kuma's own README
+/// tells them to install kuma. It was found the way these things are
+/// found: a hosted CI runner keeps podman at `/usr/local/bin/podman`,
+/// and `kuma install` refused the disk for want of podman while the job
+/// beside it was building an image with that same binary.
+pub const TOOL_DIRS: &[&str] =
+    &["/usr/local/bin", "/usr/local/sbin", "/usr/bin", "/usr/sbin", "/bin", "/sbin"];
+
+/// The tools from `required` that are absent under every directory in
+/// `dirs`, each rendered with the package that carries it.
+///
+/// `dirs` is a parameter for the same reason `scan_etc` takes its roots
+/// and `kuma-fstab-sync` takes its fstab path: on a machine that has
+/// everything, this branch never runs, so it would otherwise ship having
+/// never been executed once.
+pub fn missing_tools(required: &[(&str, &str)], dirs: &[&str]) -> Vec<String> {
+    required
+        .iter()
+        .filter(|(tool, _)| !dirs.iter().any(|dir| Path::new(dir).join(tool).exists()))
+        .map(|(tool, package)| format!("{tool}  (dnf install {package})"))
+        .collect()
+}
 
 /// Partition and format a disk, then mount it ready for bootc.
 ///
@@ -549,6 +580,41 @@ fstrim "$mnt" >/dev/null 2>&1 || true
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tool_is_found_in_any_of_the_directories_not_just_the_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first");
+        let second = dir.path().join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(second.join("podman"), "").unwrap();
+        let dirs = [first.to_str().unwrap(), second.to_str().unwrap()];
+
+        assert!(missing_tools(&[("podman", "podman")], &dirs).is_empty());
+    }
+
+    #[test]
+    fn a_missing_tool_is_reported_with_the_package_that_carries_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = [dir.path().to_str().unwrap()];
+
+        let missing = missing_tools(&[("mkfs.btrfs", "btrfs-progs")], &dirs);
+
+        assert_eq!(missing, vec!["mkfs.btrfs  (dnf install btrfs-progs)"]);
+    }
+
+    /// The bug this function was extracted for: podman on a hosted runner
+    /// lives in /usr/local/bin, the preflight looked in four directories
+    /// that did not include it, and `kuma install` refused a disk for
+    /// want of a binary that was installed. kuma's own README puts the
+    /// kuma binary in /usr/local/bin, so not looking there was refusing
+    /// to see a tool installed the way kuma asks for.
+    #[test]
+    fn usr_local_counts_as_installed() {
+        assert!(TOOL_DIRS.contains(&"/usr/local/bin"));
+        assert!(TOOL_DIRS.contains(&"/usr/local/sbin"));
+    }
 
     /// Any `@NAME@` the substitution missed.
     ///
