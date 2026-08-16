@@ -406,17 +406,22 @@ smoke_published() {
     #
     # VARS is copied because pflash wants it writable, and a per-run copy
     # means EFI boot entries cannot leak from one run into the next.
+    # The _4M names are Ubuntu's and are listed first because that is what
+    # CI runs; the unsuffixed pair is Fedora's. VARS is derived from CODE
+    # by name rather than searched for separately, because the two have to
+    # be the same build: a 4M vars file against 2M code does not boot.
     local ovmf_code="" ovmf_vars="" candidate
-    for candidate in /usr/share/OVMF/OVMF_CODE.fd /usr/share/edk2/ovmf/OVMF_CODE.fd \
-                     /usr/share/qemu/OVMF_CODE.fd; do
+    for candidate in /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd \
+                     /usr/share/edk2/ovmf/OVMF_CODE.fd /usr/share/qemu/OVMF_CODE.fd; do
         [ -f "$candidate" ] && ovmf_code=$candidate && break
     done
-    [ -n "$ovmf_code" ] \
-        || bad "no OVMF firmware; an installed disk is UEFI and will not boot on SeaBIOS"
-    for candidate in "${ovmf_code%OVMF_CODE.fd}OVMF_VARS.fd" /usr/share/OVMF/OVMF_VARS.fd; do
-        [ -f "$candidate" ] && ovmf_vars=$candidate && break
-    done
-    [ -n "$ovmf_vars" ] || bad "found $ovmf_code but no matching OVMF_VARS.fd"
+    if [ -z "$ovmf_code" ]; then
+        echo "   .. looked for OVMF in:" >&2
+        ls -1 /usr/share/OVMF /usr/share/edk2/ovmf /usr/share/qemu 2>/dev/null >&2 || true
+        bad "no OVMF firmware; an installed disk is UEFI and will not boot on SeaBIOS"
+    fi
+    ovmf_vars=${ovmf_code//CODE/VARS}
+    [ -f "$ovmf_vars" ] || bad "found $ovmf_code but no $ovmf_vars beside it"
     cp "$ovmf_vars" "$dir/OVMF_VARS.fd"
 
     qemu-system-x86_64 \
