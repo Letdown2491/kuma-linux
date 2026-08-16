@@ -216,15 +216,18 @@ system.
 another, so a machine can be installed from media without building
 anything first. It asks which disk, then for an account and a hostname,
 because a shared image cannot declare either: the image is shared and you
-are not. It
-writes them down and the machine creates them on its first boot, the same
-way a declared `[user]` works. It also asks whether to encrypt the disk,
-and takes a passphrase if you say yes: `/boot` is a partition of its own
-either way, so the answer changes what the root partition holds and not
-the shape of the disk. It partitions the disk itself, so the plan it
-prints is the layout it will write. It is the one verb here that cannot
-be undone, so it dry-runs by default and refuses a disk with anything
-mounted on it.
+are not. It writes them down and the machine creates them on its first
+boot, the same way a declared `[user]` works.
+
+It also asks whether to encrypt the disk. Say yes and the root partition
+holds a LUKS container that the machine unlocks at every boot; `/boot` is
+a partition of its own either way, so the answer changes what the root
+holds rather than the shape of the disk. Nothing keeps a copy of the
+passphrase, so a lost one is a lost disk.
+
+It partitions the disk itself, so the plan it prints is the layout it
+will write. It is the one verb here that cannot be undone, so it dry-runs
+by default and refuses a disk with anything mounted on it.
 
 ## Going deeper
 
@@ -233,8 +236,8 @@ not obvious from them:
 
 - [How kuma behaves](docs/concepts.md): why drift is a proposal rather
   than an error, what `kuma.lock` pins and what it only records, how
-  `/etc` is merged rather than replaced, and how a bad update rolls itself
-  back.
+  `/etc` is merged rather than replaced, how a bad update rolls itself
+  back, and what an install decides that a declaration cannot.
 - [What a desktop contains](docs/desktops.md): what `desktop = "niri"` or
   `"cosmic"` installs that you didn't name, why the surprising parts are
   there, and what you can change.

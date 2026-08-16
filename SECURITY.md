@@ -104,6 +104,33 @@ examples declare no user for this reason.
 It's a deliberate choice for a kiosk or a VM, and it is not a good one for a
 laptop that leaves the house.
 
+## Disk encryption
+
+`kuma install` asks whether to encrypt the disk, and encrypts nothing unless
+told to. Saying yes puts a LUKS2 container in the root partition, holding the
+same btrfs root, and the machine asks for the passphrase at every boot before
+anything else runs.
+
+**Kuma keeps no copy of the passphrase.** It reaches `cryptsetup` on a pipe,
+never through a command line where `ps` would show it and never through a
+file. A lost passphrase is a lost disk; there is no recovery key, no escrow,
+and no way for kuma to help. Changing it later is `cryptsetup luksChangeKey`
+on the machine itself, which kuma has no verb for.
+
+**What it protects is a disk at rest, and only that.** `/boot` and the EFI
+system partition are outside the container on every install, because a
+bootloader has to read a kernel before anything is unlocked. Nothing measures
+or verifies them, so an attacker with repeated physical access can modify the
+initramfs that later asks for your passphrase. Defending against that needs
+Secure Boot with signed and measured boot, which kuma does not do. Encryption
+here answers a stolen or discarded disk, not a machine somebody keeps
+visiting.
+
+Encryption is not a field in `kuma.toml`, deliberately. It is a property of a
+disk, fixed when that disk is partitioned, and two machines built from one
+declaration can differ on it. Machine state stays out of the declaration for
+the same reason hostname and timezone do.
+
 ## VM and installer images
 
 `kuma vm` disks carry a `kuma` account with the password `kuma` and membership
@@ -114,6 +141,13 @@ don't expose one to a network.
 `kuma iso` builds installer media from your declaration, and a declared
 `[user]` rides along into it, password hash included. `kuma iso` says so when
 it happens. Build shareable media from a declaration with no `[user]`.
+
+The same is true of the images themselves, and `kuma install` says so too: the
+declaration is baked into every image, so installing one that declares a
+`[user]` writes that account's name and password hash onto a disk being made
+for somebody else. Installing an image that declares an account also drops
+that account's autologin from the greeter, since a greeter cannot log in a
+user the installed machine will not have.
 
 `kuma iso --live` does not carry the declared account into the live session:
 it creates its own passwordless `liveuser` with passwordless sudo, which

@@ -322,3 +322,38 @@ bootloader can actually count. A previously-good deployment that starts
 failing reboots three times and then waits for a human, because rolling
 back can't fix what an update didn't break.
 
+
+## A disk is not a declaration
+
+Everything above is about images. An install is where an image meets a
+machine, and the two know different things.
+
+An image knows what should be installed. It cannot know who the machine is
+for: a published image is pulled by strangers, so it declares no `[user]`,
+and a machine installed from one would otherwise have no account and no way
+in. So `kuma install` asks, writes the answers to `/var/lib/kuma/user` on the
+target, and `kuma-user-sync` creates the account at first boot exactly as it
+does for a declared one. The installer creates nobody; it writes down what
+the machine should converge to.
+
+That split decides where things live. `/var` is filled from the image once,
+at install, and never touched again, which is what install-time answers need.
+`/etc` is merged against the image on every update, so a file the installer
+shipped there would be image content rather than a local change, and the next
+update would delete it. The hostname is the exception that proves it:
+`/etc/hostname` *is* image content, so the installed machine writes it at
+first boot from `/var/lib/kuma/hostname`, and writing it is what makes it
+local and therefore what makes it survive.
+
+The disk itself is machine state too. Kuma writes the same three partitions
+every time: an EFI system partition, a `/boot` outside the root, and a root
+that takes the rest. `/boot` is separate even when nothing is encrypted, so
+that turning encryption on changes what the third partition holds rather than
+the shape of the disk. Whether it holds a LUKS container is asked at install
+and cannot be revised afterwards without installing again, which is why it is
+asked before the plan is printed rather than defaulted either way.
+
+None of that is in `kuma.toml`, and none of it should be. Two machines
+installed from one declaration can have different disks, different names, and
+different people. The declaration says what the system is; the install says
+whose it is.
