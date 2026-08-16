@@ -383,7 +383,19 @@ smoke_published() {
     # until now it was exercised only with a reference nothing ever
     # fetched, so this is the first time it points at something real.
     local update_from=()
-    [ -n "$UPGRADE_TO" ] && update_from=(--update-from "$UPGRADE_TO")
+    if [ -n "$UPGRADE_TO" ]; then
+        update_from=(--update-from "$UPGRADE_TO")
+    else
+        case "$image" in
+            # kuma refuses to record a localhost tag as an update source,
+            # and it is right to: on the installed machine `localhost`
+            # means itself, so the machine could never update. The
+            # reference here is never fetched, exactly as in
+            # smoke_install; it exists so the install has somewhere real
+            # to write down.
+            localhost/*) update_from=(--update-from ghcr.io/example/kuma:niri) ;;
+        esac
+    fi
 
     # One line on stdin, not two: without --encrypt the interview never
     # asks for a disk passphrase, and only the account password is left.
@@ -511,12 +523,31 @@ smoke_published() {
     fi
     ok "no ordering cycle this boot"
 
+    # Collected the same way whichever fault fired, because the two look
+    # identical from outside and the guest's kernel log never reaches the
+    # serial console: the installed image sets no console= karg, so this
+    # is the only chance to ask while the machine is still up.
+    home_evidence() {
+        echo "   .. kuma-home-subvol.service says:" >&2
+        gsudo systemctl --no-pager -l status kuma-home-subvol.service >&2 2>&1 || true
+        gsudo journalctl --no-pager -b -u kuma-home-subvol.service >&2 2>&1 || true
+        echo "   .. /var/home contains:" >&2
+        gsudo ls -Al /var/home >&2 2>&1 || true
+        echo "   .. what ran before it:" >&2
+        gsudo systemd-analyze critical-chain kuma-home-subvol.service >&2 2>&1 || true
+    }
+
     # A converger that ran and correctly declined is a different fault
     # from one that died, and `systemctl is-system-running` calls both
     # "degraded", which this stage accepts as settled. So ask about this
     # unit by name rather than letting a failure hide in the aggregate.
-    [ "$(guest systemctl is-failed kuma-home-subvol.service)" != failed ] \
-        || bad "kuma-home-subvol.service failed; console at $log"
+    # This is the one that fires in practice: the unit FAILS on the boots
+    # where /var/home stays a directory, which is why every theory about
+    # some other unit writing there first was looking in the wrong place.
+    if [ "$(guest systemctl is-failed kuma-home-subvol.service)" = failed ]; then
+        home_evidence
+        bad "kuma-home-subvol.service failed; console at $log"
+    fi
 
     if [ -z "$UPGRADE_TO" ]; then
         if [ "$home_was_subvol" != yes ]; then
@@ -526,13 +557,7 @@ smoke_published() {
             # reaches the serial console because the installed image sets
             # no console= karg, so the evidence has to be collected here
             # while the machine is still up.
-            echo "   .. kuma-home-subvol.service says:" >&2
-            guest systemctl --no-pager -l status kuma-home-subvol.service >&2 2>&1 || true
-            guest journalctl --no-pager -b -u kuma-home-subvol.service >&2 2>&1 || true
-            echo "   .. /var/home contains:" >&2
-            guest ls -A /var/home >&2 2>&1 || true
-            echo "   .. units that finished before it:" >&2
-            guest systemd-analyze critical-chain kuma-home-subvol.service >&2 2>&1 || true
+            home_evidence
             bad "/var/home is not a subvolume (inode $home_inode); snapshots would take nothing"
         fi
         ok "/var/home is its own subvolume"
