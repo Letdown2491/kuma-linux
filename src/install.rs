@@ -40,6 +40,12 @@ use anyhow::{bail, Context, Result};
 /// apart by position is a poor place to get one wrong.
 pub struct Request {
     pub image: String,
+    /// What a bare `kuma install` resolves to here, which is the
+    /// published image on a machine and the media's own image on
+    /// installer media that recorded a pullable one. Carried so the
+    /// command a dry run prints names `--image` when, and only when,
+    /// running it without the flag would install something else.
+    pub default_image: String,
     /// What the installed machine fetches updates from, when that is not
     /// the image being installed. Installing a locally built image and
     /// tracking the published tag is the case this exists for.
@@ -305,6 +311,41 @@ pub fn unreachable_update_source(reference: &str) -> Option<String> {
         ));
     }
     None
+}
+
+/// Which image a bare `kuma install` writes, given what the media it is
+/// running on recorded about itself, and what to say about the choice.
+///
+/// Installing pulls from a registry rather than copying the media, so
+/// the media's own image is only installable when it came from one. The
+/// three cases are worth keeping apart:
+///
+/// - Nothing recorded: an ordinary machine, or media built before kuma
+///   recorded this. The published image, silently, as before.
+/// - A registry reference: install what this media is. Somebody who
+///   built media from their declaration and booted it was looking at
+///   their own system, and installing something else is a surprise no
+///   message makes acceptable.
+/// - A `localhost/` reference: the common case, since `kuma build`
+///   writes one. It cannot be pulled from anywhere, so the published
+///   image is the only thing that can be installed, and the difference
+///   has to be said out loud rather than discovered afterwards.
+pub fn image_for_media(recorded: Option<&str>) -> (String, Option<String>) {
+    let published = crate::PUBLISHED_IMAGE.to_string();
+    let Some(recorded) = recorded.map(str::trim).filter(|r| !r.is_empty()) else {
+        return (published, None);
+    };
+    if unreachable_update_source(recorded).is_none() {
+        return (recorded.to_string(), None);
+    }
+    let note = format!(
+        "This media was built from {recorded}, which is local to the machine\n\
+         that built it and cannot be pulled from here. Installing {published}\n\
+         instead, so the installed machine has somewhere to update from.\n\n\
+         To install what this media is running, push that image to a registry\n\
+         and name it: kuma install --image ghcr.io/<owner>/kuma:<tag>"
+    );
+    (published, Some(note))
 }
 
 /// A disk somebody might install onto, as `lsblk` describes it.
@@ -721,6 +762,39 @@ tmpfs /tmp tmpfs rw 0 0
         // Not a prefix match on the word: a registry that merely starts
         // with those letters is somebody's real host.
         assert!(unreachable_update_source("localhost.example.com/kuma:v1").is_none());
+    }
+
+    /// What a bare `kuma install` writes, which was kuma's published
+    /// image on every medium regardless of what that medium was. Someone
+    /// could build installer media from their own declaration, boot it,
+    /// look at their own desktop, install, and get a different system,
+    /// with nothing anywhere saying so.
+    #[test]
+    fn a_bare_install_writes_the_media_it_can_actually_pull() {
+        // An ordinary machine, and media built before this was recorded.
+        let (image, note) = image_for_media(None);
+        assert_eq!(image, crate::PUBLISHED_IMAGE);
+        assert!(note.is_none(), "nothing recorded is not worth a paragraph");
+
+        // Media built from something installable: install what you booted.
+        let (image, note) = image_for_media(Some("ghcr.io/someone/kuma:cosmic"));
+        assert_eq!(image, "ghcr.io/someone/kuma:cosmic");
+        assert!(note.is_none());
+
+        // The common case, since `kuma build` writes a localhost tag. The
+        // published image is the only installable answer, and the
+        // difference is said rather than left to be discovered.
+        let (image, note) = image_for_media(Some("localhost/kuma:latest"));
+        assert_eq!(image, crate::PUBLISHED_IMAGE);
+        let note = note.expect("a substitution this surprising has to be announced");
+        assert!(note.contains("localhost/kuma:latest"));
+        assert!(note.contains(crate::PUBLISHED_IMAGE));
+        assert!(note.contains("--image"), "and it has to say how to get what you built");
+
+        // A file with a trailing newline is what `printf` writes, and an
+        // empty one is a record that failed to say anything.
+        assert_eq!(image_for_media(Some("ghcr.io/o/k:t\n")).0, "ghcr.io/o/k:t");
+        assert_eq!(image_for_media(Some("  ")).0, crate::PUBLISHED_IMAGE);
     }
 
     #[test]

@@ -167,14 +167,20 @@ questions: whether to encrypt the disk, a passphrase if you say yes, an
 account name and password, and a hostname. It prints the partition layout it
 will write before it writes anything.
 
-**Which image you get.** The live session is running the image you built, but
-`kuma install` writes the published `ghcr.io/letdown2491/kuma:niri` unless
-`--image` names another. Installing pulls from a registry, and an image you
-built on your own machine is not in one. So there are two ways to end up
-running your own declaration on real hardware: push your image somewhere and
-name it with `--image`, or install the published one and then build yours on
-the machine itself with `kuma build` and `kuma switch --yes`, which needs
-`podman` in your `packages.rpm`.
+**Which image you get.** Installing pulls the image from a registry rather
+than copying it off the media, so what gets installed depends on where your
+media's image came from.
+
+Media built from a registry image installs that image. Media built from a
+local `kuma build`, which is what step 3 produced, cannot: `localhost/kuma`
+means nothing to the machine being installed, so kuma installs its published
+`ghcr.io/letdown2491/kuma:niri` instead and says so before it starts.
+
+So there are two ways to end up running your own declaration on real
+hardware. Push your image to a registry and build media from that, or
+install the published one and then build yours on the machine itself with
+`kuma build` and `kuma switch --yes`, which needs `podman` in your
+`packages.rpm`.
 
 The account is asked for rather than declared because the image is shared
 and you are not. Kuma writes your answers onto the target, and the machine

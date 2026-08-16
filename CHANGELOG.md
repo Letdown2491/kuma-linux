@@ -56,6 +56,15 @@ as its release notes.
   created unlabeled. `kuma doctor` now grades the target itself, for the
   machines already in that state, where the layout cannot be changed
   without moving home directories.
+- `kuma install` on installer media defaults to the image that media was
+  built from, when that image can be pulled. Installing fetches from a
+  registry rather than copying the media, and the default was kuma's
+  published image regardless: somebody could build media from their own
+  declaration, boot it, look at their own desktop, install it, and get a
+  different system with nothing saying so. Media built from a `localhost/`
+  image, which is what `kuma build` produces, still installs the published
+  one, because a local tag cannot be pulled from anywhere, and now says
+  that out loud instead of leaving it to be discovered.
 - `kuma doctor` grades `kuma-user-sync` on a machine that was installed,
   not only on one built from a declaration that names an account. A
   published image declares none by design, so `kuma install` writes the

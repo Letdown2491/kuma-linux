@@ -146,9 +146,11 @@ enum Cmd {
         /// Omit it and kuma lists what it found and asks.
         #[arg(long)]
         disk: Option<PathBuf>,
-        /// Image to install, and to fetch updates from afterwards
-        #[arg(long, default_value = PUBLISHED_IMAGE)]
-        image: String,
+        /// Image to install, and to fetch updates from afterwards.
+        /// Defaults to the image this installer media was built from when
+        /// that can be pulled, and to kuma's published image otherwise.
+        #[arg(long)]
+        image: Option<String>,
         /// Where the installed machine fetches updates from, if that is
         /// not the image being installed. For installing a local build
         /// while tracking a published tag.
@@ -423,8 +425,24 @@ fn run(
             json,
         } => {
             let groups = groups.split(',').filter(|g| !g.is_empty()).map(String::from).collect();
+            // Resolved here rather than by clap, because the default is
+            // not a constant: on installer media it is what the media was
+            // built from. The note is why the resolution has to be
+            // visible; see install::image_for_media.
+            let (default_image, note_about_it) =
+                install::image_for_media(inspect::live_source().as_deref());
+            let image = match image {
+                Some(named) => named,
+                None => {
+                    if let Some(why) = note_about_it {
+                        note(&format!("\n{why}\n"));
+                    }
+                    default_image.clone()
+                }
+            };
             let request = install::Request {
                 image,
+                default_image,
                 update_from,
                 user,
                 groups,
@@ -1808,6 +1826,7 @@ fn print_install_plan(view: &PlanView) {
 fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     let install::Request {
         image: image_owned,
+        default_image,
         update_from,
         user,
         groups,
@@ -1984,7 +2003,13 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     // two spellings of it is two chances to get one wrong.
     let confirm = {
         let mut flags = format!("--disk {}", disk.display());
-        if image != PUBLISHED_IMAGE {
+        // Against what a bare run resolves to *here*, not against the
+        // published image. On installer media built from a registry
+        // reference, the default is that reference, and naming it would
+        // add a flag that changes nothing; on media built from a local
+        // image, the default is the published one and a `--image` the
+        // person passed has to survive into the command they copy.
+        if image != default_image {
             flags.push_str(&format!(" --image {image}"));
         }
         // Carried because without it the command this prints is one the

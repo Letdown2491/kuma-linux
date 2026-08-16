@@ -566,6 +566,18 @@ fn live_media() -> bool {
     Path::new(crate::liveiso::LIVE_MARKER).exists()
 }
 
+/// What this media was built from, if it is media and it recorded one.
+///
+/// `None` on a machine, and on media built by a kuma that predates the
+/// record, which is why every caller has to have an answer for "nothing
+/// recorded" rather than treating it as an error.
+pub fn live_source() -> Option<String> {
+    std::fs::read_to_string(crate::liveiso::LIVE_SOURCE)
+        .ok()
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+}
+
 /// A kuma machine that kuma actually converges: the image is kuma's AND
 /// it was booted as a deployment. The second half is what separates a
 /// running machine from live media or a container of the same image, and

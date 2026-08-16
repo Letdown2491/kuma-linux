@@ -175,6 +175,11 @@ struct Observed {
     /// `classify`, so the classifier stays a pure function of what was
     /// observed and this state is testable without an ISO.
     live: bool,
+    /// The image that media was built from, when it recorded one. Read
+    /// here for the same reason `live` is: the fact a live session shows
+    /// names the image `kuma install` would write, and that answer is
+    /// this media's own when it can be pulled.
+    live_source: Option<String>,
     /// Convergence units running right now, by the name a person would
     /// recognise ("flatpak", "brew", "user").
     ///
@@ -300,6 +305,7 @@ fn observe(config_path: &Path) -> Observed {
         image,
         machine,
         live: Path::new(crate::liveiso::LIVE_MARKER).exists(),
+        live_source: crate::inspect::live_source(),
         converging,
     }
 }
@@ -617,7 +623,17 @@ fn live_facts(obs: &Observed) -> [(&'static str, String); 3] {
     [
         ("config", config),
         ("image", "this media's own filesystem, read-only; edits live in RAM".into()),
-        ("machine", format!("none yet; `kuma install` writes one from {}", crate::PUBLISHED_IMAGE)),
+        // The image install would actually write, which on media built
+        // from a registry reference is that reference rather than the
+        // published one. Resolved by the same function install uses, so
+        // the fact and the verb cannot say different things.
+        (
+            "machine",
+            format!(
+                "none yet; `kuma install` writes one from {}",
+                crate::install::image_for_media(obs.live_source.as_deref()).0
+            ),
+        ),
     ]
 }
 
@@ -685,6 +701,7 @@ mod tests {
             image,
             machine,
             live: false,
+            live_source: None,
             converging: Vec::new(),
         }
     }
@@ -744,6 +761,36 @@ mod tests {
         assert!(!snap.facts.iter().any(|(_, d)| d.contains("build/test workspace")));
         // The keys docs/agents.md promises, whatever the state.
         assert_eq!(snap.facts.map(|(name, _)| name), ["config", "image", "machine"]);
+    }
+
+    /// A live session says which image installing would write, and the
+    /// answer is not always kuma's published one. Media built from a
+    /// registry reference installs that reference, and saying otherwise
+    /// would promise a stranger the wrong system.
+    #[test]
+    fn a_live_session_names_the_image_its_install_would_write() {
+        let mut obs = workspace(
+            ConfigFact::Baked { rpm: 6, flatpak: 7, brew: 7 },
+            None,
+            MachineFact::NotBootc,
+        );
+        obs.live = true;
+
+        let machine = |obs: &Observed| classify(obs).facts[2].1.clone();
+        // Nothing recorded: media from before kuma wrote this down.
+        assert!(machine(&obs).contains(crate::PUBLISHED_IMAGE));
+
+        // A registry reference is what the media is, so it is what an
+        // install writes.
+        obs.live_source = Some("ghcr.io/someone/kuma:cosmic".into());
+        assert!(machine(&obs).contains("ghcr.io/someone/kuma:cosmic"));
+
+        // A local build cannot be pulled from anywhere, so the fact has
+        // to name the image that actually gets installed.
+        obs.live_source = Some("localhost/kuma:latest".into());
+        let said = machine(&obs);
+        assert!(said.contains(crate::PUBLISHED_IMAGE));
+        assert!(!said.contains("localhost/"));
     }
 
     /// The bug this exists to prevent: capture's dry run printed `kuma

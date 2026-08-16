@@ -188,12 +188,16 @@ written to a disk, because the ISO's root filesystem *is* the image rather
 than an installer beside it. `kuma iso` without `--live` builds Anaconda
 media instead, which is about a gigabyte larger for the same system.
 
-`install` pulls `ghcr.io/letdown2491/kuma:niri` unless `--image` names
-another, so a machine can be installed from media without building anything
-first. It asks which disk, then whether to encrypt it, then for an account
-and a hostname, because a shared image cannot declare either: the image is
-shared and you are not. It writes those answers down, and the machine creates
-them on its first boot.
+`install` pulls the image rather than copying the media, so it installs the
+image the media was built from when that came from a registry, and
+`ghcr.io/letdown2491/kuma:niri` when it did not. Media built from a local
+`kuma build` is the second case, and says so before it installs anything.
+`--image` names another.
+
+It asks which disk, then whether to encrypt it, then for an account and a
+hostname, because a shared image cannot declare either: the image is shared
+and you are not. It writes those answers down, and the machine creates them
+on its first boot.
 
 It partitions the disk itself, so the plan it prints is the layout it will
 write. It is the one verb here that cannot be undone, so it dry-runs by

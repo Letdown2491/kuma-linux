@@ -61,6 +61,20 @@ pub const LIVE_HOSTNAME: &str = "kuma";
 /// bad first impression and simply untrue.
 pub const LIVE_MARKER: &str = "/usr/lib/kuma/live";
 
+/// The image this media was built from, recorded beside the marker.
+///
+/// Installing pulls an image from a registry rather than copying the
+/// media, so without this a bare `kuma install` wrote the published
+/// image whatever the media happened to be: somebody could build media
+/// from their own declaration, boot it, watch their own desktop, install
+/// it, and get a different system. Recorded rather than assumed, because
+/// only the build knows the answer.
+///
+/// A separate file from the marker, which says where kuma is running.
+/// This says what it came from, and media built by an older kuma has the
+/// first and not the second, which is a case that has to work anyway.
+pub const LIVE_SOURCE: &str = "/usr/lib/kuma/live-source";
+
 /// What makes container storage work on a live root.
 ///
 /// The whole file rather than a drop-in: containers-storage reads one
@@ -200,7 +214,8 @@ pub fn live_containerfile(config: &Config, base_tag: &str) -> String {
     // The marker doctor reads to know where it is, read by
     // inspect::live_media.
     out.push_str(&format!(
-        "RUN mkdir -p /usr/lib/kuma && printf 'live installer media\\n' > {LIVE_MARKER}\n\n"
+        "RUN mkdir -p /usr/lib/kuma && printf 'live installer media\\n' > {LIVE_MARKER} \\\n \
+         && printf '%s\\n' '{base_tag}' > {LIVE_SOURCE}\n\n"
     ));
 
     // And the kuma that understands that marker.
@@ -612,6 +627,27 @@ mod tests {
         assert!(out.contains(super::LIVE_MARKER));
         assert!(out.contains("COPY --chmod=755 kuma /usr/bin/kuma"));
         assert!(out.contains("RUN /usr/bin/kuma --version"), "guard against an unrunnable ELF");
+    }
+
+    /// The media records what it was built from, because installing
+    /// pulls an image rather than copying the media, and without this a
+    /// bare `kuma install` wrote kuma's published image whatever the
+    /// person was looking at.
+    #[test]
+    fn the_live_layer_records_the_image_it_was_built_from() {
+        let out = super::live_containerfile(
+            &config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"),
+            "ghcr.io/someone/kuma:cosmic",
+        );
+        assert!(out.contains(super::LIVE_SOURCE));
+        assert!(out.contains("'ghcr.io/someone/kuma:cosmic' > /usr/lib/kuma/live-source"));
+        // Beside the marker and in the same layer: media carrying one and
+        // not the other is media that says where it is without saying
+        // what it is.
+        let marker_at = out.find(super::LIVE_MARKER).unwrap();
+        let source_at = out.find(super::LIVE_SOURCE).unwrap();
+        assert!(source_at > marker_at);
+        assert_eq!(out[marker_at..source_at].matches("RUN ").count(), 0);
     }
 
     /// Live media masks flatpak convergence, so without this a live
