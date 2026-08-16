@@ -55,7 +55,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        attempt: [1, 2, 3, 4, 5, 6]
+        attempt: [1, 2, 3]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -102,6 +102,60 @@ jobs:
         if: failure()
         with:
           name: console-published
+          path: vm-smoke/published/console.log
+          if-no-files-found: warn
+
+  # TEMPORARY, REMOVE WITH THE HUNT MATRIX ABOVE.
+  #
+  # The published jobs test what is on the registry, which by definition
+  # does not carry a fix that has not been released. This one builds the
+  # tree's own niri image and installs THAT, which is the only way to
+  # exercise the home-subvolume converger's btrfs path against a change
+  # to it: ci.yml's boot job uses bootc-image-builder disks, and those
+  # are ext4, so the converger correctly does nothing there and a broken
+  # one would look identical to a working one.
+  #
+  # It also runs the ordering-cycle assertion, which matters more than
+  # usual right now: widening a unit's Before= is how a cycle gets made,
+  # systemd breaks a cycle by deleting a job, and on an ext4 disk the
+  # deleted job would go unnoticed.
+  fix-verification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked
+
+      - name: qemu, cryptsetup, sshpass, and access to /dev/kvm
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-x86 cryptsetup-bin sshpass ovmf
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+              | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo udevadm settle
+          test -w /dev/kvm || { echo "no write access to /dev/kvm"; exit 1; }
+
+      # --keep so the tag survives for the install below.
+      - name: build this tree's niri image
+        run: ./scripts/smoke.sh --keep niri
+
+      - name: install the image this tree builds, and boot it
+        env:
+          QEMU_VGA: virtio-vga
+          QEMU_DISPLAY: none
+        run: ./scripts/smoke.sh --published localhost/kuma-smoke-niri:latest
+
+      - name: guest console
+        if: failure()
+        run: tail -200 vm-smoke/published/console.log || true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: console-fix-verification
           path: vm-smoke/published/console.log
           if-no-files-found: warn
 
