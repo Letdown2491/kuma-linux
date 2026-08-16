@@ -21,9 +21,13 @@ on:
   workflow_dispatch:
     inputs:
       image:
-        description: "Image reference to install and boot"
+        description: "Image reference to install and boot, and to upgrade to"
         required: false
         default: "ghcr.io/letdown2491/kuma:niri"
+      from_image:
+        description: "Older image the cross-version job installs first"
+        required: false
+        default: "ghcr.io/letdown2491/kuma:niri-0.7.0"
   schedule:
     # Weekly rather than daily. The daily heartbeat in ci.yml watches a
     # base that moves on its own; a published tag only moves when someone
@@ -84,5 +88,54 @@ jobs:
         if: failure()
         with:
           name: console-published
+          path: vm-smoke/published/console.log
+          if-no-files-found: warn
+
+  # Can a machine installed at one version reach a later one? Nothing has
+  # ever asked. Every other check builds and boots a single image, so
+  # "an existing machine survives moving forward" has been a promise
+  # rather than a result, and it is the promise 1.0 rests on.
+  #
+  # Installs an older published tag while pointing its update origin at
+  # the rolling one, so `bootc upgrade` inside the guest has somewhere
+  # newer to go. Not `kuma update`: that is the builder's verb, which
+  # pulls a base and rebuilds, and kuma's own update_check says a machine
+  # running a published image asks bootc instead.
+  cross-version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked
+
+      - name: qemu, cryptsetup, sshpass, and access to /dev/kvm
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-x86 cryptsetup-bin sshpass
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+              | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo udevadm settle
+          test -w /dev/kvm || { echo "no write access to /dev/kvm"; exit 1; }
+
+      - name: install an old version, upgrade it, and boot what it became
+        env:
+          QEMU_VGA: virtio-vga
+          QEMU_DISPLAY: none
+        run: |
+          ./scripts/smoke.sh \
+            --published "${{ inputs.from_image || 'ghcr.io/letdown2491/kuma:niri-0.7.0' }}" \
+            --upgrade-to "${{ inputs.image || 'ghcr.io/letdown2491/kuma:niri' }}"
+
+      - name: guest console
+        if: failure()
+        run: tail -200 vm-smoke/published/console.log || true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: console-cross-version
           path: vm-smoke/published/console.log
           if-no-files-found: warn

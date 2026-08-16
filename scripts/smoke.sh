@@ -63,6 +63,7 @@ QEMU_VGA=${QEMU_VGA:-virtio-vga-gl}
 BOOT=0
 INSTALL=0
 PUBLISHED=""
+UPGRADE_TO=""
 KEEP=0
 SELECTED=()
 
@@ -71,6 +72,7 @@ while [ $# -gt 0 ]; do
         --boot) BOOT=1 ;;
         --install) INSTALL=1 ;;
         --published) PUBLISHED=${2:?--published needs an image reference}; shift ;;
+        --upgrade-to) UPGRADE_TO=${2:?--upgrade-to needs an image reference}; shift ;;
         --keep) KEEP=1 ;;
         -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
         -*) echo "unknown flag: $1" >&2; exit 2 ;;
@@ -376,11 +378,19 @@ smoke_published() {
     rm -f "$raw"
     truncate -s 24G "$raw"
 
+    # --update-from only when the machine is meant to move somewhere else
+    # later. It is the flag that says "install this, but track that", and
+    # until now it was exercised only with a reference nothing ever
+    # fetched, so this is the first time it points at something real.
+    local update_from=()
+    [ -n "$UPGRADE_TO" ] && update_from=(--update-from "$UPGRADE_TO")
+
     # One line on stdin, not two: without --encrypt the interview never
     # asks for a disk passphrase, and only the account password is left.
     echo "   .. installing $image (needs sudo; this is the slow part)"
     printf '%s\n' "$pass" \
         | "$KUMA" install --disk "$raw" --image "$image" \
+            "${update_from[@]}" \
             --user "$user" --hostname smoketest --yes >/dev/null \
         || bad "installing $image failed"
     ok "installed $image"
@@ -407,6 +417,22 @@ smoke_published() {
                     "$user@127.0.0.1")
     # shellcheck disable=SC2029  # client-side expansion is the point.
     guest() { sshpass -p "$pass" ssh "${ssh_opts[@]}" "$@" 2>/dev/null; }
+
+    # sudo over ssh has no terminal to ask on, and this account is in
+    # wheel rather than NOPASSWD, so the password goes in on stdin. Same
+    # shape `kuma vm --apply` already uses against its own guests. `-p ''`
+    # drops the prompt, which would otherwise land in the output being
+    # parsed. The remote side re-parses one string, so the pipeline is
+    # built here as one argument rather than passed as words.
+    gsudo() { guest "echo '$pass' | sudo -S -p '' $*"; }
+
+    # Parsed on this side, never in the guest: anything with quotes in it
+    # loses them crossing ssh, and a python one-liner is all quotes.
+    booted_digest() {
+        gsudo bootc status --format json \
+            | python3 -c 'import sys,json; print(json.load(sys.stdin)["status"]["booted"]["image"]["imageDigest"])' \
+            2>/dev/null || true
+    }
 
     echo "   .. waiting for ssh on $port"
     local deadline=$((SECONDS + 420))
@@ -448,8 +474,76 @@ smoke_published() {
     [ "$(guest hostnamectl hostname)" = smoketest ] || bad "hostname did not converge"
     ok "the installed account and hostname converged"
 
+    # --- the cross-version half ----------------------------------------
+    #
+    # Nothing has ever checked that a machine installed at one version can
+    # reach a later one. Every other stage builds and boots a single
+    # image, so "does an existing machine survive moving forward" has been
+    # a promise rather than a result, and it is the promise 1.0 rests on.
+    #
+    # bootc, not `kuma update`: kuma's own update_check says so in as many
+    # words. `kuma update` is the builder's verb, which pulls a base and
+    # rebuilds; a machine running a published image asks bootc to re-pull
+    # its origin, and --update-from above is what pointed that origin at
+    # something newer than what was installed.
+    if [ -n "$UPGRADE_TO" ]; then
+        local before after
+        before=$(booted_digest)
+        [ -n "$before" ] || bad "could not read the booted digest before upgrading"
+
+        echo "   .. upgrading to $UPGRADE_TO (pulling inside the guest)"
+        gsudo bootc upgrade >/dev/null 2>&1 \
+            || bad "bootc upgrade failed; console at $log"
+
+        # Staged, or there is nothing to reboot into and a green reboot
+        # below would mean nothing at all.
+        gsudo bootc status | grep -qiE '^  Staged|staged image' \
+            || bad "nothing staged after bootc upgrade; the origin may not have moved"
+        ok "the newer image staged"
+
+        echo "   .. rebooting into it"
+        gsudo systemctl reboot >/dev/null 2>&1 || true
+        # Let it actually go down before waiting for it to come back, or
+        # the first successful ssh is to the machine that is still
+        # shutting down and every assertion runs against the old boot.
+        local gone=0
+        while guest true 2>/dev/null && [ $gone -lt 60 ]; do sleep 2; gone=$((gone + 2)); done
+
+        deadline=$((SECONDS + 420))
+        until guest true; do
+            kill -0 $qemu 2>/dev/null || bad "qemu died during reboot; console at $log"
+            [ $SECONDS -lt $deadline ] || bad "no ssh within 420s after upgrade; console at $log"
+            sleep 5
+        done
+
+        deadline=$((SECONDS + 600))
+        until [[ "$(guest systemctl is-system-running)" =~ ^(running|degraded)$ ]]; do
+            [ $SECONDS -lt $deadline ] || bad "boot never settled after upgrade; console at $log"
+            sleep 10
+        done
+
+        verdict=$(guest systemctl is-active greenboot-healthcheck.service || true)
+        [ "$verdict" = active ] || bad "greenboot verdict after upgrade: $verdict (console at $log)"
+        ok "the upgraded machine boots and greenboot says it is healthy"
+
+        after=$(booted_digest)
+        [ -n "$after" ] || bad "could not read the booted digest after upgrading"
+        [ "$before" != "$after" ] \
+            || bad "still booted on $before after the upgrade; nothing actually moved"
+        ok "moved from ${before:0:19} to ${after:0:19}"
+
+        # The half that a reboot alone would not catch. /var is shared
+        # across deployments by design, so an image can move forward and
+        # leave the machine's own state behind: the subvolume that makes
+        # [snapshots] mean anything, and the account somebody logs in as.
+        [ "$(guest stat -c %i /var/home)" = 256 ] \
+            || bad "/var/home stopped being a subvolume across the upgrade"
+        guest id "$user" >/dev/null || bad "$user did not survive the upgrade"
+        ok "the machine's own state survived the version jump"
+    fi
+
     echo "   .. powering off"
-    guest sudo -n systemctl poweroff >/dev/null 2>&1 || true
+    gsudo systemctl poweroff >/dev/null 2>&1 || true
     local waited=0
     while kill -0 $qemu 2>/dev/null && [ $waited -lt 30 ]; do sleep 1; waited=$((waited + 1)); done
     kill $qemu 2>/dev/null || true
