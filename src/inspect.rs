@@ -24,6 +24,12 @@ const FLATPAK_STATE: &str = "/var/lib/kuma/flatpaks-installed";
 /// Doctor reads it to learn what the machine was meant to do, which is a
 /// better question than what its unit files happen to say.
 const BAKED_CONFIG: &str = "/usr/lib/kuma/kuma.toml";
+/// The account a declaration asked for, baked in at build time.
+const BAKED_USER: &str = "/usr/lib/kuma/user";
+/// The account an installer asked for, written onto the target. A
+/// published image declares none, so on an installed machine this is the
+/// only one of the two that exists.
+const INSTALLED_USER: &str = "/var/lib/kuma/user";
 
 /// One drift observation: what would change ("add"/"remove"/"mismatch"),
 /// which item, and the note that carries its consequence or cure.
@@ -938,11 +944,28 @@ fn check_deployment(report: &mut impl FnMut(Grade, &str, String, Option<Action>)
     }
 }
 
+/// Whether there is an account for `kuma-user-sync` to converge, asked
+/// of both files the converger itself reads.
+///
+/// Baked, or installed, and on the whole install path only the second
+/// one exists: a published image declares no account, `kuma install`
+/// writes the answer onto the target, and the unit creates it at first
+/// boot. Asking only about the baked file left that machine's one
+/// account-creating unit ungraded, which is where a failure costs the
+/// most, because a machine whose account was never created is a machine
+/// nobody can log in to and doctor had nothing to say about it.
+///
+/// Takes both paths so the branch is testable: on a real machine only
+/// one of the four combinations is ever live.
+fn user_sync_has_an_account(baked: &Path, installed: &Path) -> bool {
+    baked.exists() || installed.exists()
+}
+
 /// The oneshots record their last run in Result=; the timers are what
 /// keeps long-uptime machines converged.
 fn check_convergence(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     let mut targets: Vec<(&str, &str)> = Vec::new();
-    if Path::new("/usr/lib/kuma/user").exists() {
+    if user_sync_has_an_account(Path::new(BAKED_USER), Path::new(INSTALLED_USER)) {
         targets.push(("kuma-user-sync.service", "user"));
     }
     if Path::new("/usr/lib/kuma/flatpaks").exists() {
@@ -1709,6 +1732,33 @@ mod tests {
         // byte comparison, so whitespace counts: an /etc file that differs
         // by a trailing newline still wins over the image's copy
         assert_eq!(classify_etc(Some(b"KUMA=1\n"), Some(b"KUMA=1")), EtcState::Shadowed);
+    }
+
+    /// The case that went unchecked: an image declaring no account,
+    /// installed onto a disk, where the only record of the account is the
+    /// one the installer wrote. A machine installed from the published
+    /// image has exactly this shape, and doctor said nothing about the
+    /// unit that creates its only account.
+    #[test]
+    fn the_account_converger_is_graded_on_an_installed_machine_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let (baked, installed) = (dir.path().join("usr-user"), dir.path().join("var-user"));
+
+        // A published image before its first boot: nothing to converge.
+        assert!(!user_sync_has_an_account(&baked, &installed));
+
+        // The same image after `kuma install` wrote the answer.
+        std::fs::write(&installed, "KUMA_USER='test'\n").unwrap();
+        assert!(user_sync_has_an_account(&baked, &installed));
+
+        // A declaration that names an account, built and booted directly.
+        std::fs::remove_file(&installed).unwrap();
+        std::fs::write(&baked, "KUMA_USER='declared'\n").unwrap();
+        assert!(user_sync_has_an_account(&baked, &installed));
+
+        // Both, which is an installed machine whose image declared one.
+        std::fs::write(&installed, "KUMA_USER='test'\n").unwrap();
+        assert!(user_sync_has_an_account(&baked, &installed));
     }
 
     /// The branch that fires when something is actually wrong, which on a
