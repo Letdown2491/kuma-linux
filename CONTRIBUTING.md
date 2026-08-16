@@ -50,6 +50,11 @@ run on a push. The boot stage stays local because its verdict comes from
 booting the disk, which needs KVM and sudo. Run `--boot` locally before
 pushing anything that changes what a machine does at runtime.
 
+The image stage is the one part that does not repeat on a tag. Cutting a
+release means tagging a commit that already went green on main, so the tag
+names a tree those images were already built from, and building them again
+only delays the release. Everything else in `ci.yml` still runs on the tag.
+
 Two limits in that list worth knowing before you trust it. shellcheck reads
 `scripts/smoke.sh` and nothing else, so the shell that images actually run
 (the sync units and helpers, which live in Rust string literals in

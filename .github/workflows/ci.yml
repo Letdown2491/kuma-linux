@@ -1,7 +1,16 @@
 name: ci
 
 on:
+  # Named rather than left bare, which matched every branch and every tag.
+  # A bare `push` beside `pull_request` runs this twice for one push to a
+  # branch with a PR open on it, and a branch without one is work in
+  # progress that its PR will gate. main and tags are what is being
+  # claimed to work.
   push:
+    branches:
+      - main
+    tags:
+      - "v*"
   pull_request:
   workflow_dispatch:
   # A dependency becomes vulnerable on the day the advisory lands, not on
@@ -76,7 +85,15 @@ jobs:
     runs-on: ubuntu-latest
     # Skipped on the weekly run: this builds a real image with podman, and
     # the tree it builds from is the same one it built last week.
-    if: github.event_name != 'schedule'
+    #
+    # Skipped on a tag for the same reason. Cutting a release means
+    # pushing main, waiting for it to go green, and tagging the commit
+    # that went green, so the tag names a tree this job has already built;
+    # rebuilding three composed images to reach the same answer only
+    # delays the release. The rest of this workflow still runs on the tag,
+    # so a tag made some other way is gated by everything cheap, and
+    # release.yml runs its own tests on the release target besides.
+    if: github.event_name != 'schedule' && !startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
