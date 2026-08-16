@@ -5,6 +5,17 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+### Added
+
+- `kuma install` can encrypt the disk. It asks on a terminal, takes
+  `--encrypt` from anything else, and is off unless something says
+  otherwise. The passphrase reaches cryptsetup on a pipe and is never a
+  flag, a file, or an argument `ps` could show; the root partition holds
+  a LUKS2 container with the same btrfs root inside it, and the installed
+  machine unlocks it from a kernel argument at every boot. `/boot` was
+  already a partition of its own for exactly this, so encrypting changes
+  what the third partition holds and nothing about the shape of the disk.
+
 ### Fixed
 
 - The greeter health check no longer passes a greeter that is crash
@@ -15,6 +26,7 @@ as its release notes.
   be up a moment after it comes up, and treats a unit that has exhausted
   its restarts as failed immediately rather than polling a corpse for two
   minutes.
+
 ### Behavior
 
 - Bare `kuma` counts a flatpak as pending removal only when kuma installed

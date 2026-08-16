@@ -218,11 +218,13 @@ anything first. It asks which disk, then for an account and a hostname,
 because a shared image cannot declare either: the image is shared and you
 are not. It
 writes them down and the machine creates them on its first boot, the same
-way a declared `[user]` works. It partitions the disk itself, so the plan
-it prints is the layout it will write: an ESP, a `/boot` outside the root
-so encryption stays a later decision rather than a reinstall, and a btrfs
-root. It is the one verb here that cannot be undone, so it dry-runs by
-default and refuses a disk with anything mounted on it.
+way a declared `[user]` works. It also asks whether to encrypt the disk,
+and takes a passphrase if you say yes: `/boot` is a partition of its own
+either way, so the answer changes what the root partition holds and not
+the shape of the disk. It partitions the disk itself, so the plan it
+prints is the layout it will write. It is the one verb here that cannot
+be undone, so it dry-runs by default and refuses a disk with anything
+mounted on it.
 
 ## Going deeper
 
@@ -243,10 +245,9 @@ not obvious from them:
 
 ## Not yet
 
-- **No encryption at install.** The layout `kuma install` writes puts
-  `/boot` outside the root so a passphrase can be added later without a
-  different disk shape, but the installer does not offer one yet, so an
-  encrypted machine still has to be installed by something else.
+- **No custom partition layout.** `kuma install` writes the same three
+  partitions on every disk. Anything else, including installing beside
+  another system, still has to be done by something else.
 - **No offsite backup.** `[snapshots]` survives a mistake, not a dead
   disk. Blocked on where a repository credential lives, since it cannot be
   the declaration.

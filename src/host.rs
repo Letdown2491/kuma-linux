@@ -43,6 +43,43 @@ pub fn run_host<S: AsRef<str>>(args: &[S]) -> Result<()> {
     Ok(())
 }
 
+/// Run a command on the host, handing it `input` on standard input.
+///
+/// For the one thing kuma has that must not appear in argv: a disk
+/// passphrase. `ps` shows any process's arguments to any user, so a
+/// secret passed as one is readable by everybody on the machine for as
+/// long as the command runs, and a file would leave it on a disk.
+///
+/// `sudo` still gets its own prompt: it reads a password from the
+/// terminal rather than from stdin unless it is asked to do otherwise,
+/// so a piped stdin does not swallow the one the person has to answer.
+pub fn run_host_stdin<S: AsRef<str>>(args: &[S], input: &str) -> Result<()> {
+    use std::io::Write;
+    let mut cmd = host_command(args)?;
+    cmd.stdin(std::process::Stdio::piped());
+    if JSON_OUTPUT.load(Ordering::Relaxed) {
+        use std::os::fd::AsFd;
+        let stderr = std::io::stderr()
+            .as_fd()
+            .try_clone_to_owned()
+            .context("cannot redirect subprocess output to stderr")?;
+        cmd.stdout(std::process::Stdio::from(stderr));
+    }
+    let mut child = cmd.spawn().with_context(|| format!("failed to run {}", args[0].as_ref()))?;
+    child
+        .stdin
+        .take()
+        .context("no stdin on the child process")?
+        .write_all(input.as_bytes())
+        .context("cannot write to the child process")?;
+    let status = child.wait().with_context(|| format!("failed to run {}", args[0].as_ref()))?;
+    if !status.success() {
+        let shown: Vec<&str> = args.iter().map(|s| s.as_ref()).collect();
+        bail!("{} exited with {status}", shown.join(" "));
+    }
+    Ok(())
+}
+
 /// Run a host command and capture its trimmed stdout; Err on failure.
 pub fn host_output<S: AsRef<str>>(args: &[S]) -> Result<String> {
     let out = host_command(args)?

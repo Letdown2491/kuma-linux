@@ -16,7 +16,7 @@ mod updates;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use config::Config;
-use host::{host_output, host_output_any, note, run_host};
+use host::{host_output, host_output_any, note, run_host, run_host_stdin};
 use state::{action_json, print_actions, reboot_action, Action};
 use std::path::{Path, PathBuf};
 
@@ -167,6 +167,12 @@ enum Cmd {
         /// Hostname for the installed machine
         #[arg(long)]
         hostname: Option<String>,
+        /// Encrypt the root partition. Asked for on a terminal when this
+        /// is left off; off when it is left off and nobody is there to
+        /// ask. The passphrase is read from stdin, before the account
+        /// password, never from a flag.
+        #[arg(long)]
+        encrypt: bool,
         /// Do it. Without this, print the plan and change nothing.
         #[arg(long)]
         yes: bool,
@@ -404,10 +410,30 @@ fn run(
         Cmd::Vm { tag, output, no_run, rebuild, apply } => {
             vm(&tag, &output, no_run, rebuild, apply)
         }
-        Cmd::Install { disk, image, update_from, user, groups, hostname, shell, yes, json } => {
+        Cmd::Install {
+            disk,
+            image,
+            update_from,
+            user,
+            groups,
+            hostname,
+            shell,
+            encrypt,
+            yes,
+            json,
+        } => {
             let groups = groups.split(',').filter(|g| !g.is_empty()).map(String::from).collect();
-            let request =
-                install::Request { image, update_from, user, groups, hostname, shell, yes, json };
+            let request = install::Request {
+                image,
+                update_from,
+                user,
+                groups,
+                hostname,
+                shell,
+                encrypt,
+                yes,
+                json,
+            };
             install(disk.as_deref(), request)
         }
         Cmd::Iso { tag, output, live } => {
@@ -1706,6 +1732,7 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         groups,
         hostname,
         shell,
+        encrypt: encrypt_flag,
         yes,
         json,
     } = request;
@@ -1777,13 +1804,26 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         bail!("no such device: {}", disk.display());
     }
 
+    // Asked here, ahead of the plan, because the answer changes the plan:
+    // the layout printed below says what the root partition will hold,
+    // and a plan printed before the question would be describing a disk
+    // nobody had decided on yet. Only under --yes, since a dry run
+    // changes nothing and has no business prompting.
+    let encrypt = if yes { install::ask_encrypt(encrypt_flag)? } else { encrypt_flag };
+
     // With the objections, for the same reason they are: this is the
     // verb that cannot be undone, so everything that would stop it stops
     // it before anything is typed. `sgdisk` taught this the expensive
     // way, wiping a table and then failing with exit 127 one password
-    // later.
-    let missing: Vec<String> = partition::REQUIRED_TOOLS
-        .iter()
+    // later. cryptsetup joins the list only for an encrypted install,
+    // because refusing a plain one for want of it would be a check
+    // inventing a requirement.
+    let required = partition::REQUIRED_TOOLS.iter().chain(if encrypt {
+        partition::ENCRYPT_TOOLS
+    } else {
+        &[]
+    });
+    let missing: Vec<String> = required
         .filter(|(tool, _)| {
             // Not `command -v`: this runs under sudo, whose PATH is not
             // the one asking. Both directories, because a machine that
@@ -1816,7 +1856,7 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
             .with_context(|| format!("cannot read the size of {}", disk.display()))?
     };
     let disk_mib = disk_bytes / (1024 * 1024);
-    let layout = partition::plan(disk_bytes, false)
+    let layout = partition::plan(disk_bytes, encrypt)
         .with_context(|| format!("cannot install to {}", disk.display()))?;
 
     // Defaulting --image means the plan can name one that is not there,
@@ -1831,11 +1871,16 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     // Named once. It is the string somebody copies to destroy a disk, so
     // two spellings of it is two chances to get one wrong.
     let confirm = {
-        let flags = if image == PUBLISHED_IMAGE {
-            format!("--disk {}", disk.display())
-        } else {
-            format!("--disk {} --image {image}", disk.display())
-        };
+        let mut flags = format!("--disk {}", disk.display());
+        if image != PUBLISHED_IMAGE {
+            flags.push_str(&format!(" --image {image}"));
+        }
+        // Carried only when it was given. Adding it to the command a dry
+        // run prints would be answering a question on somebody's behalf,
+        // and `--yes` asks it anyway.
+        if encrypt_flag {
+            flags.push_str(" --encrypt");
+        }
         format!("kuma install {flags} --yes")
     };
     if json && !yes {
@@ -1849,7 +1894,15 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
             serde_json::json!({
                 "ok": true, "installed": false, "dry_run": true,
                 "disk": disk_str, "image": image, "image_local": local,
-                "asks": ["account name", "password", "hostname"],
+                // What `--encrypt` would make it, not what a person would
+                // be asked: an agent is not a terminal, so the flag is the
+                // whole of the answer it can give.
+                "encrypted": encrypt,
+                "asks": if encrypt {
+                    vec!["disk passphrase", "account name", "password", "hostname"]
+                } else {
+                    vec!["account name", "password", "hostname"]
+                },
                 // The one decision here that cannot be revised later, so
                 // an agent reading this resource can see it before
                 // agreeing to it rather than only in the prose plan.
@@ -1882,7 +1935,10 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     // because btrfs is load-bearing rather than taste: `[snapshots]` is
     // btrfs-only, so a machine installed on anything else could never
     // use a feature kuma ships.
-    println!("  layout   GPT, btrfs root (snapshots need btrfs):");
+    println!(
+        "  layout   GPT, btrfs root{} (snapshots need btrfs):",
+        if encrypt { " inside LUKS" } else { "" }
+    );
     for part in &layout {
         println!(
             "             {:<10} {:>5}  {}",
@@ -1898,7 +1954,16 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         // until it silently was not one. Saying what --yes asks for costs
         // three lines and leaves nobody surprised by a prompt.
         println!("\nNothing has been changed. Re-run with --yes and kuma will ask for:");
-        println!("\n  an account name and password   created on the first boot of the");
+        if encrypt {
+            println!("\n  a disk passphrase              typed at every boot to unlock the");
+            println!("                                 root, and not recoverable if lost");
+        } else {
+            println!("\n  whether to encrypt the disk    a passphrase typed at every boot;");
+            println!("                                 off unless you say so, and not a");
+            println!("                                 thing that can be added afterwards");
+            println!("                                 without installing again");
+        }
+        println!("  an account name and password   created on the first boot of the");
         println!("                                 installed machine, since a published");
         println!("                                 image declares no account");
         println!("  a hostname                     defaults to {}", install::DEFAULT_HOSTNAME);
@@ -1946,6 +2011,10 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     // would mean running the image, running it would mean pulling it,
     // and on live media a pull lands in a RAM-backed overlay, which is
     // the ceiling this whole install path exists to get out from under.
+    // Before the account, so that a pipe driving this reads in the same
+    // order the questions are asked: the passphrase decides the shape of
+    // the disk, the account only what is on it.
+    let passphrase = if encrypt { Some(install::ask_passphrase()?) } else { None };
     let account = install::ask_account(user, groups, shell)?;
     let hostname = install::ask_hostname(hostname)?;
     let dir = tempfile::tempdir().context("cannot create install directory")?;
@@ -1955,15 +2024,22 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         dir.path().join("Containerfile"),
         install::install_containerfile(image, account.shell.as_deref()),
     )?;
+
     let script = dir.path().join("install");
-    std::fs::write(&script, partition::install_script(&layout))?;
+    std::fs::write(&script, partition::install_script(&layout, encrypt))?;
 
     // The script runs as root and reads this directory, and a tempdir is
-    // 0700 for whoever created it.
+    // 0700 for whoever created it. Nothing written here is the
+    // passphrase: it goes to the script on stdin and never to a file,
+    // which is what this chmod would otherwise undo.
     run_host(&["sudo", "chmod", "-R", "a+rX", path_str(dir.path())?])?;
 
     note("Partitioning, formatting and installing (this destroys the target)...");
-    run_host(&["sudo", "bash", path_str(&script)?, disk_str, path_str(dir.path())?, updates])?;
+    let argv = ["sudo", "bash", path_str(&script)?, disk_str, path_str(dir.path())?, updates];
+    match &passphrase {
+        Some(passphrase) => run_host_stdin(&argv, &format!("{passphrase}\n"))?,
+        None => run_host(&argv)?,
+    }
 
     let reboot = Action::new(
         "reboot",
@@ -1975,24 +2051,9 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
             "{}",
             serde_json::json!({
                 "ok": true, "installed": true, "disk": disk_str, "image": image,
-                "user": account.name, "hostname": hostname,
+                "user": account.name, "hostname": hostname, "encrypted": encrypt,
                 "actions": [action_json(&reboot)],
             })
-        );
-        return Ok(());
-    }
-    if to_file && !json {
-        println!("\nInstalled {image} to {}.", disk.display());
-        println!(
-            "The account '{}' is created on first boot by kuma-user-sync, from\n\
-             /var/lib/kuma/user written onto the target. The hostname is '{hostname}'.",
-            account.name
-        );
-        println!(
-            "\nBoot it with UEFI firmware, which a disk image needs and a plain\n\
-             qemu invocation does not supply, and with a 3D-capable device,\n\
-             without which the desktop logs in to a black screen:\n\n{}",
-            disk_image_boot_hint(disk)
         );
         return Ok(());
     }
@@ -2002,6 +2063,21 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
          /var/lib/kuma/user written onto the target. The hostname is '{hostname}'.",
         account.name
     );
+    if encrypt {
+        println!(
+            "\nThe root is a LUKS volume. It asks for that passphrase at every boot,\n\
+             before the desktop and before anything can log in. Nothing here kept a\n\
+             copy of it, and a lost one is a lost disk."
+        );
+    }
+    if to_file {
+        println!(
+            "\nBoot it with UEFI firmware, which a disk image needs and a plain\n\
+             qemu invocation does not supply, and with a 3D-capable device,\n\
+             without which the desktop logs in to a black screen:\n\n{}",
+            disk_image_boot_hint(disk)
+        );
+    }
     print_actions(&[reboot]);
     Ok(())
 }

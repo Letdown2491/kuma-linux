@@ -19,12 +19,17 @@
 //! the machine fetches for subsequent updates. The installed system
 //! therefore has an account and still tracks the public tag.
 //!
-//! Scope is deliberately whole-disk. `bootc install to-disk` owns the
-//! partitioning, so there is no cryptsetup here and no custom layout;
-//! passphrase LUKS needs `to-filesystem` and kuma owning the storage,
-//! which is a larger and much more dangerous piece of work. This verb is
-//! the one that had to exist first, because without it a published image
-//! installs to a machine nobody can log into.
+//! Scope is deliberately whole-disk: kuma owns the partitioning (see
+//! `partition`), but not where the partitions go. A custom layout is a
+//! separate decision and a later one.
+//!
+//! Encryption is offered rather than assumed. It is asked for, not
+//! declared, because it is a property of a disk and not of an image: the
+//! same declaration installed onto two machines can encrypt one and not
+//! the other, and no image can carry the answer. It is also the one
+//! answer here that cannot be revised without reinstalling, which is why
+//! it is asked before anything is written rather than defaulted either
+//! way.
 
 use anyhow::{bail, Context, Result};
 
@@ -43,6 +48,10 @@ pub struct Request {
     pub groups: Vec<String>,
     pub hostname: Option<String>,
     pub shell: Option<String>,
+    /// Asked for on a terminal when this is false, so that the flag is a
+    /// way to answer the question early rather than the only way to
+    /// answer it at all.
+    pub encrypt: bool,
     pub yes: bool,
     pub json: bool,
 }
@@ -345,6 +354,71 @@ pub fn choose_disk(mut disks: Vec<Disk>) -> Result<Disk> {
     }
 }
 
+/// Whether to encrypt the root, asked unless `--encrypt` already said so.
+///
+/// Not a default in either direction. Encryption on by default would
+/// hand somebody a machine that stops at a passphrase prompt they never
+/// asked for and cannot remove without reinstalling; off by default and
+/// never asked is how a laptop ends up unencrypted because nothing
+/// mentioned it. So the flag answers it early, a terminal is asked, and
+/// a pipe with no flag gets the safe-to-be-wrong answer: an unencrypted
+/// machine can be reinstalled, and a machine whose passphrase nobody
+/// chose cannot be booted.
+pub fn ask_encrypt(flagged: bool) -> Result<bool> {
+    use std::io::{IsTerminal, Write};
+    if flagged {
+        return Ok(true);
+    }
+    if !std::io::stdin().is_terminal() {
+        return Ok(false);
+    }
+    loop {
+        print!("\nEncrypt this disk with a passphrase? [y/N] ");
+        std::io::stdout().flush()?;
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            return Ok(false);
+        }
+        match line.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => return Ok(true),
+            "" | "n" | "no" => return Ok(false),
+            _ => println!("Answer y or n."),
+        }
+    }
+}
+
+/// The passphrase that unlocks the disk at every boot.
+///
+/// Asked twice on a terminal, because a mistyped one is not discovered
+/// until the machine will not boot and there is nothing left to compare
+/// it against. From stdin otherwise, one line, ahead of the account
+/// password for the same reason it is asked first: it decides the shape
+/// of the disk, and the account does not.
+///
+/// No minimum length and no strength opinion. Unlike everything else
+/// decided here, this one *can* be changed later on the installed
+/// machine (`cryptsetup luksChangeKey`), so a rule invented here would
+/// be a rule nothing enforces afterwards.
+pub fn ask_passphrase() -> Result<String> {
+    use std::io::IsTerminal;
+    let passphrase = if std::io::stdin().is_terminal() {
+        let first = rpassword::prompt_password("Passphrase to unlock this disk at boot: ")?;
+        let again = rpassword::prompt_password("Retype the disk passphrase: ")?;
+        if first != again {
+            bail!("passphrases don't match");
+        }
+        first
+    } else {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        line.trim_end_matches(['\r', '\n']).to_string()
+    };
+    if passphrase.is_empty() {
+        bail!("empty passphrase: the disk would be encrypted with nothing");
+    }
+    Ok(passphrase)
+}
+
 /// Ask for the account the target will create at first boot.
 ///
 /// Not a terminal: the name comes from `--user` and stdin supplies the
@@ -571,6 +645,20 @@ tmpfs /tmp tmpfs rw 0 0
         let out = install_containerfile("ghcr.io/example/kuma:niri", Some("fish"));
         let guard = out.find("RUN test -x /usr/bin/fish").unwrap();
         assert!(guard < out.find("COPY --chmod=600").unwrap());
+    }
+
+    /// The flag answers the question, and a pipe with no flag answers it
+    /// the way that can be undone. Both directions matter: an install
+    /// driven by a script must not stop on a prompt nobody is there for,
+    /// and it must not quietly encrypt a disk with a passphrase nobody
+    /// chose either.
+    ///
+    /// The terminal branch cannot be reached from a test, which is why
+    /// the two branches that can are pinned here.
+    #[test]
+    fn encryption_is_answered_by_the_flag_or_left_off_when_nobody_is_asked() {
+        assert!(ask_encrypt(true).unwrap());
+        assert!(!ask_encrypt(false).unwrap(), "piped stdin, no flag");
     }
 
     /// A name is the least consequential thing being decided here, so it

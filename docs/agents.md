@@ -35,12 +35,16 @@ names the legal next commands.
   immediately and cannot be undone: no staged deployment to discard, no
   rollback slot. It still dry-runs by default, and its dry run reports the
   disk, the image, whether that image is already local, the partition
-  `layout` it will write, and what it will ask a person for (`asks`)
-  before `--yes` does anything. It refuses a disk
+  `layout` it will write, whether the root will be `encrypted`, and what
+  it will ask a person for (`asks`) before `--yes` does anything. It
+  refuses a disk
   with anything mounted on it, and it is the only verb here that prompts:
   with `--user`, `--hostname` and `--disk` given, the password is the one
   remaining answer and is read from stdin rather than a flag, so it never
-  reaches `ps` or a shell history.
+  reaches `ps` or a shell history. `--encrypt` adds a second, and stdin is
+  then the disk passphrase first and the account password second, in the
+  order the two are asked. Without the flag, an install driven this way is
+  never encrypted: the question is only put to a terminal.
 
 Without `--config`, kuma reads `./kuma.toml`, falling back to
 `~/.config/kuma/kuma.toml`. Neither is ever created implicitly. With no
