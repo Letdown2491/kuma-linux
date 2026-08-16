@@ -11,7 +11,7 @@
 //! the checks that genuinely need root stay in `kuma doctor`.
 
 use crate::config::Config;
-use crate::host::host_output;
+use crate::host::{host_output, host_output_any};
 use crate::inspect::to_set;
 use anyhow::Result;
 use std::collections::BTreeSet;
@@ -175,6 +175,15 @@ struct Observed {
     /// `classify`, so the classifier stays a pure function of what was
     /// observed and this state is testable without an ISO.
     live: bool,
+    /// Convergence units running right now, by the name a person would
+    /// recognise ("flatpak", "brew", "user").
+    ///
+    /// A first boot spends minutes installing declared apps, and for all
+    /// of it the machine genuinely does not match its declaration. Read
+    /// as a snapshot it is drift; read in time it is progress, and
+    /// telling somebody to `kuma sync` while a sync is running is
+    /// offering them work already underway.
+    converging: Vec<&'static str>,
 }
 
 struct Snapshot {
@@ -283,7 +292,32 @@ fn observe(config_path: &Path) -> Observed {
         image,
         machine: observe_machine(),
         live: Path::new(crate::liveiso::LIVE_MARKER).exists(),
+        converging: observe_converging(),
     }
+}
+
+/// Which convergence units are running, asked passwordlessly like every
+/// other probe here. One call for all three: `systemctl is-active` prints
+/// a line per unit in the order given, and exits non-zero when any of
+/// them is inactive, which is the normal case and not an error.
+fn observe_converging() -> Vec<&'static str> {
+    const UNITS: [(&str, &str); 3] = [
+        ("kuma-flatpak-sync.service", "flatpak"),
+        ("kuma-brew-sync.service", "brew"),
+        ("kuma-user-sync.service", "user"),
+    ];
+    let names: Vec<&str> = UNITS.iter().map(|(unit, _)| *unit).collect();
+    let mut args = vec!["systemctl", "is-active"];
+    args.extend(&names);
+    let Ok(out) = host_output_any(&args) else {
+        return Vec::new();
+    };
+    out.lines()
+        .map(str::trim)
+        .zip(UNITS)
+        .filter(|(state, _)| *state == "activating" || *state == "active")
+        .map(|(_, (_, label))| label)
+        .collect()
 }
 
 /// What convergence installed, and therefore all it may remove. The same
@@ -462,14 +496,39 @@ fn classify(obs: &Observed) -> Snapshot {
             ));
         }
     }
+    // Above drift, because during a first boot both are true and only
+    // one of them is the answer: the declared apps are not installed
+    // *yet*. A machine that spends three minutes downloading a gigabyte
+    // of flatpaks reported drift for all of it and offered a sync that
+    // was already running.
+    if !obs.converging.is_empty() {
+        claim(
+            "converging",
+            format!(
+                "{} convergence is running now; this is what the machine is doing, not drift",
+                obs.converging.join(" and ")
+            ),
+        );
+        actions.push(Action::new(
+            "watch",
+            "journalctl -fu kuma-flatpak-sync",
+            "follow it (brew and user sync have their own units)",
+        ));
+    }
     if let MachineFact::Kuma { drift, .. } = &obs.machine {
         if !drift.is_empty() {
             claim("drifted", format!("machine drifted from its declaration: {}", drift.join(", ")));
-            actions.push(Action::new(
-                "sync",
-                "kuma sync",
-                "converge now (also runs at boot and daily)",
-            ));
+            // No sync edge while one is running: it starts the same
+            // units, and telling somebody to start what is already
+            // started is how an interface loses their trust. diff still
+            // reads, and reading is always safe.
+            if obs.converging.is_empty() {
+                actions.push(Action::new(
+                    "sync",
+                    "kuma sync",
+                    "converge now (also runs at boot and daily)",
+                ));
+            }
             actions.push(Action::new("diff", "kuma diff", "see the drift in detail"));
         }
     }
@@ -612,7 +671,14 @@ mod tests {
     use super::*;
 
     fn workspace(config: ConfigFact, image: Option<ImageFact>, machine: MachineFact) -> Observed {
-        Observed { config_path: "kuma.toml".into(), config, image, machine, live: false }
+        Observed {
+            config_path: "kuma.toml".into(),
+            config,
+            image,
+            machine,
+            live: false,
+            converging: Vec::new(),
+        }
     }
 
     /// Convergence takes back only what it installed, and this is the
@@ -827,6 +893,35 @@ mod tests {
         assert_eq!(snap.state, "drifted");
         assert_eq!(snap.actions[0].rel, "sync");
         assert_eq!(snap.actions[1].rel, "diff");
+    }
+
+    /// A first boot is not a drifted machine. It spends minutes
+    /// installing declared apps, and for every one of them the machine
+    /// genuinely does not match its declaration, which read as drift and
+    /// offered a `kuma sync` that was already running.
+    #[test]
+    fn a_machine_mid_convergence_says_so_instead_of_claiming_drift() {
+        let mut obs = workspace(
+            loaded(),
+            image(false),
+            kuma_machine(false, vec!["6 flatpak(s) to install".into()], Some("sha256:aaa")),
+        );
+        obs.converging = vec!["flatpak"];
+        let snap = classify(&obs);
+        assert_eq!(snap.state, "converging");
+        assert!(snap.headline.contains("flatpak"));
+        // No sync edge: it starts the unit that is already running.
+        assert!(snap.actions.iter().all(|a| a.rel != "sync"));
+        // Reading is still offered, because reading is always safe.
+        assert!(snap.actions.iter().any(|a| a.rel == "diff"));
+        assert_eq!(snap.actions[0].rel, "watch");
+
+        // And when nothing is converging, the same machine is drifted
+        // and gets its sync back.
+        obs.converging = Vec::new();
+        let snap = classify(&obs);
+        assert_eq!(snap.state, "drifted");
+        assert_eq!(snap.actions[0].rel, "sync");
     }
 
     #[test]

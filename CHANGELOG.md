@@ -13,6 +13,13 @@ as its release notes.
   declaration carries their name and password hash in its baked
   declaration, onto a disk for an account it will never create. `kuma iso`
   already warned about the same hazard riding into installer media.
+- Bare `kuma` says `converging` while a sync unit is running, instead of
+  reporting drift and offering a `kuma sync` that is already underway. A
+  first boot spends minutes installing declared apps, and for all of it the
+  machine genuinely does not match its declaration: read as a snapshot that
+  is drift, read in time it is progress. `kuma doctor` says a unit is
+  running now rather than that its last run succeeded, since systemd
+  reports `Result=success` for a run that has not finished.
 - `kuma doctor` says whether the root is encrypted. Nothing else on a
   running machine reports it, both answers are legitimate, and the choice
   cannot be revised without reinstalling, so it is stated rather than

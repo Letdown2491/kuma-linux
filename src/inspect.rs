@@ -971,6 +971,13 @@ fn check_convergence(report: &mut impl FnMut(Grade, &str, String, Option<Action>
                 );
                 report(Grade::Fail, name, format!("{unit} is not active"), Some(fix));
             }
+        } else if fact.active == "active" || fact.active == "activating" {
+            // Asked before the result, because systemd reports
+            // Result=success for a unit that has not finished: a first
+            // boot downloading a gigabyte of flatpaks was graded "last
+            // run succeeded" while the run was still going, which is a
+            // true field and a false sentence.
+            report(Grade::Ok, name, format!("{unit} is running now"), None);
         } else if fact.result == "success" {
             report(Grade::Ok, name, format!("{unit} last run succeeded"), None);
         } else {
