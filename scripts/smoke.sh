@@ -598,6 +598,24 @@ smoke_published() {
         else
             ok "/var/home is still not a subvolume after upgrading, so [snapshots] on this machine would take nothing"
         fi
+
+        # And now ask the machine to grade itself, rather than trusting
+        # this script's reading of an inode. doctor already owns this
+        # knowledge: check_snapshots fails a machine whose target is a
+        # directory, with "the timer runs and takes nothing". Checking
+        # that its verdict agrees with the filesystem turns that comment
+        # into a result, and would catch doctor going quiet about a
+        # machine that is still broken.
+        local snapshots_grade
+        snapshots_grade=$(gsudo kuma doctor --json \
+            | python3 -c 'import sys,json; print(next((c["grade"] for c in json.load(sys.stdin)["checks"] if c["name"]=="snapshots"), "absent"))' \
+            2>/dev/null || true)
+        case "$home_now:$snapshots_grade" in
+            yes:ok)   ok "doctor agrees the snapshot target is usable" ;;
+            no:fail)  ok "doctor fails this machine's snapshot check, which is the correct verdict" ;;
+            *:absent) bad "doctor reported no snapshots check; the declaration should have enabled it" ;;
+            *)        bad "doctor says snapshots is '$snapshots_grade' while /var/home is-a-subvolume=$home_now" ;;
+        esac
     fi
 
     echo "   .. powering off"
