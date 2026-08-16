@@ -608,10 +608,17 @@ smoke_published() {
     # on the specific thing it is testing instead.
     if [ -z "$UPGRADE_TO" ]; then
         local doctor_failing
+        # Name and detail, not just the check's name: "units" on its own
+        # says a unit failed without saying which, and doctor already
+        # knows which.
         doctor_failing=$(gsudo kuma doctor --json \
-            | python3 -c 'import sys,json; print(" ".join(c["name"] for c in json.load(sys.stdin)["checks"] if c["grade"] == "fail"))' \
+            | python3 -c 'import sys,json; print("; ".join(c["name"] + ": " + c["detail"] for c in json.load(sys.stdin)["checks"] if c["grade"] == "fail"))' \
             2>/dev/null || true)
-        [ -z "$doctor_failing" ] || bad "kuma doctor fails: $doctor_failing"
+        if [ -n "$doctor_failing" ]; then
+            echo "   .. units the machine considers failed:" >&2
+            gsudo systemctl list-units --failed --plain --no-legend >&2 2>&1 || true
+            bad "kuma doctor fails: $doctor_failing"
+        fi
         ok "kuma doctor finds nothing failing"
     fi
 
