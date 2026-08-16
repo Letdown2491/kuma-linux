@@ -788,6 +788,14 @@ mod tests {
         // so only once the disk has been formatted.
         assert!(script.contains(r#"--boot-mount-spec "UUID=$boot_uuid""#));
         assert!(!script.contains("LABEL=boot"));
+        // Not --generic-image, however much its description sounds like
+        // the cure for a file target writing an EFI entry into this
+        // machine's firmware. It installs *every* bootloader, including
+        // BIOS grub, and this layout has no BIOS Boot Partition, so
+        // grub2-install refuses ("will not proceed with blocklists")
+        // after the disk has been partitioned and the image built. The
+        // firmware entry is reported instead; see install::new_efi_entries.
+        assert!(!script.contains("--generic-image"));
     }
 
     /// The encrypted script, which is the same install with one

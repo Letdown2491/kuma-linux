@@ -427,6 +427,41 @@ pub fn choose_disk(mut disks: Vec<Disk>) -> Result<Disk> {
     }
 }
 
+/// EFI boot entries that appeared while installing, as `efibootmgr`
+/// numbers them.
+///
+/// Installing writes a boot entry into the firmware of the machine doing
+/// the installing, because `bootupctl` names the ESP it just wrote and
+/// asks the firmware to remember it. That is exactly right for a disk
+/// and useless for a file: the entry points at a partition inside an
+/// image, sorts itself to the front of the boot order, and names a
+/// device no firmware can ever find.
+///
+/// bootc has no flag for this. `--generic-image` skips the firmware but
+/// also installs every bootloader type, and this layout has no BIOS Boot
+/// Partition, so it fails at `grub2-install` after the disk is already
+/// written. So kuma does not prevent the entry; it notices it and says
+/// which one it is.
+///
+/// A diff of two `efibootmgr` listings rather than a search for kuma's
+/// own name: the entry is named by the image's os-release, an install of
+/// somebody else's image can call it anything, and the only thing kuma
+/// knows for certain is that it was not there a minute ago.
+pub fn new_efi_entries(before: &str, after: &str) -> Vec<String> {
+    after
+        .lines()
+        .filter(|line| line.starts_with("Boot") && !before.lines().any(|old| old == *line))
+        .filter_map(|line| {
+            // `Boot0008* Kuma\tHD(1,GPT,...)`. The number is fixed width
+            // and the rest is a device path nobody needs here.
+            let rest = line.strip_prefix("Boot")?;
+            let (number, _) = rest.split_at(rest.find(['*', ' '])?);
+            (number.len() == 4 && number.chars().all(|c| c.is_ascii_hexdigit()))
+                .then(|| number.to_string())
+        })
+        .collect()
+}
+
 /// Whether to encrypt the root, asked unless `--encrypt` already said so.
 ///
 /// Not a default in either direction. Encryption on by default would
@@ -761,6 +796,33 @@ tmpfs /tmp tmpfs rw 0 0
         let out = install_containerfile("ghcr.io/example/kuma:niri", &account());
         let guard = out.find("RUN test -x /usr/bin/fish").unwrap();
         assert!(guard < out.find("COPY --chmod=600").unwrap());
+    }
+
+    /// The entry an install leaves in this machine's firmware, which is
+    /// pollution when the target was a file. Found by what changed, not
+    /// by name: the name comes from the image being installed.
+    #[test]
+    fn a_boot_entry_that_was_not_there_before_is_reported() {
+        let before = "\
+BootCurrent: 0003
+BootOrder: 0003,0000
+Boot0000* Windows Boot Manager\tHD(1,GPT,c0355a54)/\\EFI\\Microsoft\\Boot\\bootmgfw.efi
+Boot0003* Fedora\tHD(1,GPT,f3035b31)/\\EFI\\fedora\\shimx64.efi
+";
+        let after = "\
+BootCurrent: 0003
+BootOrder: 0008,0003,0000
+Boot0000* Windows Boot Manager\tHD(1,GPT,c0355a54)/\\EFI\\Microsoft\\Boot\\bootmgfw.efi
+Boot0003* Fedora\tHD(1,GPT,f3035b31)/\\EFI\\fedora\\shimx64.efi
+Boot0008* Kuma\tHD(1,GPT,b0180ce6)/\\EFI\\fedora\\shimx64.efi
+";
+        assert_eq!(new_efi_entries(before, after), vec!["0008"]);
+        // A reordered boot order is not a new entry, and neither is an
+        // unchanged listing.
+        assert!(new_efi_entries(after, after).is_empty());
+        assert!(new_efi_entries(before, before).is_empty());
+        // Nothing to say when the firmware cannot be read at all.
+        assert!(new_efi_entries("", "").is_empty());
     }
 
     /// The flag answers the question, and a pipe with no flag answers it

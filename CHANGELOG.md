@@ -42,6 +42,14 @@ as its release notes.
   be up a moment after it comes up, and treats a unit that has exhausted
   its restarts as failed immediately rather than polling a corpse for two
   minutes.
+- Installing to a disk image says what it did to this machine's firmware.
+  bootc writes an EFI boot entry naming the ESP it just installed, which
+  is right for a disk and pollution for a file: the entry sorts itself
+  ahead of the entries that can boot and points at a partition inside an
+  image. It cannot be prevented (`--generic-image` skips the firmware but
+  also installs BIOS grub, which this layout has no partition for), so a
+  file install now compares `efibootmgr` before and after and prints the
+  `sudo efibootmgr -b <num> -B` that removes what it added.
 
 ### Behavior
 

@@ -2049,6 +2049,13 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     // which is what this chmod would otherwise undo.
     run_host(&["sudo", "chmod", "-R", "a+rX", path_str(dir.path())?])?;
 
+    // Read before, compared after. Installing to a file leaves a boot
+    // entry in this machine's firmware naming a partition inside that
+    // file, and the only way to know which entry is to know which ones
+    // were there first. Readable without root, and skipped entirely when
+    // the target is a real disk, where the entry is the point.
+    let efi_before = if to_file { host_output(&["efibootmgr"]).ok() } else { None };
+
     note("Partitioning, formatting and installing (this destroys the target)...");
     let argv = ["sudo", "bash", path_str(&script)?, disk_str, path_str(dir.path())?, updates];
     match &passphrase {
@@ -2092,6 +2099,25 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
              without which the desktop logs in to a black screen:\n\n{}",
             disk_image_boot_hint(disk)
         );
+        // Named rather than removed. Deleting a firmware entry on
+        // somebody's behalf is a larger liberty than leaving one they
+        // can see, and the number is the whole of the difficulty.
+        let added = match (efi_before, host_output(&["efibootmgr"]).ok()) {
+            (Some(before), Some(after)) => install::new_efi_entries(&before, &after),
+            _ => Vec::new(),
+        };
+        if !added.is_empty() {
+            println!(
+                "\nInstalling added {} to this machine's firmware, naming the ESP\n\
+                 inside the image. It points at a partition no firmware can find,\n\
+                 and it sorts ahead of the entries that can boot. Remove it with:\n",
+                if added.len() == 1 { "a boot entry" } else { "boot entries" }
+            );
+            for number in &added {
+                println!("  sudo efibootmgr -b {number} -B");
+            }
+        }
+        return Ok(());
     }
     print_actions(&[reboot]);
     Ok(())
