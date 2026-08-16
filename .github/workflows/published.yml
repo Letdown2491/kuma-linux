@@ -42,16 +42,20 @@ jobs:
   install-and-boot:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # TEMPORARY, REMOVE ONCE THE HOME-SUBVOL RACE IS UNDERSTOOD. The
-    # subvolume assertion fails on roughly one boot in three of the same
-    # published image, which is too rare to chase one run at a time and
-    # too common to ship. Six independent first boots make catching it
-    # ~91% likely in a single wall-clock window, and each carries the
-    # diagnostics the stage now collects.
+    # TEMPORARY, REMOVE ONCE THE HOME-SUBVOL RACE IS UNDERSTOOD.
+    # Observed once in nine first boots of the same published image (the
+    # earlier "one in three" was one failure in three boots, which is not
+    # a rate). Six more attempts did not reproduce it, so this is twenty:
+    # at ~11% that is a ~90% chance of catching one, and each attempt
+    # carries the diagnostics the stage collects on failure.
+    #
+    # The converger cannot be instrumented directly, because the artifact
+    # under test is a published image rather than one built here. All the
+    # evidence has to be collected from outside the guest after the fact.
     strategy:
       fail-fast: false
       matrix:
-        attempt: [1, 2, 3, 4, 5, 6]
+        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
