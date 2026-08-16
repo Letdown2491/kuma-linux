@@ -2,6 +2,11 @@
 
 Kuma is early and maintained by one person.
 
+Four things here are worth reading even if you never report a bug: what
+naming a package in your declaration opts you into, how to check that the
+binary you downloaded came from this project, what a password hash in a
+declaration exposes, and what disk encryption does and does not protect.
+
 ## Reporting a vulnerability
 
 Use GitHub's private vulnerability reporting:
@@ -84,7 +89,30 @@ $ cosign verify-blob \
 ```
 
 Worth doing: the install instructions put this binary in `/usr/local/bin` and
-it goes on to build the filesystem you boot.
+it goes on to build the filesystem you boot. That is the same command every
+release's notes carry, deliberately: a release's notes cannot be corrected
+once people have them, so the two say one thing.
+
+Published images are signed with a key pair instead, and `cosign.pub` in this
+repository is the public half:
+
+```console
+$ cosign verify --key cosign.pub ghcr.io/letdown2491/kuma:niri
+```
+
+The two differ for a reason rather than by accident. A `policy.json`
+`sigstoreSigned` requirement takes exactly one of `keyPath`, `fulcio` or
+`pki`, and the `fulcio` block requires both `oidcIssuer` and `subjectEmail`.
+A GitHub Actions certificate carries no email, only a URI SAN naming the
+workflow, so no policy file can express "signed by kuma's release workflow".
+An image people configure a machine to trust needs a key a policy can name; a
+blob a person verifies once by hand does not.
+
+Publishing is refused without a signature unless somebody explicitly asks for
+it, and the workflow verifies its own output against the committed public key
+before finishing, because a `cosign.pub` that does not match the signing
+secret fails silently: the image publishes and verification fails everywhere
+else.
 
 Images kuma builds for you are not signed. They're built on your machine, from
 your declaration, and stay in your local container storage unless you push
@@ -168,44 +196,6 @@ installed machine. A declared `[user]` is still baked into the image the ISO
 was built from, so the sentence above still applies to what gets installed.
 The live session also runs SELinux permissive, for the reason recorded in
 `src/liveiso.rs`; an installed machine is enforcing from its first boot.
-
-## Verifying what you downloaded
-
-The release binary is signed keylessly, so there is no key to trust, only a
-workflow identity:
-
-```
-cosign verify-blob \
-  --bundle kuma-x86_64-unknown-linux-musl.bundle \
-  --certificate-identity-regexp '^https://github.com/Letdown2491/kuma-linux/' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  kuma-x86_64-unknown-linux-musl
-```
-
-That is the same command every release's notes carry, deliberately: a
-release's notes cannot be corrected once people have them, so the two say
-one thing.
-
-Published images are signed with a key pair instead, and `cosign.pub` in
-this repository is the public half:
-
-```
-cosign verify --key cosign.pub ghcr.io/letdown2491/kuma:niri
-```
-
-The two differ for a reason rather than by accident. A `policy.json`
-`sigstoreSigned` requirement takes exactly one of `keyPath`, `fulcio` or
-`pki`, and the `fulcio` block requires both `oidcIssuer` and `subjectEmail`.
-A GitHub Actions certificate carries no email, only a URI SAN naming the
-workflow, so no policy file can express "signed by kuma's release workflow".
-An image people configure a machine to trust needs a key a policy can name;
-a blob a person verifies once by hand does not.
-
-Publishing is refused without a signature unless somebody explicitly asks
-for it, and the workflow verifies its own output against the committed
-public key before finishing, because a `cosign.pub` that does not match the
-signing secret fails silently: the image publishes and verification fails
-everywhere else.
 
 ## What runs as root
 

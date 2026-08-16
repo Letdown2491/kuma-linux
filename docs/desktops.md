@@ -1,7 +1,12 @@
 # What a desktop contains
 
 Setting `desktop = "niri"` or `desktop = "cosmic"` installs a set of packages
-you did not name.
+you did not name. This page says what they are and why.
+
+A desktop is more than the thing you look at: something has to draw windows,
+show a login screen, play sound, find printers, ask for your password when an
+application needs root, and supply fonts. Naming a desktop is how you get all
+of that in one word.
 
 For the exact list any declaration produces, run `kuma generate` and read the
 `dnf install` line. That is the authority; this page explains it.
@@ -15,15 +20,15 @@ An image is built in layers, and they are not all curated by the same hand:
 2. **kuma's base.** Networking, firmware, and the handful of things any real
    machine needs: `shadow-utils`, `sudo`, `chrony`, `openssh-server`,
    `passwd`, `cryptsetup`, `fwupd`. See
-   [the base is composed, not inherited](concepts.md#the-base-is-composed-not-inherited).
+   [where the base system comes from](concepts.md#where-the-base-system-comes-from).
 3. **The desktop set.** Everything below.
 
 ## The line between a desktop and your declaration
 
-A curated desktop is session infrastructure: the parts that have to be present
-for a session to function at all. Applications are not in it. A calculator, an
-office suite, a media player, or a store belongs in `packages.flatpak` in your
-declaration, even when it would be convenient to bake one in.
+A curated desktop holds the parts that have to be present for a session to
+function at all. Applications are not in it. A calculator, an office suite, a
+media player, or a store belongs in `packages.flatpak` in your declaration,
+even when it would be convenient to bake one in.
 
 The reason is reversibility rather than taste. A line in your declaration is a
 suggestion: delete it and the next convergence uninstalls it. A package in a

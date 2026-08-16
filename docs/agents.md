@@ -1,8 +1,10 @@
 # For agents
 
-The self-describing principle is an API. An agent with a shell can operate
-a kuma machine without kuma-specific knowledge, because every response
-names the legal next commands.
+This is the interface for driving kuma from a program rather than by hand.
+Every command speaks `--json`, and every response names the legal next
+commands, so a caller can follow the output instead of encoding kuma's rules.
+
+The loop is: probe, execute one of the actions it named, probe again.
 
 - **Probe.** `kuma --json` is the root resource: state, facts, and `actions`
   as `{rel, cmd, why}`. Execute an action's `cmd` verbatim, then re-probe.
@@ -35,22 +37,24 @@ names the legal next commands.
   exactly one document on stdout: `{"ok": true, …}` with result fields and
   next `actions`, or `{"ok": false, "error": …}` with a non-zero exit.
   Progress and subprocess output move to stderr.
-- **Nothing changes what's running without a reboot,** with one exception
-  worth knowing before you drive it. `switch`, `update` and `rollback` gate
-  on `--yes` and even then only stage a deployment. `install` writes a disk
-  immediately and cannot be undone: no staged deployment to discard, no
-  rollback slot. It still dry-runs by default, and its dry run reports the
-  disk, the image, whether that image is already local, the partition
-  `layout` it will write, whether the root will be `encrypted`, and what
-  it will ask a person for (`asks`) before `--yes` does anything. It
-  refuses a disk
-  with anything mounted on it, and it is the only verb here that prompts:
-  with `--user`, `--hostname` and `--disk` given, the password is the one
-  remaining answer and is read from stdin rather than a flag, so it never
-  reaches `ps` or a shell history. `--encrypt` adds a second, and stdin is
-  then the disk passphrase first and the account password second, in the
-  order the two are asked. Without the flag, an install driven this way is
-  never encrypted: the question is only put to a terminal.
+- **Nothing changes what's running without a reboot.** `switch`, `update` and
+  `rollback` gate on `--yes`, and even then only stage a deployment.
+
+`kuma install` is the one exception, and worth understanding before driving
+it. It writes a disk immediately and cannot be undone: no staged deployment
+to discard, no rollback slot. Three things make it drivable anyway:
+
+- **It dry-runs by default.** Without `--yes` it reports the disk, the image,
+  whether that image is already local, the partition `layout` it will write,
+  whether the root will be `encrypted`, and what it will ask a person for
+  (`asks`). It also refuses a disk with anything mounted on it.
+- **It is the only verb that prompts.** Give it `--user`, `--hostname` and
+  `--disk` and the password is the one remaining answer, read from stdin
+  rather than a flag, so it never reaches `ps` or a shell history.
+- **Encryption is opt-in from a program.** `--encrypt` makes stdin two lines,
+  the disk passphrase first and the account password second, in the order a
+  person is asked. Without the flag an install driven this way is never
+  encrypted, because the question is only put to a terminal.
 
 Without `--config`, kuma reads `./kuma.toml`, falling back to
 `~/.config/kuma/kuma.toml`. Neither is ever created implicitly. With no

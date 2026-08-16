@@ -1,5 +1,9 @@
 # Contributing
 
+This is about working on kuma itself. For using it, start at
+[getting started](docs/getting-started.md); for why it behaves the way it
+does, [how kuma behaves](docs/concepts.md).
+
 **Smoke tests.** `scripts/smoke.sh` builds every committed example and, on
 request, installs or boots it. Four stages: `check` validates the
 declaration, `image` builds it and inspects what a successful build doesn't
@@ -114,46 +118,30 @@ Worth checking whenever a change doesn't appear in the image: `kuma build`
 runs whatever `kuma` is on `$PATH`, which is not necessarily the tree you
 just edited.
 
-**Booting a VM.** `kuma vm` builds a qcow2 via bootc-image-builder and boots
-it in QEMU (it needs sudo; bootc-image-builder runs as root). Log in as your
-declared `[user]`, or the always-present test user `kuma`/`kuma`
-(`ssh -p 2222 kuma@localhost`; your ssh key is injected). Pass `--rebuild`
-after rebuilding the image; kuma warns when the reused disk is older.
+**Testing in a VM.** [Getting started](docs/getting-started.md) covers `kuma
+vm` and `kuma iso` as a user meets them. What matters when developing:
 
-**Iterating without losing state.** `kuma vm --apply` streams the freshly
-built image into the *running* VM and switches inside it. `/var` survives,
-so flatpaks, brew, and homes don't re-download. It's also the real update
-path, so `bootc rollback` inside the VM undoes it.
+- Log in as your declared `[user]`, or as the always-present test user
+  `kuma`/`kuma` (`ssh -p 2222 kuma@localhost`; your ssh key is injected).
+- Pass `--rebuild` after rebuilding the image. Without it the old disk is
+  silently reused, and kuma warns when that disk is older.
+- `kuma vm --apply` streams the freshly built image into the *running* VM and
+  switches inside it, so `/var` survives and flatpaks, brew, and homes do not
+  re-download. It is also the real update path, so `bootc rollback` inside
+  the VM undoes it.
+- Live media is UEFI-only, so give a test VM UEFI firmware and a 3D-capable
+  device (`-device virtio-vga-gl -display gtk,gl=on`), or the desktop renders
+  nowhere. It runs SELinux permissive, since a container image's real labels
+  are not reachable through a podman mount, and installing from it pulls the
+  image over the network rather than copying the media. Both are explained
+  where they are set, in `src/liveiso.rs`.
 
-**Installer media.** `kuma iso` builds an Anaconda installer ISO
-(`iso/bootiso/install.iso`), bootable in GNOME Boxes or `dd`'d to a USB
-stick. Kuma-owned choices are preseeded; the rest is interactive. A declared
-`[user]` rides into the installer, and `kuma iso` says so when it happens,
-so build shareable media from a declaration without one.
-
-`kuma iso --live` builds the other shape: the image is its own installer
-environment, so the ISO carries one root filesystem instead of two and comes
-out around a gigabyte smaller. It boots to a live desktop as `liveuser`, and
-needs no sudo, because nothing in that path runs bootc-image-builder.
-
-Two things follow from carrying no second copy of the image. Installing from
-it pulls one over the network rather than copying the media, which is why
-the live session's one affordance is `kuma install` and why it needs a
-network. And the live session runs SELinux permissive, since a container
-image's real labels are not reachable through a podman mount. Both are
-explained where they are set, in `src/liveiso.rs`. It is UEFI-only, so give
-a test VM UEFI firmware, and a 3D-capable one (`-device virtio-vga-gl
--display gtk,gl=on`) or the desktop renders nowhere.
-
-**Installing.** `kuma install` partitions a disk, writes an image to it, and
-asks for the account the machine creates on first boot, since a published
-image declares none. Run it with no `--disk` and it lists what it found.
-The whole destructive half is one generated script (`src/partition.rs`),
-which unwinds itself on failure and can be dumped for shellcheck:
-`KUMA_DUMP_SCRIPT=/tmp/install.sh cargo test dump_the_script`. It is the only
-command here with no way back, so it dry-runs by default and refuses a disk
-with anything in use on it, asking `lsblk` rather than only `/proc/mounts`
-because an encrypted root is named by its mapper device in the mount table.
+**Installing.** The whole destructive half is one generated script
+(`src/partition.rs`), which unwinds itself on failure and can be dumped for
+shellcheck: `KUMA_DUMP_SCRIPT=/tmp/install.sh cargo test dump_the_script`. It
+refuses a disk with anything in use on it, asking `lsblk` rather than only
+`/proc/mounts`, because an encrypted root is named by its mapper device in
+the mount table.
 
 **Publishing an image.** `.github/workflows/publish.yml`, manual dispatch
 only. It builds from a committed example, runs `scripts/publish-audit.sh`
