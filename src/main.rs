@@ -1875,6 +1875,13 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         if image != PUBLISHED_IMAGE {
             flags.push_str(&format!(" --image {image}"));
         }
+        // Carried because without it the command this prints is one the
+        // next run refuses: a local image with nowhere to update from is
+        // exactly the case --update-from exists for, and an affordance
+        // that does not work is worse than none.
+        if updates != image {
+            flags.push_str(&format!(" --update-from {updates}"));
+        }
         // Carried only when it was given. Adding it to the command a dry
         // run prints would be answering a question on somebody's behalf,
         // and `--yes` asks it anyway.

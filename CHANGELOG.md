@@ -50,6 +50,9 @@ as its release notes.
   also installs BIOS grub, which this layout has no partition for), so a
   file install now compares `efibootmgr` before and after and prints the
   `sudo efibootmgr -b <num> -B` that removes what it added.
+- The command `kuma install` prints for confirming a dry run carries
+  `--update-from`, so installing a local image no longer offers a next
+  step that the next run refuses.
 
 ### Behavior
 
