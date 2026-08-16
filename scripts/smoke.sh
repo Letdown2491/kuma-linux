@@ -276,17 +276,33 @@ smoke_install() {
         || bad "cannot open the container"
     sudo mount -o subvol=root "/dev/mapper/$mapper" "$mnt" || bad "cannot mount the root"
 
-    sudo grep -q "KUMA_USER='$user'" "$mnt/var/lib/kuma/user" \
+    # Neither /var nor /etc is where it looks. This is an ostree
+    # deployment: the subvolume holds /ostree/deploy/<stateroot>/var, and
+    # the merged /etc lives inside the deployment directory under a
+    # checksum nobody can predict. Naming them as if the subvolume were
+    # the root is how this assertion read correctly and failed the first
+    # time it ran.
+    local user_file
+    user_file=$(sudo find "$mnt/ostree/deploy" -maxdepth 5 -path '*/var/lib/kuma/user' -print -quit)
+    [ -n "$user_file" ] || bad "no /var/lib/kuma/user on the installed root"
+    sudo grep -q "KUMA_USER='$user'" "$user_file" \
         || bad "the installer's account file does not name $user"
     ok "the account to converge is written where kuma-user-sync reads it"
+
+    local host_file
+    host_file=$(sudo find "$mnt/ostree/deploy" -maxdepth 5 -path '*/var/lib/kuma/hostname' -print -quit)
+    [ -n "$host_file" ] || bad "no /var/lib/kuma/hostname for first boot to apply"
+    ok "the hostname to apply is written beside it"
 
     # The greeter must not autologin an account this machine will not
     # have. A committed example declares no [user], so there is nothing to
     # strip here and the assertion is that nothing crept in.
-    if sudo test -f "$mnt/etc/greetd/config.toml"; then
+    local greetd_conf
+    greetd_conf=$(sudo find "$mnt/ostree/deploy" -maxdepth 6 \
+                  -path '*/etc/greetd/config.toml' -print -quit)
+    if [ -n "$greetd_conf" ]; then
         local autologin
-        autologin=$(sudo sed -n 's/^user *= *"\(.*\)"/\1/p' "$mnt/etc/greetd/config.toml" \
-                    | tail -1)
+        autologin=$(sudo sed -n 's/^user *= *"\(.*\)"/\1/p' "$greetd_conf" | tail -1)
         case "$autologin" in
             ""|greetd|"$user") ok "no greeter autologins an account this disk lacks" ;;
             *) bad "greetd autologins '$autologin', which this machine has no account for" ;;
