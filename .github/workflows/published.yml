@@ -51,7 +51,7 @@ jobs:
       - name: qemu, cryptsetup, sshpass, and access to /dev/kvm
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-x86 cryptsetup-bin sshpass
+          sudo apt-get install -y -qq qemu-system-x86 cryptsetup-bin sshpass ovmf
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
               | sudo tee /etc/udev/rules.d/99-kvm.rules
           sudo udevadm control --reload-rules
@@ -113,7 +113,7 @@ jobs:
       - name: qemu, cryptsetup, sshpass, and access to /dev/kvm
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-x86 cryptsetup-bin sshpass
+          sudo apt-get install -y -qq qemu-system-x86 cryptsetup-bin sshpass ovmf
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
               | sudo tee /etc/udev/rules.d/99-kvm.rules
           sudo udevadm control --reload-rules

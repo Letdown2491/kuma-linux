@@ -395,8 +395,35 @@ smoke_published() {
         || bad "installing $image failed"
     ok "installed $image"
 
+    # UEFI firmware, and this is not optional. `kuma install` writes a GPT
+    # with an ESP, which is a UEFI layout; qemu defaults to SeaBIOS, which
+    # finds nothing bootable and says so on the VGA console that
+    # `-display none` throws away. The failure is therefore completely
+    # silent: the install succeeds, the guest never boots, ssh times out
+    # after seven minutes and the serial log is zero bytes. Nothing needed
+    # this before because the boot stage's disks come from
+    # bootc-image-builder and boot under BIOS.
+    #
+    # VARS is copied because pflash wants it writable, and a per-run copy
+    # means EFI boot entries cannot leak from one run into the next.
+    local ovmf_code="" ovmf_vars="" candidate
+    for candidate in /usr/share/OVMF/OVMF_CODE.fd /usr/share/edk2/ovmf/OVMF_CODE.fd \
+                     /usr/share/qemu/OVMF_CODE.fd; do
+        [ -f "$candidate" ] && ovmf_code=$candidate && break
+    done
+    [ -n "$ovmf_code" ] \
+        || bad "no OVMF firmware; an installed disk is UEFI and will not boot on SeaBIOS"
+    for candidate in "${ovmf_code%OVMF_CODE.fd}OVMF_VARS.fd" /usr/share/OVMF/OVMF_VARS.fd; do
+        [ -f "$candidate" ] && ovmf_vars=$candidate && break
+    done
+    [ -n "$ovmf_vars" ] || bad "found $ovmf_code but no matching OVMF_VARS.fd"
+    cp "$ovmf_vars" "$dir/OVMF_VARS.fd"
+
     qemu-system-x86_64 \
         -enable-kvm -cpu host -smp 4 -m 4096 \
+        -machine q35 \
+        -drive "if=pflash,format=raw,readonly=on,file=$ovmf_code" \
+        -drive "if=pflash,format=raw,file=$dir/OVMF_VARS.fd" \
         -drive "file=$raw,if=virtio,format=raw" \
         -device "$QEMU_VGA" -display "$QEMU_DISPLAY" \
         -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$port-:22" \
