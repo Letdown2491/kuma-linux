@@ -169,6 +169,22 @@ jobs:
           # Loud here rather than as a confusing qemu error minutes later.
           test -w /dev/kvm || { echo "no write access to /dev/kvm"; exit 1; }
 
+      # `kuma install` refuses to touch a disk when a tool it needs is
+      # absent, and it looks in /usr/bin, /usr/sbin, /bin and /sbin rather
+      # than $PATH, because it runs under sudo and sudo's PATH is not the
+      # one asking. That is right on the media kuma installs from and
+      # wrong here: the runner keeps podman somewhere else, so the first
+      # CI install failed on `podman (dnf install podman)` while the image
+      # job was building with it happily.
+      - name: make podman visible to the install preflight
+        run: |
+          echo "podman resolves to: $(command -v podman)"
+          for d in /usr/bin /usr/sbin /bin /sbin; do
+            [ -x "$d/podman" ] && echo "already at $d/podman" && exit 0
+          done
+          sudo ln -s "$(command -v podman)" /usr/bin/podman
+          echo "linked $(command -v podman) -> /usr/bin/podman"
+
       - name: smoke (install + boot)
         env:
           QEMU_VGA: virtio-vga
