@@ -2022,9 +2022,24 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     std::fs::write(dir.path().join("kuma-hostname"), format!("{hostname}\n"))?;
     std::fs::write(
         dir.path().join("Containerfile"),
-        install::install_containerfile(image, account.shell.as_deref()),
+        install::install_containerfile(image, &account),
     )?;
 
+    // Said before anything is written, and only when it can be known
+    // for free: reading the baked declaration means running the image,
+    // and on live media a pull lands in RAM, which is the ceiling this
+    // install path exists to get out from under. A local image is
+    // already here, and a local image is exactly the case this warns
+    // about, since a published one declares no user at all.
+    if local {
+        if let Ok(baked) =
+            host_output(&["podman", "run", "--rm", image, "cat", "/usr/lib/kuma/kuma.toml"])
+        {
+            if let Some(warning) = install::baked_user_warning(&baked, &account.name) {
+                println!("\n{warning}\n");
+            }
+        }
+    }
     let script = dir.path().join("install");
     std::fs::write(&script, partition::install_script(&layout, encrypt))?;
 

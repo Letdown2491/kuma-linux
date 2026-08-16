@@ -99,7 +99,8 @@ pub fn user_file(account: &Account) -> String {
 /// 0600 on the user file for the same reason the baked one is: it holds a
 /// password hash and only the root-run converger reads it. This image is
 /// thrown away once the install finishes; nothing tags it for keeping.
-pub fn install_containerfile(source: &str, shell: Option<&str>) -> String {
+pub fn install_containerfile(source: &str, account: &Account) -> String {
+    let shell = account.shell.as_deref();
     // `useradd -s /usr/bin/nonsense` does not fail. It makes the account
     // with a shell that is not there and the machine comes up unable to
     // log anybody in, which is the exact failure this verb exists to
@@ -117,8 +118,80 @@ pub fn install_containerfile(source: &str, shell: Option<&str>) -> String {
          FROM {source}\n\
          {guard}\
          COPY --chmod=600 kuma-user /var/lib/kuma/user\n\
-         COPY kuma-hostname /var/lib/kuma/hostname\n"
+         COPY kuma-hostname /var/lib/kuma/hostname\n\
+         {}",
+        drop_foreign_autologin(&account.name)
     )
+}
+
+/// Where the greeter autologins somebody who will not exist here.
+///
+/// An image built from a declaration with `autologin = true` bakes that
+/// account's name into the greeter's config. Installed for a different
+/// account, the name resolves to nobody: greetd fails
+/// `pam_acct_mgmt: USER_UNKNOWN`, restarts five times, and gives up, so
+/// the machine boots to a console nobody can log in at. Found on a real
+/// install, where every other part had converged correctly.
+///
+/// Dropped rather than pointed at the new account, because kuma already
+/// answered this question once: `kuma-user-sync` clears the account keys
+/// between the baked declaration and the installer's file so that "an
+/// image that declared a user cannot lend its password to somebody
+/// else's account". Autologin is a property of that same account, and
+/// lending it is the same move.
+///
+/// Cut at the section header, because kuma writes this block last in
+/// both files it appears in, and because a greeter that has lost its
+/// autologin still greets. Only when the names differ: installing an
+/// image onto a machine for the account it already declares is the case
+/// where autologin was meant.
+fn drop_foreign_autologin(name: &str) -> String {
+    format!(
+        "# A greeter cannot autologin an account this machine will not\n\
+         # have. Runs inside the build, so nothing has to read the image\n\
+         # from outside it.\n\
+         RUN for conf in {} {}; do \\\n    \
+         [ -f \"$conf\" ] || continue; \\\n    \
+         grep -q '^\\[initial_session\\]' \"$conf\" || continue; \\\n    \
+         [ \"$(sed -n 's/^user *= *\"\\(.*\\)\"/\\1/p' \"$conf\" | tail -1)\" = '{name}' ] \\\n      \
+         || sed -i '/^\\[initial_session\\]/,$d' \"$conf\"; \\\n\
+         done\n",
+        crate::containerfile::GREETD_CONF,
+        crate::containerfile::COSMIC_GREETER_CONF,
+    )
+}
+
+/// What installing this image puts on the disk that a published one
+/// would not.
+///
+/// A shared image declares no `[user]`, which is why the installer asks
+/// for one. An image built from somebody's own declaration does declare
+/// one, and installing it carries that account's name and password hash
+/// onto the disk in the baked declaration, for an account this machine
+/// will not even create. `kuma iso` already warns when a declared user
+/// rides into installer media; this is the same hazard by the same
+/// route, and it went unremarked until an install produced a machine
+/// nobody could log in to.
+pub fn baked_user_warning(baked: &str, installing: &str) -> Option<String> {
+    let config: crate::config::Config = toml::from_str(baked).ok()?;
+    let declared = config.user?;
+    if declared.name == installing {
+        return None;
+    }
+    let mut out = format!(
+        "note: this image declares the account '{}', which is not the '{installing}' being\n\
+         created here. Its password hash rides along in the image's baked declaration,\n\
+         so this disk carries a credential for an account it will never have.",
+        declared.name
+    );
+    if declared.autologin {
+        out.push_str(
+            "\nIts autologin has been dropped from the greeter, which would otherwise try to\n\
+             log in a user that does not exist and fail to start at all.",
+        );
+    }
+    out.push_str("\n\nImages meant to be installed elsewhere should declare no [user].");
+    Some(out)
 }
 
 /// The hostname the installed machine takes.
@@ -623,7 +696,8 @@ tmpfs /tmp tmpfs rw 0 0
     /// with no account, the second a machine that can never update.
     #[test]
     fn the_derived_layer_carries_the_answers_at_0600() {
-        let out = install_containerfile("ghcr.io/example/kuma:niri", None);
+        let bare = Account { shell: None, ..account() };
+        let out = install_containerfile("ghcr.io/example/kuma:niri", &bare);
         assert!(out.contains("FROM ghcr.io/example/kuma:niri"));
         assert!(out.contains("COPY --chmod=600 kuma-user /var/lib/kuma/user"));
         assert!(out.contains("COPY kuma-hostname /var/lib/kuma/hostname"));
@@ -636,13 +710,55 @@ tmpfs /tmp tmpfs rw 0 0
         assert!(!out.contains("/etc/kuma/"));
     }
 
+    /// A greeter that autologins the image author's account cannot start
+    /// on a machine that has a different one. Proven on a real install:
+    /// `pam_acct_mgmt: USER_UNKNOWN` from `getpwnam(martin)`, five
+    /// restarts, then no greeter at all.
+    #[test]
+    fn autologin_for_an_account_this_machine_lacks_is_removed() {
+        let out = install_containerfile("localhost/kuma:latest", &account());
+        // Both files, because the two desktops autologin through
+        // different ones and only one of them would be noticed.
+        assert!(out.contains(crate::containerfile::GREETD_CONF));
+        assert!(out.contains(crate::containerfile::COSMIC_GREETER_CONF));
+        // Cut at the section header, which is where kuma writes it.
+        assert!(out.contains(r"sed -i '/^\[initial_session\]/,$d'"));
+        // And only when the name differs: an image installed for the
+        // account it declares is the case autologin was written for.
+        assert!(out.contains("= 'mira' ]"));
+        // The greeter survives; only its autologin goes.
+        assert!(!out.contains("rm -f /etc/greetd"));
+    }
+
+    /// The other half of the same hazard, which no code can undo: the
+    /// image carries a password hash for an account this disk will never
+    /// create. `kuma iso` warns about the same thing for media.
+    #[test]
+    fn installing_someone_elses_image_says_what_rides_along() {
+        let baked = "schema_version = 1\n[user]\nname = \"martin\"\n\
+                     password_hash = '$6$abc$def'\nautologin = true\n";
+        let warning = baked_user_warning(baked, "mira").expect("a declared user is worth saying");
+        assert!(warning.contains("martin"));
+        assert!(warning.contains("password hash"));
+        assert!(warning.contains("autologin"));
+        // Nothing to warn about when the image declares the same account
+        // it is being installed for, or declares none at all.
+        assert!(baked_user_warning(baked, "martin").is_none());
+        assert!(baked_user_warning("schema_version = 1\n", "mira").is_none());
+        // A declaration without autologin still carries the hash, and
+        // still says so, but has no greeter line to explain.
+        let quiet = "schema_version = 1\n[user]\nname = \"martin\"\n";
+        let warning = baked_user_warning(quiet, "mira").unwrap();
+        assert!(warning.contains("password hash") && !warning.contains("autologin"));
+    }
+
     /// An explicit --shell is the one thing here the image has never
     /// seen, so it is the one thing this layer checks. It fails the
     /// build rather than the boot, which is the difference between an
     /// install that stops and a machine nobody can log into.
     #[test]
     fn an_asked_for_shell_is_checked_before_the_account_is_written() {
-        let out = install_containerfile("ghcr.io/example/kuma:niri", Some("fish"));
+        let out = install_containerfile("ghcr.io/example/kuma:niri", &account());
         let guard = out.find("RUN test -x /usr/bin/fish").unwrap();
         assert!(guard < out.find("COPY --chmod=600").unwrap());
     }

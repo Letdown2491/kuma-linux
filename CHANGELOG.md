@@ -7,6 +7,12 @@ as its release notes.
 
 ### Added
 
+- `kuma install` says when the image it is installing declares an account
+  that is not the one being created. A shared image declares none, which
+  is why the installer asks; an image built from somebody's own
+  declaration carries their name and password hash in its baked
+  declaration, onto a disk for an account it will never create. `kuma iso`
+  already warned about the same hazard riding into installer media.
 - `kuma install` can encrypt the disk. It asks on a terminal, takes
   `--encrypt` from anything else, and is off unless something says
   otherwise. The passphrase reaches cryptsetup on a pipe and is never a
@@ -18,6 +24,16 @@ as its release notes.
 
 ### Fixed
 
+- Installing an image whose declaration sets `autologin` no longer produces
+  a machine with no greeter. The image bakes that account's name into
+  greetd's `initial_session`, and an install creates the account it was
+  asked for instead, so the greeter tried to log in a user that did not
+  exist: `pam_acct_mgmt: USER_UNKNOWN`, five restarts, then nothing to log
+  in at. The install layer now drops `initial_session` when the account it
+  creates is not the one the image declares, in the niri config and the
+  COSMIC one, and keeps it when they match. Autologin belongs to the
+  account that declared it, the same rule `kuma-user-sync` already applies
+  to a password.
 - The greeter health check no longer passes a greeter that is crash
   looping. It sampled `display-manager.service` once, and a unit with
   `Restart=` is briefly active on every retry, so a machine nobody could
