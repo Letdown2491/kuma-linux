@@ -5,6 +5,11 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+## v0.8.0 (2026-08-15)
+
+The disk kuma installs can be encrypted, and the machine it makes says what
+it is and what it came from.
+
 ### Added
 
 - `kuma install` says when the image it is installing declares an account
