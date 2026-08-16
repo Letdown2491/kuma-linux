@@ -608,7 +608,22 @@ ln -sfn "../usr/share/zoneinfo/$tz" /etc/localtime
 const HOME_SUBVOL_SERVICE: &str = r#"[Unit]
 Description=Give /var/home its own btrfs subvolume while it is empty
 ConditionPathExists=/run/ostree-booted
-Before=kuma-user-sync.service kuma-brew-setup.service systemd-user-sessions.service
+# Every unit that could put something in /var/home before this gets to
+# look at it. The window is only ever the first boot, and losing it is
+# permanent and quiet: the converger declines, the machine boots healthy,
+# and [snapshots] then runs a timer that takes nothing forever.
+#
+# The list is longer than the units kuma ships on purpose. Ordering
+# against a unit that is not installed is a no-op in systemd, so naming
+# both greeters, sshd and homed costs nothing in an image that has none
+# of them, and closes the case where one of them is what got there first.
+# This was widened after a first boot in roughly thirty came up with
+# /var/home an ordinary directory, on an image where the three units
+# named originally were all correctly ordered.
+Before=kuma-user-sync.service kuma-brew-setup.service kuma-brew-sync.service
+Before=kuma-flatpak-sync.service kuma-snapshot.service
+Before=systemd-user-sessions.service systemd-homed.service
+Before=sshd.service greetd.service cosmic-greeter.service display-manager.service
 
 [Service]
 Type=oneshot
@@ -625,18 +640,35 @@ const HOME_SUBVOL_SCRIPT: &str = r#"#!/usr/bin/bash
 set -euo pipefail
 target=${1:-/var/home}
 
-[ -d "$target" ] || exit 0
-[ "$(findmnt -no FSTYPE -T "$target" 2>/dev/null || true)" = btrfs ] || exit 0
+# Every exit says why. Declining is the common case and the right one on
+# every boot after the first, but it is also what a missed first boot
+# looks like, and those were indistinguishable while both were a silent
+# exit 0: the unit succeeds, the machine boots healthy, and the only
+# evidence is an inode nobody looks at.
+say() { echo "kuma-home-subvol: $*"; }
+
+[ -d "$target" ] || { say "$target does not exist yet; nothing to do"; exit 0; }
+
+# head -1 because findmnt prints a line per mount when something is
+# stacked at or under the path, and a two-line answer never equals
+# "btrfs", which would decline on a machine that is in fact btrfs.
+fstype=$(findmnt -no FSTYPE -T "$target" 2>/dev/null | head -1 || true)
+[ "$fstype" = btrfs ] \
+    || { say "$target is on ${fstype:-an unknown filesystem}, not btrfs; nothing to do"; exit 0; }
 
 # Inode 256 is every btrfs subvolume root, and asking this way needs no
 # privilege and no btrfs command. Already one: nothing to do, on every
 # boot after the first.
-[ "$(stat -c %i "$target")" = 256 ] && exit 0
+[ "$(stat -c %i "$target")" = 256 ] && { say "$target is already a subvolume"; exit 0; }
 
 # Only while nothing lives there. This runs before the account converger
 # and before any login, so on a first boot it is empty; on any later one
 # it holds somebody's home directory and this must leave it alone.
-[ -z "$(ls -A "$target")" ] || exit 0
+if [ -n "$(ls -A "$target")" ]; then
+    say "$target already holds $(ls -A "$target" | tr '\n' ' ')"
+    say "leaving it alone: making it a subvolume now would mean moving what is in it"
+    exit 0
+fi
 
 # Carried across rather than assumed: tmpfiles made this directory with
 # the mode and label the system expects, and the subvolume replacing it
@@ -2437,6 +2469,26 @@ mod tests {
         // what makes "only while empty" a check that ever passes.
         assert!(HOME_SUBVOL_SERVICE.contains("Before=kuma-user-sync.service"));
         assert!(HOME_SUBVOL_SERVICE.contains("ConditionPathExists=/run/ostree-booted"));
+        // Every unit that could write into /var/home before this looks at
+        // it. Pinned by name because the failure they prevent is silent
+        // and permanent, so dropping one would not show up in any boot.
+        for unit in [
+            "kuma-brew-setup.service",
+            "kuma-brew-sync.service",
+            "kuma-flatpak-sync.service",
+            "kuma-snapshot.service",
+            "systemd-user-sessions.service",
+            "systemd-homed.service",
+            "sshd.service",
+            "greetd.service",
+            "cosmic-greeter.service",
+            "display-manager.service",
+        ] {
+            assert!(
+                HOME_SUBVOL_SERVICE.contains(unit),
+                "{unit} can write into /var/home and is not ordered after the converger"
+            );
+        }
 
         let dir = tempfile::tempdir().unwrap();
         context("schema_version = 1\n", dir.path());
@@ -2467,11 +2519,21 @@ mod tests {
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         assert!(plain.join("someone-lives-here").exists(), "it must never delete a home");
         assert!(plain.is_dir());
+        // Declining has to say so. A silent exit 0 here is
+        // indistinguishable from the first boot where this was supposed
+        // to act and did not, which is exactly the case that went
+        // unexplained: the unit succeeds either way and the only
+        // difference is an inode nobody reads.
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("kuma-home-subvol:"),
+            "declining must log a reason, got: {:?}",
+            String::from_utf8_lossy(&out.stdout)
+        );
 
         // And the order of the guards: emptiness is checked before
         // anything is removed, on the same line of reasoning.
         let body = std::fs::read_to_string(&script).unwrap();
-        let empty_at = body.find(r#"[ -z "$(ls -A "$target")" ]"#).unwrap();
+        let empty_at = body.find(r#"[ -n "$(ls -A "$target")" ]"#).unwrap();
         let rmdir_at = body.find(r#"rmdir "$target""#).unwrap();
         assert!(empty_at < rmdir_at);
     }

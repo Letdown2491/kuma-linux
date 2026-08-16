@@ -500,6 +500,17 @@ smoke_published() {
     # version from BEFORE a fix and see what upgrading does about it, so
     # its absence is the premise rather than the failure. Reported either
     # way, because a silent skip here would read as a pass.
+    # An ordering cycle does not stop a boot. systemd breaks one by
+    # deleting a job, and the job it deletes could be the converger's,
+    # with the machine coming up healthy and one unit having silently
+    # never run. Widening a unit's Before= is precisely the change that
+    # introduces one, so this is checked rather than assumed.
+    if gsudo journalctl -b --no-pager | grep -qi 'ordering cycle'; then
+        gsudo journalctl -b --no-pager | grep -i -A 3 'ordering cycle' >&2 || true
+        bad "systemd broke an ordering cycle this boot; a unit may never have run"
+    fi
+    ok "no ordering cycle this boot"
+
     # A converger that ran and correctly declined is a different fault
     # from one that died, and `systemctl is-system-running` calls both
     # "degraded", which this stage accepts as settled. So ask about this
