@@ -647,6 +647,13 @@ target=${1:-/var/home}
 # evidence is an inode nobody looks at.
 say() { echo "kuma-home-subvol: $*"; }
 
+# Which command died, not just that one did. This unit fails on a small
+# fraction of first boots, leaving /var/home an ordinary directory
+# forever, and until this trap existed the only trace was `systemctl
+# is-failed` saying "failed": the work below is four commands and
+# `set -e` names none of them. Costs nothing on the boots that succeed.
+trap 'say "FAILED at line $LINENO running: $BASH_COMMAND"' ERR
+
 [ -d "$target" ] || { say "$target does not exist yet; nothing to do"; exit 0; }
 
 # head -1 because findmnt prints a line per mount when something is
@@ -1088,6 +1095,35 @@ gtk-theme='Adwaita'
 const DCONF_BLUEMAN: &str = r#"[org/blueman/general]
 plugin-list=['!StatusIcon', '!ShowConnected']
 "#;
+
+/// One launch path per session service, and it is kuma's.
+///
+/// `xdg-desktop-autostart.target` is active in this session, so systemd's
+/// xdg-autostart-generator turns every `/etc/xdg/autostart/*.desktop`
+/// into a unit. Fedora ships one for blueman and one for the mate polkit
+/// agent, and niri-extras.kdl *also* spawns both. They are single
+/// instance, so one launch wins and the other quietly loses, and which
+/// one wins is a race: measured on one boot, blueman came up under
+/// `app-blueman@autostart.service` while the polkit agent came up under
+/// niri's own scope. Nothing breaks, but a unit reads `dead` while its
+/// program is running, the loser can log noise, and which cgroup owns a
+/// process changes from boot to boot.
+///
+/// kuma's spawn is the one kept, because it is the one this image
+/// declares: the alternative depends on the session reaching
+/// `xdg-desktop-autostart.target`, and losing the polkit agent that way
+/// is invisible until somebody needs an authentication prompt.
+///
+/// `Hidden=true` rather than masking the generated unit: the generator
+/// names the polkit unit
+/// `app-polkit\x2dmate\x2dauthentication\x2dagent\x2d1@autostart.service`,
+/// and reproducing that escaping in a symlink is a worse thing to depend
+/// on than the spec's own "ignore this entry" key. Verified against the
+/// running generator, which reports the unit `not-found` with this in
+/// place.
+fn autostart_off(name: &str) -> String {
+    format!("[Desktop Entry]\nType=Application\nName={name}\nHidden=true\n")
+}
 
 /// Volume/brightness OSD: wob draws an overlay bar from levels written
 /// to a FIFO (swayosd would be nicer but is COPR-only). kuma-osd is
@@ -1619,6 +1655,11 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY dconf-kuma-dark /etc/dconf/db/local.d/10-kuma-dark\n");
         out.push_str("COPY dconf-kuma-blueman /etc/dconf/db/local.d/10-kuma-blueman\n");
         out.push_str("RUN dconf update\n");
+        out.push_str("COPY autostart-blueman /etc/xdg/autostart/blueman.desktop\n");
+        out.push_str(
+            "COPY autostart-polkit-mate \
+             /etc/xdg/autostart/polkit-mate-authentication-agent-1.desktop\n",
+        );
         // The packaged default config is complete (all keybindings); Kuma's
         // config is that plus our session extras, validated at build time.
         // Fedora's default config already spawns waybar — drop that line (and
@@ -2084,6 +2125,11 @@ pub fn write_context(
         std::fs::write(dir.join("dconf-profile"), DCONF_PROFILE)?;
         std::fs::write(dir.join("dconf-kuma-dark"), DCONF_DARK)?;
         std::fs::write(dir.join("dconf-kuma-blueman"), DCONF_BLUEMAN)?;
+        std::fs::write(dir.join("autostart-blueman"), autostart_off("Blueman Applet"))?;
+        std::fs::write(
+            dir.join("autostart-polkit-mate"),
+            autostart_off("PolicyKit Authentication Agent"),
+        )?;
     }
     if config.system.desktop != Desktop::None || !config.packages.flatpak.is_empty() {
         let mut list = config.packages.flatpak.join("\n");
@@ -2357,6 +2403,18 @@ mod tests {
         // bar would fail a test to say so.
         assert!(DCONF_BLUEMAN.contains("'!StatusIcon'"));
         assert!(DCONF_BLUEMAN.contains("'!ShowConnected'"));
+
+        // Exactly one launch path for the two session services this image
+        // both spawns and ships an autostart entry for. The pairing is
+        // the point: an override here without the matching
+        // spawn-at-startup would leave the machine with no bluetooth
+        // agent and no polkit agent, and the second of those is silent
+        // until somebody needs a password prompt.
+        assert!(out.contains("COPY autostart-blueman /etc/xdg/autostart/blueman.desktop"));
+        assert!(out.contains("/etc/xdg/autostart/polkit-mate-authentication-agent-1.desktop"));
+        assert!(NIRI_EXTRAS.contains("spawn-at-startup \"blueman-applet\""));
+        assert!(NIRI_EXTRAS.contains("polkit-mate-authentication-agent-1"));
+        assert!(autostart_off("x").contains("Hidden=true"));
     }
 
     #[test]

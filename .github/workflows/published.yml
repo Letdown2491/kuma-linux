@@ -55,7 +55,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+        attempt: [1, 2, 3]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -122,6 +122,14 @@ jobs:
   fix-verification:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    # TEMPORARY, REMOVE WITH THE HUNT MATRIX ABOVE. Matrixed because this
+    # is the only build carrying the converger's ERR trap: the published
+    # jobs test an artifact that cannot contain an unreleased change, so
+    # this is the only place the failing command can name itself.
+    strategy:
+      fail-fast: false
+      matrix:
+        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
