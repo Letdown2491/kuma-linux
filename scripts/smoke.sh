@@ -294,6 +294,10 @@ smoke_install() {
     [ -n "$host_file" ] || bad "no /var/lib/kuma/hostname for first boot to apply"
     ok "the hostname to apply is written beside it"
 
+    # No /var/home assertion here on purpose: the image ships none, and
+    # tmpfiles creates it at first boot. Whether it is a subvolume is a
+    # question for a booted machine, and smoke_boot asks it.
+
     # The greeter must not autologin an account this machine will not
     # have. A committed example declares no [user], so there is nothing to
     # strip here and the assertion is that nothing crept in.
@@ -408,6 +412,30 @@ smoke_boot() {
     fi
     [ -z "$failed" ] || bad "failed units: $(echo "$failed" | tr '\n' ' ')"
     ok "no failed units"
+
+    # /var/home has to be its own btrfs subvolume, or `[snapshots]` is a
+    # timer that runs hourly and takes nothing: a snapshot is of a
+    # subvolume, the script exits 0 on a target that is not one, and the
+    # machine reports itself healthy throughout. kuma-home-subvol makes
+    # it one on the first boot, while it is still empty, so a booted
+    # machine is the only place the answer exists.
+    #
+    # Conditional, and the condition is not a hedge: these disks are
+    # built by bootc-image-builder with an ext4 root (see BIB_ROOTFS),
+    # where there is no subvolume to make and the converger is right to
+    # do nothing. Said out loud rather than skipped, because a silent
+    # pass here would read as if the btrfs case had been checked, and on
+    # this harness it never is: only `kuma install` writes btrfs.
+    local home_fs home_inode
+    home_fs=$(guest findmnt -no FSTYPE -T /var/home)
+    if [ "$home_fs" = btrfs ]; then
+        home_inode=$(guest stat -c %i /var/home)
+        [ "$home_inode" = 256 ] \
+            || bad "/var/home is not a subvolume (inode $home_inode); snapshots would take nothing"
+        ok "/var/home is its own subvolume"
+    else
+        ok "/var/home is on $home_fs, so the subvolume question does not arise here"
+    fi
 
     local rpms
     rpms=$(declared "$file" packages.rpm)

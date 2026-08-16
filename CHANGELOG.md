@@ -43,6 +43,19 @@ as its release notes.
 
 ### Fixed
 
+- Every image gives `/var/home` a btrfs subvolume of its own on the first
+  boot, without which `[snapshots]` could never take one. A snapshot is of
+  a subvolume, `/var/home` on a machine kuma installed was an ordinary
+  directory inside the deployment's `/var`, and the snapshot script exits
+  0 on a target it cannot snapshot: the unit succeeded, the timer stayed
+  active, the store stayed empty, and every report read healthy while
+  nothing was ever taken. Machines installed by Anaconda were never
+  affected, which is how it survived. The new `kuma-home-subvol` runs
+  before any account exists and only while the directory is still empty,
+  carrying the mode and SELinux label across, since a fresh subvolume is
+  created unlabeled. `kuma doctor` now grades the target itself, for the
+  machines already in that state, where the layout cannot be changed
+  without moving home directories.
 - `kuma doctor` grades `kuma-user-sync` on a machine that was installed,
   not only on one built from a declaration that names an account. A
   published image declares none by design, so `kuma install` writes the

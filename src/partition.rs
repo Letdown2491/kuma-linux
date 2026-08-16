@@ -798,6 +798,22 @@ mod tests {
         assert!(!script.contains("--generic-image"));
     }
 
+    /// The install does not touch `/var/home`, and cannot.
+    ///
+    /// It looks like the obvious place to make it a subvolume, which is
+    /// where this went first. The image ships no `/var/home` at all:
+    /// `rpm-ostree-0-integration.conf` has tmpfiles create it at every
+    /// boot, so at install time there is nothing there to replace, and a
+    /// subvolume made here would have to invent the SELinux label that
+    /// the machine's own first boot gets right for free. It is done by
+    /// `kuma-home-subvol` instead, before any account exists.
+    #[test]
+    fn the_install_leaves_var_home_to_the_machine() {
+        let script = install_script(&plan(40 * 1024 * 1024 * 1024, false).unwrap(), false);
+        assert!(!script.contains("/var/home"));
+        assert!(!script.contains("$var/home"));
+    }
+
     /// The encrypted script, which is the same install with one
     /// difference and four ways to get that difference wrong: a
     /// passphrase in argv, a newline in the key, the wrong UUID in the

@@ -182,11 +182,15 @@ fn list(
     } else if ids.is_empty() {
         // An enabled declaration with an empty store is the normal state
         // between switching and the first timer tick, and it is also what
-        // a non-btrfs machine looks like forever. Say both.
+        // a target that cannot be snapshotted looks like forever. The two
+        // are worth telling apart rather than hedging, which is what this
+        // said until a machine spent a night in the second state reading
+        // like the first: `kuma doctor` grades the target directly.
         println!("No snapshots yet in {}.", store.display());
         println!(
-            "The timer takes the first one on its next run; a {} that isn't a btrfs \
-             subvolume is skipped entirely.",
+            "The timer takes the first one on its next run. If it does not, ask \
+             `kuma doctor`: a {} that isn't a btrfs subvolume is skipped entirely, \
+             and doctor is what checks.",
             config.snapshots.target
         );
     } else {

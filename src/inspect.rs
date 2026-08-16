@@ -1030,6 +1030,21 @@ fn check_convergence(report: &mut impl FnMut(Grade, &str, String, Option<Action>
     }
 }
 
+/// Whether a `stat -c %i` answer names the root of a btrfs subvolume.
+///
+/// Inode 256 is what every subvolume root has, and it is the only form
+/// of the question that can be asked without root: `btrfs subvolume
+/// show` searches the B-tree, which needs privilege, and it fails with
+/// an error for "not a subvolume" and for "not allowed to look" alike.
+/// A check built on that would grade a working machine broken the moment
+/// it ran unprivileged.
+///
+/// `None` for an answer that isn't a number, which means the question
+/// could not be asked and nothing should be graded on it.
+fn subvolume_root(stat_output: &str) -> Option<bool> {
+    stat_output.trim().parse::<u64>().ok().map(|inode| inode == 256)
+}
+
 /// Snapshots fail quietly by design, and correctly so: the script
 /// degrades rather than erroring when the target isn't btrfs, and the
 /// timer is Persistent with a jittered delay, so nothing complains on a
@@ -1064,6 +1079,32 @@ fn check_snapshots(report: &mut impl FnMut(Grade, &str, String, Option<Action>))
             Grade::Fail,
             "snapshots",
             format!("{target} is {fstype}, not btrfs; no snapshot can ever be taken"),
+            None,
+        );
+        return;
+    }
+
+    // btrfs is necessary and not sufficient. A snapshot is taken of a
+    // subvolume, and on a machine installed before kuma made one of
+    // /var/home, the target is an ordinary directory inside the
+    // deployment's /var. The snapshot script exits 0 on it, so the unit
+    // succeeds, the timer is active, the store stays empty, and every
+    // line here reads healthy while nothing will ever be taken.
+    //
+    // Unfixable from here: converting a directory that holds home
+    // directories into a subvolume means moving them, which is not
+    // something a health check should offer to do while people are
+    // logged in. Saying so is the whole of the job.
+    if let Some(false) =
+        host_output(&["stat", "-c", "%i", target]).ok().as_deref().and_then(subvolume_root)
+    {
+        report(
+            Grade::Fail,
+            "snapshots",
+            format!(
+                "{target} is a directory, not a btrfs subvolume; \
+                 the timer runs and takes nothing"
+            ),
             None,
         );
         return;
@@ -1732,6 +1773,24 @@ mod tests {
         // byte comparison, so whitespace counts: an /etc file that differs
         // by a trailing newline still wins over the image's copy
         assert_eq!(classify_etc(Some(b"KUMA=1\n"), Some(b"KUMA=1")), EtcState::Shadowed);
+    }
+
+    /// The question doctor asks about a snapshot target, and the reason
+    /// it asks it by inode: 256 is every subvolume root, and the
+    /// privileged way to ask cannot tell "not a subvolume" from "not
+    /// allowed to look".
+    #[test]
+    fn a_subvolume_root_is_inode_256() {
+        assert_eq!(subvolume_root("256\n"), Some(true));
+        assert_eq!(subvolume_root("256"), Some(true));
+        // A directory inside one, which is what an installed /var/home
+        // was: a real inode, and not that one.
+        assert_eq!(subvolume_root("103740"), Some(false));
+        // No answer is not an answer. `stat` on a path that is not there
+        // prints nothing to stdout, and grading a machine on that would
+        // report a fault where there was only a missing probe.
+        assert_eq!(subvolume_root(""), None);
+        assert_eq!(subvolume_root("stat: cannot stat"), None);
     }
 
     /// The case that went unchecked: an image declaring no account,
