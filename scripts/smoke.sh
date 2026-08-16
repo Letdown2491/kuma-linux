@@ -500,9 +500,30 @@ smoke_published() {
     # version from BEFORE a fix and see what upgrading does about it, so
     # its absence is the premise rather than the failure. Reported either
     # way, because a silent skip here would read as a pass.
+    # A converger that ran and correctly declined is a different fault
+    # from one that died, and `systemctl is-system-running` calls both
+    # "degraded", which this stage accepts as settled. So ask about this
+    # unit by name rather than letting a failure hide in the aggregate.
+    [ "$(guest systemctl is-failed kuma-home-subvol.service)" != failed ] \
+        || bad "kuma-home-subvol.service failed; console at $log"
+
     if [ -z "$UPGRADE_TO" ]; then
-        [ "$home_was_subvol" = yes ] \
-            || bad "/var/home is not a subvolume (inode $home_inode); snapshots would take nothing"
+        if [ "$home_was_subvol" != yes ]; then
+            # Say why, not just that. This has come back intermittently on
+            # the same published image (two subvolumes and one directory
+            # across three boots), and the guest's kernel log never
+            # reaches the serial console because the installed image sets
+            # no console= karg, so the evidence has to be collected here
+            # while the machine is still up.
+            echo "   .. kuma-home-subvol.service says:" >&2
+            guest systemctl --no-pager -l status kuma-home-subvol.service >&2 2>&1 || true
+            guest journalctl --no-pager -b -u kuma-home-subvol.service >&2 2>&1 || true
+            echo "   .. /var/home contains:" >&2
+            guest ls -A /var/home >&2 2>&1 || true
+            echo "   .. units that finished before it:" >&2
+            guest systemd-analyze critical-chain kuma-home-subvol.service >&2 2>&1 || true
+            bad "/var/home is not a subvolume (inode $home_inode); snapshots would take nothing"
+        fi
         ok "/var/home is its own subvolume"
     elif [ "$home_was_subvol" = yes ]; then
         ok "/var/home is its own subvolume before upgrading"
