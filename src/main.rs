@@ -230,7 +230,7 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Reclaim build leftovers: dangling images, abandoned build containers, stale composed bases
+    /// Reclaim build leftovers: dangling images, abandoned build containers, stale composed bases, live media images
     Clean {
         /// Report what was reclaimed as JSON (progress moves to stderr)
         #[arg(long)]
@@ -1534,6 +1534,20 @@ fn clean(config_path: &Path, json: bool) -> Result<()> {
         }
     }
 
+    // The live ISO's root filesystem is built under a tag of its own,
+    // which `live_iso` calls disposable where it defines it: it exists
+    // between two podman calls and is worth nothing once the ISO is
+    // written. Nothing reclaimed it, so a 4 GB image sat in storage until
+    // somebody went looking for space.
+    //
+    // Unconditional, unlike the composed bases. A base tag has to be told
+    // from the live one the declaration still composes to; this one has
+    // no live version to confuse it with, only a leftover.
+    let live_pruned = host_output(&["podman", "rmi", LIVE_TAG]).is_ok();
+    if live_pruned {
+        say("Removed the live ISO build image.".to_string());
+    }
+
     // `kuma switch` copies each image into root storage, where the same
     // stranding happens. Only on a bootc machine — elsewhere root storage
     // isn't part of kuma's flow. bootc's own image store is untouched.
@@ -1549,7 +1563,8 @@ fn clean(config_path: &Path, json: bool) -> Result<()> {
         }
     }
 
-    let nothing = abandoned.is_empty() && pruned == 0 && base_pruned == 0 && root_pruned == 0;
+    let nothing =
+        abandoned.is_empty() && pruned == 0 && base_pruned == 0 && !live_pruned && root_pruned == 0;
     let freed = match (before, avail_bytes()) {
         (Some(before), Some(after)) if after > before => Some(after - before),
         _ => None,
@@ -1562,6 +1577,7 @@ fn clean(config_path: &Path, json: bool) -> Result<()> {
                 "containers_removed": abandoned.len(),
                 "images_pruned": pruned,
                 "base_images_pruned": base_pruned,
+                "live_image_pruned": live_pruned,
                 "root_images_pruned": root_pruned,
                 "freed_bytes": freed,
                 "actions": [],

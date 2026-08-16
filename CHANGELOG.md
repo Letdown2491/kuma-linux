@@ -52,6 +52,10 @@ as its release notes.
   check silently did not exist. That is where it is worth the most: a
   machine whose account was never created is one nobody can log in to, and
   doctor would have called it healthy.
+- `kuma clean` reclaims the image `kuma iso --live` builds the live root
+  filesystem under. It is worth nothing once the ISO is written, and
+  nothing pruned it: dangling-pruning cannot, because it is tagged, and
+  the stale-base rule does not cover it. It was four gigabytes.
 - `scripts/smoke.sh` pulls a declared base before building it. A base
   already in local storage is the one podman builds on however old it is,
   so the lock recorded that digest while `update --check` asked the
