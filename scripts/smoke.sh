@@ -345,6 +345,46 @@ smoke_install() {
     ok "disk verified"
 }
 
+# The same three questions after every boot, asked in three places: is it
+# reachable, has it finished starting, and does its own health check pass.
+# The three copies were still identical when this was extracted (same
+# 420s and 600s deadlines, same qemu-alive check, same greenboot verdict),
+# which is the moment to do it rather than after one of them has quietly
+# grown a fix the others lack.
+#
+# Calls `guest`, which each stage defines for its own connection before
+# reaching here. That is the one implicit thing about it, and the reason
+# it takes qemu and the log rather than reading them from scope too.
+await_healthy_boot() {
+    local qemu=$1 log=$2 reached=$3 healthy=$4 when=${5:-}
+
+    local deadline=$((SECONDS + 420))
+    until guest true; do
+        kill -0 "$qemu" 2>/dev/null || bad "qemu died${when}; console at $log"
+        [ $SECONDS -lt $deadline ] || bad "no ssh within 420s${when}; console at $log"
+        sleep 5
+    done
+    ok "$reached"
+
+    # Let boot finish before judging it: a first boot creates the user and
+    # converges flatpaks and brew, and greenboot runs after all of it.
+    echo "   .. waiting for the boot to settle"
+    deadline=$((SECONDS + 600))
+    until [[ "$(guest systemctl is-system-running)" =~ ^(running|degraded)$ ]]; do
+        [ $SECONDS -lt $deadline ] || bad "boot never settled${when}; console at $log"
+        sleep 10
+    done
+
+    # The verdict from the machine's own health check rather than from
+    # anything this script knows: on a desktop image a green greenboot
+    # means the greeter came up, which is the regression class that boots
+    # "fine" into a black screen.
+    local verdict
+    verdict=$(guest systemctl is-active greenboot-healthcheck.service || true)
+    [ "$verdict" = active ] || bad "greenboot verdict${when}: $verdict (console at $log)"
+    ok "$healthy"
+}
+
 # --- stage: published --------------------------------------------------
 #
 # Installs an image kuma published, then boots the disk that install
@@ -504,25 +544,9 @@ smoke_published() {
     }
 
     echo "   .. waiting for ssh on $port"
-    local deadline=$((SECONDS + 420))
-    until guest true; do
-        kill -0 $qemu 2>/dev/null || bad "qemu died; console at $log"
-        [ $SECONDS -lt $deadline ] || bad "no ssh within 420s; console at $log"
-        sleep 5
-    done
-    ok "installed machine booted and is reachable"
-
-    echo "   .. waiting for the boot to settle"
-    deadline=$((SECONDS + 600))
-    until [[ "$(guest systemctl is-system-running)" =~ ^(running|degraded)$ ]]; do
-        [ $SECONDS -lt $deadline ] || bad "boot never settled; console at $log"
-        sleep 10
-    done
-
-    local verdict
-    verdict=$(guest systemctl is-active greenboot-healthcheck.service || true)
-    [ "$verdict" = active ] || bad "greenboot verdict: $verdict (console at $log)"
-    ok "greenboot says this boot is healthy"
+    await_healthy_boot "$qemu" "$log" \
+        "installed machine booted and is reachable" \
+        "greenboot says this boot is healthy"
 
     # The reason this stage exists. A `kuma install` root is btrfs, so
     # "not btrfs" is a failure rather than a question that does not arise.
@@ -665,22 +689,10 @@ smoke_published() {
         local gone=0
         while guest true 2>/dev/null && [ $gone -lt 60 ]; do sleep 2; gone=$((gone + 2)); done
 
-        deadline=$((SECONDS + 420))
-        until guest true; do
-            kill -0 $qemu 2>/dev/null || bad "qemu died during reboot; console at $log"
-            [ $SECONDS -lt $deadline ] || bad "no ssh within 420s after upgrade; console at $log"
-            sleep 5
-        done
-
-        deadline=$((SECONDS + 600))
-        until [[ "$(guest systemctl is-system-running)" =~ ^(running|degraded)$ ]]; do
-            [ $SECONDS -lt $deadline ] || bad "boot never settled after upgrade; console at $log"
-            sleep 10
-        done
-
-        verdict=$(guest systemctl is-active greenboot-healthcheck.service || true)
-        [ "$verdict" = active ] || bad "greenboot verdict after upgrade: $verdict (console at $log)"
-        ok "the upgraded machine boots and greenboot says it is healthy"
+        await_healthy_boot "$qemu" "$log" \
+            "the upgraded machine came back" \
+            "the upgraded machine boots and greenboot says it is healthy" \
+            " after the upgrade"
 
         after=$(booted_digest)
         [ -n "$after" ] || bad "could not read the booted digest after upgrading"
@@ -779,31 +791,9 @@ smoke_boot() {
     guest() { ssh "${ssh_opts[@]}" "$@" 2>/dev/null; }
 
     echo "   .. waiting for ssh on $port"
-    local deadline=$((SECONDS + 420))
-    until guest true; do
-        kill -0 $qemu 2>/dev/null || bad "qemu died; console at $log"
-        [ $SECONDS -lt $deadline ] || bad "no ssh within 420s; console at $log"
-        sleep 5
-    done
-    ok "booted and reachable"
-
-    # Let boot finish before judging it: first boot creates the user,
-    # converges flatpaks and brew, and greenboot runs after all of it.
-    echo "   .. waiting for the boot to settle"
-    deadline=$((SECONDS + 600))
-    until [[ "$(guest systemctl is-system-running)" =~ ^(running|degraded)$ ]]; do
-        [ $SECONDS -lt $deadline ] || bad "boot never settled; console at $log"
-        sleep 10
-    done
-
-    # The verdict, from the machine's own health check rather than from
-    # anything this script knows: on a desktop image a green greenboot
-    # means the greeter came up, which is the regression class that boots
-    # "fine" into a black screen.
-    local verdict
-    verdict=$(guest systemctl is-active greenboot-healthcheck.service || true)
-    [ "$verdict" = active ] || bad "greenboot verdict: $verdict (console at $log)"
-    ok "greenboot says this boot is healthy"
+    await_healthy_boot "$qemu" "$log" \
+        "booted and reachable" \
+        "greenboot says this boot is healthy"
 
     # systemd-remount-fs fails on a machine whose fstab still declares the
     # root Anaconda wrote, because composefs cannot remount it. Excused by

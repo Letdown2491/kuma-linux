@@ -165,21 +165,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked
 
-      - name: qemu, cryptsetup, and access to /dev/kvm
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-x86 cryptsetup-bin
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-              | sudo tee /etc/udev/rules.d/99-kvm.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          # `trigger` queues the event and returns, so the mode change has
-          # not necessarily landed yet. Without this, one of three
-          # otherwise identical matrix jobs failed the check below while
-          # the other two passed, which reads as flake and is a race.
-          sudo udevadm settle
-          # Loud here rather than as a confusing qemu error minutes later.
-          test -w /dev/kvm || { echo "no write access to /dev/kvm"; exit 1; }
+      - uses: ./.github/actions/kvm
+        with:
+          sshpass: "true"
 
       # `kuma install` refuses to touch a disk when a tool it needs is
       # absent, and it looks in /usr/bin, /usr/sbin, /bin and /sbin rather

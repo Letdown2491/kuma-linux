@@ -48,31 +48,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked
 
-      - name: qemu, cryptsetup, sshpass, and access to /dev/kvm
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-x86 cryptsetup-bin sshpass ovmf
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-              | sudo tee /etc/udev/rules.d/99-kvm.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          # trigger queues the event and returns; without settle this
-          # races and reads as flake.
-          sudo udevadm settle
-          test -w /dev/kvm || { echo "no write access to /dev/kvm"; exit 1; }
-
-      # kuma install looks for its tools in fixed directories rather than
-      # $PATH, because it runs under sudo. A runner keeps podman in
-      # /usr/local/bin, which TOOL_DIRS now covers; this stays as a
-      # no-op that says so out loud if that ever changes.
-      - name: confirm the install preflight can see podman
-        run: |
-          echo "podman resolves to: $(command -v podman)"
-          for d in /usr/local/bin /usr/local/sbin /usr/bin /usr/sbin /bin /sbin; do
-            [ -x "$d/podman" ] && echo "preflight will find $d/podman" && exit 0
-          done
-          echo "podman is outside TOOL_DIRS; the install preflight will refuse"
-          exit 1
+      - uses: ./.github/actions/kvm
+        with:
+          sshpass: "true"
 
       - name: install the published image and boot the disk it wrote
         env:
@@ -112,16 +90,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked
 
-      - name: qemu, cryptsetup, sshpass, and access to /dev/kvm
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-x86 cryptsetup-bin sshpass ovmf
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-              | sudo tee /etc/udev/rules.d/99-kvm.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          sudo udevadm settle
-          test -w /dev/kvm || { echo "no write access to /dev/kvm"; exit 1; }
+      - uses: ./.github/actions/kvm
+        with:
+          sshpass: "true"
 
       # --keep so the tag survives for the install below.
       - name: build this tree's niri image
@@ -162,16 +133,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked
 
-      - name: qemu, cryptsetup, sshpass, and access to /dev/kvm
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-x86 cryptsetup-bin sshpass ovmf
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-              | sudo tee /etc/udev/rules.d/99-kvm.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          sudo udevadm settle
-          test -w /dev/kvm || { echo "no write access to /dev/kvm"; exit 1; }
+      - uses: ./.github/actions/kvm
+        with:
+          sshpass: "true"
 
       - name: install an old version, upgrade it, and boot what it became
         env:
