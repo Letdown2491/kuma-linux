@@ -487,16 +487,28 @@ smoke_published() {
     [ "$verdict" = active ] || bad "greenboot verdict: $verdict (console at $log)"
     ok "greenboot says this boot is healthy"
 
-    # The reason this stage exists. Unconditional here, unlike the copy
-    # in smoke_boot: a `kuma install` root is btrfs, so "not btrfs" is a
-    # failure rather than a question that does not arise.
-    local home_fs home_inode
+    # The reason this stage exists. A `kuma install` root is btrfs, so
+    # "not btrfs" is a failure rather than a question that does not arise.
+    local home_fs home_inode home_was_subvol=no
     home_fs=$(guest findmnt -no FSTYPE -T /var/home)
     [ "$home_fs" = btrfs ] || bad "/var/home is $home_fs on an installed disk; expected btrfs"
     home_inode=$(guest stat -c %i /var/home)
-    [ "$home_inode" = 256 ] \
-        || bad "/var/home is not a subvolume (inode $home_inode); snapshots would take nothing"
-    ok "/var/home is its own subvolume"
+    [ "$home_inode" = 256 ] && home_was_subvol=yes
+
+    # Strict only when the image under test is meant to have the
+    # converger. In the cross-version path the point is to install a
+    # version from BEFORE a fix and see what upgrading does about it, so
+    # its absence is the premise rather than the failure. Reported either
+    # way, because a silent skip here would read as a pass.
+    if [ -z "$UPGRADE_TO" ]; then
+        [ "$home_was_subvol" = yes ] \
+            || bad "/var/home is not a subvolume (inode $home_inode); snapshots would take nothing"
+        ok "/var/home is its own subvolume"
+    elif [ "$home_was_subvol" = yes ]; then
+        ok "/var/home is its own subvolume before upgrading"
+    else
+        ok "/var/home is NOT a subvolume on $image (inode $home_inode), which is what upgrading is being asked about"
+    fi
 
     # The account the installer was told to make, on the machine it made
     # it on. Nothing before this stage has booted a disk whose user came
@@ -566,12 +578,26 @@ smoke_published() {
 
         # The half that a reboot alone would not catch. /var is shared
         # across deployments by design, so an image can move forward and
-        # leave the machine's own state behind: the subvolume that makes
-        # [snapshots] mean anything, and the account somebody logs in as.
-        [ "$(guest stat -c %i /var/home)" = 256 ] \
-            || bad "/var/home stopped being a subvolume across the upgrade"
+        # leave the machine's own state behind.
         guest id "$user" >/dev/null || bad "$user did not survive the upgrade"
-        ok "the machine's own state survived the version jump"
+        ok "the account survived the version jump"
+
+        # Whether a fix that ships in the newer image reaches a machine
+        # that was installed before it. `kuma-home-subvol` only acts while
+        # /var/home is empty, and after a first boot it never is, so an
+        # older machine cannot acquire the subvolume by upgrading. Never a
+        # silent pass in either direction: losing it is a regression, and
+        # not gaining it is the finding this job exists to produce.
+        local home_now=no
+        [ "$(guest stat -c %i /var/home)" = 256 ] && home_now=yes
+        if [ "$home_was_subvol" = yes ]; then
+            [ "$home_now" = yes ] || bad "/var/home stopped being a subvolume across the upgrade"
+            ok "/var/home is still its own subvolume"
+        elif [ "$home_now" = yes ]; then
+            ok "upgrading turned /var/home into a subvolume"
+        else
+            ok "/var/home is still not a subvolume after upgrading, so [snapshots] on this machine would take nothing"
+        fi
     fi
 
     echo "   .. powering off"
