@@ -7,10 +7,11 @@
 # a machine (every example compiles to an image that keeps kuma's floor);
 # this is the part that needs real podman, real bootc, and a real boot.
 #
-# Three stages, cheapest first, each a superset of the last:
+# Four stages, cheapest first:
 #
 #   check   parse and validate the declaration            (no podman)
 #   image   build it and inspect the built layers         (podman)
+#   install write an encrypted disk and verify it         (podman + sudo)
 #   boot    make a disk, boot it headless, ask the        (podman + kvm + sudo)
 #           machine whether the boot was healthy
 #
@@ -21,10 +22,16 @@
 # your laptop.
 #
 # Usage:
-#   scripts/smoke.sh                  # check + image, every example
-#   scripts/smoke.sh --boot           # all three stages, every example
-#   scripts/smoke.sh --boot minimal   # just one, by example name
-#   scripts/smoke.sh --keep           # leave images and disks behind
+#   scripts/smoke.sh                   # check + image, every example
+#   scripts/smoke.sh --boot            # check, image and boot, every example
+#   scripts/smoke.sh --install         # check, image and install
+#   scripts/smoke.sh --boot minimal    # just one, by example name
+#   scripts/smoke.sh --keep            # leave images and disks behind
+#
+# --install is separate from --boot rather than another step of it: it is
+# the only stage that needs no KVM, and it answers a different question.
+# Boot asks whether a machine works; install asks whether the disk it was
+# written onto is the one that was described.
 #
 # Env: KUMA (default target/debug/kuma), QEMU_DISPLAY (default egl-headless).
 set -euo pipefail
@@ -39,14 +46,16 @@ KUMA=${KUMA:-target/debug/kuma}
 # session down with it.
 QEMU_DISPLAY=${QEMU_DISPLAY:-egl-headless}
 BOOT=0
+INSTALL=0
 KEEP=0
 SELECTED=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --boot) BOOT=1 ;;
+        --install) INSTALL=1 ;;
         --keep) KEEP=1 ;;
-        -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
         -*) echo "unknown flag: $1" >&2; exit 2 ;;
         *) SELECTED+=("$1") ;;
     esac
@@ -164,6 +173,110 @@ smoke_image() {
             || bad "update --check doesn't explain composed-base updates"
         ok "check explains recompose semantics"
     fi
+}
+
+# --- stage: install ----------------------------------------------------
+# What `kuma install` writes, checked on the disk rather than by booting
+# it. Booting proves a machine works; this proves the one thing a boot
+# cannot report, because a disk written wrongly is not recoverable by the
+# person holding it: the container opens with the passphrase that was
+# typed, and the bootloader asks the initramfs to unlock the container
+# that is actually there. Get either wrong and the install succeeds, the
+# machine is unbootable, and whatever was on that disk is gone.
+#
+# Encrypted only. The encrypted path is a superset: it writes the same
+# table, the same filesystems and the same account file, plus a container
+# and a karg. Running both would double the slowest stage here to check
+# the same partition table twice.
+smoke_install() {
+    local file=$1 tag=$2 name=$3
+    local dir="vm-smoke/$name-install"
+    local raw="$dir/disk.raw"
+    local pass="smoke-passphrase"
+    local user="smoketest"
+
+    mkdir -p "$dir"
+    rm -f "$raw"
+    # Sparse, so this costs no disk until the install fills it, and above
+    # the 16G floor partition::plan refuses below.
+    truncate -s 24G "$raw"
+
+    # Two lines on stdin, in the order the interview asks: the disk
+    # passphrase, then the account password. Neither is ever a flag.
+    #
+    # --update-from because the image being installed is a localhost tag,
+    # which kuma refuses to record as an update source: on the installed
+    # machine `localhost` means itself. The reference here is never
+    # fetched by this test; it exists because the installed machine has to
+    # record somewhere real to update from.
+    echo "   .. installing to a disk image (needs sudo; this is the slow part)"
+    printf '%s\n%s\n' "$pass" "$pass" \
+        | "$KUMA" install --disk "$raw" --image "$tag" \
+            --update-from ghcr.io/example/kuma:niri \
+            --user "$user" --encrypt --yes >/dev/null \
+        || bad "install failed"
+    ok "installed"
+
+    # Everything below reads the disk as root through a loop device, and
+    # unwinds in the order it was set up. EXIT rather than RETURN for the
+    # same reason the boot stage uses it: a failed assertion exits this
+    # subshell and a RETURN trap would never fire, leaving a loop device
+    # and an open mapper behind to confuse the next run.
+    local loop mnt="$dir/mnt" mapper="kuma-smoke-$name"
+    loop=$(sudo losetup -fP --show "$raw") || bad "cannot attach $raw"
+    # shellcheck disable=SC2064
+    trap "sudo umount -R '$mnt' 2>/dev/null || true
+          sudo cryptsetup close '$mapper' 2>/dev/null || true
+          sudo losetup -d '$loop' 2>/dev/null || true" EXIT
+    mkdir -p "$mnt"
+
+    sudo cryptsetup isLuks "${loop}p3" || bad "the root partition holds no LUKS container"
+    printf '%s' "$pass" \
+        | sudo cryptsetup luksOpen --test-passphrase --key-file - "${loop}p3" \
+        || bad "the passphrase that was typed does not open the container"
+    ok "the root partition is LUKS and opens with the passphrase"
+
+    # The karg names the container's own UUID. The mapper reports the
+    # UUID of the filesystem inside it, which is a real number that
+    # unlocks nothing, and the difference is invisible until a machine
+    # boots to an initramfs waiting for a device that will never appear.
+    local luks_uuid
+    luks_uuid=$(sudo blkid -s UUID -o value "${loop}p3")
+    [ -n "$luks_uuid" ] || bad "no LUKS UUID on the root partition"
+    sudo mount "${loop}p2" "$mnt" || bad "cannot mount /boot"
+    sudo grep -rq "rd.luks.uuid=luks-$luks_uuid" "$mnt/loader/entries" \
+        || bad "no boot entry unlocks luks-$luks_uuid"
+    ok "the bootloader unlocks the container that is there"
+    sudo umount "$mnt"
+
+    # And the answers the installer was given, inside the container.
+    printf '%s' "$pass" | sudo cryptsetup open --key-file - "${loop}p3" "$mapper" \
+        || bad "cannot open the container"
+    sudo mount -o subvol=root "/dev/mapper/$mapper" "$mnt" || bad "cannot mount the root"
+
+    sudo grep -q "KUMA_USER='$user'" "$mnt/var/lib/kuma/user" \
+        || bad "the installer's account file does not name $user"
+    ok "the account to converge is written where kuma-user-sync reads it"
+
+    # The greeter must not autologin an account this machine will not
+    # have. A committed example declares no [user], so there is nothing to
+    # strip here and the assertion is that nothing crept in.
+    if sudo test -f "$mnt/etc/greetd/config.toml"; then
+        local autologin
+        autologin=$(sudo sed -n 's/^user *= *"\(.*\)"/\1/p' "$mnt/etc/greetd/config.toml" \
+                    | tail -1)
+        case "$autologin" in
+            ""|greetd|"$user") ok "no greeter autologins an account this disk lacks" ;;
+            *) bad "greetd autologins '$autologin', which this machine has no account for" ;;
+        esac
+    fi
+
+    sudo umount -R "$mnt"
+    sudo cryptsetup close "$mapper"
+    sudo losetup -d "$loop"
+    trap - EXIT
+    [ $KEEP -eq 1 ] || rm -f "$raw"
+    ok "disk verified"
 }
 
 # --- stage: boot -------------------------------------------------------
@@ -393,6 +506,7 @@ for file in examples/*.toml; do
     fi
     tag="localhost/kuma-smoke-$name:latest"
     port=$((port + 1))
+    example_file=$file
 
     # The boot stage builds from the example plus a [user] block, not from
     # the example as committed.
@@ -431,7 +545,13 @@ EOF
     fi
 
     note "$name"
-    if (smoke_image "$file" "$tag" && { [ $BOOT -eq 0 ] || smoke_boot "$file" "$tag" "$name" "$port"; }); then
+    # The committed example, never the boot stage's copy: the account an
+    # install creates is the installer's answer, and building from a
+    # declaration that already names one would test the case where the two
+    # agree, which is the case that was never broken.
+    if (smoke_image "$file" "$tag" \
+        && { [ $INSTALL -eq 0 ] || smoke_install "$example_file" "$tag" "$name"; } \
+        && { [ $BOOT -eq 0 ] || smoke_boot "$file" "$tag" "$name" "$port"; }); then
         PASS+=("$name")
     else
         FAIL+=("$name")
@@ -445,6 +565,7 @@ EOF
         # which is the one thing they exist to notice.
         rm -f "${file%.toml}.lock"
         [ -d "vm-smoke/$name" ] && sudo rm -rf "vm-smoke/$name"
+        [ -d "vm-smoke/$name-install" ] && sudo rm -rf "vm-smoke/$name-install"
         [ $BOOT -eq 1 ] && rm -f "vm-smoke/$name.toml"
     fi
 done

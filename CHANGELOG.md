@@ -17,6 +17,14 @@ as its release notes.
   running machine reports it, both answers are legitimate, and the choice
   cannot be revised without reinstalling, so it is stated rather than
   graded.
+- `scripts/smoke.sh --install` writes a real encrypted disk and verifies
+  what landed on it: that the container opens with the passphrase that was
+  typed, that a boot entry unlocks the container actually present, that the
+  account file names the account the installer was given, and that no
+  greeter autologins somebody the disk has no account for. It needs sudo
+  and no KVM, and is separate from `--boot` because it asks a different
+  question: not whether a machine works, but whether the disk is the one
+  that was described.
 - `kuma install` can encrypt the disk. It asks on a terminal, takes
   `--encrypt` from anything else, and is off unless something says
   otherwise. The passphrase reaches cryptsetup on a pipe and is never a

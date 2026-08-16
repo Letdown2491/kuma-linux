@@ -1,18 +1,27 @@
 # Contributing
 
-**Smoke tests.** `scripts/smoke.sh` builds every committed example and, with
-`--boot`, boots it. Three stages, cheapest first: `check` validates the
+**Smoke tests.** `scripts/smoke.sh` builds every committed example and, on
+request, installs or boots it. Four stages: `check` validates the
 declaration, `image` builds it and inspects what a successful build doesn't
-already prove, and `boot` makes a disk, boots it headless, and asks the
-machine whether the boot was healthy. That last verdict is greenboot's own,
-so the check that would roll an update back is the one that decides whether
-the test passed.
+already prove, `install` writes an encrypted disk and verifies what landed on
+it, and `boot` makes a disk, boots it headless, and asks the machine whether
+the boot was healthy. That last verdict is greenboot's own, so the check that
+would roll an update back is the one that decides whether the test passed.
+
+`--install` and `--boot` are separate because they answer different
+questions. Boot asks whether a machine works. Install asks whether the disk
+is the one that was described: that the container opens with the passphrase
+that was typed, that the bootloader unlocks the container actually present,
+and that the account file says what the installer was told. Those are the
+failures nobody can recover from, since by the time they show up the disk
+that used to hold something else is gone.
 
 ```console
 $ cargo test                    # the tier that needs no machine
 $ cargo fmt                     # rustfmt.toml settles layout; CI checks it
 $ scripts/smoke.sh              # check + image, every example
-$ scripts/smoke.sh --boot       # all three stages (needs KVM and sudo)
+$ scripts/smoke.sh --install    # plus a real install (needs sudo, no KVM)
+$ scripts/smoke.sh --boot       # plus a real boot (needs KVM and sudo)
 $ scripts/smoke.sh --boot cosmic
 ```
 
