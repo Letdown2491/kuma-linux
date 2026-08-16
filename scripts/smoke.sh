@@ -387,12 +387,25 @@ smoke_boot() {
     [ "$verdict" = active ] || bad "greenboot verdict: $verdict (console at $log)"
     ok "greenboot says this boot is healthy"
 
-    # systemd-remount-fs fails on installed systems over composefs
-    # (Anaconda's fstab '/' line); doctor calls it known-benign and so
-    # does this, but nothing else gets a pass.
+    # systemd-remount-fs fails on a machine whose fstab still declares the
+    # root Anaconda wrote, because composefs cannot remount it. Excused by
+    # that cause and not by the unit's name, which is the same narrowing
+    # doctor got: kuma-fstab-sync comments the line out on first boot, and
+    # a machine kuma installed never had one, so after that a failure of
+    # this unit is news like anything else. Excusing it by name meant this
+    # stage could never report it again.
+    #
+    # The fstab is read here rather than parsed in the guest, so the awk
+    # program is not going through ssh's word splitting. Matching the
+    # mount point as a field is deliberate, and the same rule the
+    # converger follows: `root` is a subvolume name on every Anaconda
+    # btrfs install, so a line regex matches things that are not the root.
     local failed
-    failed=$(guest systemctl --failed --plain --no-legend \
-             | awk '{print $1}' | grep -v '^systemd-remount-fs.service$' || true)
+    failed=$(guest systemctl --failed --plain --no-legend | awk '{print $1}')
+    if guest cat /etc/fstab | awk '$1 !~ /^#/ && $2 == "/" { found = 1 }
+                                   END { exit !found }'; then
+        failed=$(printf '%s\n' "$failed" | grep -v '^systemd-remount-fs.service$' || true)
+    fi
     [ -z "$failed" ] || bad "failed units: $(echo "$failed" | tr '\n' ' ')"
     ok "no failed units"
 

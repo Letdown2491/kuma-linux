@@ -52,6 +52,12 @@ as its release notes.
   check silently did not exist. That is where it is worth the most: a
   machine whose account was never created is one nobody can log in to, and
   doctor would have called it healthy.
+- `scripts/smoke.sh` excuses a failed `systemd-remount-fs` by its cause
+  rather than by its name, which is the narrowing doctor already had. The
+  unit fails on a machine whose fstab still holds the `/` line Anaconda
+  wrote, `kuma-fstab-sync` comments that line out on first boot, and a
+  machine `kuma install` wrote has no such line at all. Skipping the unit
+  by name meant the boot stage could never report it again.
 - `kuma clean` reclaims the image `kuma iso --live` builds the live root
   filesystem under. It is worth nothing once the ISO is written, and
   nothing pruned it: dangling-pruning cannot, because it is tagged, and
