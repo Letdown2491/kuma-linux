@@ -140,18 +140,25 @@ jobs:
       github.event_name != 'pull_request' &&
       !startsWith(github.ref, 'refs/tags/') &&
       (github.event_name != 'schedule' || github.event.schedule == '0 5 * * *')
-    # COSMIC is the experimental desktop and its live arm has never booted
-    # anywhere. Gating main on it would mean the first red build is a
-    # desktop bug rather than a harness bug, and the harness work would
-    # stall behind it. Flip this to a plain gate once it is green.
-    continue-on-error: ${{ matrix.example == 'cosmic' }}
     timeout-minutes: 60
     strategy:
       # One example failing says nothing about the others, and cancelling
       # them costs the run its only evidence about the rest.
       fail-fast: false
+      # niri only, deliberately, and this is the whole desktop policy:
+      # make one desktop first class before widening. The image job still
+      # builds every committed example on every push, so nothing here is
+      # untested, it is un-booted.
+      #
+      # cosmic is the experimental desktop and its live arm has never
+      # booted anywhere; boot-gating it would mean debugging a desktop
+      # through a harness that is itself new. minimal is not a competing
+      # desktop at all, it is the fast lane: it names a base rather than
+      # composing one, which makes it the only example covering
+      # `base = "..."`, and that coverage lives in the image job where it
+      # is cheap. Neither belongs in the slow tier yet.
       matrix:
-        example: [minimal, niri, cosmic]
+        example: [niri]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -166,6 +173,11 @@ jobs:
               | sudo tee /etc/udev/rules.d/99-kvm.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+          # `trigger` queues the event and returns, so the mode change has
+          # not necessarily landed yet. Without this, one of three
+          # otherwise identical matrix jobs failed the check below while
+          # the other two passed, which reads as flake and is a race.
+          sudo udevadm settle
           # Loud here rather than as a confusing qemu error minutes later.
           test -w /dev/kvm || { echo "no write access to /dev/kvm"; exit 1; }
 
