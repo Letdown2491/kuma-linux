@@ -180,7 +180,7 @@ $ kuma remove org.mozilla.firefox          # drop from whichever list declares i
 $ kuma capture                             # declare what this machine already runs
 $ kuma check                               # validate the declaration, build nothing
 $ kuma diff                                # drift: kuma.toml vs image vs machine
-$ kuma doctor                              # machine health, image age, /etc drift, snapshots, GPU
+$ kuma doctor                              # machine health, image age, /etc drift, encryption, snapshots, GPU
 $ kuma sync                                # converge, and update everything installed
 $ kuma snapshot                            # the btrfs snapshots this machine has taken
 $ kuma snapshot --restore ~/notes.md       # bring a path back (dry run; --yes writes)

@@ -111,6 +111,11 @@ told to. Saying yes puts a LUKS2 container in the root partition, holding the
 same btrfs root, and the machine asks for the passphrase at every boot before
 anything else runs.
 
+The question is only put to a terminal. An install driven from a pipe or a
+script is unencrypted unless it passes `--encrypt`, which is the answer that
+can be undone: an unencrypted machine can be reinstalled, and one whose
+passphrase nobody chose cannot be booted.
+
 **Kuma keeps no copy of the passphrase.** It reaches `cryptsetup` on a pipe,
 never through a command line where `ps` would show it and never through a
 file. A lost passphrase is a lost disk; there is no recovery key, no escrow,
@@ -145,9 +150,11 @@ it happens. Build shareable media from a declaration with no `[user]`.
 The same is true of the images themselves, and `kuma install` says so too: the
 declaration is baked into every image, so installing one that declares a
 `[user]` writes that account's name and password hash onto a disk being made
-for somebody else. Installing an image that declares an account also drops
-that account's autologin from the greeter, since a greeter cannot log in a
-user the installed machine will not have.
+for somebody else. When the account being created is not the one the image
+declares, the installer also drops that account's autologin from the greeter,
+since a greeter cannot log in a user the machine will not have. Install an
+image for the account it already declares and the autologin stays, because
+then it names somebody who exists.
 
 `kuma iso --live` does not carry the declared account into the live session:
 it creates its own passwordless `liveuser` with passwordless sudo, which
@@ -213,7 +220,9 @@ three-way merged on every update: a file an installer shipped as image
 content is not a local modification, so merging against a published image
 that has no such file would delete it. The
 password is never passed as an argument, so it does not reach `ps` or a shell
-history; piped stdin takes the account name and password as two lines. The
+history: on a terminal it is prompted for, and from a pipe it is read as one
+line, with the account name coming from `--user`, which is required there. An
+encrypted install reads two lines, the disk passphrase first. The
 hash is the same sha512-crypt at 656k rounds `kuma passwd` produces. Unlike a
 declared `[user]`, it is written to the machine rather than baked into the
 image, so it is not published by publishing the image.

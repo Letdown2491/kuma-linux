@@ -353,6 +353,14 @@ the shape of the disk. Whether it holds a LUKS container is asked at install
 and cannot be revised afterwards without installing again, which is why it is
 asked before the plan is printed rather than defaulted either way.
 
+A first boot then spends minutes on the rest of it. The account is made,
+the hostname applied, and the declared flatpaks and brews downloaded,
+which for a full desktop is about a gigabyte and takes a few minutes on
+an ordinary connection. Kuma says so while it happens: bare `kuma` reports
+`converging` rather than drift, and offers no `sync`, because a sync is
+what is running. A machine that does not match its declaration yet is not
+the same as one that has stopped trying.
+
 None of that is in `kuma.toml`, and none of it should be. Two machines
 installed from one declaration can have different disks, different names, and
 different people. The declaration says what the system is; the install says

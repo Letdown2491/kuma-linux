@@ -16,6 +16,12 @@ names the legal next commands.
   were never going to pass. Its one action is `kuma install`, bare: the
   disk is not knowable from there, so the affordance is the form that
   lists what it found and asks.
+- **A converging machine says so.** A first boot spends minutes installing
+  declared apps, and for that whole window the machine genuinely does not
+  match its declaration. The state is `converging`, not `drifted`, and no
+  `sync` action is offered because a sync is what is running. Re-probe
+  rather than acting: the machine is already doing the thing an agent
+  would otherwise tell it to do.
 - **Ask before doing.** `check --json` validates a declaration,
   `update --check --json` reports whether the base moved (or, for a composed
   base, every package that has and its advisory severity), `diff --json` reports
