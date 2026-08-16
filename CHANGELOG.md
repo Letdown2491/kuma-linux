@@ -13,6 +13,10 @@ as its release notes.
   declaration carries their name and password hash in its baked
   declaration, onto a disk for an account it will never create. `kuma iso`
   already warned about the same hazard riding into installer media.
+- `kuma doctor` says whether the root is encrypted. Nothing else on a
+  running machine reports it, both answers are legitimate, and the choice
+  cannot be revised without reinstalling, so it is stated rather than
+  graded.
 - `kuma install` can encrypt the disk. It asks on a terminal, takes
   `--encrypt` from anything else, and is off unless something says
   otherwise. The passphrase reaches cryptsetup on a pipe and is never a

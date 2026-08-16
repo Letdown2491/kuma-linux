@@ -652,6 +652,7 @@ pub fn doctor(json: bool) -> Result<()> {
         check_convergence(&mut report);
         check_snapshots(&mut report);
         check_boot_health(&mut report);
+        check_encryption(&mut report);
         check_etc_drift(&mut report);
     } else if Path::new("/usr/lib/kuma").is_dir() {
         report(
@@ -1353,6 +1354,59 @@ fn check_build_leftovers(report: &mut impl FnMut(Grade, &str, String, Option<Act
 
 /// Kernel-side only (driver bound, render node present) — userspace probes
 /// need tools the image deliberately doesn't carry.
+/// Whether the root filesystem sits inside a LUKS container.
+///
+/// Pure over what `findmnt` and `lsblk` answer, because the interesting
+/// case is a machine this one is not: a check that can only run on an
+/// encrypted machine would ship having never taken the other branch.
+///
+/// `findmnt` prints a btrfs subvolume as `/dev/mapper/luks-x[/root]`, so
+/// the source has to be cut at the bracket before anything can be asked
+/// about the device. `None` means the question could not be answered,
+/// which is a reason to say nothing rather than to guess.
+fn root_encrypted(findmnt_source: &str, lsblk_types: &str) -> Option<bool> {
+    let source = findmnt_source.trim().split('[').next().unwrap_or_default().trim();
+    if source.is_empty() {
+        return None;
+    }
+    let types: Vec<&str> = lsblk_types.split_whitespace().collect();
+    if types.is_empty() {
+        return None;
+    }
+    // lsblk names the whole stack under the device; a crypt layer
+    // anywhere in it is the root sitting inside a container.
+    Some(types.contains(&"crypt"))
+}
+
+fn check_encryption(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
+    // /sysroot on a booted ostree deployment, / everywhere else.
+    let source = host_output(&["findmnt", "-no", "SOURCE", "/sysroot"])
+        .or_else(|_| host_output(&["findmnt", "-no", "SOURCE", "/"]))
+        .unwrap_or_default();
+    let device = source.trim().split('[').next().unwrap_or_default().trim().to_string();
+    let types = if device.is_empty() {
+        String::new()
+    } else {
+        host_output(&["lsblk", "-no", "TYPE", &device]).unwrap_or_default()
+    };
+    // Silent when unknowable. Encryption is a choice, so neither answer
+    // is a fault and neither carries a fix: this line exists so that a
+    // machine can say which choice was made, since nothing else on a
+    // running system does.
+    match root_encrypted(&source, &types) {
+        Some(true) => {
+            report(Grade::Ok, "encryption", "root is a LUKS volume, unlocked at boot".into(), None)
+        }
+        Some(false) => report(
+            Grade::Ok,
+            "encryption",
+            "root is not encrypted; that was decided when this disk was partitioned".into(),
+            None,
+        ),
+        None => {}
+    }
+}
+
 fn check_gpu(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     let mut drivers: Vec<String> = Vec::new();
     if let Ok(cards) = std::fs::read_dir("/sys/class/drm") {
@@ -1678,6 +1732,32 @@ mod tests {
         assert_eq!(scan.owned, 3, "the local-only file is not the image's to own");
         assert_eq!(scan.shadowed, ["/etc/environment"]);
         assert_eq!(scan.removed, ["/etc/xdg/mimeapps.list"]);
+    }
+
+    /// Both answers, since the machine writing this check can only be
+    /// one of them and the other would otherwise ship unexercised.
+    #[test]
+    fn an_encrypted_root_is_told_apart_from_a_plain_one() {
+        // A LUKS root, as an ostree deployment reports it: the mapper
+        // plus the subvolume in brackets, and the stack under it.
+        assert_eq!(
+            root_encrypted("/dev/mapper/luks-f5d1fc89[/root]", "crypt\n"),
+            Some(true),
+            "a crypt layer means the root is inside a container"
+        );
+        // lsblk prints the whole stack when asked about a partition.
+        assert_eq!(root_encrypted("/dev/nvme0n1p3", "part\ncrypt\n"), Some(true));
+        // And a plain install, which is the default and must not be
+        // reported as anything else.
+        assert_eq!(root_encrypted("/dev/sda3[/root]", "part\n"), Some(false));
+        assert_eq!(root_encrypted("/dev/vda3", "part\n"), Some(false));
+        // LVM is not encryption.
+        assert_eq!(root_encrypted("/dev/mapper/fedora-root", "lvm\n"), Some(false));
+        // Unanswerable rather than guessed: no findmnt, no lsblk, or a
+        // source that is not a device at all.
+        assert_eq!(root_encrypted("", "part\n"), None);
+        assert_eq!(root_encrypted("/dev/sda3", ""), None);
+        assert_eq!(root_encrypted("  ", "  "), None);
     }
 
     /// An image that ships none of the paths it declares means the check
