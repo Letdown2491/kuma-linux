@@ -36,6 +36,13 @@ as its release notes.
 
 ### Fixed
 
+- `scripts/smoke.sh` pulls a declared base before building it. A base
+  already in local storage is the one podman builds on however old it is,
+  so the lock recorded that digest while `update --check` asked the
+  registry, and the two disagreed the moment Fedora pushed a new base.
+  The harness read that true answer as the false alarm it was written to
+  catch. CI never met it, because a fresh runner has nothing local to be
+  stale. The failure also now reports what `update --check` said.
 - Installing an image whose declaration sets `autologin` no longer produces
   a machine with no greeter. The image bakes that account's name into
   greetd's `initial_session`, and an install creates the account it was

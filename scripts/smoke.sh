@@ -118,6 +118,20 @@ smoke_image() {
     "$KUMA" --config "$file" check >/dev/null || bad "check: $file"
     ok "declaration validates"
 
+    # A base already in local storage is the one podman builds on, however
+    # old it is, and the lock then records that digest while `update
+    # --check` below asks the registry. The two disagree the moment Fedora
+    # pushes a new base, which is true news and not what that assertion is
+    # about. CI never meets this because a fresh runner has nothing local
+    # to be stale; a laptop that has been building for a month always does.
+    if grep -q '^base *=' "$file"; then
+        local base
+        base=$(sed -n 's/^ *base *= *"\(.*\)".*/\1/p' "$file" | head -1)
+        [ -n "$base" ] || bad "cannot read system.base out of $file"
+        echo "   .. pulling $base so the build and the registry agree"
+        podman pull -q "$base" >/dev/null || bad "cannot pull $base"
+    fi
+
     "$KUMA" --config "$file" build --tag "$tag" >/dev/null || bad "build failed"
     ok "image builds"
 
@@ -155,8 +169,16 @@ smoke_image() {
         # recording a different KIND of digest than the tag resolves to (the
         # per-architecture manifest instead of the OCI index), which is a
         # permanent false alarm rather than news. That shipped once.
-        "$KUMA" --config "$file" update --check | grep -q 'is current' \
-            || bad "update --check disagrees with the lock this build just wrote"
+        # Reported with what it actually said. This failed once for a
+        # reason the message could not express (a base that had genuinely
+        # moved, before the pull above existed), and a failure that names
+        # only its own assertion sends somebody looking in the wrong place.
+        local checked
+        checked=$("$KUMA" --config "$file" update --check 2>&1 || true)
+        case "$checked" in
+            *"is current"*) ;;
+            *) bad "update --check disagrees with the lock this build just wrote: $checked" ;;
+        esac
         ok "check agrees with the fresh lock"
     else
         # Composed base: the pin is the content-addressed tag itself.
