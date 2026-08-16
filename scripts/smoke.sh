@@ -33,7 +33,8 @@
 # Boot asks whether a machine works; install asks whether the disk it was
 # written onto is the one that was described.
 #
-# Env: KUMA (default target/debug/kuma), QEMU_DISPLAY (default egl-headless).
+# Env: KUMA (default target/debug/kuma), QEMU_DISPLAY (default egl-headless),
+#      QEMU_VGA (default virtio-vga-gl).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -44,7 +45,14 @@ KUMA=${KUMA:-target/debug/kuma}
 # LIBGL_ALWAYS_SOFTWARE keeps guest GL work on llvmpipe, out of the host's
 # GPU driver, where a bad guest submission could otherwise take the host
 # session down with it.
+#
+# The device is a variable for one reason: egl-headless needs a DRM render
+# node on the HOST, and a CI runner has no GPU. virtio-vga without -gl
+# still gives the guest a virtio-gpu DRM device, so the question a machine
+# without a host GPU has to answer is whether the guest can allocate
+# through it on llvmpipe alone.
 QEMU_DISPLAY=${QEMU_DISPLAY:-egl-headless}
+QEMU_VGA=${QEMU_VGA:-virtio-vga-gl}
 BOOT=0
 INSTALL=0
 KEEP=0
@@ -341,7 +349,7 @@ smoke_boot() {
     env LIBGL_ALWAYS_SOFTWARE=1 qemu-system-x86_64 \
         -enable-kvm -cpu host -smp 4 -m 4096 \
         -drive "file=$disk,if=virtio" \
-        -device virtio-vga-gl -display "$QEMU_DISPLAY" \
+        -device "$QEMU_VGA" -display "$QEMU_DISPLAY" \
         -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$port-:22" \
         -serial "file:$log" &
     local qemu=$!
