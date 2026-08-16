@@ -50,6 +50,14 @@ as its release notes.
   The harness read that true answer as the false alarm it was written to
   catch. CI never met it, because a fresh runner has nothing local to be
   stale. The failure also now reports what `update --check` said.
+- `kuma install` syncs a locally built image into root storage before
+  installing it. The install script runs as root, whose podman store is not
+  the one a rootless `kuma build` writes to, and nothing bridged them.
+  Where an earlier `kuma vm` had left a copy in root's storage the *stale*
+  copy was installed instead of the image just built; where it had not, the
+  build fell through to `docker://localhost/...` and failed on a refused
+  connection. `switch`, `vm` and `iso` already did this; `install` was the
+  one root-side path that did not.
 - Installing an image whose declaration sets `autologin` no longer produces
   a machine with no greeter. The image bakes that account's name into
   greetd's `initial_session`, and an install creates the account it was

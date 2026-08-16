@@ -2056,6 +2056,23 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     // which is what this chmod would otherwise undo.
     run_host(&["sudo", "chmod", "-R", "a+rX", path_str(dir.path())?])?;
 
+    // The install script runs as root, and root's podman is a different
+    // store than the one that built this image. Everything else that
+    // hands an image to a root-side tool syncs it first (switch for
+    // bootc, vm and iso for bootc-image-builder); this did not. So a
+    // local image was found only when some earlier `kuma vm` had left a
+    // copy in root's storage: where that copy existed it got installed
+    // *instead* of the image just built, and where it did not the build
+    // fell through to `docker://localhost/...` and a refused connection.
+    //
+    // Only for a local image. On live media the image is not here at
+    // all: the script pulls it as root into the target's store, which is
+    // the whole reason that store lives on the disk being installed.
+    if local {
+        let scratch = tempfile::tempdir().context("cannot create scratch directory")?;
+        sync_image_to_root(image, scratch.path())?;
+    }
+
     // Read before, compared after. Installing to a file leaves a boot
     // entry in this machine's firmware naming a partition inside that
     // file, and the only way to know which entry is to know which ones
