@@ -35,6 +35,13 @@ DONE = (b"login:", b"systemd-cryptsetup: set up successfully")
 # Bounded because a wrong passphrase is re-prompted forever, and a test
 # that retypes it forever is a hang rather than a failure.
 MAX_ATTEMPTS = 3
+# How long to ignore prompts after typing one. A console arrives in
+# whatever chunks the socket gives, and the real prompt ("Please enter
+# passphrase for disk root (luks-...)") split across two reads, so the
+# second half matched again and the passphrase was typed twice into a
+# machine that had already accepted it. Deriving a key takes seconds, and
+# a genuine re-prompt after a wrong passphrase comes later than this.
+RETYPE_COOLDOWN = 15.0
 
 
 def main() -> int:
@@ -59,6 +66,7 @@ def main() -> int:
     # scrollback and answered twice.
     tail = b""
     attempts = 0
+    typed_at = 0.0
     while time.time() < deadline:
         try:
             data = conn.recv(4096)
@@ -77,12 +85,16 @@ def main() -> int:
             print("\nconsole-unlock: guest is past the unlock", file=sys.stderr)
             return 0 if attempts else 3
 
-        if attempts < MAX_ATTEMPTS and any(p in lowered for p in PROMPTS):
+        if (
+            attempts < MAX_ATTEMPTS
+            and time.time() - typed_at > RETYPE_COOLDOWN
+            and any(p in lowered for p in PROMPTS)
+        ):
             conn.sendall(passphrase.encode() + b"\n")
             attempts += 1
+            typed_at = time.time()
             print(f"\nconsole-unlock: typed the passphrase ({attempts})", file=sys.stderr)
             tail = b""
-            time.sleep(2)
 
     if attempts == 0:
         print("console-unlock: never saw a passphrase prompt", file=sys.stderr)

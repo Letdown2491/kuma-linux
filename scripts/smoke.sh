@@ -629,14 +629,27 @@ smoke_published() {
     # identical from outside and the guest's kernel log never reaches the
     # serial console: the installed image sets no console= karg, so this
     # is the only chance to ask while the machine is still up.
+    # What the machine says about a unit that went wrong, for any unit.
+    #
+    # Written for kuma-home-subvol and immediately needed for firewalld,
+    # which is the argument for not writing it per unit: the failure
+    # worth diagnosing is rarely the one anticipated, and a guest that
+    # has already been powered off cannot be asked anything.
+    unit_evidence() {
+        local unit
+        for unit in "$@"; do
+            echo "   .. $unit says:" >&2
+            gsudo systemctl --no-pager -l status "$unit" >&2 2>&1 || true
+            gsudo journalctl --no-pager -b -u "$unit" >&2 2>&1 || true
+            echo "   .. what ran before $unit:" >&2
+            gsudo systemd-analyze critical-chain "$unit" >&2 2>&1 || true
+        done
+    }
+
     home_evidence() {
-        echo "   .. kuma-home-subvol.service says:" >&2
-        gsudo systemctl --no-pager -l status kuma-home-subvol.service >&2 2>&1 || true
-        gsudo journalctl --no-pager -b -u kuma-home-subvol.service >&2 2>&1 || true
+        unit_evidence kuma-home-subvol.service
         echo "   .. /var/home contains:" >&2
         gsudo ls -Al /var/home >&2 2>&1 || true
-        echo "   .. what ran before it:" >&2
-        gsudo systemd-analyze critical-chain kuma-home-subvol.service >&2 2>&1 || true
     }
 
     # Every converger kuma ships, not one named unit.
@@ -693,7 +706,12 @@ smoke_published() {
             2>/dev/null || true)
         if [ -n "$doctor_failing" ]; then
             echo "   .. units the machine considers failed:" >&2
-            gsudo systemctl list-units --failed --plain --no-legend >&2 2>&1 || true
+            local failed_units
+            failed_units=$(guest systemctl list-units --failed --plain --no-legend \
+                | awk '{print $1}' || true)
+            echo "$failed_units" >&2
+            # shellcheck disable=SC2086  # each name is a separate argument
+            [ -z "$failed_units" ] || unit_evidence $failed_units
             bad "kuma doctor fails: $doctor_failing"
         fi
         ok "kuma doctor finds nothing failing"

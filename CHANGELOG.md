@@ -5,6 +5,101 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+CI boots and installs what it builds, so a release no longer rests on
+somebody having booted it by hand.
+
+### Added
+
+- The boot and install stages run in CI. They were local-only on the
+  stated grounds that they need KVM and sudo, which was measured rather
+  than argued and turned out to be one udev rule: `/dev/kvm` is present on
+  a hosted runner and the CPU exposes `svm`, and the runner user simply is
+  not in the `kvm` group. What genuinely does not work there is
+  `-display egl-headless`, which needs a DRM render node on the host and a
+  runner has no GPU; plain `virtio-vga` still gives the guest a virtio-gpu
+  device, and a niri image brings up its greeter through it on llvmpipe
+  alone. `QEMU_VGA` and `QEMU_DISPLAY` select both.
+- `scripts/smoke.sh --published <image>` installs an image kuma published
+  and boots the disk that install wrote. It is the only check that reads
+  the registry rather than the tree, so it lives in its own workflow: a
+  registry hiccup reddening somebody's pull request teaches people to
+  ignore red. It also reaches a branch nothing else could. Every other
+  disk here comes from bootc-image-builder with an ext4 root, and only
+  `kuma install` writes btrfs, so until now the assertion that `/var/home`
+  is its own subvolume had never once run in anger, and
+  `kuma-home-subvol` is what stands between `[snapshots]` and a timer that
+  takes nothing.
+- `scripts/smoke.sh --published <old> --upgrade-to <new>` installs an
+  older published version, points its update origin at a newer one,
+  upgrades with `bootc`, reboots, and asks whether the machine survived.
+  Nothing had ever checked that a machine installed at one version can
+  reach a later one, which is the promise everything else rests on. It
+  passes: a 0.7.0 machine reaches the current image, boots, stays healthy
+  and keeps its account. It also reports what does not travel, and
+  `/var/home` is the worked example.
+- The boot checks ask the machine to grade itself. `kuma doctor --json`
+  reporting nothing failing is now an assertion, so every check added to
+  doctor becomes a boot assertion with no change to the harness.
+- No unit whose name starts with `kuma-` may be in a failed state.
+  `systemctl is-system-running` reports a unit that died and a unit that
+  declined identically as `degraded`, and the boot stage accepts
+  `degraded` as settled, so a dead converger had nowhere to show up.
+- The installed disk under test gets `console=ttyS0` before it is booted.
+  The image sets no console karg, correctly, but the consequence was that
+  the worst failure produced the least evidence: a machine that never
+  booted wrote firmware output and then nothing, which is what a UEFI
+  mismatch looked like for seven silent minutes.
+
+### Fixed
+
+- `kuma install` no longer refuses a disk for want of a tool that is
+  installed. The preflight searched four fixed directories and not
+  `/usr/local`, which is where kuma's own README tells you to put the kuma
+  binary, so a machine keeping `podman` there was told to install podman.
+  The deeper half is that the check and the install script were two
+  questions that had to agree by luck: the script runs under `sudo` and
+  resolved commands through `secure_path`, which is configured per machine
+  and need not include `/usr/local` either. Both now derive from one list.
+- The bar showed bluetooth twice, in two styles. One was waybar's own
+  module, a font glyph like every other module; the other was
+  `blueman-tray`'s coloured application icon in the tray. A tray renders
+  whatever icon it is handed and cannot recolour it, so the fix is one
+  indicator rather than two that match: `blueman-applet` keeps running,
+  because it is the agent that answers pairing requests, and only its
+  status icon goes. Disabling `StatusIcon` alone does nothing, because
+  `ShowConnected` depends on it and the plugin manager loads a dependency
+  whether or not it was disabled.
+- `kuma-home-subvol` says why it declined, and searches for the root
+  filesystem the way the rest of kuma does. Declining is the right answer
+  on every boot after the first, and it was a silent `exit 0`, so a boot
+  where the converger should have acted and did not looked exactly like a
+  boot where it correctly did nothing: the unit succeeded either way and
+  the only difference was an inode nobody reads. It also asks `findmnt`
+  for one line, because that command prints a line per mount when
+  anything is stacked at or under the path and a two-line answer never
+  equals `btrfs`. It is now ordered before every unit that could write
+  into `/var/home` rather than the three originally named, and an
+  ordering cycle is checked for, since systemd resolves one by deleting a
+  job and that job could be this one. **The underlying failure is not
+  understood.** On roughly one first boot in thirty the unit fails rather
+  than declines, leaving `/var/home` an ordinary directory permanently,
+  which `kuma doctor` reports and nothing else did. The converger now
+  names the command it died on when that happens.
+- Two session services had two launch paths each. `xdg-desktop-autostart`
+  is active in the niri session, so Fedora's autostart entries for blueman
+  and the mate polkit agent became units while `niri-extras.kdl` also
+  spawned both. They are single instance, so one launch won and the other
+  quietly lost, and the winner was not consistent between them on the same
+  boot. kuma's spawn is the one kept, because relying on the autostart
+  path means a session that never reaches it has no polkit agent, which is
+  invisible until somebody needs an authentication prompt.
+
+### Changed
+
+- COSMIC is described as experimental. It builds on every push and it does
+  boot; what it does not get is the install-and-interrogate verification
+  niri now gets on every change.
+
 ## v0.8.1 (2026-08-16)
 
 The snapshot timer takes a snapshot.
