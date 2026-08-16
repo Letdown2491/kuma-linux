@@ -43,6 +43,15 @@ as its release notes.
 
 ### Fixed
 
+- `kuma doctor` grades `kuma-user-sync` on a machine that was installed,
+  not only on one built from a declaration that names an account. A
+  published image declares none by design, so `kuma install` writes the
+  account to `/var/lib/kuma/user` on the target and the converger creates
+  it at first boot; doctor only ever looked for the baked
+  `/usr/lib/kuma/user`, so on every machine the install path produces, the
+  check silently did not exist. That is where it is worth the most: a
+  machine whose account was never created is one nobody can log in to, and
+  doctor would have called it healthy.
 - `scripts/smoke.sh` pulls a declared base before building it. A base
   already in local storage is the one podman builds on however old it is,
   so the lock recorded that digest while `update --check` asked the
