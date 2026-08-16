@@ -42,20 +42,6 @@ jobs:
   install-and-boot:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # TEMPORARY, REMOVE ONCE THE HOME-SUBVOL RACE IS UNDERSTOOD.
-    # Observed once in nine first boots of the same published image (the
-    # earlier "one in three" was one failure in three boots, which is not
-    # a rate). Six more attempts did not reproduce it, so this is twenty:
-    # at ~11% that is a ~90% chance of catching one, and each attempt
-    # carries the diagnostics the stage collects on failure.
-    #
-    # The converger cannot be instrumented directly, because the artifact
-    # under test is a published image rather than one built here. All the
-    # evidence has to be collected from outside the guest after the fact.
-    strategy:
-      fail-fast: false
-      matrix:
-        attempt: [1, 2, 3]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -105,31 +91,21 @@ jobs:
           path: vm-smoke/published/console.log
           if-no-files-found: warn
 
-  # TEMPORARY, REMOVE WITH THE HUNT MATRIX ABOVE.
+  # The only job that installs and boots an image built from this tree.
   #
-  # The published jobs test what is on the registry, which by definition
-  # does not carry a fix that has not been released. This one builds the
-  # tree's own niri image and installs THAT, which is the only way to
-  # exercise the home-subvolume converger's btrfs path against a change
-  # to it: ci.yml's boot job uses bootc-image-builder disks, and those
-  # are ext4, so the converger correctly does nothing there and a broken
-  # one would look identical to a working one.
+  # That makes it the only place an unreleased change to install-time or
+  # first-boot behaviour can be tested at all. The published jobs test an
+  # artifact that by definition cannot contain it, and ci.yml's boot job
+  # uses bootc-image-builder disks, which are ext4: every path that only
+  # runs on a btrfs root does nothing there, so a broken converger and a
+  # working one look identical.
   #
-  # It also runs the ordering-cycle assertion, which matters more than
-  # usual right now: widening a unit's Before= is how a cycle gets made,
-  # systemd breaks a cycle by deleting a job, and on an ext4 disk the
-  # deleted job would go unnoticed.
+  # It is also where the ordering-cycle assertion runs. systemd resolves
+  # a cycle by deleting a job, and on an ext4 disk the deleted job would
+  # go unnoticed.
   fix-verification:
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    # TEMPORARY, REMOVE WITH THE HUNT MATRIX ABOVE. Matrixed because this
-    # is the only build carrying the converger's ERR trap: the published
-    # jobs test an artifact that cannot contain an unreleased change, so
-    # this is the only place the failing command can name itself.
-    strategy:
-      fail-fast: false
-      matrix:
-        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
