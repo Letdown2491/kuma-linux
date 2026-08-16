@@ -145,6 +145,11 @@ pub fn install_containerfile(source: &str, account: &Account) -> String {
 /// autologin still greets. Only when the names differ: installing an
 /// image onto a machine for the account it already declares is the case
 /// where autologin was meant.
+///
+/// The name goes into single quotes in generated shell. That is safe
+/// because `ask_account` has already put it through `validate_name`,
+/// which rejects quotes and every shell metacharacter; it is not safe on
+/// its own, and this is the sentence that says so.
 fn drop_foreign_autologin(name: &str) -> String {
     format!(
         "# A greeter cannot autologin an account this machine will not\n\
@@ -481,8 +486,11 @@ pub fn ask_encrypt(flagged: bool) -> Result<bool> {
         return Ok(false);
     }
     loop {
-        print!("\nEncrypt this disk with a passphrase? [y/N] ");
-        std::io::stdout().flush()?;
+        // stderr, like `ask_account` and `ask_hostname`. A prompt on
+        // stdout would land inside the JSON document that `--json --yes`
+        // promises is the only thing there.
+        eprint!("\nEncrypt this disk with a passphrase? [y/N] ");
+        std::io::stderr().flush()?;
         let mut line = String::new();
         if std::io::stdin().read_line(&mut line)? == 0 {
             return Ok(false);
@@ -490,7 +498,7 @@ pub fn ask_encrypt(flagged: bool) -> Result<bool> {
         match line.trim().to_ascii_lowercase().as_str() {
             "y" | "yes" => return Ok(true),
             "" | "n" | "no" => return Ok(false),
-            _ => println!("Answer y or n."),
+            _ => eprintln!("Answer y or n."),
         }
     }
 }

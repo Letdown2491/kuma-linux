@@ -286,13 +286,21 @@ fn observe(config_path: &Path) -> Observed {
         })
     });
 
+    // Asked only of a machine that has those units. On a workspace
+    // there is nothing to converge and no unit to ask about, and a probe
+    // that runs `systemctl` to learn nothing is a probe that costs
+    // something for it.
+    let machine = observe_machine();
+    let converging =
+        if matches!(machine, MachineFact::Kuma { .. }) { observe_converging() } else { Vec::new() };
+
     Observed {
         config_path: config_path.display().to_string(),
         config,
         image,
-        machine: observe_machine(),
+        machine,
         live: Path::new(crate::liveiso::LIVE_MARKER).exists(),
-        converging: observe_converging(),
+        converging,
     }
 }
 

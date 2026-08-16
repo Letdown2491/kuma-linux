@@ -1372,7 +1372,7 @@ fn check_build_leftovers(report: &mut impl FnMut(Grade, &str, String, Option<Act
 /// about the device. `None` means the question could not be answered,
 /// which is a reason to say nothing rather than to guess.
 fn root_encrypted(findmnt_source: &str, lsblk_types: &str) -> Option<bool> {
-    let source = findmnt_source.trim().split('[').next().unwrap_or_default().trim();
+    let source = root_device(findmnt_source);
     if source.is_empty() {
         return None;
     }
@@ -1385,16 +1385,24 @@ fn root_encrypted(findmnt_source: &str, lsblk_types: &str) -> Option<bool> {
     Some(types.contains(&"crypt"))
 }
 
+/// The device out of what `findmnt` printed, which appends the btrfs
+/// subvolume in brackets. Shared with the caller, which needs the same
+/// answer to ask lsblk about it, and had its own copy of this until the
+/// two could have disagreed.
+fn root_device(findmnt_source: &str) -> &str {
+    findmnt_source.trim().split('[').next().unwrap_or_default().trim()
+}
+
 fn check_encryption(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     // /sysroot on a booted ostree deployment, / everywhere else.
     let source = host_output(&["findmnt", "-no", "SOURCE", "/sysroot"])
         .or_else(|_| host_output(&["findmnt", "-no", "SOURCE", "/"]))
         .unwrap_or_default();
-    let device = source.trim().split('[').next().unwrap_or_default().trim().to_string();
+    let device = root_device(&source);
     let types = if device.is_empty() {
         String::new()
     } else {
-        host_output(&["lsblk", "-no", "TYPE", &device]).unwrap_or_default()
+        host_output(&["lsblk", "-no", "TYPE", device]).unwrap_or_default()
     };
     // Silent when unknowable. Encryption is a choice, so neither answer
     // is a fault and neither carries a fix: this line exists so that a

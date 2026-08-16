@@ -24,23 +24,7 @@ pub fn note(msg: &str) {
 /// Run a command on the host, escaping the container if kuma itself is
 /// running inside one (e.g. a distrobox dev environment).
 pub fn run_host<S: AsRef<str>>(args: &[S]) -> Result<()> {
-    let mut cmd = host_command(args)?;
-    if JSON_OUTPUT.load(Ordering::Relaxed) {
-        // The child's stream (podman build output, bootc progress) stays
-        // visible — just not where the JSON goes.
-        use std::os::fd::AsFd;
-        let stderr = std::io::stderr()
-            .as_fd()
-            .try_clone_to_owned()
-            .context("cannot redirect subprocess output to stderr")?;
-        cmd.stdout(std::process::Stdio::from(stderr));
-    }
-    let status = cmd.status().with_context(|| format!("failed to run {}", args[0].as_ref()))?;
-    if !status.success() {
-        let shown: Vec<&str> = args.iter().map(|s| s.as_ref()).collect();
-        bail!("{} exited with {status}", shown.join(" "));
-    }
-    Ok(())
+    run_piped(args, None)
 }
 
 /// Run a command on the host, handing it `input` on standard input.
@@ -54,10 +38,21 @@ pub fn run_host<S: AsRef<str>>(args: &[S]) -> Result<()> {
 /// terminal rather than from stdin unless it is asked to do otherwise,
 /// so a piped stdin does not swallow the one the person has to answer.
 pub fn run_host_stdin<S: AsRef<str>>(args: &[S], input: &str) -> Result<()> {
+    run_piped(args, Some(input))
+}
+
+/// The body both share, because they differ in one thing and the rest of
+/// it (finding the host, moving stdout out of the way of JSON, naming
+/// the command that failed) was worth writing once.
+fn run_piped<S: AsRef<str>>(args: &[S], input: Option<&str>) -> Result<()> {
     use std::io::Write;
     let mut cmd = host_command(args)?;
-    cmd.stdin(std::process::Stdio::piped());
+    if input.is_some() {
+        cmd.stdin(std::process::Stdio::piped());
+    }
     if JSON_OUTPUT.load(Ordering::Relaxed) {
+        // The child's stream (podman build output, bootc progress) stays
+        // visible — just not where the JSON goes.
         use std::os::fd::AsFd;
         let stderr = std::io::stderr()
             .as_fd()
@@ -66,17 +61,24 @@ pub fn run_host_stdin<S: AsRef<str>>(args: &[S], input: &str) -> Result<()> {
         cmd.stdout(std::process::Stdio::from(stderr));
     }
     let mut child = cmd.spawn().with_context(|| format!("failed to run {}", args[0].as_ref()))?;
-    child
-        .stdin
-        .take()
-        .context("no stdin on the child process")?
-        .write_all(input.as_bytes())
-        .context("cannot write to the child process")?;
+    // A write that fails is not the failure worth reporting. When sudo
+    // refuses a password it exits before reading, and this write then
+    // returns EPIPE: reporting that would replace "sudo: 3 incorrect
+    // password attempts" with "cannot write to the child process", which
+    // sends somebody looking at the wrong thing entirely. So the child's
+    // own status is asked first, and the write is only news if the
+    // command otherwise succeeded.
+    let wrote = match (input, child.stdin.take()) {
+        (Some(input), Some(mut stdin)) => stdin.write_all(input.as_bytes()),
+        (Some(_), None) => Ok(()),
+        (None, _) => Ok(()),
+    };
     let status = child.wait().with_context(|| format!("failed to run {}", args[0].as_ref()))?;
     if !status.success() {
         let shown: Vec<&str> = args.iter().map(|s| s.as_ref()).collect();
         bail!("{} exited with {status}", shown.join(" "));
     }
+    wrote.context("cannot write to the child process")?;
     Ok(())
 }
 

@@ -116,11 +116,16 @@ script is unencrypted unless it passes `--encrypt`, which is the answer that
 can be undone: an unencrypted machine can be reinstalled, and one whose
 passphrase nobody chose cannot be booted.
 
-**Kuma keeps no copy of the passphrase.** It reaches `cryptsetup` on a pipe,
+**Kuma writes the passphrase nowhere.** It reaches `cryptsetup` on a pipe,
 never through a command line where `ps` would show it and never through a
 file. A lost passphrase is a lost disk; there is no recovery key, no escrow,
 and no way for kuma to help. Changing it later is `cryptsetup luksChangeKey`
 on the machine itself, which kuma has no verb for.
+
+It does live in memory while the install runs: in kuma's own heap, and in a
+shell variable in the install script. Neither is scrubbed, and kuma makes no
+claim to defend against something reading another process's memory, which on
+this machine already means root. What it defends is the disk you are holding.
 
 **What it protects is a disk at rest, and only that.** `/boot` and the EFI
 system partition are outside the container on every install, because a

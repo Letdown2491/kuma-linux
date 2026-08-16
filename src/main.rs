@@ -1716,6 +1716,71 @@ fn iso(config_path: &Path, tag: &str, output: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 0600, for a file that holds a credential.
+///
+/// Rust writes a new file 0644 minus the umask, which on an ordinary
+/// machine means every local account can read it. That is the wrong
+/// default for an account's password hash sitting in a temporary
+/// directory, and the right one costs one syscall.
+fn restrict_to_owner(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("cannot restrict permissions on {}", path.display()))
+}
+
+/// What the plan prints, gathered rather than passed as eight
+/// positional arguments: this is a description of a disk about to be
+/// destroyed, and telling two `bool`s apart by position is a poor way to
+/// get one right.
+struct PlanView<'a> {
+    disk: &'a Path,
+    to_file: bool,
+    image: &'a str,
+    local: bool,
+    updates: &'a str,
+    encrypt: bool,
+    layout: &'a [partition::Partition],
+    disk_mib: u64,
+}
+
+/// The plan a person reads before agreeing to lose a disk. Separate from
+/// `install` so that "print this only for a human" is one condition
+/// rather than a `!json` on every line.
+fn print_install_plan(view: &PlanView) {
+    println!("Install plan");
+    // "file", not "image": the line under it is the container image,
+    // and two rows labelled the same thing in a plan somebody reads
+    // before destroying something is a poor place to save a word.
+    println!(
+        "  {}     {}  (everything {} it is destroyed)",
+        if view.to_file { "file" } else { "disk" },
+        view.disk.display(),
+        if view.to_file { "in" } else { "on" }
+    );
+    println!(
+        "  image    {}  ({})",
+        view.image,
+        if view.local { "in local storage" } else { "pulled when you confirm" }
+    );
+    println!("  updates  fetched from {} afterwards", view.updates);
+    // Shown in full because none of it can be changed afterwards, and
+    // because btrfs is load-bearing rather than taste: `[snapshots]` is
+    // btrfs-only, so a machine installed on anything else could never
+    // use a feature kuma ships.
+    println!(
+        "  layout   GPT, btrfs root{} (snapshots need btrfs):",
+        if view.encrypt { " inside LUKS" } else { "" }
+    );
+    for part in view.layout {
+        println!(
+            "             {:<10} {:>5}  {}",
+            part.label,
+            part.size_text(view.disk_mib),
+            part.purpose
+        );
+    }
+}
+
 /// Install kuma onto a disk. See `install` for why the account is the
 /// hard part and why it arrives as an image layer.
 ///
@@ -1809,6 +1874,42 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     // and a plan printed before the question would be describing a disk
     // nobody had decided on yet. Only under --yes, since a dry run
     // changes nothing and has no business prompting.
+    // Cheap and local: podman answers from storage without touching a
+    // registry. Known before the question below, because the question is
+    // the first thing typed and this decides whether an install can
+    // happen at all.
+    let local = host_output(&["podman", "image", "exists", image]).is_ok();
+
+    // Before the interview, not after it.
+    //
+    // Installing pulls this image, and podman only discovers it is not
+    // there when the build reaches out, which is several minutes and one
+    // typed password later. What that looks like is `error creating build
+    // container: unable to copy from source` and exit 125, after being
+    // asked to choose an account. Half a second of skopeo turns that into
+    // a sentence, before anything is asked — including the encryption
+    // question, which used to come first and be wasted.
+    //
+    // Only for a real install: a dry run reaches out to no network to
+    // describe itself. Skipped when the image is already local, and
+    // skipped rather than fatal when skopeo is missing, because a check
+    // that cannot run is not a reason to refuse an install that would
+    // have worked.
+    if yes && !local {
+        note(&format!("Checking {image} is reachable..."));
+        if let Err(why) = host_output(&["skopeo", "inspect", "--raw", &format!("docker://{image}")])
+        {
+            if host_output_any(&["skopeo", "--version"]).is_ok() {
+                bail!(
+                    "cannot reach {image}\n\n{why}\n\n\
+                     Installing pulls that image, so it has to exist and be readable\n\
+                     from here. A 403 or 404 usually means it is not published yet, or\n\
+                     is private. Pass --image to install a different one."
+                );
+            }
+        }
+    }
+
     let encrypt = if yes { install::ask_encrypt(encrypt_flag)? } else { encrypt_flag };
 
     // With the objections, for the same reason they are: this is the
@@ -1859,11 +1960,6 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     let layout = partition::plan(disk_bytes, encrypt)
         .with_context(|| format!("cannot install to {}", disk.display()))?;
 
-    // Defaulting --image means the plan can name one that is not there,
-    // so say which it is. Cheap and local: podman answers from storage
-    // without touching a registry, and a dry run that reaches out to the
-    // network to describe itself would be a surprise of its own.
-    let local = host_output(&["podman", "image", "exists", image]).is_ok();
     // The dry run is a resource like every other read: state, facts, and
     // the one legal move out of it. An agent that follows affordances
     // will be handed `kuma install` on live media once there is an image
@@ -1923,36 +2019,19 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         );
         return Ok(());
     }
-    println!("Install plan");
-    // "file", not "image": the line under it is the container image,
-    // and two rows labelled the same thing in a plan somebody reads
-    // before destroying something is a poor place to save a word.
-    println!(
-        "  {}     {}  (everything {} it is destroyed)",
-        if to_file { "file" } else { "disk" },
-        disk.display(),
-        if to_file { "in" } else { "on" }
-    );
-    println!(
-        "  image    {image}  ({})",
-        if local { "in local storage" } else { "pulled when you confirm" }
-    );
-    println!("  updates  fetched from {updates} afterwards");
-    // Shown in full because none of it can be changed afterwards, and
-    // because btrfs is load-bearing rather than taste: `[snapshots]` is
-    // btrfs-only, so a machine installed on anything else could never
-    // use a feature kuma ships.
-    println!(
-        "  layout   GPT, btrfs root{} (snapshots need btrfs):",
-        if encrypt { " inside LUKS" } else { "" }
-    );
-    for part in &layout {
-        println!(
-            "             {:<10} {:>5}  {}",
-            part.label,
-            part.size_text(disk_mib),
-            part.purpose
-        );
+    // Prose only for a person. `--json --yes` promised exactly one
+    // document on stdout and then printed a plan above it.
+    if !json {
+        print_install_plan(&PlanView {
+            disk,
+            to_file,
+            image,
+            local,
+            updates,
+            encrypt,
+            layout: &layout,
+            disk_mib,
+        });
     }
     if !yes {
         // Describe, do not rehearse. The interview belongs behind --yes,
@@ -1983,41 +2062,17 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         return Ok(());
     }
 
-    // Before the interview, not after it.
-    //
-    // Installing pulls this image, and podman only discovers it is not
-    // there when the build reaches out, which is several minutes and one
-    // typed password later. What that looks like is `error creating build
-    // container: unable to copy from source` and exit 125, after being
-    // asked to choose an account. Half a second of skopeo turns that into
-    // a sentence, before anything is asked.
-    //
-    // Skipped when the image is already local, and skipped rather than
-    // fatal when skopeo is missing: a check that cannot run is not a
-    // reason to refuse an install that would have worked.
-    if !local {
-        note(&format!("Checking {image} is reachable..."));
-        if let Err(why) = host_output(&["skopeo", "inspect", "--raw", &format!("docker://{image}")])
-        {
-            if host_output_any(&["skopeo", "--version"]).is_ok() {
-                bail!(
-                    "cannot reach {image}\n\n{why}\n\n\
-                     Installing pulls that image, so it has to exist and be readable\n\
-                     from here. A 403 or 404 usually means it is not published yet, or\n\
-                     is private. Pass --image to install a different one."
-                );
-            }
-        }
-    }
-
     // `--shell` beats what the image declares, and saying nothing leaves
     // the image's own answer standing: the converger sources the baked
     // /usr/lib/kuma/user first and the installer's file second, so an
     // omitted KUMA_SHELL is [system].shell surviving rather than a
-    // default being applied. Deliberately not read here. Reading it
-    // would mean running the image, running it would mean pulling it,
-    // and on live media a pull lands in a RAM-backed overlay, which is
-    // the ceiling this whole install path exists to get out from under.
+    // default being applied. Not read here to decide anything: reading
+    // it would mean running the image, running it would mean pulling
+    // it, and on live media a pull lands in a RAM-backed overlay, which
+    // is the ceiling this whole install path exists to get out from
+    // under. An image already in local storage is read further down,
+    // where running it costs nothing and what it declares is worth
+    // warning about.
     // Before the account, so that a pipe driving this reads in the same
     // order the questions are asked: the passphrase decides the shape of
     // the disk, the account only what is on it.
@@ -2025,7 +2080,9 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     let account = install::ask_account(user, groups, shell)?;
     let hostname = install::ask_hostname(hostname)?;
     let dir = tempfile::tempdir().context("cannot create install directory")?;
-    std::fs::write(dir.path().join("kuma-user"), install::user_file(&account))?;
+    let user_file = dir.path().join("kuma-user");
+    std::fs::write(&user_file, install::user_file(&account))?;
+    restrict_to_owner(&user_file)?;
     std::fs::write(dir.path().join("kuma-hostname"), format!("{hostname}\n"))?;
     std::fs::write(
         dir.path().join("Containerfile"),
@@ -2038,40 +2095,49 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     // install path exists to get out from under. A local image is
     // already here, and a local image is exactly the case this warns
     // about, since a published one declares no user at all.
+    // Both halves of "the image is already here", in the order they
+    // matter: say what installing it carries before spending minutes
+    // copying it anywhere.
+    //
+    // Reading the baked declaration runs the image. That is no new
+    // trust: this is the image about to become the machine. It is
+    // guarded on `local` because on live media the same read would mean
+    // a pull into RAM.
     if local {
         if let Ok(baked) =
             host_output(&["podman", "run", "--rm", image, "cat", "/usr/lib/kuma/kuma.toml"])
         {
             if let Some(warning) = install::baked_user_warning(&baked, &account.name) {
-                println!("\n{warning}\n");
+                // note(), not println!(): in JSON mode this belongs on
+                // stderr with the rest of the progress, not inside the
+                // one document stdout promised.
+                note(&format!("\n{warning}\n"));
             }
         }
+        // The install script runs as root, and root's podman is a
+        // different store than the one that built this image. Everything
+        // else that hands an image to a root-side tool syncs it first
+        // (switch for bootc, vm and iso for bootc-image-builder); this
+        // did not. So a local image was found only when some earlier
+        // `kuma vm` had left a copy in root's storage: where that copy
+        // existed it got installed *instead* of the image just built,
+        // and where it did not the build fell through to
+        // `docker://localhost/...` and a refused connection.
+        let scratch = tempfile::tempdir().context("cannot create scratch directory")?;
+        sync_image_to_root(image, scratch.path())?;
     }
     let script = dir.path().join("install");
     std::fs::write(&script, partition::install_script(&layout, encrypt))?;
 
     // The script runs as root and reads this directory, and a tempdir is
-    // 0700 for whoever created it. Nothing written here is the
-    // passphrase: it goes to the script on stdin and never to a file,
-    // which is what this chmod would otherwise undo.
+    // 0700 for whoever created it.
     run_host(&["sudo", "chmod", "-R", "a+rX", path_str(dir.path())?])?;
-
-    // The install script runs as root, and root's podman is a different
-    // store than the one that built this image. Everything else that
-    // hands an image to a root-side tool syncs it first (switch for
-    // bootc, vm and iso for bootc-image-builder); this did not. So a
-    // local image was found only when some earlier `kuma vm` had left a
-    // copy in root's storage: where that copy existed it got installed
-    // *instead* of the image just built, and where it did not the build
-    // fell through to `docker://localhost/...` and a refused connection.
-    //
-    // Only for a local image. On live media the image is not here at
-    // all: the script pulls it as root into the target's store, which is
-    // the whole reason that store lives on the disk being installed.
-    if local {
-        let scratch = tempfile::tempdir().context("cannot create scratch directory")?;
-        sync_image_to_root(image, scratch.path())?;
-    }
+    // ...except the one file with a credential in it. That recursive
+    // chmod made the account's password hash readable by every local
+    // account for as long as the install ran, and root, which is what
+    // actually reads it, needs no permission at all. The passphrase was
+    // never here to begin with: it goes to the script on stdin.
+    run_host(&["sudo", "chmod", "600", path_str(&user_file)?])?;
 
     // Read before, compared after. Installing to a file leaves a boot
     // entry in this machine's firmware naming a partition inside that
