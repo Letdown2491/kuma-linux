@@ -1065,6 +1065,30 @@ color-scheme='prefer-dark'
 gtk-theme='Adwaita'
 "#;
 
+/// One bluetooth indicator, not two.
+///
+/// blueman-applet earns its place as the Bluetooth agent: it answers
+/// pairing requests and reconnects devices, and nothing else here does.
+/// What it also does is spawn `blueman-tray`, which puts a second
+/// bluetooth indicator in waybar's tray beside waybar's own bluetooth
+/// module. The bar then shows one state twice, in two styles, because a
+/// tray renders the application's own coloured icon while every other
+/// module is a font glyph, and a tray cannot recolour what it is given.
+/// The module already opens blueman-manager on click, so the tray icon
+/// was carrying no capability of its own.
+///
+/// Disabling StatusIcon alone does nothing, which is the part worth
+/// writing down: ShowConnected declares `__depends__ = ["StatusIcon"]`,
+/// and the plugin manager loads a dependency whether or not it was
+/// disabled, so the icon comes straight back. ShowConnected exists only
+/// to decorate that icon ("adds an indication on the status icon...
+/// shows the connections in the tooltip"), so it goes with it and takes
+/// nothing else. Both names verified against a running session, after
+/// the one-name version was tried and silently did nothing.
+const DCONF_BLUEMAN: &str = r#"[org/blueman/general]
+plugin-list=['!StatusIcon', '!ShowConnected']
+"#;
+
 /// Volume/brightness OSD: wob draws an overlay bar from levels written
 /// to a FIFO (swayosd would be nicer but is COPR-only). kuma-osd is
 /// bound to the media keys in place of niri's stock wpctl binds — it
@@ -1593,6 +1617,7 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY dconf-profile /etc/dconf/profile/user\n");
         out.push_str(&keyring_pam("greetd"));
         out.push_str("COPY dconf-kuma-dark /etc/dconf/db/local.d/10-kuma-dark\n");
+        out.push_str("COPY dconf-kuma-blueman /etc/dconf/db/local.d/10-kuma-blueman\n");
         out.push_str("RUN dconf update\n");
         // The packaged default config is complete (all keybindings); Kuma's
         // config is that plus our session extras, validated at build time.
@@ -2058,6 +2083,7 @@ pub fn write_context(
         std::fs::write(dir.join("gtk4-settings.ini"), GTK4_SETTINGS_INI)?;
         std::fs::write(dir.join("dconf-profile"), DCONF_PROFILE)?;
         std::fs::write(dir.join("dconf-kuma-dark"), DCONF_DARK)?;
+        std::fs::write(dir.join("dconf-kuma-blueman"), DCONF_BLUEMAN)?;
     }
     if config.system.desktop != Desktop::None || !config.packages.flatpak.is_empty() {
         let mut list = config.packages.flatpak.join("\n");
@@ -2322,7 +2348,15 @@ mod tests {
         assert!(out.contains("--exclude=alacritty"));
         assert!(out.contains("COPY dconf-profile /etc/dconf/profile/user"));
         assert!(out.contains("COPY dconf-kuma-dark /etc/dconf/db/local.d/10-kuma-dark"));
+        assert!(out.contains("COPY dconf-kuma-blueman /etc/dconf/db/local.d/10-kuma-blueman"));
         assert!(out.contains("RUN dconf update"));
+        // Both names, because disabling only StatusIcon is a no-op:
+        // ShowConnected depends on it and the plugin manager loads a
+        // dependency regardless of the disable flag. Dropping either name
+        // brings the second bluetooth icon back, and nothing about the
+        // bar would fail a test to say so.
+        assert!(DCONF_BLUEMAN.contains("'!StatusIcon'"));
+        assert!(DCONF_BLUEMAN.contains("'!ShowConnected'"));
     }
 
     #[test]
