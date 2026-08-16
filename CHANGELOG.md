@@ -5,6 +5,19 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+### Fixed
+
+- The snapshot script asks `findmnt` which filesystem holds the target
+  rather than what is mounted exactly at it. A btrfs subvolume does not
+  have to be a mount point, and on a machine kuma installs `/var/home` is
+  one nested inside the deployment's `/var`: the bare form printed
+  nothing, so the script decided the target was not btrfs and exited 0
+  having taken nothing, while `kuma doctor`, which has always asked with
+  `-T`, said the target was fine. This was the second half of the same
+  bug as the missing subvolume, and it survived fixing the first: an
+  install from the v0.8.0 image gets a proper subvolume and still took no
+  snapshot until this.
+
 ## v0.8.0 (2026-08-15)
 
 The disk kuma installs can be encrypted, and the machine it makes says what

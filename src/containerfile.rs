@@ -421,7 +421,15 @@ keep_recent={keep_recent}
 keep_daily={keep_daily}
 store="$target/.snapshots"
 
-[ "$(findmnt -no FSTYPE -- "$target" 2>/dev/null || true)" = btrfs ] || exit 0
+# -T, so the question is "what filesystem holds this path" rather than
+# "what is mounted exactly here". A btrfs subvolume does not have to be a
+# mount point: on a machine kuma installed, /var/home is a subvolume
+# nested inside the deployment's /var, and the bare form prints nothing
+# and sent this script home. Machines whose installer gave /var/home its
+# own fstab entry answered either way, which is the only reason this ever
+# looked like it worked. `kuma doctor` has always asked with -T; these
+# two have to ask the same question or one of them is lying.
+[ "$(findmnt -no FSTYPE -T "$target" 2>/dev/null || true)" = btrfs ] || exit 0
 btrfs subvolume show "$target" >/dev/null 2>&1 || exit 0
 
 install -d -m 0755 "$store"
@@ -2684,6 +2692,17 @@ mod tests {
         }
         assert!(script.contains("= btrfs ] || exit 0"), "a non-btrfs target exits clean");
         assert!(script.contains("btrfs subvolume show"), "a non-subvolume exits clean");
+
+        // -T, and the same question doctor asks. Without it findmnt wants
+        // a mount point, and a btrfs subvolume need not be one: a
+        // /var/home nested inside the deployment's /var answered nothing,
+        // so the script exited 0 having taken no snapshot, on every
+        // machine kuma installs. The script said the target was not
+        // btrfs; doctor, asking with -T, said it was.
+        assert!(
+            script.contains(r#"findmnt -no FSTYPE -T "$target""#),
+            "the filesystem question has to be about the path, not about a mount point"
+        );
 
         let dir = tempfile::tempdir().unwrap();
         context(
