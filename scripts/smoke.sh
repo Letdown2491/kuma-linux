@@ -307,6 +307,11 @@ smoke_install() {
             ""|greetd|"$user") ok "no greeter autologins an account this disk lacks" ;;
             *) bad "greetd autologins '$autologin', which this machine has no account for" ;;
         esac
+    else
+        # Out loud, not skipped. A headless image ships no greeter config,
+        # so this says nothing about the case the check exists for, and a
+        # silent pass would read as if it had.
+        ok "no greeter on this image, so that path is unchecked here"
     fi
 
     sudo umount -R "$mnt"
