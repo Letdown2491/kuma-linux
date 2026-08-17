@@ -134,6 +134,16 @@ comments and formatting intact. Kuma itself, at `/usr/bin/kuma`. And the
 units and helpers that converge flatpaks, brews, the declared user, and boot
 health.
 
+They also carry what the machine needs to refuse an update: kuma's signing
+key, and a policy naming it for kuma's published repository. That pair is in
+every image rather than only in published ones, because the machine that
+needs it is the one installed from published media, and that machine's `/etc`
+is whatever the image it was installed from put there. The rule covers kuma's
+own repository alone; requiring signatures everywhere would refuse Fedora's
+base on your next update and your own locally built image on your next
+switch. `kuma doctor` grades the pair, since a signature nobody checks is a
+claim rather than a control.
+
 That is the complete set needed to answer "what am I supposed to be" and then
 act on it, which means a machine needs neither a working copy of your
 declaration nor a tool you brought with you. `kuma update --yes` works on a
@@ -256,6 +266,20 @@ warn  deployment: booted image is 41 days old
 
 Neither one applies anything. The machine watches the clock; you decide when
 to reboot into a new one.
+
+One change is loud enough to get its own sentence. If an update would move
+the machine to a new Fedora release, `kuma update` says so in those words
+after the diff and before anything is staged:
+
+```console
+This is a Fedora release change: 44 to 45.
+```
+
+That is the largest thing kuma can do to a machine, and in the package diff
+it otherwise looks like several hundred ordinary lines. `kuma update --check`
+tells you which release you are on but does not predict the target: for a
+composed base the answer is only knowable by composing, and a guess is worth
+less than a fact.
 
 ## Why a file you edited by hand keeps winning
 

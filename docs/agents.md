@@ -30,6 +30,21 @@ The loop is: probe, execute one of the actions it named, probe again.
   drift, and `snapshot --json` lists what this machine has kept. All four
   change nothing, and `snapshot --restore --json` stays a dry run naming
   what it would overwrite until `--yes`.
+- **A Fedora release change is a separate field, not a big diff.** `update`
+  and `update --check` carry `fedora_release` with `current`, `changed`,
+  `from` and `to`. Read that rather than inferring a distro upgrade from the
+  size of the package list, and treat `changed: true` as needing a human
+  even where you would otherwise stage automatically. `from` and `to` are
+  null when nothing moved, and `current` is null when the release could not
+  be read, which is not the same as a release that did not change.
+- **Reporting a broken machine.** `doctor --report` is `doctor --json` plus
+  `kuma.version`, a `machine` object (`pretty_name`, `version_id`,
+  `booted_image`, `booted_digest`, `staged`, `rollback`, `live_media`), and
+  the `declaration` the machine was built from. `checks` and `summary` keep
+  the same shape and place, so anything already reading `--json` reads a
+  report unchanged. `user.password_hash` is removed before it prints, and a
+  declaration kuma cannot parse arrives as `declaration.omitted` rather than
+  as raw text. That is the payload to attach to a bug report.
 - **Write.** `kuma schema` prints the JSON Schema for `kuma.toml`, generated
   from the same types that parse it, so it cannot drift from reality.
 - **Mutate.** `build`, `switch`, `update`, `rollback`, `sync`, `add`,

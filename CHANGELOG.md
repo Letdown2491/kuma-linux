@@ -67,6 +67,9 @@ by building against it rather than by reading its release notes.
   kept Fedora's own string, so an image built on a branched base announced
   itself as `45 (Rawhide Prerelease)` while calling itself Kuma everywhere
   else.
+- `update` and `update --check` both report `fedora_release` as one shape:
+  `current`, `changed`, `from`, `to`. A caller reads one key rather than
+  type-checking it.
 - `kuma update` says when it is about to change your Fedora release, and
   `kuma update --check` says which release you are on. A Fedora major showed
   up in the lock diff as several hundred package lines and nothing that named

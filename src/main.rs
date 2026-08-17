@@ -1039,16 +1039,23 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
     let config = Config::load(config_path)?;
     let base = &config.base_ref();
 
+    // Where the machine is, on either kind of base, in the same shape
+    // `kuma update` reports a move in. One key means one thing: emitting
+    // a bare string here and an object there would make `fedora_release`
+    // something a caller has to type-check before reading.
+    //
+    // Never a prediction. For a composed base the target is only knowable
+    // by composing, and for a declared one it would cost a pull of the
+    // base this command deliberately does not pull.
+    let release_now =
+        lock::for_config(config_path).and_then(|l| fedora_release_of(&l.base.reference));
+
     if config.system.base.is_none() {
         // A composed base has no registry tag whose movement can be
         // checked; the repos it composes from move continuously. The
         // honest answer is what an update would do, not a fake "current".
         let lock = lock::for_config(config_path);
         let manifest_changed = lock.as_ref().is_some_and(|lock| &lock.base.reference != base);
-        // Where you are, not where an update would take you. The target
-        // is only knowable by composing, so `--check` states the current
-        // release and `kuma update` reports the move once it can be exact.
-        let release = lock.as_ref().and_then(|l| fedora_release_of(&l.base.reference));
         let source = update_source();
         note(&format!("Asking dnf what has moved in the repos ({})...", source.name()));
         let moved = updates::moved(&source);
@@ -1070,7 +1077,7 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
                 serde_json::json!({
                     "ok": true, "composed": true, "locked": lock.is_some(),
                     "base": base, "manifest_changed": manifest_changed,
-                    "fedora_release": release,
+                    "fedora_release": release_move_json(None, &release_now),
                     "updates": match &moved {
                         Ok(moved) => serde_json::json!({
                             "checked": true, "source": source.name(),
@@ -1092,7 +1099,7 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
         } else {
             println!("The base is composed locally from Fedora's repos ({base}).");
         }
-        if let Some(release) = &release {
+        if let Some(release) = &release_now {
             println!(
                 "Currently on Fedora {release}; `kuma update` says so before it stages a change."
             );
@@ -1125,6 +1132,7 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
                 "{}",
                 serde_json::json!({
                     "ok": true, "locked": false, "base": base,
+                    "fedora_release": release_move_json(None, &release_now),
                     "actions": [action_json(&build)],
                 })
             );
@@ -1145,6 +1153,7 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
             serde_json::json!({
                 "ok": true, "locked": true, "base": base, "moved": moved,
                 "digest": { "locked": lock.base.digest },
+                "fedora_release": release_move_json(None, &release_now),
                 "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
             })
         );
