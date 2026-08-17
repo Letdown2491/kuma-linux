@@ -220,11 +220,10 @@ jobs:
   # desktop is first class and COSMIC's live arm has still never booted
   # anywhere.
   #
-  # The ISO is uploaded here and attached to a release nowhere. Wiring a
-  # 1.8 GB asset onto a tag before anyone has watched this job succeed
-  # would mean discovering its failures during a release; release.yml
-  # carries the step behind an input that defaults off, to be turned on
-  # once this has run green a few times.
+  # This job is why a tag can attach an ISO at all. It builds and boots
+  # one on every push to main and on a daily cron, so the failures live
+  # here, where they cost a red run instead of a release; release.yml
+  # switched attaching on once this had gone green on a hosted runner.
   iso:
     runs-on: ubuntu-latest
     if: >-

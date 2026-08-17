@@ -894,13 +894,23 @@ smoke_published() {
         # exists to produce rather than a broken script.
         local signatures_after
         signatures_after=$(doctor_grade signatures)
-        if [ "$signatures_before" = ok ] && [ "$signatures_after" != ok ]; then
-            bad "the signature policy was ok before the upgrade and is '$signatures_after' after it"
-        elif [ "$signatures_after" = ok ]; then
-            ok "the signature policy reached a machine installed before it existed (was '$signatures_before')"
-        else
-            ok "upgrading did NOT bring the signature policy ('$signatures_before' then '$signatures_after'); a machine installed at that version still accepts an unsigned kuma image"
-        fi
+        case "$signatures_before:$signatures_after" in
+            *:ok)
+                ok "the signature policy reached a machine installed before it existed (was '$signatures_before')" ;;
+            ok:*)
+                bad "the signature policy was ok before the upgrade and is '$signatures_after' after it" ;;
+            # `absent` before an upgrade is the honest answer from a kuma
+            # too old to have the check. After one it is not: the machine
+            # is running the new image's doctor, so no answer means the
+            # check was renamed or doctor failed on the guest, and an
+            # assertion that cannot see is not an assertion that passed.
+            # Empty is the same thing arriving through doctor_grade's
+            # `|| true` rather than through its sentinel.
+            *:absent|*:)
+                bad "no signatures grade after the upgrade ('$signatures_after'); doctor could not answer on the upgraded machine" ;;
+            *)
+                ok "upgrading did NOT bring the signature policy ('$signatures_before' then '$signatures_after'); a machine installed at that version still accepts an unsigned kuma image" ;;
+        esac
     fi
 
     echo "   .. powering off"

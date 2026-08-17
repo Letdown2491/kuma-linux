@@ -136,11 +136,18 @@ tag already exists.
 The releases page only ever lists tagged versions. A rolling entry on top of
 them reads as a version that shipped, and none did.
 
-A release is one static `x86_64` binary, its checksum, and a Sigstore
-bundle. The asset name carries no version on purpose: that is what keeps
-the README's `releases/latest/download/` URL correct from one release to
-the next, and a test pins the two together so a rename can't quietly break
-the front door.
+A release is two files people use and four that prove them: one static
+`x86_64` binary and the live installer ISO, each with a checksum and a
+Sigstore bundle beside it. Neither asset name carries a version, which is
+what keeps the `releases/latest/download/` URLs in the README and the
+walkthrough correct from one release to the next; tests pin the names to
+those URLs so a rename cannot quietly break the front door, and pin that
+nothing reaches a release page unsigned.
+
+The release is assembled as a draft and published in one step at the end.
+`latest/download/<name>` answers from the newest release and does not fall
+back, so a release that exists without its ISO would break the documented
+download for everyone rather than only for itself.
 
 **Knowing which binary you have.** `kuma --version` reports the commit it
 was built from and appends `-dirty` when that tree had uncommitted changes.

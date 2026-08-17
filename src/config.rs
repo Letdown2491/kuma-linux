@@ -539,21 +539,39 @@ pub(crate) mod tests {
             "no cosign sign-blob bundle found; has the signing step moved?"
         );
 
-        // Every asset argument on its own line, which is the shape both
-        // upload sites already have and the only shape this can read.
-        for line in workflow.lines() {
-            let t = line.trim().trim_end_matches('\\').trim();
-            let Some(asset) = t.strip_prefix('\'').and_then(|r| r.strip_suffix('\'')) else {
-                continue;
-            };
-            if !asset.contains(".outputs.name }}") {
-                continue;
-            }
+        let check = |asset: &str| {
             let base = asset.trim_end_matches(".sha256").trim_end_matches(".bundle");
             assert!(
                 signed.contains(&base),
                 "{base} is attached to a release but nothing signs it; SECURITY.md says every release asset is signed"
             );
+        };
+
+        for line in workflow.lines() {
+            let t = line.trim();
+
+            // Assets given on the command's own line. The first quoted
+            // argument to either verb is the tag, not a file.
+            let cmd =
+                t.strip_prefix("gh release create").or_else(|| t.strip_prefix("gh release upload"));
+            if let Some(rest) = cmd {
+                for asset in rest.split('\'').skip(1).step_by(2).skip(1) {
+                    check(asset);
+                }
+                continue;
+            }
+
+            // Assets on continuation lines, one per line, which is the
+            // shape both sites use today. Read without tracking which
+            // command they belong to: a quoted token alone on a line is
+            // an asset list or a sign-blob subject, and the file has
+            // nothing else shaped that way. The alternative is following
+            // backslash continuations, which the release notes heredoc
+            // breaks by containing lines that end without one.
+            let t = t.trim_end_matches('\\').trim();
+            if let Some(asset) = t.strip_prefix('\'').and_then(|r| r.strip_suffix('\'')) {
+                check(asset);
+            }
         }
     }
 

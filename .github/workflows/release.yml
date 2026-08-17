@@ -225,11 +225,27 @@ jobs:
             function flush() { if (buf != "") { print buf; buf = "" } }
           ' section.md > reflowed.md && mv reflowed.md section.md
 
+      # Created as a draft and published at the very end of this job.
+      #
+      # `releases/latest/download/<name>` resolves against the newest
+      # release and does not fall back to an older one, and the
+      # walkthrough now makes that URL step one of installing kuma. A
+      # release that exists without its ISO is therefore not a smaller
+      # release, it is a broken front door for everybody, and it would
+      # stay broken for the forty minutes this job spends building the
+      # ISO even when nothing goes wrong.
+      #
+      # A draft is invisible to `latest`, so the previous release keeps
+      # answering that URL until this one is complete. If the ISO fails,
+      # the draft stays a draft with the binary already attached, which is
+      # a release waiting for a decision rather than a page nobody can
+      # install from.
       - name: publish
         if: steps.what.outputs.publish == 'true'
         run: |
           set -euo pipefail
           gh release create '${{ steps.what.outputs.tag }}' \
+            --draft \
             --title '${{ steps.what.outputs.title }}' \
             --notes "$(cat section.md; cat <<'NOTES'
           Static `x86_64` binary, no runtime dependencies.
@@ -259,12 +275,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      # Everything below runs *after* the release exists, and that
+      # Everything below runs *after* the release object exists, and that
       # ordering is the point: building the ISO means a full image build
       # and a QEMU boot with a serial-console assertion, so putting it
       # ahead of `publish` meant a live session that failed to reach a
-      # desktop took the binary's release down with it. The ISO is an
-      # addition to a release that has already happened.
+      # desktop left nothing behind at all. This way the binary, its
+      # checksum and its bundle are already attached and waiting when the
+      # ISO is asked for, and the draft above is what keeps that
+      # half-assembled state out of anyone's way.
       #
       # On since v0.11.0, and the condition for that was a run history
       # rather than a decision: ci.yml builds and boots this ISO on every
@@ -293,8 +311,13 @@ jobs:
           set -euo pipefail
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
-          cargo build --locked
-          ./scripts/smoke.sh --iso --keep niri
+          # `kuma build` bakes whichever kuma is running into the image it
+          # builds, so this is what decides which binary the ISO installs
+          # with. It is the packaged release artifact rather than a fresh
+          # `cargo build`, which would be a debug binary carrying
+          # /home/runner paths that publish-audit.sh fails an image for,
+          # and would be a second compile of code already built above.
+          KUMA=./${{ steps.pkg.outputs.name }} ./scripts/smoke.sh --iso --keep niri
           # Unversioned for the same reason the binary is, and the reason
           # binds harder here: this is the asset getting-started links, so
           # `releases/latest/download/kuma-x86_64.iso` has to keep meaning
@@ -320,8 +343,8 @@ jobs:
             '${{ steps.iso.outputs.name }}'
 
       # Uploaded separately rather than templated into the file list
-      # above, so the release exists either way: an ISO that failed to
-      # attach should not take the binary's release down with it.
+      # above, because the file does not exist when the release is
+      # created and a draft is the thing being filled in.
       - name: attach the live ISO
         if: env.ATTACH_ISO == 'true' && steps.what.outputs.publish == 'true'
         run: |
@@ -330,5 +353,18 @@ jobs:
             '${{ steps.iso.outputs.name }}' \
             '${{ steps.iso.outputs.name }}.sha256' \
             '${{ steps.iso.outputs.name }}.bundle'
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # The release becomes real here, complete, in one step. Anything
+      # above that failed leaves a draft holding whatever did get
+      # attached, which is visible to whoever cut the tag and to nobody
+      # else: `latest` still answers with the previous release, so the
+      # download URL in the walkthrough keeps working while this is
+      # sorted out. Finish it by hand with `gh release edit <tag>
+      # --draft=false` once you know what happened.
+      - name: publish the release
+        if: steps.what.outputs.publish == 'true'
+        run: gh release edit '${{ steps.what.outputs.tag }}' --draft=false
         env:
           GH_TOKEN: ${{ github.token }}
