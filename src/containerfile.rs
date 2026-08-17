@@ -608,29 +608,39 @@ ln -sfn "../usr/share/zoneinfo/$tz" /etc/localtime
 const HOME_SUBVOL_SERVICE: &str = r#"[Unit]
 Description=Give /var/home its own btrfs subvolume while it is empty
 ConditionPathExists=/run/ostree-booted
-# Every unit that could put something in /var/home before this gets to
-# look at it. The window is only ever the first boot, and losing it is
-# permanent and quiet: the converger declines, the machine boots healthy,
-# and [snapshots] then runs a timer that takes nothing forever.
+# The same slot systemd-tmpfiles-setup runs in, one step later, and the
+# reason is a race that took two intermittent failures to see as one.
 #
-# The list is longer than the units kuma ships on purpose. Ordering
-# against a unit that is not installed is a no-op in systemd, so naming
-# both greeters, sshd and homed costs nothing in an image that has none
-# of them, and closes the case where one of them is what got there first.
-# This was widened after a first boot in roughly thirty came up with
-# /var/home an ordinary directory, on an image where the three units
-# named originally were all correctly ordered.
-Before=kuma-user-sync.service kuma-brew-setup.service kuma-brew-sync.service
-Before=kuma-flatpak-sync.service kuma-snapshot.service
-Before=systemd-user-sessions.service systemd-homed.service
-Before=sshd.service greetd.service cosmic-greeter.service display-manager.service
+# Making /var/home a subvolume means `rmdir` then `btrfs subvolume
+# create`, and between those two commands the directory does not exist.
+# Twenty five units on a desktop image carry ProtectHome, which makes
+# systemd mount something over /var/home before the service starts, so
+# the window has two losers. If this converger wins it, firewalld starts
+# into a missing directory and dies with 226/NAMESPACE. If the sandboxed
+# unit wins it, the mount pins the directory, `rmdir` fails with EBUSY,
+# this unit dies under set -e, and /var/home stays an ordinary directory
+# forever, which costs [snapshots] everything and says nothing.
+#
+# Listing those units in Before= was the first attempt and it was the
+# wrong shape: they do not write to /var/home, systemd merely binds it
+# for them, and there are twenty five of them and counting. Running
+# before sysinit.target closes the window against all of them at once,
+# including systemd-resolved, -timesyncd and -userdbd, which start too
+# early for any multi-user.target ordering to matter.
+DefaultDependencies=no
+RequiresMountsFor=/var
+After=systemd-tmpfiles-setup.service
+Before=sysinit.target
+Conflicts=shutdown.target
+Before=shutdown.target
 
 [Service]
 Type=oneshot
+RemainAfterExit=yes
 ExecStart=/usr/libexec/kuma-home-subvol
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=sysinit.target
 "#;
 
 const HOME_SUBVOL_SCRIPT: &str = r#"#!/usr/bin/bash
@@ -2559,28 +2569,31 @@ mod tests {
         assert!(out.contains("RUN systemctl enable kuma-home-subvol.service"));
         // Before anything can create a home directory in it, which is
         // what makes "only while empty" a check that ever passes.
-        assert!(HOME_SUBVOL_SERVICE.contains("Before=kuma-user-sync.service"));
         assert!(HOME_SUBVOL_SERVICE.contains("ConditionPathExists=/run/ostree-booted"));
-        // Every unit that could write into /var/home before this looks at
-        // it. Pinned by name because the failure they prevent is silent
-        // and permanent, so dropping one would not show up in any boot.
-        for unit in [
-            "kuma-brew-setup.service",
-            "kuma-brew-sync.service",
-            "kuma-flatpak-sync.service",
-            "kuma-snapshot.service",
-            "systemd-user-sessions.service",
-            "systemd-homed.service",
-            "sshd.service",
-            "greetd.service",
-            "cosmic-greeter.service",
-            "display-manager.service",
+        // The early slot, which is what closes the window rather than
+        // enumerating who might fall into it. Every one of these lines is
+        // load-bearing: without DefaultDependencies=no the unit cannot be
+        // ordered before sysinit.target at all, without the tmpfiles
+        // ordering /var/home may not exist yet, and without
+        // RequiresMountsFor the target may not be on the filesystem this
+        // is about to convert.
+        for line in [
+            "DefaultDependencies=no",
+            "RequiresMountsFor=/var",
+            "After=systemd-tmpfiles-setup.service",
+            "Before=sysinit.target",
+            "WantedBy=sysinit.target",
         ] {
             assert!(
-                HOME_SUBVOL_SERVICE.contains(unit),
-                "{unit} can write into /var/home and is not ordered after the converger"
+                HOME_SUBVOL_SERVICE.contains(line),
+                "{line} is what keeps a sandboxed unit from racing the converger"
             );
         }
+        // Ordering against individual writers was the wrong shape and is
+        // not to be reintroduced: the units that lose this race do not
+        // write to /var/home, systemd binds it for them, and there are
+        // twenty five of them on a desktop image.
+        assert!(!HOME_SUBVOL_SERVICE.contains("Before=kuma-user-sync.service"));
 
         let dir = tempfile::tempdir().unwrap();
         context("schema_version = 1\n", dir.path());
