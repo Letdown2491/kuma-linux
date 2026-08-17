@@ -506,6 +506,57 @@ pub(crate) mod tests {
         );
     }
 
+    /// SECURITY.md says every release asset is signed with Sigstore, and
+    /// that sentence has already been false once: the ISO was wired up
+    /// unsigned and it took a person reading the workflow to notice. A
+    /// claim in the file people read before trusting you should not
+    /// depend on somebody re-reading a workflow every time an asset is
+    /// added, so the workflow answers for itself here.
+    ///
+    /// Every file handed to `gh release create` or `gh release upload`
+    /// has to be something `cosign sign-blob` signed, or one of the two
+    /// files that ride along with a signed one: its checksum and its
+    /// bundle.
+    #[test]
+    fn every_release_asset_is_signed() {
+        let workflow = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/.github/workflows/release.yml"
+        ))
+        .unwrap();
+
+        // What the signing steps produce a bundle for. Quoted, which is
+        // what separates a command the workflow runs from the one it
+        // quotes at the reader in the release notes.
+        let signed: Vec<&str> = workflow
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("--bundle '"))
+            .filter_map(|r| r.split_once(".bundle'"))
+            .map(|(base, _)| base)
+            .collect();
+        assert!(
+            !signed.is_empty(),
+            "no cosign sign-blob bundle found; has the signing step moved?"
+        );
+
+        // Every asset argument on its own line, which is the shape both
+        // upload sites already have and the only shape this can read.
+        for line in workflow.lines() {
+            let t = line.trim().trim_end_matches('\\').trim();
+            let Some(asset) = t.strip_prefix('\'').and_then(|r| r.strip_suffix('\'')) else {
+                continue;
+            };
+            if !asset.contains(".outputs.name }}") {
+                continue;
+            }
+            let base = asset.trim_end_matches(".sha256").trim_end_matches(".bundle");
+            assert!(
+                signed.contains(&base),
+                "{base} is attached to a release but nothing signs it; SECURITY.md says every release asset is signed"
+            );
+        }
+    }
+
     /// The same trap, one asset over, and a worse one to fall into: the
     /// ISO is what a stranger downloads first, and it is 1.8 GB of it.
     /// The walkthrough leads with that URL, so a rename on either side

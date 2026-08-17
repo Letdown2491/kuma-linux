@@ -19,9 +19,12 @@ signature policy, which could not see the policy going missing.
 
 ### Added
 
-- Releases carry the live ISO. A tag now builds it, signs it with Sigstore
-  like every other release asset, and attaches it to the release that already
-  exists, so downloading kuma and installing kuma are the same page. This was
+- Releases carry the live ISO. A tag builds it, boots it, signs it with
+  Sigstore like every other release asset, and attaches it to the release that
+  already exists, so downloading kuma and installing kuma are the same page.
+  Booting it is not a formality: the same script CI runs starts the ISO under
+  UEFI and asks the live session whether it reached a desktop, so the file on
+  the release page is one that came up rather than one that built. This was
   wired in v0.10.0 and left off, waiting on the job that builds it having a
   run history rather than on a tag being its first real exercise; ci.yml has
   built and booted the ISO on every push to main and on a daily cron since,
