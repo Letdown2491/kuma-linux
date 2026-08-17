@@ -295,7 +295,13 @@ jobs:
                       /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
           cargo build --locked
           ./scripts/smoke.sh --iso --keep niri
-          name="kuma-${{ steps.what.outputs.tag }}-x86_64.iso"
+          # Unversioned for the same reason the binary is, and the reason
+          # binds harder here: this is the asset getting-started links, so
+          # `releases/latest/download/kuma-x86_64.iso` has to keep meaning
+          # the current ISO. The version is not lost. The release page
+          # carries the tag and the installed system says it in
+          # PRETTY_NAME.
+          name="kuma-x86_64.iso"
           mv vm-smoke/niri-iso/KUMA.iso "$name"
           sha256sum "$name" > "$name.sha256"
           echo "name=$name" >> "$GITHUB_OUTPUT"
