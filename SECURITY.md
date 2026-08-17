@@ -42,9 +42,10 @@ it runs on your machine is kuma's, and is worth reporting.
 One short file spans several trust roots, and naming a string is how you opt
 into each:
 
-- **`packages.rpm`** comes from Fedora's repositories. Kuma adds no third-party
-  repositories and provides no way to declare one. Signature checking is dnf's
-  default and kuma never disables it.
+- **`packages.rpm`** comes from Fedora's repositories. You cannot declare a
+  third-party repository; there is no key for it. Signature checking is dnf's
+  default and kuma never disables it, and a name that tries to become a flag
+  (`rpm = ["--nogpgcheck"]`) is rejected before it reaches dnf.
 - **`system.base`**, when set, is trust in whoever publishes that image. Unset,
   kuma composes a base from Fedora's repositories instead, so the trust root is
   the same as for `packages.rpm`.
@@ -63,6 +64,28 @@ Names in these lists are validated before they reach dnf, flatpak, systemctl,
 or brew: no leading dashes, so a name can't become a flag, and no shell
 metacharacters. `rpm = ["--nogpgcheck"]` and `rpm = ["fish; rm -rf /"]` are
 both rejected by `kuma check`.
+
+### Two roots your declaration does not name
+
+Choosing a desktop brings in two package sources beyond Fedora's own, and
+neither appears in the list above because neither is something you asked for by
+name. They are listed here rather than left for you to find in a build log.
+
+- **RPM Fusion**, on every desktop build. Fedora's `mesa-va-drivers` ships with
+  H.264/H.265/VC-1 decode stripped for patent reasons, so video silently falls
+  back to the CPU; kuma installs RPM Fusion's `mesa-va-drivers-freeworld`
+  instead. Getting there means installing `rpmfusion-free-release` from a URL,
+  which is the bootstrap every third-party Fedora repository has: the package
+  that carries the signing key cannot itself be checked against it. dnf reports
+  this as `skipped OpenPGP checks for 1 package`. Everything afterwards,
+  including the driver itself, is checked against RPM Fusion's key.
+- **`fedora-cisco-openh264`**, which Fedora enables by default and which reaches
+  the image because the desktop layer installs weak dependencies. It is hosted
+  by Cisco rather than Fedora.
+
+Both are the same trust decision Fedora Workstation makes for the same reason,
+and a `minimal` declaration reaches neither. If you want a machine that trusts
+only Fedora, declare no desktop.
 
 ## What a build pins
 

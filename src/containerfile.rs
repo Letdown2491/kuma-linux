@@ -2853,6 +2853,29 @@ mod tests {
         assert!(!out.contains("graphical.target"));
     }
 
+    /// SECURITY.md tells the reader that declaring no desktop reaches no
+    /// package source beyond Fedora's. Choosing a desktop is what pulls in
+    /// RPM Fusion, so "which declarations touch a third-party repo" is a
+    /// promise the trust-boundary section makes and this is what keeps it
+    /// true. A regression here would be silent: the image still builds and
+    /// still works, it just quietly trusts one more party than the
+    /// document says it does.
+    #[test]
+    fn only_a_desktop_reaches_a_third_party_repo() {
+        let minimal = generate(&config("schema_version = 1"));
+        assert!(!minimal.contains("rpmfusion"), "a desktopless image reached RPM Fusion");
+        assert!(!minimal.contains("freeworld"));
+        for desktop in ["niri", "cosmic"] {
+            let out = generate(&config(&format!(
+                "schema_version = 1\n[system]\ndesktop = \"{desktop}\"\n"
+            )));
+            assert!(
+                out.contains("rpmfusion-free-release"),
+                "{desktop} lost the freeworld codecs; SECURITY.md still names RPM Fusion"
+            );
+        }
+    }
+
     #[test]
     fn desktop_layer_precedes_user_packages() {
         let out = generate(&config(

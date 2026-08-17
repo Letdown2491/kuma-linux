@@ -5,6 +5,19 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+### Changed
+
+- SECURITY.md names the two package sources a desktop brings in beyond
+  Fedora's own. The trust-boundary section said kuma "adds no third-party
+  repositories", which was true of what a declaration can ask for and
+  false of what kuma itself does: every desktop build adds RPM Fusion for
+  the freeworld video codecs, and `fedora-cisco-openh264` reaches the
+  image as a weak dependency because Fedora enables that repo by default.
+  A reader auditing that section would have concluded neither was on
+  their machine. Both are the same call Fedora Workstation makes, and a
+  declaration with no desktop still reaches neither, which is now a test
+  rather than a claim.
+
 ### Added
 
 - `kuma doctor --report` prints what to attach to a bug report: the
