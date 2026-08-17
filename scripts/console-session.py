@@ -51,14 +51,20 @@ def main() -> int:
     s.connect(path)
     s.settimeout(1.0)
     buf = ""
+    closed = False
     end_at = time.time() + deadline
 
     def pump() -> None:
-        nonlocal buf
+        nonlocal buf, closed
         try:
             data = s.recv(65536)
             if data:
                 buf += data.decode("utf-8", "replace")
+            else:
+                # A zero-length read is the peer hanging up, which here
+                # means qemu exited: the guest is gone and nothing further
+                # can arrive.
+                closed = True
         except socket.timeout:
             pass
 
@@ -66,12 +72,17 @@ def main() -> int:
         while time.time() < end_at:
             if re.search(pattern, buf):
                 return True
+            # Checked after the search, so data delivered by the same
+            # read that saw EOF still counts.
+            if closed:
+                return False
             pump()
         return False
 
     if not wait_for(r"login:"):
         sys.stdout.write(buf)
-        print(f"\nconsole-session: no login prompt within {deadline:.0f}s", file=sys.stderr)
+        why = "the guest exited" if closed else f"no login prompt within {deadline:.0f}s"
+        print(f"\nconsole-session: {why}", file=sys.stderr)
         return 1
     s.sendall((user + "\n").encode())
 
@@ -86,10 +97,20 @@ def main() -> int:
         print("\nconsole-session: the account asked for a password", file=sys.stderr)
         return 1
 
+    # One budget covers both waits, so a slow login leaves the command
+    # less than the full deadline. Reported as what was actually left
+    # rather than as the whole number: "did not finish within 420s" after
+    # a login that ate 400 of them sends the reader after the wrong thing.
+    left = end_at - time.time()
     s.sendall(("\n" + command + "; echo " + END_TYPED + "\n").encode())
     if not wait_for(re.escape(END) + r"\s*\r?\n"):
         sys.stdout.write(buf)
-        print(f"\nconsole-session: command did not finish within {deadline:.0f}s", file=sys.stderr)
+        why = (
+            "the guest exited mid-command"
+            if closed
+            else f"command did not finish in the {left:.0f}s left of a {deadline:.0f}s budget"
+        )
+        print(f"\nconsole-session: {why}", file=sys.stderr)
         return 1
 
     sys.stdout.write(buf)

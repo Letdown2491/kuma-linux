@@ -146,6 +146,39 @@ elif node is not None:
 ' "$1" "$2"
 }
 
+# The UEFI firmware pair, printed as "CODE VARS", or nothing and a
+# non-zero status if this machine has none.
+#
+# Both UEFI stages ask this question and they used to ask it differently.
+# The ISO stage searched for VARS separately from CODE and never named
+# Ubuntu's _4M files, so on a hosted runner it matched none of its six
+# candidates and failed *after* building a 1.8 GB image, with an error
+# telling you to install a package the workflow had already installed.
+# One list, one rule, one place to fix it next time.
+#
+# The _4M names are Ubuntu's and come first because that is what CI runs;
+# the unsuffixed pair is Fedora's. VARS is derived from CODE by name
+# rather than searched for, because the two have to be the same build: a
+# 4M vars file against 2M code does not boot. A candidate whose VARS is
+# missing is skipped rather than fatal, so a half-installed path cannot
+# hide a working one further down the list.
+find_ovmf() {
+    local candidate vars
+    for candidate in /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd \
+                     /usr/share/edk2/ovmf/OVMF_CODE.fd /usr/share/qemu/OVMF_CODE.fd \
+                     /usr/share/edk2-ovmf/x64/OVMF_CODE.fd; do
+        [ -f "$candidate" ] || continue
+        vars=${candidate//CODE/VARS}
+        [ -f "$vars" ] || continue
+        printf '%s %s\n' "$candidate" "$vars"
+        return 0
+    done
+    echo "   .. looked for OVMF in:" >&2
+    ls -1 /usr/share/OVMF /usr/share/edk2/ovmf /usr/share/qemu \
+          /usr/share/edk2-ovmf/x64 2>/dev/null >&2 || true
+    return 1
+}
+
 # --- stage: image ------------------------------------------------------
 # What a successful build already proves is not worth re-asserting (dnf
 # resolved, the lint passed, every RUN test -f held). These are the things
@@ -513,22 +546,11 @@ smoke_published() {
     #
     # VARS is copied because pflash wants it writable, and a per-run copy
     # means EFI boot entries cannot leak from one run into the next.
-    # The _4M names are Ubuntu's and are listed first because that is what
-    # CI runs; the unsuffixed pair is Fedora's. VARS is derived from CODE
-    # by name rather than searched for separately, because the two have to
-    # be the same build: a 4M vars file against 2M code does not boot.
-    local ovmf_code="" ovmf_vars="" candidate
-    for candidate in /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/OVMF/OVMF_CODE.fd \
-                     /usr/share/edk2/ovmf/OVMF_CODE.fd /usr/share/qemu/OVMF_CODE.fd; do
-        [ -f "$candidate" ] && ovmf_code=$candidate && break
-    done
-    if [ -z "$ovmf_code" ]; then
-        echo "   .. looked for OVMF in:" >&2
-        ls -1 /usr/share/OVMF /usr/share/edk2/ovmf /usr/share/qemu 2>/dev/null >&2 || true
-        bad "no OVMF firmware; an installed disk is UEFI and will not boot on SeaBIOS"
-    fi
-    ovmf_vars=${ovmf_code//CODE/VARS}
-    [ -f "$ovmf_vars" ] || bad "found $ovmf_code but no $ovmf_vars beside it"
+    local ovmf ovmf_code ovmf_vars
+    ovmf=$(find_ovmf) \
+        || bad "no OVMF firmware; an installed disk is UEFI and will not boot on SeaBIOS"
+    ovmf_code=${ovmf%% *}
+    ovmf_vars=${ovmf##* }
     cp "$ovmf_vars" "$dir/OVMF_VARS.fd"
 
     # A console that can be typed into, not only read.
@@ -870,17 +892,11 @@ smoke_iso() {
     # UEFI only, deliberately: the ISO carries an EFI System Partition and
     # no BIOS boot image, so a firmware-less qemu silently falls through
     # to "no bootable device" and looks like a broken ISO.
-    local ovmf_code ovmf_vars
-    for c in /usr/share/edk2/ovmf/OVMF_CODE.fd /usr/share/OVMF/OVMF_CODE.fd \
-             /usr/share/edk2-ovmf/x64/OVMF_CODE.fd; do
-        [ -f "$c" ] && { ovmf_code=$c; break; }
-    done
-    for v in /usr/share/edk2/ovmf/OVMF_VARS.fd /usr/share/OVMF/OVMF_VARS.fd \
-             /usr/share/edk2-ovmf/x64/OVMF_VARS.fd; do
-        [ -f "$v" ] && { ovmf_vars=$v; break; }
-    done
-    [ -n "${ovmf_code:-}" ] && [ -n "${ovmf_vars:-}" ] \
+    local ovmf ovmf_code ovmf_vars
+    ovmf=$(find_ovmf) \
         || bad "no OVMF firmware found; the ISO is UEFI-only (install edk2-ovmf or ovmf)"
+    ovmf_code=${ovmf%% *}
+    ovmf_vars=${ovmf##* }
     cp "$ovmf_vars" "$dir/vars.fd"
 
     env LIBGL_ALWAYS_SOFTWARE=1 qemu-system-x86_64 \
@@ -927,7 +943,13 @@ PROBE
     echo "   .. booting the ISO (UEFI, serial console)"
     local out
     if ! out=$(python3 scripts/console-session.py "$sock" liveuser "$probe" 420 2>&1); then
-        printf '%s\n' "$out" | tail -30 >"$log"
+        # The whole transcript to the file, a tail to the terminal. It
+        # used to be the other way round, which truncated the log on the
+        # one path that needs it: a live boot that panics early leaves 30
+        # lines of timeout message in the artifact CI uploads, and the
+        # kernel output explaining it is what got thrown away.
+        printf '%s\n' "$out" >"$log"
+        printf '%s\n' "$out" | tail -30
         kill $qemu 2>/dev/null || true
         bad "the live session never reached a usable console (see $log)"
     fi
