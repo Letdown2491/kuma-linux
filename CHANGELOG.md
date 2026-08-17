@@ -31,6 +31,19 @@ as its release notes.
 
 ### Added
 
+- Every image now refuses an unsigned kuma update. Images carry kuma's
+  signing key at `/etc/pki/containers/kuma.pub` and a
+  `/etc/containers/policy.json` requiring a valid signature for
+  `ghcr.io/letdown2491/kuma`, plus the `registries.d` entry telling
+  containers/image where cosign keeps signatures. Published images have
+  been signed since v0.6.0 and SECURITY.md explained that a key pair was
+  chosen precisely so a policy could name the key, but no policy was ever
+  written, so nothing on any machine checked. `kuma doctor` grades it,
+  because a signature nobody verifies is a claim rather than a control.
+  The rule covers kuma's own repository and nothing else: that file is
+  shared by podman and bootc, so a blanket requirement would refuse
+  Fedora's base on the next update and your own local build on the next
+  switch.
 - `kuma doctor --report` prints what to attach to a bug report: the
   findings `--json` already carries, plus which kuma is running, which
   image is booted and its digest, and the declaration the machine was

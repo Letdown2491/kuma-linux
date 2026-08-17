@@ -131,6 +131,25 @@ workflow, so no policy file can express "signed by kuma's release workflow".
 An image people configure a machine to trust needs a key a policy can name; a
 blob a person verifies once by hand does not.
 
+**Your machine checks that signature without being asked.** Every kuma image
+ships the key at `/etc/pki/containers/kuma.pub` and a `/etc/containers/policy.json`
+requiring a valid kuma signature for `ghcr.io/letdown2491/kuma`, so an update
+that did not come from kuma is refused rather than installed. `kuma doctor`
+grades this, because a signature nobody checks is a claim and not a control.
+
+The rule is deliberately narrow. That policy file is shared by podman and
+bootc, so requiring signatures everywhere would refuse Fedora's base image on
+your next `kuma update` and refuse your own locally built image on your next
+`kuma switch`. Everything other than kuma's own published repository is left
+as it was.
+
+Two consequences worth knowing. The identity is matched at repository level,
+because that is what cosign records: a signature is accepted for
+`ghcr.io/letdown2491/kuma` regardless of which tag you pull, so anything kuma
+signed and published is trusted by any machine tracking that repository. And
+images you build yourself are not signed and are not required to be; they come
+from your own storage, which the policy leaves alone.
+
 Publishing is refused without a signature unless somebody explicitly asks for
 it, and the workflow verifies its own output against the committed public key
 before finishing, because a `cosign.pub` that does not match the signing

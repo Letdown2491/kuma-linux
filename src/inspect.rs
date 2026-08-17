@@ -694,6 +694,7 @@ pub fn doctor(json: bool, as_report: bool) -> Result<()> {
         );
     }
 
+    check_signature_policy(&mut report);
     check_gpu(&mut report);
     check_build_leftovers(&mut report);
 
@@ -1630,6 +1631,89 @@ fn check_encryption(report: &mut impl FnMut(Grade, &str, String, Option<Action>)
         ),
         None => {}
     }
+}
+
+/// Does this machine actually refuse an unsigned kuma image?
+///
+/// SECURITY.md says published images are signed, and a signature nobody
+/// checks is a claim rather than a control. The check is the policy file
+/// as the machine will really read it, not kuma's intent: an image built
+/// before this shipped, or a hand-edited policy, both land here.
+fn check_signature_policy(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
+    let (repo, _) = crate::PUBLISHED_IMAGE.rsplit_once(':').unwrap_or((crate::PUBLISHED_IMAGE, ""));
+    let rebuild =
+        || Some(Action::new("rebuild", "kuma update", "rebuild on an image that ships the policy"));
+    let Ok(text) = std::fs::read_to_string("/etc/containers/policy.json") else {
+        report(
+            Grade::Warn,
+            "signatures",
+            "no container signature policy; kuma's published images would not be verified".into(),
+            rebuild(),
+        );
+        return;
+    };
+    let Ok(policy) = serde_json::from_str::<serde_json::Value>(&text) else {
+        report(Grade::Warn, "signatures", "cannot parse /etc/containers/policy.json".into(), None);
+        return;
+    };
+    let rule = policy.pointer(&format!("/transports/docker/{repo}"));
+    let signed = rule.and_then(|r| r.as_array()).is_some_and(|rules| {
+        rules.iter().any(|r| r.get("type").and_then(|t| t.as_str()) == Some("sigstoreSigned"))
+    });
+    if !signed {
+        report(
+            Grade::Warn,
+            "signatures",
+            format!("{repo} is not required to be signed by this machine's policy"),
+            rebuild(),
+        );
+        return;
+    }
+    // A rule naming a key that is not there fails closed at pull time,
+    // which is safe but arrives as a confusing error during an update
+    // rather than as an answer here.
+    let key = rule
+        .and_then(|r| r.as_array())
+        .and_then(|rules| rules.first())
+        .and_then(|r| r.get("keyPath"))
+        .and_then(|k| k.as_str())
+        .unwrap_or(crate::containerfile::COSIGN_PUB_PATH);
+    if !Path::new(key).exists() {
+        report(
+            Grade::Fail,
+            "signatures",
+            format!("policy requires a signature for {repo} but its key is missing ({key})"),
+            rebuild(),
+        );
+        return;
+    }
+    // The other half of the pair. cosign stores a signature as a separate
+    // tag beside the image, and without this the policy has nothing to
+    // check and refuses every pull.
+    let attachments = std::fs::read_dir("/etc/containers/registries.d")
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                std::fs::read_to_string(e.path())
+                    .map(|t| t.contains("use-sigstore-attachments") && t.contains(repo))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+    if !attachments {
+        report(
+            Grade::Fail,
+            "signatures",
+            format!("policy requires a signature for {repo} but nothing tells it where signatures live; updates would be refused"),
+            rebuild(),
+        );
+        return;
+    }
+    report(
+        Grade::Ok,
+        "signatures",
+        format!("{repo} must carry kuma's signature; unsigned images are refused"),
+        None,
+    );
 }
 
 fn check_gpu(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {

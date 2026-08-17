@@ -187,6 +187,65 @@ const COSMIC_BACKGROUND: &str = r#"(
 )
 "#;
 
+/// kuma's own signing key, baked into the binary so that any build has
+/// it. A build runs from the binary and not from a checkout, so reading
+/// the repository's copy at build time would work only for people who
+/// have the repository.
+pub const COSIGN_PUB: &str = include_str!("../cosign.pub");
+
+/// Where the key lands in the image. Under /etc/pki/containers because
+/// that is where a policy can name it and where an administrator would
+/// look for it.
+pub const COSIGN_PUB_PATH: &str = "/etc/pki/containers/kuma.pub";
+
+/// Require a signature for kuma's own published images, and nothing else.
+///
+/// The narrow rule is the point. This file is shared by podman and bootc,
+/// so a blanket requirement would refuse Fedora's base image on the next
+/// `kuma update` and refuse the machine's own locally built images on the
+/// next `kuma switch`. What it buys, scoped this way, is that the one
+/// registry kuma tells strangers to install from cannot serve them
+/// something kuma did not sign.
+///
+/// `matchRepository`, not `matchRepoDigestOrExact`, and this was measured
+/// rather than chosen: cosign records the identity as the bare repository
+/// (`ghcr.io/letdown2491/kuma`, no tag), so an exact match can never
+/// succeed and the policy would reject every image kuma has ever
+/// published. Verified against the live registry in both directions, with
+/// the real key and with a wrong one.
+fn signature_policy() -> String {
+    let (repo, _) = crate::PUBLISHED_IMAGE.rsplit_once(':').unwrap_or((crate::PUBLISHED_IMAGE, ""));
+    format!(
+        r#"{{
+  "default": [{{"type": "insecureAcceptAnything"}}],
+  "transports": {{
+    "docker": {{
+      "{repo}": [
+        {{
+          "type": "sigstoreSigned",
+          "keyPath": "{COSIGN_PUB_PATH}",
+          "signedIdentity": {{"type": "matchRepository"}}
+        }}
+      ]
+    }},
+    "containers-storage": {{"": [{{"type": "insecureAcceptAnything"}}]}},
+    "docker-daemon": {{"": [{{"type": "insecureAcceptAnything"}}]}},
+    "dir": {{"": [{{"type": "insecureAcceptAnything"}}]}},
+    "oci": {{"": [{{"type": "insecureAcceptAnything"}}]}}
+  }}
+}}
+"#
+    )
+}
+
+/// Without this the policy above cannot find anything to verify: cosign
+/// stores a signature as a separate `sha256-<digest>.sig` tag beside the
+/// image, and containers/image only looks there when told to.
+fn registries_d() -> String {
+    let (repo, _) = crate::PUBLISHED_IMAGE.rsplit_once(':').unwrap_or((crate::PUBLISHED_IMAGE, ""));
+    format!("docker:\n  {repo}:\n    use-sigstore-attachments: true\n")
+}
+
 /// Fedora's mesa VA-API driver ships with H.264/H.265/VC-1 decode
 /// stripped (patents), so video silently falls back to CPU. RPM
 /// Fusion's freeworld build restores it; --allowerasing swaps out
@@ -1946,6 +2005,15 @@ pub fn generate(config: &Config) -> String {
         "RUN systemctl enable greenboot-healthcheck.service greenboot-set-rollback-trigger.service greenboot-success.target kuma-boot-health-sync.service kuma-fstab-sync.service\n",
     );
 
+    // What the machine will and will not accept from a registry. On every
+    // image rather than only on published ones: the machine that needs
+    // this is the one that installed from the published image and then
+    // updates from it, and that machine's /etc comes from whatever image
+    // it was installed from.
+    out.push_str(&format!("\nCOPY cosign.pub {COSIGN_PUB_PATH}\n"));
+    out.push_str("COPY containers-policy.json /etc/containers/policy.json\n");
+    out.push_str("COPY kuma-sigstore.yaml /etc/containers/registries.d/kuma-sigstore.yaml\n");
+
     // Refreshes LVFS metadata only; it never applies a firmware update on
     // its own. Applying stays a deliberate act — `fwupdmgr update`, or the
     // org.gnome.Firmware flatpak the examples declare, which drives this
@@ -2134,6 +2202,9 @@ pub fn write_context(
     std::fs::write(dir.join("kuma-boot-health-sync.service"), BOOT_HEALTH_SYNC_SERVICE)?;
     std::fs::write(dir.join("kuma-fstab-sync"), FSTAB_SYNC_SCRIPT)?;
     std::fs::write(dir.join("kuma-fstab-sync.service"), FSTAB_SYNC_SERVICE)?;
+    std::fs::write(dir.join("containers-policy.json"), signature_policy())?;
+    std::fs::write(dir.join("kuma-sigstore.yaml"), registries_d())?;
+    std::fs::write(dir.join("cosign.pub"), COSIGN_PUB)?;
     // Identity, wallpaper, and kargs ship with every desktop; the rest
     // of the niri block is glue COSMIC provides natively.
     if config.system.desktop != Desktop::None {
@@ -2851,6 +2922,74 @@ mod tests {
         let out = generate(&config("schema_version = 1"));
         assert!(!out.contains("greetd"));
         assert!(!out.contains("graphical.target"));
+    }
+
+    /// The policy is the one thing here that fails closed in production
+    /// and nowhere else: get it wrong and every `bootc upgrade` from the
+    /// published image is refused, on machines belonging to people who
+    /// did not build it. So the shipped bytes are pinned rather than
+    /// described.
+    ///
+    /// `matchRepository` is the field that was wrong first and is the
+    /// reason this test is exact. cosign records the signed identity as
+    /// the bare repository with no tag, so `matchRepoDigestOrExact` —
+    /// the obvious choice, and the one initially written — rejects every
+    /// image kuma has ever published. Verified against the live registry
+    /// with the real key (accepted) and a wrong key (refused).
+    #[test]
+    fn the_signature_policy_is_the_one_that_was_verified() {
+        let policy = signature_policy();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&policy).expect("policy.json must be valid JSON");
+
+        let repo = "ghcr.io/letdown2491/kuma";
+        let rule = &parsed["transports"]["docker"][repo][0];
+        assert_eq!(rule["type"], "sigstoreSigned");
+        assert_eq!(rule["keyPath"], COSIGN_PUB_PATH);
+        assert_eq!(
+            rule["signedIdentity"]["type"], "matchRepository",
+            "cosign signs the bare repository; any stricter identity rejects every published image"
+        );
+
+        // Everything else stays permissive on purpose. This file is
+        // shared by podman and bootc, so a blanket requirement refuses
+        // Fedora's base on the next update and the machine's own local
+        // build on the next switch.
+        assert_eq!(parsed["default"][0]["type"], "insecureAcceptAnything");
+        for transport in ["containers-storage", "docker-daemon", "dir", "oci"] {
+            assert_eq!(
+                parsed["transports"][transport][""][0]["type"], "insecureAcceptAnything",
+                "{transport} must stay permissive or local images stop working"
+            );
+        }
+        assert!(
+            parsed["transports"]["docker"].get("").is_none(),
+            "a catch-all docker rule would require signatures from every registry"
+        );
+
+        // The other half of the pair: without this the policy has nothing
+        // to look at, because cosign stores signatures as a separate tag.
+        let rd = registries_d();
+        assert!(rd.contains("use-sigstore-attachments: true"));
+        assert!(rd.contains(repo));
+    }
+
+    /// The key has to be in the binary, because a build runs from the
+    /// binary and not from a checkout.
+    #[test]
+    fn the_signing_key_ships_in_every_image() {
+        assert!(COSIGN_PUB.contains("BEGIN PUBLIC KEY"));
+        let out = generate(&config("schema_version = 1"));
+        assert!(out.contains(&format!("COPY cosign.pub {COSIGN_PUB_PATH}")));
+        assert!(out.contains("COPY containers-policy.json /etc/containers/policy.json"));
+        assert!(out.contains("registries.d/kuma-sigstore.yaml"));
+
+        let dir = tempfile::tempdir().unwrap();
+        context("schema_version = 1\n", dir.path());
+        let shipped = std::fs::read_to_string(dir.path().join("cosign.pub")).unwrap();
+        assert_eq!(shipped, COSIGN_PUB, "the image must carry the key the policy names");
+        let policy = std::fs::read_to_string(dir.path().join("containers-policy.json")).unwrap();
+        assert_eq!(policy, signature_policy());
     }
 
     /// SECURITY.md tells the reader that declaring no desktop reaches no
