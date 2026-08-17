@@ -10,13 +10,9 @@ as its release notes.
 CI boots and installs what it builds, so a release no longer rests on
 somebody having booted it by hand.
 
-Two first-boot failures are known and open, both found by these checks and
-neither introduced by them. `kuma-home-subvol` fails rather than declines on
-roughly one first boot in thirty, leaving `/var/home` an ordinary directory
-permanently; `firewalld.service` fails on a similar fraction. Both leave a
-machine that boots and passes its health check, and `kuma doctor` reports
-each of them. Neither is understood yet, and the checks that found them now
-collect the machine's own account of the next occurrence.
+The first thing those checks found was a race that had been shipping for
+several releases, on a fraction of first boots, in two directions that
+looked like unrelated bugs.
 
 ### Added
 
@@ -90,22 +86,32 @@ collect the machine's own account of the next occurrence.
   status icon goes. Disabling `StatusIcon` alone does nothing, because
   `ShowConnected` depends on it and the plugin manager loads a dependency
   whether or not it was disabled.
-- `kuma-home-subvol` says why it declined, and searches for the root
-  filesystem the way the rest of kuma does. Declining is the right answer
-  on every boot after the first, and it was a silent `exit 0`, so a boot
-  where the converger should have acted and did not looked exactly like a
-  boot where it correctly did nothing: the unit succeeded either way and
-  the only difference was an inode nobody reads. It also asks `findmnt`
-  for one line, because that command prints a line per mount when
-  anything is stacked at or under the path and a two-line answer never
-  equals `btrfs`. It is now ordered before every unit that could write
-  into `/var/home` rather than the three originally named, and an
-  ordering cycle is checked for, since systemd resolves one by deleting a
-  job and that job could be this one. **The underlying failure is not
-  understood.** On roughly one first boot in thirty the unit fails rather
-  than declines, leaving `/var/home` an ordinary directory permanently,
-  which `kuma doctor` reports and nothing else did. The converger now
-  names the command it died on when that happens.
+- `kuma-home-subvol` and `firewalld` no longer race for `/var/home`, and
+  they were one bug rather than the two they looked like. Making
+  `/var/home` a subvolume means `rmdir` and then `btrfs subvolume
+  create`, and between those two commands the directory does not exist.
+  Twenty five units on a desktop image carry `ProtectHome`, which has
+  systemd mount something over `/var/home` before the service starts, so
+  the window had two losers. When the converger won, firewalld started
+  into a missing directory and died with `226/NAMESPACE`. When a
+  sandboxed unit won, its mount pinned the directory, `rmdir` failed with
+  `EBUSY`, the converger died, and `/var/home` stayed an ordinary
+  directory for the life of the machine, which costs `[snapshots]`
+  everything and reports nothing beyond `kuma doctor`. The converger now
+  runs in the slot after `systemd-tmpfiles-setup` and before
+  `sysinit.target`, which closes the window against all of them at once,
+  including the three that start too early for any `multi-user.target`
+  ordering to have reached. Ordering it against individual writers was
+  the first attempt and the wrong shape: those units do not write to
+  `/var/home`, systemd binds it for them.
+- `kuma-home-subvol` says why it declined, and asks `findmnt` for one
+  line. Declining is the right answer on every boot after the first, and
+  it was a silent `exit 0`, so a boot where the converger should have
+  acted and did not looked exactly like a boot where it correctly did
+  nothing: the unit succeeded either way and the only difference was an
+  inode nobody reads. The one-line answer matters because `findmnt`
+  prints a line per mount when anything is stacked at or under the path,
+  and a two-line answer never equals `btrfs`.
 - Two session services had two launch paths each. `xdg-desktop-autostart`
   is active in the niri session, so Fedora's autostart entries for blueman
   and the mate polkit agent became units while `niri-extras.kdl` also

@@ -78,14 +78,6 @@ jobs:
   fix-verification:
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    # TEMPORARY SOAK, REMOVE BEFORE MERGING. The race this branch fixes
-    # fires on roughly one first boot in thirty, so one green run proves
-    # nothing. Twelve is a ~1-in-3 chance of catching it if it is still
-    # there, which is the honest bound on what a soak this size can say.
-    strategy:
-      fail-fast: false
-      matrix:
-        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
