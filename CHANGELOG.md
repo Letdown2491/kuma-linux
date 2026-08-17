@@ -5,121 +5,120 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
-### Changed
+## v0.10.0 (2026-08-17)
 
-- The README says kuma has only ever been booted on AMD graphics.
-  Images carry Intel and NVIDIA firmware, i915, xe and nouveau, and
-  Intel's Mesa and Vulkan drivers, and CI boots every build on a virtio
-  GPU, but none of that is a report from somebody whose laptop has Intel
-  graphics in it. A test now pins the Intel and Broadcom firmware by name
-  rather than by iterating the list it is checking, which is how the
-  previous version of this passed while every Intel laptop booted with no
-  wireless and no sound.
-- The walkthrough says what the machine now does, and its example
-  declaration is checked by a test rather than by whoever reads it next.
-  It also states plainly that there is no ISO to download yet: CI builds
-  one on every push and boots it, and nothing publishes it, so media is
-  still something you build.
-- The live ISO's boot menu carries a serial console, and no longer
-  prints an error before it. `load_video` is a function Fedora's own
-  grub.cfg defines rather than a grub builtin, so calling it produced
-  `can't find command 'load_video'` on every boot of the installer media,
-  which is the first thing a person sees when they try kuma;
-  `insmod all_video` already does that work. `console=ttyS0,115200
-  console=tty0` on both entries makes a live boot readable in a VM, which
-  is where `kuma iso` tells people to try it, and tty0 comes last so the
-  screen stays the primary console on real hardware.
-- `kuma update` says when it is about to change your Fedora release, and
-  `kuma update --check` says which release you are on. A Fedora major
-  showed up in the lock diff as several hundred package lines and nothing
-  that named the release, so the largest change kuma can make to a
-  machine was the one it described least. The line prints after the diff
-  and before the staging gate, so it is visible while nothing is staged
-  and `--yes` is still required. Both numbers are read out of the images
-  themselves rather than from their tags, because `fedora-bootc:45` is
-  not a promise that what is inside came from Fedora 45: a branched
-  release carries rawhide's repo definitions for a while, and composing
-  "from 45" can produce a base that calls itself 46.
-- SECURITY.md names the two package sources a desktop brings in beyond
-  Fedora's own. The trust-boundary section said kuma "adds no third-party
-  repositories", which was true of what a declaration can ask for and
-  false of what kuma itself does: every desktop build adds RPM Fusion for
-  the freeworld video codecs, and `fedora-cisco-openh264` reaches the
-  image as a weak dependency because Fedora enables that repo by default.
-  A reader auditing that section would have concluded neither was on
-  their machine. Both are the same call Fedora Workstation makes, and a
-  declaration with no desktop still reaches neither, which is now a test
-  rather than a claim.
+The artifact a stranger downloads is built and booted by CI rather than by
+hand on one laptop, an update that did not come from this project is refused
+rather than installed, and a machine that would not boot has something to
+paste.
+
+Fedora 45 also moved two things underneath this release, and both were found
+by building against it rather than by reading its release notes.
 
 ### Added
 
-- CI builds the live ISO, boots it, and keeps it as an artifact. The ISO
-  is the one thing a stranger downloads and was the one thing built by
-  hand on a single laptop, so its failures were found by whoever tried it
-  next. `scripts/smoke.sh --iso` builds it, refuses one too big to ride a
-  GitHub release asset (1.77 GB against a 2 GB cap, and every desktop
-  package spends the difference), boots it under UEFI, and asks the live
-  session whether it is actually running: systemd healthy, no failed
-  units, a graphical session on seat0, greetd and niri both up.
-  It asks over the serial console because installer media has no disk to
-  inspect and its account has no password for ssh to use. Attaching the
-  ISO to a release is wired but off by default, waiting on this job
-  having a run history rather than on a tag being the first real test.
+- CI builds the live ISO, boots it, and keeps it as an artifact. The ISO is
+  the one thing a stranger downloads and was the one thing built by hand on a
+  single laptop, so its failures were found by whoever tried it next.
+  `scripts/smoke.sh --iso` builds it, refuses one too big to ride a GitHub
+  release asset (1.77 GB against a 2 GB cap, and every desktop package spends
+  the difference), boots it under UEFI, and asks the live session whether it
+  is actually running: systemd healthy, no failed units, a graphical session
+  on seat0, greetd and niri both up. It asks over the serial console because
+  installer media has no disk to inspect and its account has no password for
+  ssh to use. Attaching the ISO to a release is wired but off by default,
+  waiting on this job having a run history rather than on a tag being the
+  first real test.
 - Every image now refuses an unsigned kuma update. Images carry kuma's
   signing key at `/etc/pki/containers/kuma.pub` and a
   `/etc/containers/policy.json` requiring a valid signature for
   `ghcr.io/letdown2491/kuma`, plus the `registries.d` entry telling
-  containers/image where cosign keeps signatures. Published images have
-  been signed since v0.6.0 and SECURITY.md explained that a key pair was
-  chosen precisely so a policy could name the key, but no policy was ever
-  written, so nothing on any machine checked. `kuma doctor` grades it,
-  because a signature nobody verifies is a claim rather than a control.
-  The rule covers kuma's own repository and nothing else: that file is
-  shared by podman and bootc, so a blanket requirement would refuse
-  Fedora's base on the next update and your own local build on the next
-  switch.
-- `kuma doctor --report` prints what to attach to a bug report: the
-  findings `--json` already carries, plus which kuma is running, which
-  image is booted and its digest, and the declaration the machine was
-  built from. Those last three are the questions always asked first and
-  the ones `--json` did not answer, which left a stranger whose machine
-  did not boot with nothing useful to paste.
-  `user.password_hash` is removed, by parsing rather than by rewriting
-  lines, because the value can be quoted four ways and a report is pasted
-  by somebody who will not read it first. A declaration kuma cannot parse
-  is omitted rather than pasted raw: not being able to redact a file is
+  containers/image where cosign keeps signatures. Published images have been
+  signed since v0.6.0 and SECURITY.md explained that a key pair was chosen
+  precisely so a policy could name the key, but no policy was ever written,
+  so nothing on any machine checked. `kuma doctor` grades it, because a
+  signature nobody verifies is a claim rather than a control. The rule covers
+  kuma's own repository and nothing else: that file is shared by podman and
+  bootc, so a blanket requirement would refuse Fedora's base on the next
+  update and your own local build on the next switch.
+- `kuma doctor --report` prints what to attach to a bug report: the findings
+  `--json` already carries, plus which kuma is running, which image is booted
+  and its digest, and the declaration the machine was built from. Those last
+  three are the questions always asked first and the ones `--json` did not
+  answer, which left a stranger whose machine did not boot with nothing
+  useful to paste. `user.password_hash` is removed, by parsing rather than by
+  rewriting lines, because the value can be quoted four ways and a report is
+  pasted by somebody who will not read it first. A declaration kuma cannot
+  parse is omitted rather than pasted raw: not being able to redact a file is
   not a reason to publish it.
+- Fedora 45 bases are named Callisto, after the nymph Zeus placed in the sky
+  as Ursa Major. Bear names follow the alphabet where a letter has a name
+  worth using.
 
 ### Changed
 
 - A machine now says which kuma built it: `PRETTY_NAME` is
   `Kuma <version> (<bear>)` rather than `Kuma (<bear>)`, and `VERSION`
-  matches it. The old wording dropped the number on the grounds that kuma
-  had no version of its own, which stopped being true once releases were
-  tagged. `VERSION_ID` is untouched and stays Fedora's, because toolbox,
-  distrobox and COPR resolve against it.
+  matches it. The old wording dropped the number on the grounds that kuma had
+  no version of its own, which stopped being true once releases were tagged.
+  `VERSION_ID` is untouched and stays Fedora's, because toolbox, distrobox
+  and COPR resolve against it.
 - `VERSION` is rewritten even when no bear matches the base. Left alone it
   kept Fedora's own string, so an image built on a branched base announced
-  itself as `45 (Rawhide Prerelease)` while calling itself Kuma
-  everywhere else.
-- Both Font Awesome faces now arrive through `fontawesome-fonts-all`
-  instead of being named per face. The per-face package names carry the
-  major version, which changed under us (`fontawesome-6-*` became
-  `fontawesome-7-*` in Fedora 45) and would have failed the build. The
-  metapackage's name does not, it pulls exactly the same two packages, and
-  it owns no files. Font Awesome 7 is also about a megabyte smaller
-  installed than 6.
-- waybar's stylesheet lists both Font Awesome generations in its font
-  stack. Family names carry the major version too and that one is baked
-  into the font's own metadata, so no package choice avoids it. Getting it
-  wrong does not fail a build; it silently drops every icon in the bar to
-  the fallback sans.
-
-### Added
-
-- Fedora 45 bases are named Callisto, after the nymph Zeus placed in the
-  sky as Ursa Major. Bear names follow the alphabet where a letter has a
-  name worth using.
+  itself as `45 (Rawhide Prerelease)` while calling itself Kuma everywhere
+  else.
+- `kuma update` says when it is about to change your Fedora release, and
+  `kuma update --check` says which release you are on. A Fedora major showed
+  up in the lock diff as several hundred package lines and nothing that named
+  the release, so the largest change kuma can make to a machine was the one
+  it described least. The line prints after the diff and before the staging
+  gate, so it is visible while nothing is staged and `--yes` is still
+  required. Both numbers are read out of the images themselves rather than
+  from their tags, because `fedora-bootc:45` is not a promise that what is
+  inside came from Fedora 45: a branched release carries rawhide's repo
+  definitions for a while, and composing "from 45" can produce a base that
+  calls itself 46.
+- Both Font Awesome faces now arrive through `fontawesome-fonts-all` instead
+  of being named per face. The per-face package names carry the major
+  version, which changed under us (`fontawesome-6-*` became `fontawesome-7-*`
+  in Fedora 45) and would have failed the build. The metapackage's name does
+  not, it pulls exactly the same two packages, and it owns no files. Font
+  Awesome 7 is also about a megabyte smaller installed than 6.
+- waybar's stylesheet lists both Font Awesome generations in its font stack.
+  Family names carry the major version too and that one is baked into the
+  font's own metadata, so no package choice avoids it. Getting it wrong does
+  not fail a build; it silently drops every icon in the bar to the fallback
+  sans.
+- The live ISO's boot menu carries a serial console, and no longer prints an
+  error before it. `load_video` is a function Fedora's own grub.cfg defines
+  rather than a grub builtin, so calling it produced `can't find command
+  'load_video'` on every boot of the installer media, which is the first
+  thing a person sees when they try kuma; `insmod all_video` already does
+  that work. `console=ttyS0,115200 console=tty0` on both entries makes a live
+  boot readable in a VM, which is where `kuma iso` tells people to try it,
+  and tty0 comes last so the screen stays the primary console on real
+  hardware.
+- SECURITY.md names the two package sources a desktop brings in beyond
+  Fedora's own. The trust-boundary section said kuma "adds no third-party
+  repositories", which was true of what a declaration can ask for and false
+  of what kuma itself does: every desktop build adds RPM Fusion for the
+  freeworld video codecs, and `fedora-cisco-openh264` reaches the image as a
+  weak dependency because Fedora enables that repo by default. A reader
+  auditing that section would have concluded neither was on their machine.
+  Both are the same call Fedora Workstation makes, and a declaration with no
+  desktop still reaches neither, which is now a test rather than a claim.
+- The README says kuma has only ever been booted on AMD graphics. Images
+  carry Intel and NVIDIA firmware, i915, xe and nouveau, and Intel's Mesa and
+  Vulkan drivers, and CI boots every build on a virtio GPU, but none of that
+  is a report from somebody whose laptop has Intel graphics in it. A test now
+  pins the Intel and Broadcom firmware by name rather than by iterating the
+  list it is checking, which is how the previous version of this passed while
+  every Intel laptop booted with no wireless and no sound.
+- The walkthrough says what the machine now does, and its example declaration
+  is checked by a test rather than by whoever reads it next. It also states
+  plainly that there is no ISO to download yet: CI builds one on every push
+  and boots it, and nothing publishes it, so media is still something you
+  build.
 
 ## v0.9.0 (2026-08-16)
 
