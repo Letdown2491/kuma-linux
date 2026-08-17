@@ -506,6 +506,48 @@ pub(crate) mod tests {
         );
     }
 
+    /// The same trap, one asset over, and a worse one to fall into: the
+    /// ISO is what a stranger downloads first, and it is 1.8 GB of it.
+    /// The walkthrough leads with that URL, so a rename on either side
+    /// makes step one of getting started a 404.
+    ///
+    /// Unversioned for the same reason the binary is, and pinned here for
+    /// the same reason: putting the version back would break every
+    /// `releases/latest/download/` link silently, one release later.
+    #[test]
+    fn the_docs_download_the_iso_the_release_workflow_publishes() {
+        let workflow = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/.github/workflows/release.yml"
+        ))
+        .unwrap();
+        let asset = workflow
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("name=\"").map(|r| r.trim_end_matches('"')))
+            .expect("the release workflow names its ISO asset");
+        assert!(asset.ends_with(".iso"), "expected an ISO asset name, got {asset}");
+        assert!(
+            !asset.contains("${{"),
+            "the ISO asset name is unversioned, so the docs can hold a latest/download URL: {asset}"
+        );
+
+        let url = format!("releases/latest/download/{asset}");
+        for doc in ["README.md", "docs/getting-started.md"] {
+            let text =
+                std::fs::read_to_string(format!("{}/{doc}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+            assert!(text.contains(&url), "{doc} should download {asset} from the latest release");
+        }
+
+        // Same standard the binary is held to: a verify command naming a
+        // file nobody has reads as a check that passed.
+        let security =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/SECURITY.md")).unwrap();
+        assert!(
+            security.contains(&format!("{asset}.bundle")),
+            "SECURITY.md should verify {asset} against its bundle"
+        );
+    }
+
     /// The release workflow pulls a tag's notes out of CHANGELOG.md and
     /// refuses to publish without them, which is what stops the file
     /// rotting. That check runs after the tag exists, and a tag is the one

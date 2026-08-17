@@ -116,6 +116,21 @@ it goes on to build the filesystem you boot. That is the same command every
 release's notes carry, deliberately: a release's notes cannot be corrected
 once people have them, so the two say one thing.
 
+The installer media on the same page is signed the same way:
+
+```console
+$ cosign verify-blob \
+    --bundle kuma-x86_64.iso.bundle \
+    --certificate-identity-regexp '^https://github.com/Letdown2491/kuma-linux/' \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    kuma-x86_64.iso
+```
+
+Worth more, if anything. The binary builds a system you then choose to boot;
+this file boots one directly, on hardware, before you have anything to
+inspect it with. The `.sha256` beside it is not a substitute, because it is
+served from the same page: whatever could replace one could replace both.
+
 Published images are signed with a key pair instead, and `cosign.pub` in this
 repository is the public half:
 

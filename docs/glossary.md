@@ -51,6 +51,10 @@ into your home directory rather than into the system. Kuma's
 system. If it fails three times, the bootloader falls back to the previous
 deployment on its own.
 
+**Installer media.** The USB stick a machine boots to be installed. Kuma's is
+live: its root filesystem is the desktop image itself, so what you look at
+before installing is what you get, and nothing is written until you say so.
+
 **LUKS.** Linux disk encryption. `kuma install` can put the root filesystem
 inside a LUKS container, which the machine unlocks with a passphrase at
 every boot.

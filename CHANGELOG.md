@@ -5,6 +5,18 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+## v0.11.0 (2026-08-18)
+
+The media is a download. v0.10.0 built the ISO in CI and booted it on every
+push to prove it could, and left attaching it to a release switched off until
+that job had a history rather than a first day; it has one, so a release now
+carries the thing you write to a USB stick. The walkthrough leads with it,
+because "describe a machine, build an image, then make your own media" was the
+order a project with nothing to download had to teach.
+
+One thing the release also fixes is the assertion that guards v0.10.0's
+signature policy, which could not see the policy going missing.
+
 ### Added
 
 - Releases carry the live ISO. A tag now builds it, signs it with Sigstore
