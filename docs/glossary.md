@@ -66,6 +66,12 @@ does is podman doing ordinary work, and it needs no root.
 **rpm.** A Fedora package. Kuma's `packages.rpm` list becomes part of the
 system image, so changing it means building a new image and rebooting.
 
+**Signature.** Proof that an image was published by this project rather
+than by whoever else could reach the registry. Every image carries kuma's
+signing key and a policy requiring it, so an update whose signature does not
+check out is refused instead of installed, and `kuma doctor` grades the
+policy rather than trusting that it is there.
+
 **Snapshot.** A read-only copy of `/var/home` as it was at a moment, taken
 hourly when `[snapshots]` is enabled. Cheap, because btrfs shares the
 unchanged data rather than copying it.
