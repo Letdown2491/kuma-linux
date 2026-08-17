@@ -214,7 +214,7 @@ pub const COSIGN_PUB_PATH: &str = "/etc/pki/containers/kuma.pub";
 /// published. Verified against the live registry in both directions, with
 /// the real key and with a wrong one.
 pub(crate) fn signature_policy() -> String {
-    let (repo, _) = crate::PUBLISHED_IMAGE.rsplit_once(':').unwrap_or((crate::PUBLISHED_IMAGE, ""));
+    let repo = crate::published_repo();
     format!(
         r#"{{
   "default": [{{"type": "insecureAcceptAnything"}}],
@@ -241,8 +241,8 @@ pub(crate) fn signature_policy() -> String {
 /// Without this the policy above cannot find anything to verify: cosign
 /// stores a signature as a separate `sha256-<digest>.sig` tag beside the
 /// image, and containers/image only looks there when told to.
-fn registries_d() -> String {
-    let (repo, _) = crate::PUBLISHED_IMAGE.rsplit_once(':').unwrap_or((crate::PUBLISHED_IMAGE, ""));
+pub(crate) fn registries_d() -> String {
+    let repo = crate::published_repo();
     format!("docker:\n  {repo}:\n    use-sigstore-attachments: true\n")
 }
 

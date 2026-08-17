@@ -38,6 +38,19 @@ pub(crate) const DEFAULT_TAG: &str = "localhost/kuma:latest";
 /// somebody trying to install.
 pub(crate) const PUBLISHED_IMAGE: &str = "ghcr.io/letdown2491/kuma:niri";
 
+/// The same image without its tag, which is the name the signature
+/// machinery works in: cosign records the signed identity as the bare
+/// repository, the policy stanza is keyed by it, and the registries.d
+/// entry that says where signatures live is keyed by it again.
+///
+/// Derived once rather than at each site. Three copies of one
+/// `rsplit_once` is three chances for the policy to require a signature
+/// for a name the grader does not look under, which is the shape of a bug
+/// this feature has already produced once.
+pub(crate) fn published_repo() -> &'static str {
+    PUBLISHED_IMAGE.rsplit_once(':').map_or(PUBLISHED_IMAGE, |(repo, _)| repo)
+}
+
 /// The root filesystem bib puts in the disks it builds. Required at all
 /// because fedora-bootc images declare no default and bib fails with
 /// "missing required info: DefaultRootFs" without one.
@@ -2924,6 +2937,23 @@ mod tests {
     /// out of step and `kuma install` defaults to a ref that does not
     /// exist, which is discovered by somebody trying to install rather
     /// than by anything here.
+    /// Three places key work off the repository without its tag — the
+    /// policy stanza, the registries.d scope and doctor's lookup — and
+    /// they have to spell it the same way or the machine requires a
+    /// signature under a name nothing grades. They share one derivation
+    /// now; this pins what it derives.
+    #[test]
+    fn the_published_repo_is_the_published_image_without_its_tag() {
+        let repo = super::published_repo();
+        assert!(!repo.is_empty());
+        assert!(super::PUBLISHED_IMAGE.starts_with(repo));
+        assert!(
+            super::PUBLISHED_IMAGE[repo.len()..].starts_with(':'),
+            "published_repo left something other than a tag behind"
+        );
+        assert!(!repo.contains(':'), "a tag survived into the repository name");
+    }
+
     /// Reading an image's os-release must never be able to fetch one.
     /// podman's default is `--pull=missing`, and with it `update --check`
     /// downloads a base it documents itself as not pulling, while

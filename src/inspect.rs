@@ -835,31 +835,63 @@ fn declaration_for_report() -> serde_json::Value {
     }
 }
 
+const REDACTED: &str = "<redacted by kuma doctor --report>";
+
+/// Keys whose value is never safe to paste into a bug report.
+///
+/// `password_hash` is the only one the schema has today. The rest are
+/// named ahead of themselves: a report is pasted by somebody who will not
+/// read it first, so the list is the cheap half of the bargain and being
+/// wrong about it is the expensive half. `nsec` is here because the
+/// announce work has one on the roadmap.
+const SECRET_KEYS: &[&str] = &["password_hash", "password", "nsec", "private_key", "secret"];
+
 /// The redaction itself. `None` means "could not be made safe", which the
 /// caller must treat as "do not include".
 ///
 /// `toml_edit` rather than a line rewrite: the value can be single- or
 /// double-quoted, literal or basic, and a regex over lines gets one of
 /// those wrong eventually. Parsing cannot.
+///
+/// Two layers, and the second is what makes the first safe to be wrong.
+/// The walk redacts every key in `SECRET_KEYS` wherever it sits, nested
+/// tables included; the guard afterwards re-reads the *output* and omits
+/// the declaration entirely if any of those keys survived unredacted. So
+/// a secret in a shape the walk does not reach — an array of tables, say,
+/// which this schema does not have and a later one might — costs a
+/// missing field in a report rather than a published secret.
 fn redact_declaration(text: &str) -> Option<String> {
-    const REDACTED: &str = "<redacted by kuma doctor --report>";
     let mut doc: toml_edit::DocumentMut = text.parse().ok()?;
-    if let Some(user) = doc.get_mut("user").and_then(|u| u.as_table_like_mut()) {
-        if user.get("password_hash").is_some() {
-            user.insert("password_hash", toml_edit::value(REDACTED));
-        }
-    }
+    redact_table(doc.as_table_mut());
     let out = doc.to_string();
-    // The belt to the parser's braces. If anything that looks like a
-    // crypt hash survived, the redaction did not do its job and the
-    // right answer is to publish nothing.
-    if out.lines().any(|l| {
-        let l = l.trim_start();
-        l.starts_with("password_hash") && !l.contains(REDACTED)
-    }) {
+
+    // The belt to the parser's braces, and the reason the doc comment
+    // above can promise anything at all. A key is matched exactly rather
+    // than by prefix: `token_path` is not a secret and omitting a whole
+    // declaration over it would be its own kind of wrong.
+    let survived = out.lines().any(|line| {
+        let Some((key, _)) = line.split_once('=') else { return false };
+        let key = key.trim().trim_matches('"');
+        SECRET_KEYS.contains(&key) && !line.contains(REDACTED)
+    });
+    if survived {
         return None;
     }
     Some(out)
+}
+
+/// Replace every `SECRET_KEYS` value in this table and its children.
+fn redact_table(table: &mut dyn toml_edit::TableLike) {
+    let keys: Vec<String> = table.iter().map(|(k, _)| k.to_string()).collect();
+    for key in keys {
+        if SECRET_KEYS.contains(&key.as_str()) {
+            table.insert(&key, toml_edit::value(REDACTED));
+            continue;
+        }
+        if let Some(child) = table.get_mut(&key).and_then(|item| item.as_table_like_mut()) {
+            redact_table(child);
+        }
+    }
 }
 
 /// os-release as a map. `/etc` first because a machine may have been
@@ -1672,8 +1704,39 @@ fn signature_key_for(policy_text: &str, repo: &str) -> Option<String> {
     )
 }
 
+/// Does one registries.d file turn sigstore attachments on for `repo`?
+///
+/// containers/image scopes these by prefix, most specific first: an entry
+/// for `ghcr.io` governs `ghcr.io/letdown2491/kuma` just as well as one
+/// naming the repository outright, and `default-docker` governs
+/// everything. Testing for the full repository string alone graded a
+/// machine whose broader entry works perfectly as `Fail: updates would be
+/// refused`, which is the worst direction for this check to be wrong in:
+/// it sends somebody to fix a machine that is not broken.
+///
+/// Deliberately not a YAML parse. These files are three lines, kuma has
+/// no YAML dependency and would not gain one for this, and the question
+/// asked here is narrow enough that a prefix over the scope lines answers
+/// it. The cost is that a scope buried in a comment would count; the
+/// alternative was a check that failed working machines.
+fn sigstore_attachments_cover(text: &str, repo: &str) -> bool {
+    if !text.contains("use-sigstore-attachments") {
+        return false;
+    }
+    // Every prefix of the repository that could legally be a scope, plus
+    // the catch-all, so the widest working configuration still passes.
+    let mut scopes = vec!["default-docker".to_string()];
+    let parts: Vec<&str> = repo.split('/').collect();
+    for n in 1..=parts.len() {
+        scopes.push(parts[..n].join("/"));
+    }
+    text.lines()
+        .map(|l| l.trim().trim_end_matches(':').trim())
+        .any(|key| scopes.iter().any(|s| s == key))
+}
+
 fn check_signature_policy(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
-    let (repo, _) = crate::PUBLISHED_IMAGE.rsplit_once(':').unwrap_or((crate::PUBLISHED_IMAGE, ""));
+    let repo = crate::published_repo();
     let rebuild =
         || Some(Action::new("rebuild", "kuma update", "rebuild on an image that ships the policy"));
     let Ok(text) = std::fs::read_to_string("/etc/containers/policy.json") else {
@@ -1718,7 +1781,7 @@ fn check_signature_policy(report: &mut impl FnMut(Grade, &str, String, Option<Ac
         .map(|entries| {
             entries.flatten().any(|e| {
                 std::fs::read_to_string(e.path())
-                    .map(|t| t.contains("use-sigstore-attachments") && t.contains(repo))
+                    .map(|t| sigstore_attachments_cover(&t, repo))
                     .unwrap_or(false)
             })
         })
@@ -2240,6 +2303,80 @@ mod tests {
             assert!(out.contains("mira"), "redaction ate the declaration: {quoted}");
             assert!(out.contains("schema_version"));
         }
+    }
+
+    /// The doc on `redact_declaration` promises that a key holding a
+    /// secret cannot slip out by being added somewhere the walk does not
+    /// look. It used to promise that while checking one key by name, so
+    /// the promise was worth nothing the moment the schema grew. Both
+    /// halves are asserted here: the walk reaches nested tables and
+    /// inline ones, and the guard omits the whole declaration rather than
+    /// publish a secret it failed to reach.
+    #[test]
+    fn a_report_never_carries_any_key_on_the_secret_list() {
+        // Nested table, inline table, and a key that is not the one the
+        // original check knew about.
+        let text = concat!(
+            "schema_version = 1\n",
+            "[user]\n",
+            "name = \"mira\"\n",
+            "password_hash = \"$6$abc$def\"\n",
+            "[announce]\n",
+            "nsec = \"nsec1verysecret\"\n",
+            "[deep.nested]\n",
+            "secret = \"do not paste me\"\n",
+        );
+        let out = redact_declaration(text).expect("a parseable declaration is redactable");
+        for leaked in ["$6$abc$def", "nsec1verysecret", "do not paste me"] {
+            assert!(!out.contains(leaked), "{leaked} survived redaction");
+        }
+        assert!(out.contains("mira"), "redaction ate the declaration");
+
+        // And the backstop: a secret the walk cannot reach costs the
+        // report a field, never a published secret. An array of tables is
+        // a shape this schema does not have and a later one might.
+        let unreachable = "schema_version = 1\n[[machines]]\npassword = \"hunter2\"\n";
+        assert!(
+            redact_declaration(unreachable).is_none_or(|out| !out.contains("hunter2")),
+            "a secret the walk missed was published anyway"
+        );
+    }
+
+    /// containers/image scopes registries.d by prefix, so an entry for
+    /// `ghcr.io` governs kuma's repository just as well as one naming it
+    /// outright. Testing for the full repository string alone graded a
+    /// machine whose broader entry works as `Fail: updates would be
+    /// refused`, which sends somebody to fix a machine that is not
+    /// broken.
+    #[test]
+    fn attachments_are_found_under_any_scope_that_covers_the_repo() {
+        let repo = crate::published_repo();
+        let (registry, _) = repo.split_once('/').unwrap();
+        for scope in [repo, registry, repo.rsplit_once('/').unwrap().0, "default-docker"] {
+            let text = format!("docker:\n  {scope}:\n    use-sigstore-attachments: true\n");
+            assert!(
+                sigstore_attachments_cover(&text, repo),
+                "a {scope} scope covers {repo} and was not recognised"
+            );
+        }
+        // A neighbour is not a cover, and neither is a scope with no
+        // attachments turned on at all.
+        assert!(!sigstore_attachments_cover(
+            "docker:\n  ghcr.io/somebody-else:\n    use-sigstore-attachments: true\n",
+            repo
+        ));
+        assert!(!sigstore_attachments_cover(&format!("docker:\n  {repo}:\n    x: y\n"), repo));
+    }
+
+    /// The file kuma actually ships has to satisfy the check kuma
+    /// actually runs. These two live in different modules and are useless
+    /// apart, which is how the pair went out broken once already.
+    #[test]
+    fn doctor_accepts_the_registries_d_file_kuma_ships() {
+        assert!(sigstore_attachments_cover(
+            &crate::containerfile::registries_d(),
+            crate::published_repo()
+        ));
     }
 
     /// bootc nests the digest inside the slot's image object, beside the
