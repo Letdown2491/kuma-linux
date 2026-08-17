@@ -14,7 +14,19 @@ on:
   # something to find out by cutting a release and watching nothing
   # happen. See rolling.yml.
   workflow_call:
+    inputs:
+      attach_iso:
+        description: "Build the live ISO and attach it to the release"
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
+    inputs:
+      attach_iso:
+        description: "Build the live ISO and attach it to the release"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -202,6 +214,32 @@ jobs:
             function flush() { if (buf != "") { print buf; buf = "" } }
           ' section.md > reflowed.md && mv reflowed.md section.md
 
+      # Off by default, and deliberately so. ci.yml builds and boots this
+      # ISO on every push, which is where its failures should be found;
+      # attaching it to a tag means a 1.8 GB asset whose first real
+      # exercise happens during a release. Turn this on once that job has
+      # a run history, by dispatching with attach_iso or flipping the
+      # default. Until then a release carries the binary, as it always
+      # has, and the ISO is a workflow artifact.
+      - uses: ./.github/actions/kvm
+        if: inputs.attach_iso && steps.what.outputs.publish == 'true'
+
+      - name: live ISO
+        id: iso
+        if: inputs.attach_iso && steps.what.outputs.publish == 'true'
+        env:
+          QEMU_VGA: virtio-vga
+          QEMU_DISPLAY: none
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+          cargo build --locked
+          ./scripts/smoke.sh --iso --keep niri
+          name="kuma-${{ steps.what.outputs.tag }}-x86_64.iso"
+          mv vm-smoke/niri-iso/KUMA.iso "$name"
+          sha256sum "$name" > "$name.sha256"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
       - name: publish
         if: steps.what.outputs.publish == 'true'
         run: |
@@ -233,5 +271,18 @@ jobs:
             '${{ steps.pkg.outputs.name }}' \
             '${{ steps.pkg.outputs.name }}.sha256' \
             '${{ steps.pkg.outputs.name }}.bundle'
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # Uploaded separately rather than templated into the file list
+      # above, so the release exists either way: an ISO that failed to
+      # attach should not take the binary's release down with it.
+      - name: attach the live ISO
+        if: inputs.attach_iso && steps.what.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          gh release upload '${{ steps.what.outputs.tag }}' \
+            '${{ steps.iso.outputs.name }}' \
+            '${{ steps.iso.outputs.name }}.sha256'
         env:
           GH_TOKEN: ${{ github.token }}

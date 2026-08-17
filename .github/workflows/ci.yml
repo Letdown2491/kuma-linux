@@ -203,6 +203,84 @@ jobs:
           path: vm-smoke/${{ matrix.example }}/console.log
           if-no-files-found: warn
 
+  # The artifact a stranger downloads, and the only one that was built by
+  # hand on one laptop until now. Every other job here asks whether the
+  # tree works; this asks whether the thing on the download page works,
+  # which is the promise 0.10 rests on.
+  #
+  # Three questions in the order they fail. Does the ISO assemble at all
+  # (it never had, anywhere but one machine). Does it still fit a GitHub
+  # release asset, capped at 2 GB, with the ISO at 1.77 GB and every
+  # desktop package spending the difference. And does it boot to a
+  # desktop rather than to a black screen, which is asked over the serial
+  # console because installer media has no disk to inspect and its
+  # account has no password for ssh to use.
+  #
+  # niri only, and for the same reason the boot job is niri only: one
+  # desktop is first class and COSMIC's live arm has still never booted
+  # anywhere.
+  #
+  # The ISO is uploaded here and attached to a release nowhere. Wiring a
+  # 1.8 GB asset onto a tag before anyone has watched this job succeed
+  # would mean discovering its failures during a release; release.yml
+  # carries the step behind an input that defaults off, to be turned on
+  # once this has run green a few times.
+  iso:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name != 'pull_request' &&
+      !startsWith(github.ref, 'refs/tags/') &&
+      (github.event_name != 'schedule' || github.event.schedule == '0 5 * * *')
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked
+
+      # For qemu and OVMF. The ISO is UEFI-only: it carries an EFI System
+      # Partition and no BIOS boot image, so a firmware-less qemu falls
+      # through to "no bootable device" and looks like a broken ISO.
+      - uses: ./.github/actions/kvm
+
+      # An ISO build unpacks the whole image and writes a 1.8 GB file
+      # beside it, and a hosted runner starts with about 25 GB free.
+      - name: reclaim runner disk
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h / | tail -1
+
+      - name: smoke (iso)
+        env:
+          QEMU_VGA: virtio-vga
+          QEMU_DISPLAY: none
+        run: ./scripts/smoke.sh --iso --keep niri
+
+      - name: what the live session said
+        if: failure()
+        run: tail -100 vm-smoke/niri-iso/console.log || true
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: iso-console
+          path: vm-smoke/niri-iso/console.log
+          if-no-files-found: warn
+
+      # Kept on success too, because the point of this job is producing
+      # the artifact and not only proving it can be produced. Compression
+      # is off: the ISO is already a solid zstd stream and re-compressing
+      # 1.8 GB buys nothing but minutes.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kuma-live-iso
+          path: vm-smoke/niri-iso/KUMA.iso
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
   # Nothing else here asks whether the dependencies have known holes.
   # Clippy reads our code and the tests read our behavior; neither has an
   # opinion about an advisory against a crate we merely depend on. This

@@ -417,13 +417,26 @@ cp "$work/EFI/fedora/mmx64.efi" "$work/EFI/BOOT/mmx64.efi" 2>/dev/null || true
 # enough, is relabelling the tree with setfiles against the image's own
 # file_contexts before squashing, which needs a writable mount and the
 # privilege to write security.* xattrs.
+#
+# Both entries carry a serial console, and tty0 is last so the screen
+# stays the primary one: on hardware without a serial port the kernel
+# drops ttyS0 and nothing changes, and in a VM the whole boot becomes
+# readable. That matters twice. `kuma iso` names GNOME Boxes in its own
+# help, so a VM is where most people meet this ISO first, and a live
+# boot that fails on somebody else's machine otherwise produces a
+# photograph of a screen as its only evidence.
 read -r -d '' grub_cfg <<EOF || true
 set timeout=10
 set default=0
 set menu_auto_hide=false
 
+# insmod, and no load_video: that is a function Fedora's own grub.cfg
+# defines, not a grub builtin, so calling it here printed
+# "can't find command \`load_video'" on every single boot of the ISO.
+# Harmless, and the first thing a person sees when they try kuma, which
+# makes it exactly the wrong place to leave a red error. insmod all_video
+# already loads every video driver grub has.
 insmod all_video
-load_video
 set gfxpayload=keep
 insmod gzio
 insmod part_gpt
@@ -432,12 +445,12 @@ insmod chain
 search --no-floppy --set=root -l '$label'
 
 menuentry 'Try kuma' {
-  linux /images/pxeboot/vmlinuz root=live:CDLABEL=$label rd.live.image rd.live.overlay.overlayfs=1 enforcing=0 quiet
+  linux /images/pxeboot/vmlinuz root=live:CDLABEL=$label rd.live.image rd.live.overlay.overlayfs=1 enforcing=0 console=ttyS0,115200 console=tty0 quiet
   initrd /images/pxeboot/initrd.img
 }
 
 menuentry 'Try kuma (verbose)' {
-  linux /images/pxeboot/vmlinuz root=live:CDLABEL=$label rd.live.image rd.live.overlay.overlayfs=1 enforcing=0
+  linux /images/pxeboot/vmlinuz root=live:CDLABEL=$label rd.live.image rd.live.overlay.overlayfs=1 enforcing=0 console=ttyS0,115200 console=tty0
   initrd /images/pxeboot/initrd.img
 }
 EOF
@@ -693,6 +706,41 @@ mod tests {
         assert!(super::BUILD_ISO_SCRIPT.contains("root=live:CDLABEL=$label"));
         assert!(super::BUILD_ISO_SCRIPT.contains("search --no-floppy --set=root -l '$label'"));
         assert!(super::BUILD_ISO_SCRIPT.contains("-V \"$label\""));
+    }
+
+    /// Both halves of what makes a live boot legible, and both were found
+    /// by booting the ISO rather than by reading it.
+    ///
+    /// `load_video` is a function Fedora's own grub.cfg defines and not a
+    /// grub builtin, so calling it printed a red `can't find command`
+    /// error on every boot of the installer media. `insmod all_video`
+    /// already does the work.
+    ///
+    /// The serial console is what lets anything observe a live boot at
+    /// all: CI asserts against it, and a person whose live session died
+    /// on their own hardware otherwise has a photograph of a screen. tty0
+    /// comes last so the display stays the primary console.
+    #[test]
+    fn the_live_boot_is_quiet_about_grub_and_loud_on_serial() {
+        // The bare command, not the word: the comment above it in the
+        // script explains why it is gone and would match a substring
+        // search, which is how this assertion first failed on itself.
+        assert!(
+            !super::BUILD_ISO_SCRIPT.lines().any(|l| l.trim() == "load_video"),
+            "load_video is not a grub builtin; it errors on every boot"
+        );
+        assert!(super::BUILD_ISO_SCRIPT.contains("insmod all_video"));
+        let entries: Vec<&str> = super::BUILD_ISO_SCRIPT
+            .lines()
+            .filter(|l| l.contains("linux /images/pxeboot"))
+            .collect();
+        assert_eq!(entries.len(), 2, "both menu entries are the boot paths people take");
+        for entry in entries {
+            assert!(entry.contains("console=ttyS0,115200"), "no serial console: {entry}");
+            let serial = entry.find("console=ttyS0").unwrap();
+            let screen = entry.find("console=tty0").expect("tty0 must be listed");
+            assert!(screen > serial, "tty0 must come last or the screen stops being primary");
+        }
     }
 
     /// The bug the first fixture hid, and the reason fixtures get built

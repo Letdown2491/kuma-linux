@@ -7,6 +7,15 @@ as its release notes.
 
 ### Changed
 
+- The live ISO's boot menu carries a serial console, and no longer
+  prints an error before it. `load_video` is a function Fedora's own
+  grub.cfg defines rather than a grub builtin, so calling it produced
+  `can't find command 'load_video'` on every boot of the installer media,
+  which is the first thing a person sees when they try kuma;
+  `insmod all_video` already does that work. `console=ttyS0,115200
+  console=tty0` on both entries makes a live boot readable in a VM, which
+  is where `kuma iso` tells people to try it, and tty0 comes last so the
+  screen stays the primary console on real hardware.
 - `kuma update` says when it is about to change your Fedora release, and
   `kuma update --check` says which release you are on. A Fedora major
   showed up in the lock diff as several hundred package lines and nothing
@@ -31,6 +40,18 @@ as its release notes.
 
 ### Added
 
+- CI builds the live ISO, boots it, and keeps it as an artifact. The ISO
+  is the one thing a stranger downloads and was the one thing built by
+  hand on a single laptop, so its failures were found by whoever tried it
+  next. `scripts/smoke.sh --iso` builds it, refuses one too big to ride a
+  GitHub release asset (1.77 GB against a 2 GB cap, and every desktop
+  package spends the difference), boots it under UEFI, and asks the live
+  session whether it is actually running: systemd healthy, no failed
+  units, a graphical session on seat0, greetd and niri both up.
+  It asks over the serial console because installer media has no disk to
+  inspect and its account has no password for ssh to use. Attaching the
+  ISO to a release is wired but off by default, waiting on this job
+  having a run history rather than on a tag being the first real test.
 - Every image now refuses an unsigned kuma update. Images carry kuma's
   signing key at `/etc/pki/containers/kuma.pub` and a
   `/etc/containers/policy.json` requiring a valid signature for

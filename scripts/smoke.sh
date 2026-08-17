@@ -28,6 +28,7 @@
 #   scripts/smoke.sh                   # check + image, every example
 #   scripts/smoke.sh --boot            # check, image and boot, every example
 #   scripts/smoke.sh --install         # check, image and install
+#   scripts/smoke.sh --iso             # build the live ISO and boot it
 #   scripts/smoke.sh --boot minimal    # just one, by example name
 #   scripts/smoke.sh --keep            # leave images and disks behind
 #   scripts/smoke.sh --published ghcr.io/letdown2491/kuma:niri
@@ -42,6 +43,12 @@
 # the only stage that needs no KVM, and it answers a different question.
 # Boot asks whether a machine works; install asks whether the disk it was
 # written onto is the one that was described.
+#
+# --iso is the third question and the only one about the artifact a
+# stranger downloads: it builds the live ISO, refuses one too big to ride
+# a release, and boots it under UEFI to ask whether a desktop came up.
+# It talks to the guest over the serial console because installer media
+# has no disk to inspect and its account has no password for ssh to use.
 #
 # Env: KUMA (default target/debug/kuma), QEMU_DISPLAY (default egl-headless),
 #      QEMU_VGA (default virtio-vga-gl).
@@ -64,7 +71,13 @@ KUMA=${KUMA:-target/debug/kuma}
 QEMU_DISPLAY=${QEMU_DISPLAY:-egl-headless}
 QEMU_VGA=${QEMU_VGA:-virtio-vga-gl}
 BOOT=0
+ISO=0
 INSTALL=0
+# The ISO rides a GitHub release, and a release asset is capped at 2 GB.
+# Failing below the cap rather than at it: an ISO that only just fits is
+# one desktop package away from not fitting, and finding that out when a
+# tag is already pushed means a release with no installer.
+ISO_MAX_BYTES=${ISO_MAX_BYTES:-1900000000}
 PUBLISHED=""
 UPGRADE_TO=""
 ENCRYPTED=0
@@ -74,12 +87,13 @@ SELECTED=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --boot) BOOT=1 ;;
+        --iso) ISO=1 ;;
         --install) INSTALL=1 ;;
         --published) PUBLISHED=${2:?--published needs an image reference}; shift ;;
         --upgrade-to) UPGRADE_TO=${2:?--upgrade-to needs an image reference}; shift ;;
         --encrypted) ENCRYPTED=1 ;;
         --keep) KEEP=1 ;;
-        -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,54p' "$0"; exit 0 ;;
         -*) echo "unknown flag: $1" >&2; exit 2 ;;
         *) SELECTED+=("$1") ;;
     esac
@@ -823,6 +837,142 @@ smoke_published() {
     [ $KEEP -eq 1 ] || sudo rm -rf "$dir"
 }
 
+# --- stage: iso --------------------------------------------------------
+# The artifact a stranger downloads, and until now the only one built by
+# hand on one laptop. Three questions, in the order they can go wrong:
+# does it assemble, does it still fit a release, and does it boot to a
+# desktop rather than to a black screen.
+#
+# The last one is answered through the serial console because there is no
+# other way in. The ISO has no disk to inspect and the live account has
+# no password, so sshd will not take it; the console is the channel, and
+# `console=ttyS0` on both menu entries is what makes it one.
+smoke_iso() {
+    local file=$1 tag=$2 name=$3
+    local dir="vm-smoke/$name-iso"
+    local iso="$dir/KUMA.iso"
+    local log="$dir/console.log"
+    local sock="$dir/console.sock"
+
+    rm -rf "$dir"; mkdir -p "$dir"
+    echo "   .. building live ISO"
+    "$KUMA" --config "$file" iso --live --tag "$tag" --output "$dir" >"$dir/build.log" 2>&1 \
+        || { tail -20 "$dir/build.log"; bad "ISO build failed"; }
+    [ -f "$iso" ] || bad "no ISO at $iso"
+
+    local bytes
+    bytes=$(stat -c %s "$iso")
+    printf '   ok   ISO built (%.2f GB)\n' "$(echo "$bytes" | awk '{print $1/1e9}')"
+    [ "$bytes" -le "$ISO_MAX_BYTES" ] \
+        || bad "ISO is $(awk -v b="$bytes" 'BEGIN{printf "%.2f", b/1e9}') GB, over the $(awk -v b="$ISO_MAX_BYTES" 'BEGIN{printf "%.2f", b/1e9}') GB budget for a release asset"
+    ok "ISO fits a release asset"
+
+    # UEFI only, deliberately: the ISO carries an EFI System Partition and
+    # no BIOS boot image, so a firmware-less qemu silently falls through
+    # to "no bootable device" and looks like a broken ISO.
+    local ovmf_code ovmf_vars
+    for c in /usr/share/edk2/ovmf/OVMF_CODE.fd /usr/share/OVMF/OVMF_CODE.fd \
+             /usr/share/edk2-ovmf/x64/OVMF_CODE.fd; do
+        [ -f "$c" ] && { ovmf_code=$c; break; }
+    done
+    for v in /usr/share/edk2/ovmf/OVMF_VARS.fd /usr/share/OVMF/OVMF_VARS.fd \
+             /usr/share/edk2-ovmf/x64/OVMF_VARS.fd; do
+        [ -f "$v" ] && { ovmf_vars=$v; break; }
+    done
+    [ -n "${ovmf_code:-}" ] && [ -n "${ovmf_vars:-}" ] \
+        || bad "no OVMF firmware found; the ISO is UEFI-only (install edk2-ovmf or ovmf)"
+    cp "$ovmf_vars" "$dir/vars.fd"
+
+    env LIBGL_ALWAYS_SOFTWARE=1 qemu-system-x86_64 \
+        -enable-kvm -cpu host -smp 4 -m 4096 \
+        -drive "if=pflash,format=raw,readonly=on,file=$ovmf_code" \
+        -drive "if=pflash,format=raw,file=$dir/vars.fd" \
+        -cdrom "$iso" -boot d \
+        -device "$QEMU_VGA" -display "$QEMU_DISPLAY" \
+        -chardev "socket,id=kumacon,path=$sock,server=on,wait=off" -serial chardev:kumacon \
+        >"$dir/qemu.log" 2>&1 &
+    local qemu=$!
+    # shellcheck disable=SC2064
+    trap "kill $qemu 2>/dev/null || true" EXIT
+
+    # qemu creates the socket during startup, not before it, so connecting
+    # straight away loses a race that looks exactly like a guest which
+    # never booted. Wait for the file, and give up if qemu died instead.
+    local waited=0
+    while [ ! -S "$sock" ]; do
+        kill -0 "$qemu" 2>/dev/null || { tail -5 "$dir/qemu.log"; bad "qemu exited before it opened a console"; }
+        [ "$waited" -lt 60 ] || bad "qemu never created $sock"
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    # Every expansion below belongs to the guest's shell, which is why the
+    # heredoc is quoted: expanding any of it here would send this host's
+    # answers down the serial line and then assert them against
+    # themselves. The `p=` prefix is built at runtime for a second
+    # reason — a serial console echoes what you type, so a literal
+    # `KUMA_ISO_RUNNING=` in the command would appear in the transcript
+    # before the guest had answered anything.
+    local probe
+    probe=$(cat <<'PROBE'
+p=KUMA_ISO
+echo "${p}_RUNNING=$(systemctl is-system-running 2>&1)"
+echo "${p}_FAILED=$(systemctl --failed --plain --no-legend | awk '{print $1}' | tr '\n' ',')"
+echo "${p}_SEAT=$(loginctl list-sessions --no-legend | awk '$4 == "seat0" {print $3}' | head -1)"
+echo "${p}_NIRI=$(pgrep -c niri || echo 0)"
+echo "${p}_GREETD=$(pgrep -c greetd || echo 0)"
+PROBE
+)
+
+    echo "   .. booting the ISO (UEFI, serial console)"
+    local out
+    if ! out=$(python3 scripts/console-session.py "$sock" liveuser "$probe" 420 2>&1); then
+        printf '%s\n' "$out" | tail -30 >"$log"
+        kill $qemu 2>/dev/null || true
+        bad "the live session never reached a usable console (see $log)"
+    fi
+    printf '%s\n' "$out" >"$log"
+    # A serial console speaks CRLF, and every value below is read to end
+    # of line. Without this the empty answer to "which units failed" is a
+    # lone carriage return, which is not empty, and a perfectly healthy
+    # live session fails the check with a blank explanation.
+    out=$(printf '%s' "$out" | tr -d '\r')
+    ok "live session reached a login prompt and accepted liveuser"
+
+    # `tail -1` throughout: the probe's own echo carries the literal
+    # `${p}_RUNNING=` and the real answer comes after it.
+    local value
+    value=$(printf '%s\n' "$out" | grep -o 'KUMA_ISO_RUNNING=[a-z-]*' | tail -1 | cut -d= -f2)
+    [ "$value" = "running" ] || bad "live session is '$value', not running"
+    ok "systemd reports the live session running"
+
+    value=$(printf '%s\n' "$out" | grep -o 'KUMA_ISO_FAILED=[^ ]*' | tail -1 | cut -d= -f2 | tr -d ',')
+    [ -z "$value" ] || bad "failed units in the live session: $value"
+    ok "no failed units"
+
+    # The desktop, which is the whole point of media that says "try kuma".
+    # A seat0 session is the autologin one; the serial session this probe
+    # runs in has no seat, so it cannot satisfy this by accident.
+    value=$(printf '%s\n' "$out" | grep -o 'KUMA_ISO_SEAT=[a-z0-9]*' | tail -1 | cut -d= -f2)
+    [ -n "$value" ] || bad "no graphical session on seat0; the live desktop did not come up"
+    ok "graphical session on seat0 as $value"
+
+    for unit in NIRI GREETD; do
+        value=$(printf '%s\n' "$out" | grep -o "KUMA_ISO_${unit}=[0-9]*" | tail -1 | cut -d= -f2)
+        [ "${value:-0}" -gt 0 ] || bad "$(echo "$unit" | tr '[:upper:]' '[:lower:]') is not running in the live session"
+    done
+    ok "greetd and niri are running"
+
+    kill $qemu 2>/dev/null || true
+    wait $qemu 2>/dev/null || true
+    trap - EXIT
+    if [ $KEEP -eq 0 ]; then
+        rm -rf "$dir/vars.fd" "$sock"
+    else
+        echo "   .. ISO kept at $iso"
+    fi
+}
+
 # --- stage: boot -------------------------------------------------------
 smoke_boot() {
     local file=$1 tag=$2 name=$3 port=$4
@@ -1131,6 +1281,7 @@ EOF
     # agree, which is the case that was never broken.
     if (smoke_image "$file" "$tag" \
         && { [ $INSTALL -eq 0 ] || smoke_install "$example_file" "$tag" "$name"; } \
+        && { [ $ISO -eq 0 ] || smoke_iso "$example_file" "$tag" "$name"; } \
         && { [ $BOOT -eq 0 ] || smoke_boot "$file" "$tag" "$name" "$port"; }); then
         PASS+=("$name")
     else
@@ -1154,6 +1305,7 @@ EOF
         rm -f "${file%.toml}.lock"
         [ -d "vm-smoke/$name" ] && sudo rm -rf "vm-smoke/$name"
         [ -d "vm-smoke/$name-install" ] && sudo rm -rf "vm-smoke/$name-install"
+        [ -d "vm-smoke/$name-iso" ] && sudo rm -rf "vm-smoke/$name-iso"
         [ $BOOT -eq 1 ] && rm -f "vm-smoke/$name.toml"
     fi
 done
