@@ -586,7 +586,7 @@ fn booted_kuma_machine() -> bool {
     Path::new("/usr/lib/kuma").is_dir() && Path::new("/run/ostree-booted").exists()
 }
 
-pub fn doctor(json: bool) -> Result<()> {
+pub fn doctor(json: bool, as_report: bool) -> Result<()> {
     let mut findings: Vec<Finding> = Vec::new();
     let mut report = |grade: Grade, name: &str, detail: String, fix: Option<Action>| {
         findings.push(Finding { grade, name: name.to_string(), detail, fix });
@@ -595,8 +595,14 @@ pub fn doctor(json: bool) -> Result<()> {
     let live = live_media();
     // Live media has no deployment by design, so asking about one can
     // only produce a warning about a fact rather than a problem.
+    //
+    // Fetched even on live media when a report was asked for: a report
+    // from installer media is exactly the case where somebody needs to
+    // see that there is no deployment, rather than see the question
+    // skipped.
+    let status = (!live || as_report).then(bootc_status).flatten();
     if !live {
-        check_deployment(&mut report);
+        check_deployment(status.as_ref(), &mut report);
     }
 
     match host_output_any(&["systemctl", "--failed", "--plain", "--no-legend"]) {
@@ -711,7 +717,9 @@ pub fn doctor(json: bool) -> Result<()> {
 
     let fails = findings.iter().filter(|f| matches!(f.grade, Grade::Fail)).count();
     let warns = findings.iter().filter(|f| matches!(f.grade, Grade::Warn)).count();
-    if json {
+    if as_report {
+        println!("{}", serde_json::to_string_pretty(&report_json(&findings, status.as_ref()))?);
+    } else if json {
         println!("{}", serde_json::to_string_pretty(&doctor_json(&findings))?);
     } else {
         for f in &findings {
@@ -738,6 +746,127 @@ pub fn doctor(json: bool) -> Result<()> {
         bail!("{fails} check(s) failed, {warns} warning(s)");
     }
     Ok(())
+}
+
+/// What a stranger pastes when their machine did not come up.
+///
+/// `--json` answers "what does doctor think", which is enough for an
+/// agent already standing on the machine. Somebody filing a bug is not
+/// standing on it, and the three things always asked first — which kuma,
+/// which image, what did you declare — are exactly the three `--json`
+/// does not carry.
+///
+/// The declaration is the machine's own baked copy rather than whatever
+/// kuma.toml happens to be in the reporter's working directory, because
+/// the question is what built this machine.
+fn report_json(findings: &[Finding], status: Option<&serde_json::Value>) -> serde_json::Value {
+    let os = os_release_fields();
+    let image = |ptr: &str| {
+        status.and_then(|s| s.pointer(ptr)).and_then(|v| v.as_str()).map(str::to_string)
+    };
+    let slot_present = |name: &str| {
+        status.and_then(|s| s.pointer(&format!("/status/{name}"))).is_some_and(|v| !v.is_null())
+    };
+    // Built on top of the `--json` object rather than beside it, so
+    // `checks` and `summary` sit at the top level in both and anything
+    // that already reads `--json` reads a report unchanged.
+    let mut out = doctor_json(findings);
+    let extra = serde_json::json!({
+        "kuma": {
+            "version": crate::VERSION,
+            // Which verb produced this, so a pasted report is not mistaken
+            // for `--json` output with fields mysteriously added.
+            "report": "doctor",
+        },
+        "machine": {
+            "pretty_name": os.get("PRETTY_NAME"),
+            "id": os.get("ID"),
+            "version_id": os.get("VERSION_ID"),
+            "version_codename": os.get("VERSION_CODENAME"),
+            "booted_image": image("/status/booted/image/image/image"),
+            "booted_digest": image("/status/booted/imageDigest"),
+            "staged": slot_present("staged"),
+            "rollback": slot_present("rollback"),
+            "live_media": live_media(),
+            "booted_kuma_machine": booted_kuma_machine(),
+        },
+        "declaration": declaration_for_report(),
+    });
+    if let (Some(out), Some(extra)) = (out.as_object_mut(), extra.as_object()) {
+        for (k, v) in extra {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    out
+}
+
+/// The baked declaration with `user.password_hash` removed.
+///
+/// Fails closed in both directions. A file that will not parse is
+/// omitted entirely rather than pasted raw, because "cannot parse" is not
+/// a reason to publish a hash; and the redaction is asserted afterwards,
+/// so a future key that also holds a secret cannot slip out by being
+/// added somewhere this function does not look.
+fn declaration_for_report() -> serde_json::Value {
+    let path = Path::new(BAKED_CONFIG);
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return serde_json::json!({ "present": false });
+    };
+    match redact_declaration(&text) {
+        Some(redacted) => serde_json::json!({
+            "present": true,
+            "path": BAKED_CONFIG,
+            "toml": redacted,
+        }),
+        None => serde_json::json!({
+            "present": true,
+            "path": BAKED_CONFIG,
+            "omitted": "kuma could not parse this declaration, and will not paste one it cannot redact",
+        }),
+    }
+}
+
+/// The redaction itself. `None` means "could not be made safe", which the
+/// caller must treat as "do not include".
+///
+/// `toml_edit` rather than a line rewrite: the value can be single- or
+/// double-quoted, literal or basic, and a regex over lines gets one of
+/// those wrong eventually. Parsing cannot.
+fn redact_declaration(text: &str) -> Option<String> {
+    const REDACTED: &str = "<redacted by kuma doctor --report>";
+    let mut doc: toml_edit::DocumentMut = text.parse().ok()?;
+    if let Some(user) = doc.get_mut("user").and_then(|u| u.as_table_like_mut()) {
+        if user.get("password_hash").is_some() {
+            user.insert("password_hash", toml_edit::value(REDACTED));
+        }
+    }
+    let out = doc.to_string();
+    // The belt to the parser's braces. If anything that looks like a
+    // crypt hash survived, the redaction did not do its job and the
+    // right answer is to publish nothing.
+    if out.lines().any(|l| {
+        let l = l.trim_start();
+        l.starts_with("password_hash") && !l.contains(REDACTED)
+    }) {
+        return None;
+    }
+    Some(out)
+}
+
+/// os-release as a map. `/etc` first because a machine may have been
+/// given a local one, `/usr/lib` second because that is where kuma's
+/// branding actually writes.
+fn os_release_fields() -> BTreeMap<String, String> {
+    ["/etc/os-release", "/usr/lib/os-release"]
+        .iter()
+        .find_map(|p| std::fs::read_to_string(p).ok())
+        .map(|text| {
+            text.lines()
+                .filter_map(|line| line.split_once('='))
+                .map(|(k, v)| (k.trim().to_string(), v.trim().trim_matches('"').to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn doctor_json(findings: &[Finding]) -> serde_json::Value {
@@ -815,23 +944,28 @@ fn days_since(stamp: &str) -> Option<u64> {
 
 /// bootc status needs root; a sudo prompt out of `kuma doctor` is the
 /// price of seeing the deployment at all, same as `kuma switch` pays.
-fn check_deployment(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
-    let status = match host_output(&["sudo", "bootc", "status", "--format", "json"]) {
-        Ok(out) => out,
-        Err(_) => {
+///
+/// Fetched once per run and shared, because `--report` wants the same
+/// answer and two sudo prompts for one question is a worse tool.
+fn bootc_status() -> Option<serde_json::Value> {
+    host_output(&["sudo", "bootc", "status", "--format", "json"])
+        .ok()
+        .and_then(|out| serde_json::from_str(&out).ok())
+}
+
+fn check_deployment(
+    status: Option<&serde_json::Value>,
+    report: &mut impl FnMut(Grade, &str, String, Option<Action>),
+) {
+    let json = match status {
+        Some(json) => json.clone(),
+        None => {
             report(
                 Grade::Warn,
                 "deployment",
                 "bootc status unavailable (not a bootc system, or sudo declined)".into(),
                 None,
             );
-            return;
-        }
-    };
-    let json: serde_json::Value = match serde_json::from_str(&status) {
-        Ok(json) => json,
-        Err(_) => {
-            report(Grade::Warn, "deployment", "cannot parse bootc status".into(), None);
             return;
         }
     };
@@ -1939,6 +2073,46 @@ mod tests {
         assert!(json["checks"][1]["fix"]["why"].is_string());
         assert_eq!(json["summary"]["fails"], 1);
         assert_eq!(json["summary"]["warns"], 0);
+    }
+
+    /// The whole point of the verb. A report is pasted into a bug tracker
+    /// by somebody who will not read it first, so the hash has to be gone
+    /// whichever way TOML let them write it.
+    #[test]
+    fn a_report_never_carries_the_password_hash() {
+        for quoted in [
+            r#"password_hash = "$6$abcdefgh$0123456789""#,
+            r#"password_hash = '$6$abcdefgh$0123456789'"#,
+            r#"password_hash="$6$abcdefgh$0123456789""#,
+            r#"   password_hash   =   "$6$abcdefgh$0123456789"   "#,
+        ] {
+            let text = format!("schema_version = 1\n[user]\nname = \"mira\"\n{quoted}\n");
+            let out = redact_declaration(&text).expect("a parseable declaration is redactable");
+            assert!(!out.contains("$6$abcdefgh$"), "hash survived redaction of: {quoted}");
+            assert!(out.contains("<redacted by kuma doctor --report>"));
+            // The rest of the declaration is what makes the report useful,
+            // so redaction must not be achieved by dropping everything.
+            assert!(out.contains("mira"), "redaction ate the declaration: {quoted}");
+            assert!(out.contains("schema_version"));
+        }
+    }
+
+    /// A declaration with no account is the published-image case, and it
+    /// must come through whole rather than being treated as suspect.
+    #[test]
+    fn a_declaration_without_a_hash_is_untouched() {
+        let text = "schema_version = 1\n[packages]\nrpm = [\"fish\"]\n";
+        let out = redact_declaration(text).unwrap();
+        assert!(out.contains("fish"));
+        assert!(!out.contains("redacted"));
+    }
+
+    /// Fail closed. "Cannot parse" is not a reason to paste a file that
+    /// may hold a hash, so the answer is nothing rather than the raw text.
+    #[test]
+    fn an_unparseable_declaration_is_omitted_rather_than_pasted() {
+        let text = "this is not toml = = = \npassword_hash = \"$6$leak\"\n";
+        assert!(redact_declaration(text).is_none());
     }
 
     #[test]

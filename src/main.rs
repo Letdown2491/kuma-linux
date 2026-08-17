@@ -292,6 +292,11 @@ enum Cmd {
         /// Emit the findings as JSON
         #[arg(long)]
         json: bool,
+        /// Emit a support report: the findings plus which kuma, which
+        /// image, and the declaration this machine was built from, with
+        /// the password hash removed. What to attach to a bug report.
+        #[arg(long)]
+        report: bool,
     },
     /// Validate the declaration without building anything (read-only)
     Check {
@@ -505,7 +510,7 @@ fn run(
             let config = Config::load(&path)?;
             inspect::diff(&config, &path, json)
         }
-        Cmd::Doctor { json } => inspect::doctor(json || root_json),
+        Cmd::Doctor { json, report } => inspect::doctor(json || root_json, report),
         Cmd::Check { json } => {
             let json = json || root_json;
             check(&read_config_path(config_path, explicit, !json), json)

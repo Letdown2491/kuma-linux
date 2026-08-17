@@ -5,6 +5,20 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+### Added
+
+- `kuma doctor --report` prints what to attach to a bug report: the
+  findings `--json` already carries, plus which kuma is running, which
+  image is booted and its digest, and the declaration the machine was
+  built from. Those last three are the questions always asked first and
+  the ones `--json` did not answer, which left a stranger whose machine
+  did not boot with nothing useful to paste.
+  `user.password_hash` is removed, by parsing rather than by rewriting
+  lines, because the value can be quoted four ways and a report is pasted
+  by somebody who will not read it first. A declaration kuma cannot parse
+  is omitted rather than pasted raw: not being able to redact a file is
+  not a reason to publish it.
+
 ### Changed
 
 - A machine now says which kuma built it: `PRETTY_NAME` is
