@@ -1409,32 +1409,62 @@ ExecStart=/usr/libexec/kuma-mako
 /// that sniff os-release (toolbox, distrobox, dnf COPR, …) working. Runs
 /// last so every dnf layer before it still sees stock Fedora metadata.
 ///
-/// Releases carry bear names (species or fiction), one per Fedora base,
-/// keyed by VERSION_ID below. PRETTY_NAME drops the number — kuma has no
-/// version of its own, just a continuously rebuilt base — while VERSION_ID
-/// stays Fedora's so toolbox/dnf/bib keep resolving. An unlisted base
-/// falls back to plain "Kuma" and Fedora's own VERSION string.
+/// Two independent axes, and keeping them apart is the point:
 ///
+/// - **The number is kuma's**, taken from the binary that built the image,
+///   so PRETTY_NAME says which kuma made this machine. The number alone,
+///   deliberately: `io.kuma.builder` already carries the full
+///   `<version> (<sha> <date>)` stamp for the "is this the binary with my
+///   change in it" question (see build.rs), and a GRUB menu entry is the
+///   wrong place to answer it. Between releases every build from main
+///   therefore shows the same number, which is the same approximation
+///   `--version` makes and is why the sha exists beside it.
+/// - **The bear names the Fedora base**, keyed by VERSION_ID below. Two
+///   machines reading (Callisto) share a base whatever their numbers say,
+///   and a bear you did not expect means the base moved under you.
+///
+/// **VERSION_ID stays Fedora's** and must: it is machine-readable, and
+/// toolbox, distrobox and COPR resolve against it. Only the display
+/// fields carry kuma's version. `/usr/lib/fedora-release` likewise keeps
+/// Fedora's number, because it exists to be parsed as one.
+///
+/// Bear names go alphabetically where a letter has a name worth using;
+/// the pool is bears real, extinct, mythical and fictional. D and F are
+/// skipped deliberately (Deninger and Fozzie were the only candidates and
+/// neither earns a place). Planned: E Ephraim, G Grizzly, H Helarctos,
+/// I Iorek, J Jambavan, K Kodiak.
+///
+/// An unlisted base falls back to no bear, keeping "Kuma <version>" so a
+/// machine still says what built it.
 const BRANDING: &str = r#"
 RUN . /usr/lib/os-release \
     && case "${VERSION_ID}" in \
         44) CODENAME="Beorn" ;; \
+        45) CODENAME="Callisto" ;; \
         *) CODENAME="" ;; \
     esac \
     && sed -i \
         -e 's|^NAME=.*|NAME="Kuma"|' \
-        -e "s|^PRETTY_NAME=.*|PRETTY_NAME=\"Kuma${CODENAME:+ ($CODENAME)}\"|" \
+        -e "s|^PRETTY_NAME=.*|PRETTY_NAME=\"Kuma @KUMAVERSION@${CODENAME:+ ($CODENAME)}\"|" \
+        -e "s|^VERSION=.*|VERSION=\"@KUMAVERSION@${CODENAME:+ ($CODENAME)}\"|" \
         -e 's|^ID=.*|ID=kuma|' \
         -e 's|^DEFAULT_HOSTNAME=.*|DEFAULT_HOSTNAME="kuma"|' \
         -e 's|^ANSI_COLOR=.*|ANSI_COLOR="0;38;2;126;224;168"|' \
         /usr/lib/os-release \
     && if [ -n "$CODENAME" ]; then sed -i \
-        -e "s|^VERSION=.*|VERSION=\"${VERSION_ID} ($CODENAME)\"|" \
         -e "s|^VERSION_CODENAME=.*|VERSION_CODENAME=$(printf %s "$CODENAME" | tr '[:upper:]' '[:lower:]')|" \
         /usr/lib/os-release; fi \
     && { grep -q '^ID_LIKE=' /usr/lib/os-release || echo 'ID_LIKE="fedora"' >> /usr/lib/os-release; } \
     && { [ ! -f /usr/lib/fedora-release ] || echo "Kuma release ${VERSION_ID}${CODENAME:+ ($CODENAME)}" > /usr/lib/fedora-release; }
 "#;
+
+/// BRANDING with the building binary's version substituted in. Not a
+/// const because the version is only knowable at compile time, and not a
+/// `format!` because the block is dense with `${...}` the shell needs and
+/// `format!` would demand every brace be doubled.
+fn branding() -> String {
+    BRANDING.replace("@KUMAVERSION@", env!("CARGO_PKG_VERSION"))
+}
 
 /// Homebrew lives in /home/linuxbrew — machine-local mutable state, so it
 /// can't be image content. First boot installs it; the tarball is the
@@ -2013,7 +2043,7 @@ pub fn generate(config: &Config) -> String {
         out.push_str(&format!("RUN echo 'LANG={locale}' > /etc/locale.conf\n"));
     }
 
-    out.push_str(BRANDING);
+    out.push_str(&branding());
 
     // The machine gets the kuma that built it. Everything else needed to
     // run kuma on a machine already shipped — the baked declaration below,
@@ -2785,10 +2815,35 @@ mod tests {
     #[test]
     fn branding_names_the_release() {
         let out = generate(&config("schema_version = 1\n"));
-        // 44 is Beorn; an unlisted base must fall back to plain "Kuma".
+        // One bear per Fedora base, and an unlisted base must still name
+        // the kuma version rather than degrading to a bare "Kuma".
         assert!(out.contains(r#"44) CODENAME="Beorn""#));
+        assert!(out.contains(r#"45) CODENAME="Callisto""#));
         assert!(out.contains(r#"*) CODENAME="""#));
-        assert!(out.contains(r#"PRETTY_NAME=\"Kuma${CODENAME:+ ($CODENAME)}\""#));
+
+        // The number is kuma's own and comes from the building binary, so
+        // an image says which kuma made it. The placeholder must be gone:
+        // shipping "@KUMAVERSION@" as a machine's PRETTY_NAME is the whole
+        // failure this asserts against.
+        let version = env!("CARGO_PKG_VERSION");
+        assert!(
+            !out.contains("@KUMAVERSION@"),
+            "the version placeholder reached the Containerfile"
+        );
+        assert!(
+            out.contains(&format!(r#"PRETTY_NAME=\"Kuma {version}${{CODENAME:+ ($CODENAME)}}\""#))
+        );
+        // VERSION is rewritten unconditionally, not only when a bear
+        // matched: left alone it keeps Fedora's own string, which on a
+        // branched base reads "45 (Rawhide Prerelease)" inside an OS that
+        // otherwise calls itself Kuma.
+        assert!(out.contains(&format!(r#"VERSION=\"{version}${{CODENAME:+ ($CODENAME)}}\""#)));
+
+        // VERSION_ID stays Fedora's: toolbox, distrobox and COPR resolve
+        // against it, so kuma's version must never be written there.
+        assert!(!out.contains(&format!("VERSION_ID={version}")));
+        // fedora-release is a compatibility file and keeps Fedora's number.
+        assert!(out.contains(r#"echo "Kuma release ${VERSION_ID}${CODENAME:+ ($CODENAME)}""#));
     }
 
     #[test]
