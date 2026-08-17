@@ -5,12 +5,23 @@ This is about working on kuma itself. For using it, start at
 does, [how kuma behaves](docs/concepts.md).
 
 **Smoke tests.** `scripts/smoke.sh` builds every committed example and, on
-request, installs or boots it. Four stages: `check` validates the
+request, installs or boots it. Five stages: `check` validates the
 declaration, `image` builds it and inspects what a successful build doesn't
 already prove, `install` writes an encrypted disk and verifies what landed on
-it, and `boot` makes a disk, boots it headless, and asks the machine whether
-the boot was healthy. That last verdict is greenboot's own, so the check that
-would roll an update back is the one that decides whether the test passed.
+it, `boot` makes a disk, boots it headless, and asks the machine whether
+the boot was healthy, and `published` installs an image kuma published and
+boots the disk that install wrote. That boot verdict is greenboot's own, so
+the check that would roll an update back is the one that decides whether the
+test passed.
+
+`--published` is the only stage that reads the registry rather than the
+tree, so it can go red without anyone having committed anything, and it
+lives in its own workflow for that reason. It is also the only one that
+boots a disk `kuma install` wrote: every other disk here comes from
+bootc-image-builder with an ext4 root, so anything that only happens on
+btrfs does nothing in them. Add `--upgrade-to <image>` and it installs one
+version, upgrades to another, and asks whether the machine survived;
+`--encrypted` types the passphrase at the guest's serial console.
 
 `--install` and `--boot` are separate because they answer different
 questions. Boot asks whether a machine works. Install asks whether the disk
@@ -27,6 +38,7 @@ $ scripts/smoke.sh              # check + image, every example
 $ scripts/smoke.sh --install    # plus a real install (needs sudo, no KVM)
 $ scripts/smoke.sh --boot       # plus a real boot (needs KVM and sudo)
 $ scripts/smoke.sh --boot cosmic
+$ scripts/smoke.sh --published ghcr.io/letdown2491/kuma:niri
 ```
 
 **Building without a compiler.** The machines most likely to run kuma are
@@ -46,9 +58,22 @@ $ podman run --rm --userns=keep-id --security-opt label=disable \
 CI runs formatting, tests, clippy at `-D warnings`, shellcheck, actionlint,
 and the image stage on every committed example, desktops included. That
 covers the compose and both desktop arms, so the build-time guards in them
-run on a push. The boot stage stays local because its verdict comes from
-booting the disk, which needs KVM and sudo. Run `--boot` locally before
-pushing anything that changes what a machine does at runtime.
+run on a push.
+
+The boot and install stages run there too, on niri, for pushes to main and
+on a daily schedule. They were local-only on the stated grounds that they
+need KVM and sudo, which turned out to be one udev rule: a hosted runner
+has `/dev/kvm` and the runner user is simply not in the `kvm` group. The
+daily run exists because the base kuma builds on moves without anyone
+pushing, so a boot can break on a tree that was green yesterday. COSMIC is
+built on every push and not booted; that is what calling it experimental
+means here.
+
+`published.yml` is separate and manual or weekly: it installs and boots
+what is on the registry, upgrades an older published version to the current
+one, and boots an encrypted install. Run it after publishing an image and
+before tagging, so the artifact a stranger gets is verified while there is
+still time to republish.
 
 The image stage is the one part that does not repeat on a tag. Cutting a
 release means tagging a commit that already went green on main, so the tag
