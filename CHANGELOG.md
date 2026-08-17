@@ -5,6 +5,37 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+### Changed
+
+- A machine now says which kuma built it: `PRETTY_NAME` is
+  `Kuma <version> (<bear>)` rather than `Kuma (<bear>)`, and `VERSION`
+  matches it. The old wording dropped the number on the grounds that kuma
+  had no version of its own, which stopped being true once releases were
+  tagged. `VERSION_ID` is untouched and stays Fedora's, because toolbox,
+  distrobox and COPR resolve against it.
+- `VERSION` is rewritten even when no bear matches the base. Left alone it
+  kept Fedora's own string, so an image built on a branched base announced
+  itself as `45 (Rawhide Prerelease)` while calling itself Kuma
+  everywhere else.
+- Both Font Awesome faces now arrive through `fontawesome-fonts-all`
+  instead of being named per face. The per-face package names carry the
+  major version, which changed under us (`fontawesome-6-*` became
+  `fontawesome-7-*` in Fedora 45) and would have failed the build. The
+  metapackage's name does not, it pulls exactly the same two packages, and
+  it owns no files. Font Awesome 7 is also about a megabyte smaller
+  installed than 6.
+- waybar's stylesheet lists both Font Awesome generations in its font
+  stack. Family names carry the major version too and that one is baked
+  into the font's own metadata, so no package choice avoids it. Getting it
+  wrong does not fail a build; it silently drops every icon in the bar to
+  the fallback sans.
+
+### Added
+
+- Fedora 45 bases are named Callisto, after the nymph Zeus placed in the
+  sky as Ursa Major. Bear names follow the alphabet where a letter has a
+  name worth using.
+
 ## v0.9.0 (2026-08-16)
 
 CI boots and installs what it builds, so a release no longer rests on
