@@ -7,6 +7,17 @@ as its release notes.
 
 ### Changed
 
+- `kuma update` says when it is about to change your Fedora release, and
+  `kuma update --check` says which release you are on. A Fedora major
+  showed up in the lock diff as several hundred package lines and nothing
+  that named the release, so the largest change kuma can make to a
+  machine was the one it described least. The line prints after the diff
+  and before the staging gate, so it is visible while nothing is staged
+  and `--yes` is still required. Both numbers are read out of the images
+  themselves rather than from their tags, because `fedora-bootc:45` is
+  not a promise that what is inside came from Fedora 45: a branched
+  release carries rawhide's repo definitions for a while, and composing
+  "from 45" can produce a base that calls itself 46.
 - SECURITY.md names the two package sources a desktop brings in beyond
   Fedora's own. The trust-boundary section said kuma "adds no third-party
   repositories", which was true of what a declaration can ask for and

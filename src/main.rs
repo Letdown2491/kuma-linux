@@ -1045,6 +1045,10 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
         // honest answer is what an update would do, not a fake "current".
         let lock = lock::for_config(config_path);
         let manifest_changed = lock.as_ref().is_some_and(|lock| &lock.base.reference != base);
+        // Where you are, not where an update would take you. The target
+        // is only knowable by composing, so `--check` states the current
+        // release and `kuma update` reports the move once it can be exact.
+        let release = lock.as_ref().and_then(|l| fedora_release_of(&l.base.reference));
         let source = update_source();
         note(&format!("Asking dnf what has moved in the repos ({})...", source.name()));
         let moved = updates::moved(&source);
@@ -1066,6 +1070,7 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
                 serde_json::json!({
                     "ok": true, "composed": true, "locked": lock.is_some(),
                     "base": base, "manifest_changed": manifest_changed,
+                    "fedora_release": release,
                     "updates": match &moved {
                         Ok(moved) => serde_json::json!({
                             "checked": true, "source": source.name(),
@@ -1086,6 +1091,11 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
             println!("The base manifest changed since the lock: the next build composes a new base ({base}).");
         } else {
             println!("The base is composed locally from Fedora's repos ({base}).");
+        }
+        if let Some(release) = &release {
+            println!(
+                "Currently on Fedora {release}; `kuma update` says so before it stages a change."
+            );
         }
         match &moved {
             Ok(moved) => print_moves(moved, &source),
@@ -1158,6 +1168,12 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
 
 fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
     let config = Config::load(config_path)?;
+    // Both reads happen before the pull, and that is the whole trick.
+    // Pulling can move a declared tag, and a recompose replaces the
+    // content tag's image in place, so asking either of them afterwards
+    // returns the new answer to the old question.
+    let before = lock::for_config(config_path);
+    let before_release = before.as_ref().and_then(|l| fedora_release_of(&l.base.reference));
     match &config.system.base {
         Some(base) => run_host(&["podman", "pull", base])?,
         // Composed base: the packages come from Fedora's repos at
@@ -1169,14 +1185,16 @@ fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
     // The one command that moves the pin. Everything else builds from
     // whatever the lock already says, so an update is the only way the
     // base underneath you changes, and it says what changed.
-    let before = lock::for_config(config_path);
     let after = build_image_pinned(config_path, tag, Pin::Refresh)?;
+    let after_release = after.as_ref().and_then(|l| fedora_release_of(&l.base.reference));
+    let release_move = release_move(&before_release, &after_release);
     let moved = match (&before, &after) {
         (Some(before), Some(after)) => Some(lock::diff(before, after)),
         _ => None,
     };
     if !json {
         print_lock_diff(moved.as_ref());
+        print_release_move(release_move.as_ref());
     }
     if !yes {
         let stage_hint = Action::new(
@@ -1190,6 +1208,7 @@ fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
                 serde_json::json!({
                     "ok": true, "built": true, "staged": false, "tag": tag,
                     "changes": lock_diff_json(moved.as_ref()),
+                    "fedora_release": release_move_json(release_move.as_ref(), &after_release),
                     "actions": [action_json(&stage_hint)],
                 })
             );
@@ -1208,6 +1227,7 @@ fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
             serde_json::json!({
                 "ok": true, "staged": staged, "up_to_date": !staged, "tag": tag,
                 "changes": lock_diff_json(moved.as_ref()),
+                "fedora_release": release_move_json(release_move.as_ref(), &after_release),
                 "actions": actions,
             })
         );
@@ -1224,6 +1244,74 @@ fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
 /// (it is the only pin), but the package churn underneath it is what
 /// makes a broken update bisectable, so a bounded sample of it prints
 /// too; the lock has the rest, and `git diff kuma.lock` is the full story.
+/// The Fedora release an image is built on, read out of the image.
+///
+/// Not derived from the tag. `fedora-bootc:45` is not a promise that the
+/// packages inside came from Fedora 45: a branched release still carries
+/// rawhide's repo definitions for a while, so composing "from 45" can
+/// produce a base that calls itself 46. The image is the only thing that
+/// knows, so the image is asked.
+///
+/// `None` for an image that is not in local storage or does not say,
+/// which is a reason to stay quiet rather than to guess.
+fn fedora_release_of(image: &str) -> Option<String> {
+    host_output(&[
+        "podman",
+        "run",
+        "--rm",
+        image,
+        "sh",
+        "-c",
+        ". /usr/lib/os-release && printf %s \"$VERSION_ID\"",
+    ])
+    .ok()
+    .map(|out| out.trim().to_string())
+    .filter(|out| !out.is_empty())
+}
+
+/// Whether the release actually moved, given what each side reported.
+///
+/// One unknown side means silence, not a change: an image that could not
+/// be asked is not evidence of a move, and announcing "Fedora ? to 45"
+/// would be worse than saying nothing.
+fn release_move(before: &Option<String>, after: &Option<String>) -> Option<(String, String)> {
+    match (before, after) {
+        (Some(from), Some(to)) if from != to => Some((from.clone(), to.clone())),
+        _ => None,
+    }
+}
+
+/// The one line that stops a distro upgrade from arriving unannounced.
+///
+/// `kuma update` already reports what moved, but a Fedora major shows up
+/// there as several hundred package lines and nothing that says which
+/// release you are on. This is printed after the diff and before the
+/// staging gate, so the answer to "did I just change Fedora version" is
+/// visible while nothing has been staged yet and `--yes` is still
+/// required.
+fn print_release_move(moved: Option<&(String, String)>) {
+    if let Some((from, to)) = moved {
+        println!();
+        println!("This is a Fedora release change: {from} to {to}.");
+        println!(
+            "Everything in the declaration is rebuilt against {to}'s packages. \
+             Nothing is staged yet, and the current deployment stays for kuma rollback."
+        );
+    }
+}
+
+fn release_move_json(
+    moved: Option<&(String, String)>,
+    current: &Option<String>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "current": current,
+        "changed": moved.is_some(),
+        "from": moved.map(|(from, _)| from.clone()),
+        "to": moved.map(|(_, to)| to.clone()),
+    })
+}
+
 /// Which rpmdb the repos get compared against.
 ///
 /// A machine that runs kuma has the better answer and always has it: its
@@ -2841,6 +2929,35 @@ mod tests {
         // version, and pointing installs at one would freeze every new
         // machine on whatever was current when this line was written.
         assert!(!tag.contains(char::is_numeric), "the default should be the moving tag");
+    }
+
+    /// A Fedora major arriving unannounced is the failure this exists to
+    /// prevent, so the quiet cases matter as much as the loud one: a
+    /// release that did not move, and a release that could not be read,
+    /// must both say nothing rather than invent a change.
+    #[test]
+    fn a_release_change_is_announced_and_a_non_change_is_not() {
+        let f = |s: &str| Some(s.to_string());
+        assert_eq!(super::release_move(&f("44"), &f("45")), Some(("44".into(), "45".into())));
+        assert_eq!(super::release_move(&f("44"), &f("44")), None);
+        assert_eq!(super::release_move(&None, &f("45")), None);
+        assert_eq!(super::release_move(&f("44"), &None), None);
+        assert_eq!(super::release_move(&None, &None), None);
+
+        let moved = super::release_move(&f("44"), &f("45"));
+        let json = super::release_move_json(moved.as_ref(), &f("45"));
+        assert_eq!(json["changed"], true);
+        assert_eq!(json["from"], "44");
+        assert_eq!(json["to"], "45");
+        assert_eq!(json["current"], "45");
+
+        // The steady state still reports where the machine is, because
+        // "which Fedora am I on" should not require a release change to
+        // become answerable.
+        let json = super::release_move_json(None, &f("44"));
+        assert_eq!(json["changed"], false);
+        assert_eq!(json["current"], "44");
+        assert!(json["from"].is_null());
     }
 
     /// `kuma update --json` is how an agent learns what an update did to
