@@ -213,7 +213,7 @@ pub const COSIGN_PUB_PATH: &str = "/etc/pki/containers/kuma.pub";
 /// succeed and the policy would reject every image kuma has ever
 /// published. Verified against the live registry in both directions, with
 /// the real key and with a wrong one.
-fn signature_policy() -> String {
+pub(crate) fn signature_policy() -> String {
     let (repo, _) = crate::PUBLISHED_IMAGE.rsplit_once(':').unwrap_or((crate::PUBLISHED_IMAGE, ""));
     format!(
         r#"{{

@@ -694,7 +694,15 @@ pub fn doctor(json: bool, as_report: bool) -> Result<()> {
         );
     }
 
-    check_signature_policy(&mut report);
+    // Any kuma image, booted or on live media, because installer media is
+    // where the published image is pulled and an unbooted one still holds
+    // the policy that will govern it. Not on a host that merely builds
+    // kuma: that machine will never `bootc upgrade` from kuma's registry,
+    // so the answer there is true and beside the point, and doctor has
+    // already said it is not running a kuma image.
+    if Path::new("/usr/lib/kuma").is_dir() {
+        check_signature_policy(&mut report);
+    }
     check_gpu(&mut report);
     check_build_leftovers(&mut report);
 
@@ -1639,6 +1647,31 @@ fn check_encryption(report: &mut impl FnMut(Grade, &str, String, Option<Action>)
 /// checks is a claim rather than a control. The check is the policy file
 /// as the machine will really read it, not kuma's intent: an image built
 /// before this shipped, or a hand-edited policy, both land here.
+/// The key a policy requires for `repo`, or `None` if it requires none.
+///
+/// Split out from the check so it can be tested against the policy kuma
+/// actually ships rather than against a hand-written copy of it. The two
+/// halves of this feature live in different modules and are useless
+/// apart: a policy nothing grades, or a grader that misreads the policy.
+/// The second is what happened. `serde_json`'s `pointer` reads `/` as a
+/// path separator, so `/transports/docker/ghcr.io/letdown2491/kuma`
+/// addressed four nested objects instead of one key containing slashes,
+/// found nothing, and reported that an image shipping the policy did not
+/// have it. Nothing caught that until doctor ran inside a real image.
+fn signature_key_for(policy_text: &str, repo: &str) -> Option<String> {
+    let policy: serde_json::Value = serde_json::from_str(policy_text).ok()?;
+    let rules = policy.get("transports")?.get("docker")?.get(repo)?.as_array()?;
+    let signed =
+        rules.iter().find(|r| r.get("type").and_then(|t| t.as_str()) == Some("sigstoreSigned"))?;
+    Some(
+        signed
+            .get("keyPath")
+            .and_then(|k| k.as_str())
+            .unwrap_or(crate::containerfile::COSIGN_PUB_PATH)
+            .to_string(),
+    )
+}
+
 fn check_signature_policy(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     let (repo, _) = crate::PUBLISHED_IMAGE.rsplit_once(':').unwrap_or((crate::PUBLISHED_IMAGE, ""));
     let rebuild =
@@ -1652,15 +1685,11 @@ fn check_signature_policy(report: &mut impl FnMut(Grade, &str, String, Option<Ac
         );
         return;
     };
-    let Ok(policy) = serde_json::from_str::<serde_json::Value>(&text) else {
+    if serde_json::from_str::<serde_json::Value>(&text).is_err() {
         report(Grade::Warn, "signatures", "cannot parse /etc/containers/policy.json".into(), None);
         return;
-    };
-    let rule = policy.pointer(&format!("/transports/docker/{repo}"));
-    let signed = rule.and_then(|r| r.as_array()).is_some_and(|rules| {
-        rules.iter().any(|r| r.get("type").and_then(|t| t.as_str()) == Some("sigstoreSigned"))
-    });
-    if !signed {
+    }
+    let Some(key) = signature_key_for(&text, repo) else {
         report(
             Grade::Warn,
             "signatures",
@@ -1668,16 +1697,11 @@ fn check_signature_policy(report: &mut impl FnMut(Grade, &str, String, Option<Ac
             rebuild(),
         );
         return;
-    }
+    };
     // A rule naming a key that is not there fails closed at pull time,
     // which is safe but arrives as a confusing error during an update
     // rather than as an answer here.
-    let key = rule
-        .and_then(|r| r.as_array())
-        .and_then(|rules| rules.first())
-        .and_then(|r| r.get("keyPath"))
-        .and_then(|k| k.as_str())
-        .unwrap_or(crate::containerfile::COSIGN_PUB_PATH);
+    let key = key.as_str();
     if !Path::new(key).exists() {
         report(
             Grade::Fail,
@@ -2157,6 +2181,43 @@ mod tests {
         assert!(json["checks"][1]["fix"]["why"].is_string());
         assert_eq!(json["summary"]["fails"], 1);
         assert_eq!(json["summary"]["warns"], 0);
+    }
+
+    /// Doctor must read the policy kuma ships, and the two live in
+    /// different modules, so this asserts them against each other rather
+    /// than against a copy. Written after doctor reported "not required
+    /// to be signed" while standing inside an image that required it.
+    #[test]
+    fn doctor_reads_the_policy_kuma_actually_ships() {
+        let repo = crate::PUBLISHED_IMAGE.rsplit_once(':').unwrap().0;
+        let shipped = crate::containerfile::signature_policy();
+        assert_eq!(
+            signature_key_for(&shipped, repo).as_deref(),
+            Some(crate::containerfile::COSIGN_PUB_PATH),
+            "doctor cannot find the requirement in kuma's own policy"
+        );
+
+        // A repository name is full of slashes, which is exactly what a
+        // JSON Pointer treats as structure. Pinned so the fix cannot be
+        // undone by a refactor that looks equivalent.
+        assert!(repo.contains('/'), "the guard below only means something for a nested name");
+
+        // Fedora's stock policy, and anything else with no rule for kuma.
+        let permissive = r#"{"default":[{"type":"insecureAcceptAnything"}]}"#;
+        assert_eq!(signature_key_for(permissive, repo), None);
+
+        // A rule for a different repository must not be mistaken for ours.
+        let other = r#"{"transports":{"docker":{"quay.io/other/image":
+            [{"type":"sigstoreSigned","keyPath":"/k"}]}}}"#;
+        assert_eq!(signature_key_for(other, repo), None);
+
+        // Present but not a signature requirement.
+        let unsigned = format!(
+            r#"{{"transports":{{"docker":{{"{repo}":[{{"type":"insecureAcceptAnything"}}]}}}}}}"#
+        );
+        assert_eq!(signature_key_for(&unsigned, repo), None);
+
+        assert_eq!(signature_key_for("not json", repo), None);
     }
 
     /// The whole point of the verb. A report is pasted into a bug tracker
