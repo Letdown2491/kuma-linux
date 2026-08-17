@@ -5,8 +5,18 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+## v0.9.0 (2026-08-16)
+
 CI boots and installs what it builds, so a release no longer rests on
 somebody having booted it by hand.
+
+Two first-boot failures are known and open, both found by these checks and
+neither introduced by them. `kuma-home-subvol` fails rather than declines on
+roughly one first boot in thirty, leaving `/var/home` an ordinary directory
+permanently; `firewalld.service` fails on a similar fraction. Both leave a
+machine that boots and passes its health check, and `kuma doctor` reports
+each of them. Neither is understood yet, and the checks that found them now
+collect the machine's own account of the next occurrence.
 
 ### Added
 
@@ -37,6 +47,17 @@ somebody having booted it by hand.
   passes: a 0.7.0 machine reaches the current image, boots, stays healthy
   and keeps its account. It also reports what does not travel, and
   `/var/home` is the worked example.
+- `scripts/smoke.sh --published <image> --encrypted` installs an encrypted
+  disk, types the passphrase at the guest's serial console, and boots it.
+  Encrypted installs were already verified thoroughly and entirely
+  offline, through a loop device: the LUKS header, the passphrase, the
+  kargs and the account file. What that could not answer is the only
+  question a person has, which is whether the machine comes up when you
+  type the passphrase, so the feature that headlined v0.8.0 was the one
+  shipped thing with no boot coverage at all. It comes up. The serial
+  console is a socket for every run rather than a file, because two
+  console paths would mean the encrypted one is the only one nobody
+  exercises.
 - The boot checks ask the machine to grade itself. `kuma doctor --json`
   reporting nothing failing is now an assertion, so every check added to
   doctor becomes a boot assertion with no change to the harness.

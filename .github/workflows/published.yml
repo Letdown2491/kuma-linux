@@ -12,12 +12,6 @@ name: published
 # `kuma install` writes one, and until this existed nothing ever booted a
 # disk it had written.
 on:
-  # TEMPORARY, REMOVE BEFORE MERGING. workflow_dispatch only works for a
-  # file that is already on the default branch, so a new workflow cannot
-  # be tried from the branch that adds it without this.
-  push:
-    branches:
-      - ci-boot-probe
   workflow_dispatch:
     inputs:
       image:
