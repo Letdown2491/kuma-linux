@@ -15,6 +15,15 @@ as its release notes.
   built and booted the ISO on every push to main and on a daily cron since,
   and went green before this was turned on.
 
+### Changed
+
+- The getting-started walkthrough leads with installing a machine rather than
+  building an image. It was ordered "build an image, then build media" because
+  media was something you had to make yourself, and it said so; with media on
+  the release page the front door is download, boot, install, and describing
+  your own machine is what you do next rather than what you do first. The
+  builder's path is unchanged and still there, one step later.
+
 ## v0.10.0 (2026-08-17)
 
 The artifact a stranger downloads is built and booted by CI rather than by

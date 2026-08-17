@@ -132,8 +132,9 @@ $ kuma switch --yes  # on a bootc machine: take it at the next boot
 Without `--yes`, `switch` only prints what it would do.
 
 [Getting started](docs/getting-started.md) walks the whole path instead:
-building, trying it in a VM, writing installer media, installing a real
-machine, what the first boot does, and how updates work once it is yours.
+installing a machine from the published media, what the first boot does, then
+describing and building an image of your own, and how updates work once it is
+yours.
 
 **What needs what.** `init`, `check`, `generate`, and `build` need only
 podman. `switch`, `update`, `rollback`, and `doctor` need to be running on a
@@ -176,6 +177,16 @@ hashes a password for `[user]`, `kuma schema` prints the JSON Schema for
 `kuma.toml`, and `kuma completions fish | source` wires up your shell.
 
 ## Putting it on a machine
+
+Every release carries installer media, so a machine can be installed without
+building anything first:
+
+```console
+$ curl -LO https://github.com/Letdown2491/kuma-linux/releases/latest/download/kuma-x86_64.iso
+```
+
+That media installs `ghcr.io/letdown2491/kuma:niri`. The verbs below are for
+putting a declaration of your own onto hardware:
 
 ```console
 $ kuma vm                 # boot the image in a disposable QEMU VM
@@ -245,7 +256,7 @@ In order:
 ## Documentation
 
 - [Getting started](docs/getting-started.md): the whole path once, from
-  installing kuma to living with a machine it built.
+  downloading the media to living with a machine you declared.
 - [How kuma behaves](docs/concepts.md): why drift is a proposal rather than
   an error, what `kuma.lock` pins and what it only records, how `/etc` is
   merged rather than replaced, how a bad update rolls itself back, and what

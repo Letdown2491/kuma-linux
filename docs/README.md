@@ -4,9 +4,9 @@ Start at [the project README](../README.md) for what kuma is and how to
 install it. From there:
 
 - **[Getting started](getting-started.md)** walks the whole path once:
-  describing a machine, trying it in a VM, writing installer media,
-  installing real hardware, and what to expect afterwards. Start here if you
-  want to use kuma.
+  installing real hardware from the published media, then describing an image
+  of your own, building it, and trying it in a VM. Start here if you want to
+  use kuma.
 - **[How kuma behaves](concepts.md)** explains the reasoning: what a build
   pins, what happens to changes you make by hand, why a file you edited keeps
   winning over the image, how a bad update rolls itself back, and what an
