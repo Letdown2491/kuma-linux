@@ -104,8 +104,11 @@ failure someone had to diagnose:
   clock disables itself.
 - **`mesa-vulkan-drivers`** and **`vulkan-loader`**: OpenGL drivers alone
   strand every Vulkan application on software rendering.
-- **`fontawesome-6-brands-fonts`** is a second font package because the
-  bluetooth glyph waybar uses lives in the Brands face, not Free.
+- **`fontawesome-fonts-all`** pulls both Font Awesome faces, because the
+  bluetooth glyph waybar uses lives in the Brands face and the rest live in
+  Free. It is named instead of the two faces directly because their package
+  names carry the major version, which changes under you; this one does not,
+  and it adds no files of its own.
 - **`google-noto-sans-cjk-vf-fonts`**, because the default sans is latin-only
   and CJK pages render as tofu.
 - **`avahi`** is named rather than assumed. It used to arrive with

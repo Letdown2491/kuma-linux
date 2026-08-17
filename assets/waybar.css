@@ -1,7 +1,14 @@
 /* Kuma waybar theme: night navy sky, aurora green accents. */
 
+/* Both Font Awesome generations are listed because the family name carries
+   the major version ("Font Awesome 6 Free" became "Font Awesome 7 Free" in
+   Fedora 45) and the name is baked into the font's own metadata, so no
+   package choice avoids it. fontconfig falls through the list, so this
+   renders on either release; a future major means prepending one name.
+   Getting this wrong does not fail the build, it silently drops every icon
+   to the fallback sans. */
 * {
-    font-family: "Noto Sans", "Font Awesome 6 Free", "Font Awesome 6 Free Solid", "Font Awesome 6 Brands", sans-serif;
+    font-family: "Noto Sans", "Font Awesome 7 Free", "Font Awesome 7 Free Solid", "Font Awesome 7 Brands", "Font Awesome 6 Free", "Font Awesome 6 Free Solid", "Font Awesome 6 Brands", sans-serif;
     font-size: 13px;
     min-height: 0;
 }

@@ -34,9 +34,16 @@ const NIRI_PACKAGES: &[&str] = &[
     "vulkan-loader",
     "default-fonts-core-sans",
     "default-fonts-core-mono",
-    "fontawesome-6-free-fonts",
-    // the bluetooth glyph lives in the Brands face, not Free
-    "fontawesome-6-brands-fonts",
+    // Both desktop faces, via the metapackage rather than by naming
+    // them: waybar needs Free for most glyphs and Brands for the
+    // bluetooth one, and the per-face packages carry the major version
+    // in their names (fontawesome-6-* became fontawesome-7-* in Fedora
+    // 45), so naming the faces breaks the build on every Font Awesome
+    // major. The metapackage's name is version-free, it requires
+    // exactly those two packages, and it owns no files itself.
+    // waybar.css carries the other half of this: font *family* names
+    // are versioned too, and it lists both generations.
+    "fontawesome-fonts-all",
     // base ships glibc-minimal-langpack only; without real locale data
     // en_US.UTF-8 fails to resolve and waybar's clock disables itself
     "glibc-langpack-en",
@@ -3124,8 +3131,7 @@ mod tests {
         ];
         // niri-only: COSMIC's set has no waybar to lose its glyphs, and
         // fonts follow the arm that renders with them.
-        const EXPLAINED_NIRI: &[&str] =
-            &["fontawesome-6-brands-fonts", "google-noto-sans-cjk-vf-fonts"];
+        const EXPLAINED_NIRI: &[&str] = &["fontawesome-fonts-all", "google-noto-sans-cjk-vf-fonts"];
 
         let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/desktops.md"))
             .unwrap();

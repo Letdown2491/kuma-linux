@@ -5,6 +5,21 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+### Changed
+
+- Both Font Awesome faces now arrive through `fontawesome-fonts-all`
+  instead of being named per face. The per-face package names carry the
+  major version, which changed under us (`fontawesome-6-*` became
+  `fontawesome-7-*` in Fedora 45) and would have failed the build. The
+  metapackage's name does not, it pulls exactly the same two packages, and
+  it owns no files. Font Awesome 7 is also about a megabyte smaller
+  installed than 6.
+- waybar's stylesheet lists both Font Awesome generations in its font
+  stack. Family names carry the major version too and that one is baked
+  into the font's own metadata, so no package choice avoids it. Getting it
+  wrong does not fail a build; it silently drops every icon in the bar to
+  the fallback sans.
+
 ## v0.9.0 (2026-08-16)
 
 CI boots and installs what it builds, so a release no longer rests on
