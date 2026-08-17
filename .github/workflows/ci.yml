@@ -269,10 +269,13 @@ jobs:
           path: vm-smoke/niri-iso/console.log
           if-no-files-found: warn
 
-      # Kept on success too, because the point of this job is producing
-      # the artifact and not only proving it can be produced. Compression
-      # is off: the ISO is already a solid zstd stream and re-compressing
-      # 1.8 GB buys nothing but minutes.
+      # Kept on success too, though the verdict is what this job is for:
+      # the ISO people download comes from a tag, and this one expires in
+      # a week. What the copy buys is a current known-good ISO between
+      # releases, which is worth a week of storage and is not a
+      # distribution channel. Compression is off: the ISO is already a
+      # solid zstd stream and re-compressing 1.8 GB buys nothing but
+      # minutes.
       - uses: actions/upload-artifact@v4
         with:
           name: kuma-live-iso
