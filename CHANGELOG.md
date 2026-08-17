@@ -28,7 +28,9 @@ by building against it rather than by reading its release notes.
   installer media has no disk to inspect and its account has no password for
   ssh to use. Attaching the ISO to a release is wired but off by default,
   waiting on this job having a run history rather than on a tag being the
-  first real test.
+  first real test. When it is turned on the ISO is signed like every other
+  release asset and the build runs after the release exists, so a live
+  session that fails to come up cannot take the binary's release with it.
 - Every image now refuses an unsigned kuma update. Images carry kuma's
   signing key at `/etc/pki/containers/kuma.pub` and a
   `/etc/containers/policy.json` requiring a valid signature for
@@ -48,9 +50,12 @@ by building against it rather than by reading its release notes.
   answer, which left a stranger whose machine did not boot with nothing
   useful to paste. `user.password_hash` is removed, by parsing rather than by
   rewriting lines, because the value can be quoted four ways and a report is
-  pasted by somebody who will not read it first. A declaration kuma cannot
-  parse is omitted rather than pasted raw: not being able to redact a file is
-  not a reason to publish it.
+  pasted by somebody who will not read it first. The same goes for anything
+  else on a short list of secret-bearing key names, wherever in the file it
+  sits, and a secret that survives the redaction costs the report its
+  declaration rather than getting published. A declaration kuma cannot parse
+  is omitted rather than pasted raw: not being able to redact a file is not a
+  reason to publish it.
 - Fedora 45 bases are named Callisto, after the nymph Zeus placed in the sky
   as Ursa Major. Bear names follow the alphabet where a letter has a name
   worth using.

@@ -1,5 +1,10 @@
 /target
 /Containerfile
+# CPython writes these beside any script it imports or compiles, and the
+# name carries the interpreter version, so one ran on a laptop and got
+# committed. A binary nobody reads has no business in a repository whose
+# case rests on being auditable.
+__pycache__/
 # vm, vm-cosmic, vm-smoke, and any future disk directories
 /vm*
 /.claude
