@@ -5,6 +5,16 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+### Added
+
+- Releases carry the live ISO. A tag now builds it, signs it with Sigstore
+  like every other release asset, and attaches it to the release that already
+  exists, so downloading kuma and installing kuma are the same page. This was
+  wired in v0.10.0 and left off, waiting on the job that builds it having a
+  run history rather than on a tag being its first real exercise; ci.yml has
+  built and booted the ISO on every push to main and on a daily cron since,
+  and went green before this was turned on.
+
 ## v0.10.0 (2026-08-17)
 
 The artifact a stranger downloads is built and booted by CI rather than by

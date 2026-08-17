@@ -46,12 +46,12 @@ jobs:
       #
       # A tag is a `push` event, and the `inputs` context is empty for
       # those: defaults declared under workflow_dispatch and
-      # workflow_call never materialise on a push. So the tag path — the
-      # only trigger that actually cuts a release — reads the literal
-      # below, and every other trigger reads its input verbatim. Flip
-      # 'false' to 'true' to start attaching the ISO; the steps at the
-      # end of this job say why it is off.
-      ATTACH_ISO: ${{ github.event_name == 'push' && 'false' || inputs.attach_iso }}
+      # workflow_call never materialise on a push. So the tag path, the
+      # only trigger that actually cuts a release, reads the literal
+      # below, and every other trigger reads its input verbatim. The
+      # literal is what to change to stop attaching the ISO; the steps at
+      # the end of this job say what has to be true for it to stay on.
+      ATTACH_ISO: ${{ github.event_name == 'push' && 'true' || inputs.attach_iso }}
     steps:
       - uses: actions/checkout@v7
 
@@ -266,11 +266,13 @@ jobs:
       # desktop took the binary's release down with it. The ISO is an
       # addition to a release that has already happened.
       #
-      # Off by default, and deliberately so. ci.yml builds and boots this
-      # ISO on every push, which is where its failures should be found;
-      # attaching it to a tag means a 1.8 GB asset whose first real
-      # exercise happens during a release. Turn it on by flipping the
-      # `|| false` below to `|| true`, once that job has a run history.
+      # On since v0.11.0, and the condition for that was a run history
+      # rather than a decision: ci.yml builds and boots this ISO on every
+      # push to main and on a daily cron, which is where its failures
+      # belong, and it went green there before a tag was ever allowed to
+      # depend on it. Turn it off by flipping the `&& 'true'` in `env`
+      # above back to `&& 'false'` if that job starts being flaky, because
+      # a 1.8 GB asset is not worth a release that cannot be cut.
       #
       # Read through `env` rather than `inputs.attach_iso` directly
       # because a tag is a `push` event, and the `inputs` context is empty
