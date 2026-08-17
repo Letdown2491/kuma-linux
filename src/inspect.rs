@@ -793,7 +793,7 @@ fn report_json(findings: &[Finding], status: Option<&serde_json::Value>) -> serd
             "version_id": os.get("VERSION_ID"),
             "version_codename": os.get("VERSION_CODENAME"),
             "booted_image": image("/status/booted/image/image/image"),
-            "booted_digest": image("/status/booted/imageDigest"),
+            "booted_digest": image("/status/booted/image/imageDigest"),
             "staged": slot_present("staged"),
             "rollback": slot_present("rollback"),
             "live_media": live_media(),
@@ -2240,6 +2240,33 @@ mod tests {
             assert!(out.contains("mira"), "redaction ate the declaration: {quoted}");
             assert!(out.contains("schema_version"));
         }
+    }
+
+    /// bootc nests the digest inside the slot's image object, beside the
+    /// reference rather than beside the slot. Read one level too shallow
+    /// it is null on every machine, and null is exactly what a local
+    /// image that never had a digest looks like, so the field reads as
+    /// working. Every other digest lookup in the crate goes through
+    /// `<slot>/image/imageDigest`; this one is pinned so the report
+    /// cannot drift away from them again.
+    #[test]
+    fn a_report_reads_the_digest_where_bootc_writes_it() {
+        let status = serde_json::json!({"status": {"booted": {"image": {
+            "image": {"image": "ghcr.io/letdown2491/kuma:latest"},
+            "imageDigest": "sha256:0123456789abcdef0123456789abcdef",
+        }}}});
+        let out = report_json(&[], Some(&status));
+        assert_eq!(
+            out.pointer("/machine/booted_digest").and_then(|v| v.as_str()),
+            Some("sha256:0123456789abcdef0123456789abcdef"),
+        );
+        // The reference sits one level shallower than the digest, so a
+        // test that only pinned the digest could be satisfied by moving
+        // both.
+        assert_eq!(
+            out.pointer("/machine/booted_image").and_then(|v| v.as_str()),
+            Some("ghcr.io/letdown2491/kuma:latest"),
+        );
     }
 
     /// A declaration with no account is the published-image case, and it
