@@ -549,6 +549,34 @@ pub(crate) mod tests {
         assert!(config.user.is_some(), "the example shows a declared [user]");
     }
 
+    /// Getting-started's example is the one a newcomer copies, which makes
+    /// it the worst place for a declaration that does not build. The
+    /// README's is read; this one is typed.
+    #[test]
+    fn the_getting_started_example_is_a_valid_declaration() {
+        let doc = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/docs/getting-started.md"
+        ))
+        .unwrap();
+        let block = doc
+            .split_once("```toml\n")
+            .and_then(|(_, rest)| rest.split_once("```"))
+            .map(|(block, _)| block)
+            .expect("getting-started has a ```toml example");
+        let config: Config = toml::from_str(block).expect("getting-started example parses");
+        config.validate().expect("getting-started example validates");
+
+        // The walkthrough tells the reader to run `kuma passwd` and paste
+        // the result in, so the example must not already carry one: a
+        // published hash in the document everyone copies is the one place
+        // it would spread furthest.
+        assert!(
+            config.user.as_ref().is_some_and(|u| u.password_hash.is_none()),
+            "the walkthrough's example must declare a user and no password hash"
+        );
+    }
+
     /// niri.toml says it shows every field the schema accepts,
     /// which is a promise a reader can't check and a schema change can
     /// quietly break. `services.disable` and `system.brew` were both

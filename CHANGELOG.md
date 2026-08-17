@@ -7,6 +7,11 @@ as its release notes.
 
 ### Changed
 
+- The walkthrough says what the machine now does, and its example
+  declaration is checked by a test rather than by whoever reads it next.
+  It also states plainly that there is no ISO to download yet: CI builds
+  one on every push and boots it, and nothing publishes it, so media is
+  still something you build.
 - The live ISO's boot menu carries a serial console, and no longer
   prints an error before it. `load_video` is a function Fedora's own
   grub.cfg defines rather than a grub builtin, so calling it produced

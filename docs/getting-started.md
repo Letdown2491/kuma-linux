@@ -152,6 +152,11 @@ hardware works. Nothing persists and nothing is written until you install.
 instead. It is about a gigabyte larger for the same system, and it needs
 sudo. Use it if you want Fedora's familiar installer screens.
 
+There is no ISO to download yet: this project builds one on every push and
+boots it to check that it still reaches a desktop, but nothing publishes it.
+Until that changes, media is something you build, which is why this step
+comes after building an image rather than before it.
+
 ## 6. Install it
 
 Boot the stick, and connect it to a network: installing downloads the system
@@ -232,10 +237,26 @@ Running bare `kuma` is always safe and always tells you where you are. Every
 command ends by naming what you can legally do next, so you can follow the
 prompts rather than remember the verbs.
 
+**When something is wrong and you want help.** `kuma doctor --report` prints
+one JSON document with the findings, which kuma is running, which image is
+booted and its digest, and the declaration the machine was built from. That
+is what to attach to a bug report. The password hash is removed before it
+prints, and a declaration kuma cannot parse is left out entirely rather than
+pasted raw.
+
 **Updates never happen behind your back.** Kuma tells you when there is
 something to take and leaves the taking to you. `kuma update --yes` builds a
 new image and stages it; the change lands when you reboot, and the previous
-system stays in the rollback slot.
+system stays in the rollback slot. If an update would move you to a new
+Fedora release, it says so in those words before anything is staged, because
+that is the largest change kuma can make to a machine and it otherwise
+arrives as several hundred package lines.
+
+**A machine tracking the published image checks the signature.** Every image
+ships kuma's signing key and a policy requiring it, so an update that did not
+come from this project is refused rather than installed. `kuma doctor` grades
+that the policy is really in place; images you build yourself are your own
+and are not required to be signed.
 
 **A bad update rolls itself back.** If a new image fails to boot to a working
 desktop three times, the bootloader falls back to the previous one on its
