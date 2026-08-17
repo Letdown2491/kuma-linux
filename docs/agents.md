@@ -34,9 +34,14 @@ The loop is: probe, execute one of the actions it named, probe again.
   and `update --check` carry `fedora_release` with `current`, `changed`,
   `from` and `to`. Read that rather than inferring a distro upgrade from the
   size of the package list, and treat `changed: true` as needing a human
-  even where you would otherwise stage automatically. `from` and `to` are
-  null when nothing moved, and `current` is null when the release could not
-  be read, which is not the same as a release that did not change.
+  even where you would otherwise stage automatically. Only `update` can
+  report a move. `update --check` neither composes nor pulls, so it has
+  nothing to compare against and always answers `changed: false` with
+  `from` and `to` null: read `current` from a check and `changed` from an
+  update. `current` is null when the release could not be read, which is
+  not the same as a release that did not change, and is also what a
+  machine with no base image in local storage reports, since a check does
+  not download one to answer.
 - **Reporting a broken machine.** `doctor --report` is `doctor --json` plus
   `kuma.version`, a `machine` object (`pretty_name`, `version_id`,
   `booted_image`, `booted_digest`, `staged`, `rollback`, `live_media`), and

@@ -1099,11 +1099,7 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
         } else {
             println!("The base is composed locally from Fedora's repos ({base}).");
         }
-        if let Some(release) = &release_now {
-            println!(
-                "Currently on Fedora {release}; `kuma update` says so before it stages a change."
-            );
-        }
+        print_release_now(&release_now);
         match &moved {
             Ok(moved) => print_moves(moved, &source),
             // Named rather than silent: a check that quietly drops half
@@ -1159,6 +1155,10 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
         );
         return Ok(());
     }
+    // Both kinds of base say where the machine is. This line used to sit
+    // in the composed branch only, so concepts.md promised every reader
+    // something half of them could not see.
+    print_release_now(&release_now);
     if moved {
         // The new digest isn't named: learning it would cost a second
         // tool, and `kuma update` prints the full before-and-after from
@@ -1264,18 +1264,37 @@ fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
 /// `None` for an image that is not in local storage or does not say,
 /// which is a reason to stay quiet rather than to guess.
 fn fedora_release_of(image: &str) -> Option<String> {
-    host_output(&[
-        "podman",
-        "run",
-        "--rm",
-        image,
-        "sh",
-        "-c",
-        ". /usr/lib/os-release && printf %s \"$VERSION_ID\"",
-    ])
-    .ok()
-    .map(|out| out.trim().to_string())
-    .filter(|out| !out.is_empty())
+    os_release_of_image(image, "$VERSION_ID").ok().filter(|out| !out.is_empty())
+}
+
+/// A shell expansion evaluated against an image's own os-release.
+///
+/// `--pull=never` is the load-bearing flag, and it is not an
+/// optimisation. podman's default is `--pull=missing`, which turns
+/// reading a local image into downloading whatever its tag points at
+/// *now*, and that is wrong in two different ways here. `update --check`
+/// says in its own comments that it does not pull, and a read-only check
+/// that quietly fetches a base over a metered link breaks that promise.
+/// Worse, `update` reads the release *before* its pull exactly so it can
+/// say the release moved: on a machine without the base in local storage,
+/// pulling here would answer with the new release, `release_move` would
+/// see nothing between two identical numbers, and a Fedora major would
+/// arrive unannounced. That is the whole feature, silently inverted.
+///
+/// An image that is not in local storage therefore reports nothing, which
+/// is what the callers already treat as "stay quiet rather than guess".
+fn os_release_of_image(image: &str, expr: &str) -> Result<String> {
+    host_output(&os_release_argv(image, expr))
+}
+
+/// Split out from the call so the `--pull=never` above is a thing a test
+/// can assert rather than a flag someone can drop while tidying.
+fn os_release_argv(image: &str, expr: &str) -> Vec<String> {
+    ["podman", "run", "--rm", "--pull=never", image, "sh", "-c"]
+        .iter()
+        .map(|s| s.to_string())
+        .chain(std::iter::once(format!(". /usr/lib/os-release && printf %s \"{expr}\"")))
+        .collect()
 }
 
 /// Whether the release actually moved, given what each side reported.
@@ -1306,6 +1325,15 @@ fn print_release_move(moved: Option<&(String, String)>) {
             "Everything in the declaration is rebuilt against {to}'s packages. \
              Nothing is staged yet, and the current deployment stays for kuma rollback."
         );
+    }
+}
+
+/// Where the machine is now, for `update --check`, which never predicts
+/// where it is going. Silent when the release could not be read, because
+/// "Currently on Fedora ?" is worse than saying nothing.
+fn print_release_now(release: &Option<String>) {
+    if let Some(release) = release {
+        println!("Currently on Fedora {release}; `kuma update` says so before it stages a change.");
     }
 }
 
@@ -1815,16 +1843,8 @@ fn iso(config_path: &Path, tag: &str, output: &Path) -> Result<()> {
     // for fedora, bluefin, bazzite, ...). Kuma's installer environment IS
     // Fedora's, so lift the newest fedora def out of the bib image and
     // mount it back in under kuma's name.
-    let distro = host_output(&[
-        "podman",
-        "run",
-        "--rm",
-        tag,
-        "sh",
-        "-c",
-        ". /usr/lib/os-release && echo \"$ID-$VERSION_ID\"",
-    ])
-    .context("cannot read os-release from the image")?;
+    let distro = os_release_of_image(tag, "$ID-$VERSION_ID")
+        .context("cannot read os-release from the image")?;
     let mut def = host_output(&[
         "sudo",
         "podman",
@@ -2904,6 +2924,22 @@ mod tests {
     /// out of step and `kuma install` defaults to a ref that does not
     /// exist, which is discovered by somebody trying to install rather
     /// than by anything here.
+    /// Reading an image's os-release must never be able to fetch one.
+    /// podman's default is `--pull=missing`, and with it `update --check`
+    /// downloads a base it documents itself as not pulling, while
+    /// `update` reads the *post-move* release before its own pull and so
+    /// reports no move across a Fedora major. The flag is the whole fix,
+    /// which makes it exactly the kind of thing a tidy-up deletes.
+    #[test]
+    fn reading_an_images_os_release_never_pulls_it() {
+        let argv = super::os_release_argv("example.invalid/image:tag", "$VERSION_ID");
+        assert!(
+            argv.iter().any(|a| a == "--pull=never"),
+            "os-release reads must not be able to pull: {argv:?}"
+        );
+        assert!(argv.iter().any(|a| a.contains("VERSION_ID")));
+    }
+
     #[test]
     fn the_default_image_is_the_one_the_workflow_publishes() {
         let workflow = std::fs::read_to_string(concat!(
