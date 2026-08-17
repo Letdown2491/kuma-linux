@@ -272,3 +272,8 @@ In order:
   image that already knows the answer.
 - **No flatpak permission overrides.** They survive image updates and are
   the one part of the app layer a declaration cannot see or restore.
+- **Only booted on AMD graphics.** Images carry Intel and NVIDIA firmware,
+  the i915, xe and nouveau drivers, and Intel's Mesa and Vulkan drivers, and
+  CI boots every build on a virtio GPU. None of that is a report from
+  somebody whose laptop has Intel graphics in it, because nobody has run one
+  yet.

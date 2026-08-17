@@ -251,6 +251,36 @@ mod tests {
         assert!(out.contains("recommends: false"));
     }
 
+    /// The test above iterates the list it is checking, so deleting an
+    /// entry keeps it green. These names are written out a second time on
+    /// purpose, because dropping one of them has already shipped: the set
+    /// was curated from `dnf repoquery --recommends linux-firmware`, which
+    /// returns neither Intel's wifi nor SOF audio, and every Intel laptop
+    /// that booted the published image had no wireless and no sound. It
+    /// could not even install, since installing pulls over the network.
+    ///
+    /// Nobody who develops on AMD hardware will notice this breaking.
+    /// That is what the list is for.
+    #[test]
+    fn the_default_firmware_still_covers_hardware_nobody_here_runs() {
+        let out = manifest(&config("schema_version = 1"));
+        for pkg in [
+            "iwlwifi-mvm-firmware", // Intel wifi, the bulk of the last decade
+            "iwlwifi-mld-firmware", // Intel wifi, newest generations
+            "iwlwifi-dvm-firmware", // Intel wifi, older generations
+            "alsa-sof-firmware",    // audio on essentially every modern laptop
+            "intel-gpu-firmware",   //
+            "intel-audio-firmware", //
+            "intel-vsc-firmware",   // MIPI webcams on recent Intel laptops
+            "nvidia-gpu-firmware",  //
+            "atheros-firmware",     //
+            "brcmfmac-firmware",    // Broadcom wifi, most older Macs
+            "realtek-firmware",     //
+        ] {
+            assert!(out.contains(&format!("- {pkg}")), "{pkg} left the default firmware set");
+        }
+    }
+
     #[test]
     fn firmware_trim_narrows_and_is_order_independent() {
         let a = config(

@@ -7,6 +7,14 @@ as its release notes.
 
 ### Changed
 
+- The README says kuma has only ever been booted on AMD graphics.
+  Images carry Intel and NVIDIA firmware, i915, xe and nouveau, and
+  Intel's Mesa and Vulkan drivers, and CI boots every build on a virtio
+  GPU, but none of that is a report from somebody whose laptop has Intel
+  graphics in it. A test now pins the Intel and Broadcom firmware by name
+  rather than by iterating the list it is checking, which is how the
+  previous version of this passed while every Intel laptop booted with no
+  wireless and no sound.
 - The walkthrough says what the machine now does, and its example
   declaration is checked by a test rather than by whoever reads it next.
   It also states plainly that there is no ISO to download yet: CI builds
