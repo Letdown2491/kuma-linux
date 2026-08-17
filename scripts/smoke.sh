@@ -618,6 +618,17 @@ smoke_published() {
             2>/dev/null || true
     }
 
+    # One named check's grade, so an assertion can say what it expects
+    # instead of scanning for whatever failed. Scanning only finds `fail`,
+    # and a check whose bad states are graded `warn` is invisible to it.
+    # "absent" rather than empty when doctor has no such check, so a
+    # renamed check reads as a missing answer instead of a passing one.
+    doctor_grade() {
+        gsudo kuma doctor --json \
+            | python3 -c 'import sys,json; print(next((c["grade"] for c in json.load(sys.stdin)["checks"] if c["name"]==sys.argv[1]), "absent"))' "$1" \
+            2>/dev/null || true
+    }
+
     echo "   .. waiting for ssh on $port"
     await_healthy_boot "$qemu" "$log" \
         "installed machine booted and is reachable" \
@@ -644,6 +655,13 @@ smoke_published() {
     [ "$home_fs" = btrfs ] || bad "/var/home is $home_fs on an installed disk; expected btrfs"
     home_inode=$(guest stat -c %i /var/home)
     [ "$home_inode" = 256 ] && home_was_subvol=yes
+
+    # Read before any upgrade, because the interesting question in that
+    # path is whether this changes. Measured rather than assumed from the
+    # version under test: `--published` takes any reference, so "the old
+    # one predates the policy" is only true of the fixtures used today.
+    local signatures_before
+    signatures_before=$(doctor_grade signatures)
 
     # Strict only when the image under test is meant to have the
     # converger. In the cross-version path the point is to install a
@@ -751,6 +769,27 @@ smoke_published() {
             bad "kuma doctor fails: $doctor_failing"
         fi
         ok "kuma doctor finds nothing failing"
+
+        # Named rather than left to the scan above, because the ways this
+        # control goes missing are all graded `warn`: no policy file, one
+        # that will not parse, or one that does not name kuma's
+        # repository. Only a policy that names a key it does not have, or
+        # one with nowhere to look for signatures, grades `fail`. So the
+        # scan sees the half-broken states and is blind to the absent
+        # one, which is the likeliest of the three and the one an /etc
+        # merge can cause.
+        #
+        # `ok` is the requirement rather than "not fail" because every
+        # image writes the policy, the key and the registries.d entry
+        # unconditionally (containerfile.rs: "on every image rather than
+        # only on published ones"). A machine that boots a kuma image and
+        # does not require kuma's signature has lost something between
+        # the image and the deployment.
+        local signatures_grade
+        signatures_grade=$(doctor_grade signatures)
+        [ "$signatures_grade" = ok ] || bad \
+            "doctor grades signatures '$signatures_grade': this machine does not refuse an unsigned kuma image"
+        ok "doctor grades signatures ok: an update that is not kuma's is refused"
     fi
 
     # The account the installer was told to make, on the machine it made
@@ -838,15 +877,30 @@ smoke_published() {
         # into a result, and would catch doctor going quiet about a
         # machine that is still broken.
         local snapshots_grade
-        snapshots_grade=$(gsudo kuma doctor --json \
-            | python3 -c 'import sys,json; print(next((c["grade"] for c in json.load(sys.stdin)["checks"] if c["name"]=="snapshots"), "absent"))' \
-            2>/dev/null || true)
+        snapshots_grade=$(doctor_grade snapshots)
         case "$home_now:$snapshots_grade" in
             yes:ok)   ok "doctor agrees the snapshot target is usable" ;;
             no:fail)  ok "doctor fails this machine's snapshot check, which is the correct verdict" ;;
             *:absent) bad "doctor reported no snapshots check; the declaration should have enabled it" ;;
             *)        bad "doctor says snapshots is '$snapshots_grade' while /var/home is-a-subvolume=$home_now" ;;
         esac
+
+        # The other side of the same question, for a control rather than a
+        # feature: the signature policy ships in every image from v0.10.0,
+        # so an older machine can only acquire it through the /etc merge.
+        # Reported in all three directions and failed in only one, the
+        # same shape as /var/home above: losing the policy is a regression
+        # this job must catch, and not gaining it is a finding this job
+        # exists to produce rather than a broken script.
+        local signatures_after
+        signatures_after=$(doctor_grade signatures)
+        if [ "$signatures_before" = ok ] && [ "$signatures_after" != ok ]; then
+            bad "the signature policy was ok before the upgrade and is '$signatures_after' after it"
+        elif [ "$signatures_after" = ok ]; then
+            ok "the signature policy reached a machine installed before it existed (was '$signatures_before')"
+        else
+            ok "upgrading did NOT bring the signature policy ('$signatures_before' then '$signatures_after'); a machine installed at that version still accepts an unsigned kuma image"
+        fi
     fi
 
     echo "   .. powering off"

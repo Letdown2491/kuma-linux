@@ -15,6 +15,21 @@ as its release notes.
   built and booted the ISO on every push to main and on a daily cron since,
   and went green before this was turned on.
 
+### Fixed
+
+- The install-and-boot smoke tests could not see a missing signature policy.
+  They asserted that `kuma doctor` reports nothing graded `fail`, and the three
+  ways this control goes missing are all graded `warn`: no policy file, one
+  that will not parse, or one that does not name kuma's repository. Only a
+  policy naming a key it does not have, or one with nowhere to look for
+  signatures, was ever `fail`. So the scan saw the half-broken states and was
+  blind to the absent one, which is the likeliest of the three and the one an
+  `/etc` merge can cause. An installed machine now has to grade `signatures`
+  as `ok`, which is the requirement rather than "not fail" because every image
+  writes the policy, the key and the registries.d entry unconditionally. The
+  cross-version job reports whether upgrading brings the policy to a machine
+  installed before it existed, and fails only if an upgrade takes it away.
+
 ### Changed
 
 - The getting-started walkthrough leads with installing a machine rather than
