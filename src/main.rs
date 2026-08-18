@@ -2981,6 +2981,41 @@ mod tests {
         super::Cli::command().debug_assert();
     }
 
+    /// Every command the docs hand somebody has to parse against the CLI
+    /// that exists.
+    ///
+    /// Living with the machine proves the CLI works and cannot prove the
+    /// docs still describe it: a renamed flag is noticed the moment it is
+    /// typed, and the page saying the old name is a page its author never
+    /// reads again. Both times this project shipped stale documentation
+    /// it was found by somebody reading the file on purpose, which is not
+    /// a mechanism.
+    ///
+    /// This asserts the words parse, not that the command works. What the
+    /// command does is proven by CI where CI can reach it and by use
+    /// where it cannot, and neither of those ever looks at the docs.
+    #[test]
+    fn every_documented_command_parses_against_this_cli() {
+        use clap::Parser;
+        let mut checked = 0;
+        for doc in ["docs/getting-started.md", "README.md"] {
+            for cmd in crate::config::documented_commands(doc) {
+                let mut words = cmd.split_whitespace();
+                // The docs also give curl, dd, chmod and cargo, which are
+                // not kuma's to validate.
+                if words.next() != Some("kuma") {
+                    continue;
+                }
+                let argv: Vec<&str> = std::iter::once("kuma").chain(words).collect();
+                if let Err(e) = super::Cli::try_parse_from(&argv) {
+                    panic!("{doc} tells somebody to run `{cmd}`, which this kuma rejects:\n{e}");
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 15, "expected the docs to be full of kuma commands, found {checked}");
+    }
+
     /// The installer's default image and the workflow that publishes it
     /// are the same string written in two languages, and nothing else
     /// compares them. Get the owner, the package name or the tag scheme

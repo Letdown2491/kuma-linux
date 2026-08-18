@@ -386,6 +386,29 @@ pub(crate) fn validate_name(value: &str, field: &str, extra: &[char]) -> Result<
     Ok(())
 }
 
+/// Commands as a doc page gives them: `$ ` prefixed, with the trailing
+/// comment (which is prose, not argument) removed, in the order a reader
+/// meets them and without repeats.
+///
+/// Shared with main.rs, which parses the same lines against the real CLI
+/// definition. One reader for both, because two would drift and the
+/// thing being guarded against here is drift.
+#[cfg(test)]
+pub(crate) fn documented_commands(doc: &str) -> Vec<String> {
+    let text = std::fs::read_to_string(format!("{}/{doc}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let mut seen: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let Some(rest) = line.trim().strip_prefix("$ ") else { continue };
+        // No documented command contains a literal '#', so this splits
+        // off the explanatory comment and nothing else.
+        let cmd = rest.split('#').next().unwrap_or("").trim().to_string();
+        if !cmd.is_empty() && !seen.contains(&cmd) {
+            seen.push(cmd);
+        }
+    }
+    seen
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -681,22 +704,7 @@ pub(crate) mod tests {
     /// Commands as the walkthrough gives them: `$ ` prefixed, with the
     /// trailing comment (which is prose, not argument) removed.
     fn walkthrough_commands() -> Vec<String> {
-        let text = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/docs/getting-started.md"
-        ))
-        .unwrap();
-        let mut seen: Vec<String> = Vec::new();
-        for line in text.lines() {
-            let Some(rest) = line.trim().strip_prefix("$ ") else { continue };
-            // No documented command contains a literal '#', so this
-            // splits off the explanatory comment and nothing else.
-            let cmd = rest.split('#').next().unwrap_or("").trim().to_string();
-            if !cmd.is_empty() && !seen.contains(&cmd) {
-                seen.push(cmd);
-            }
-        }
-        seen
+        super::documented_commands("docs/getting-started.md")
     }
 
     /// The gate item of 0.12, and the honest version of "somebody walked
