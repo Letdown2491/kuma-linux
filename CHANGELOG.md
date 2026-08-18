@@ -7,6 +7,14 @@ as its release notes.
 
 ### Added
 
+- `kuma doctor` reports a Flatpak permission override that points at nothing.
+  A machine that was another distribution first can carry an override symlink
+  into a directory that distribution shipped and kuma does not have, and it
+  survives in `/var` across every image switch because nothing has ever looked
+  at it. Graded a warning: flatpak tolerates it and the machine is not broken,
+  but it is a statement about an app's permissions that is not true, and the
+  declaration cannot see it yet. Regular override files are left alone; they
+  are somebody's settings, whoever wrote them.
 - `kuma doctor` reports a machine that has stopped converging. It already
   graded whether the last convergence attempt failed; it could not see a
   machine whose last attempt succeeded three weeks ago, because "last run

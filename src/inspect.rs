@@ -11,7 +11,7 @@ use crate::snapshot;
 use crate::state::{action_json, print_actions, Action};
 use anyhow::{bail, Result};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const BREW: &str = "/home/linuxbrew/.linuxbrew/bin/brew";
@@ -792,6 +792,7 @@ pub fn doctor(json: bool, as_report: bool) -> Result<()> {
         );
     } else if booted_kuma_machine() {
         check_convergence(&mut report);
+        check_overrides(&override_roots(), &mut report);
         check_snapshots(&mut report);
         check_boot_health(&mut report);
         check_encryption(&mut report);
@@ -1281,6 +1282,90 @@ fn check_deployment(
             format!("rm -f {}", crate::state::DEPLOYED_ID_FILE)
         };
         let _ = host_output(&["sudo", "sh", "-c", &heal]);
+    }
+}
+
+/// Where flatpak keeps per-app permission overrides: one store for the
+/// system installation, one per person.
+const SYSTEM_OVERRIDES: &str = "/var/lib/flatpak/overrides";
+const USER_OVERRIDES: &str = ".local/share/flatpak/overrides";
+
+/// Both stores on this machine: the system one, and the home of whoever
+/// is asking. Doctor runs as a person, so their overrides are the ones
+/// they can act on; reaching into every home would be root rummaging
+/// through accounts to report on files it has no business converging.
+fn override_roots() -> Vec<PathBuf> {
+    let mut roots = vec![PathBuf::from(SYSTEM_OVERRIDES)];
+    if let Ok(home) = std::env::var("HOME") {
+        roots.push(PathBuf::from(home).join(USER_OVERRIDES));
+    }
+    roots
+}
+
+/// Override files that are symlinks to somewhere that does not exist,
+/// with what each one points at.
+///
+/// Takes its roots so the finding path is testable. A healthy machine
+/// has nothing here, which is exactly the branch that never runs and so
+/// never gets checked; `scan_etc` and `kuma-fstab-sync` are parameterised
+/// for the same reason.
+///
+/// Only symlinks are examined. A regular override file is somebody's
+/// settings, whatever wrote it, and none of kuma's business until the
+/// declaration learns to own these.
+fn dangling_overrides(roots: &[PathBuf]) -> Vec<(PathBuf, PathBuf)> {
+    let mut found = Vec::new();
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(root) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            // exists() follows the link, so on its own it already skips
+            // every regular file and every symlink that resolves. This
+            // guard earns its line in the race the pair leaves open: a
+            // file deleted between the read_dir and the exists() would
+            // otherwise be reported as an override pointing at nothing,
+            // with nothing to name as its target.
+            if !path.is_symlink() {
+                continue;
+            }
+            if path.exists() {
+                continue;
+            }
+            let target = std::fs::read_link(&path).unwrap_or_default();
+            found.push((path, target));
+        }
+    }
+    found.sort();
+    found
+}
+
+/// An override pointing at nothing is inherited wreckage: a distribution
+/// that shipped its own overrides directory, a machine that was
+/// something else before it was this, and a symlink that survived in
+/// /var across every image switch because nothing has ever looked at it.
+///
+/// Graded warn rather than fail. flatpak tolerates it, the machine is
+/// not broken, and nothing kuma converges depends on it. It is still a
+/// lie about the machine, and the declaration cannot see it yet, so
+/// saying so is the whole of what kuma can honestly do here today.
+fn check_overrides(
+    roots: &[PathBuf],
+    report: &mut impl FnMut(Grade, &str, String, Option<Action>),
+) {
+    for (link, target) in dangling_overrides(roots) {
+        let name = link.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let sudo = if link.starts_with("/var/lib") { "sudo " } else { "" };
+        let fix = Action::new(
+            "remove-override",
+            format!("{sudo}rm {}", link.display()),
+            "drop an override pointing at nothing",
+        );
+        report(
+            Grade::Warn,
+            "flatpak overrides",
+            format!("{name} points at {}, which does not exist", target.display()),
+            Some(fix),
+        );
     }
 }
 
@@ -2038,6 +2123,53 @@ mod tests {
         let brew = &facts["kuma-brew-sync.service"];
         assert_eq!(brew.invocation, "bbbb2222");
         assert_eq!(brew.last_exit, None, "a unit that never ran has no exit time");
+    }
+
+    /// The finding here only exists on machines that were something else
+    /// first, which is why the scan takes its roots: on a healthy
+    /// machine this branch never runs, and a branch that never runs is
+    /// not covered by anything.
+    #[test]
+    fn an_override_pointing_at_nothing_is_found_and_the_rest_are_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("overrides");
+        std::fs::create_dir_all(&root).unwrap();
+
+        // Somebody's real settings, whoever wrote them.
+        std::fs::write(root.join("com.google.Chrome"), "[Context]\n").unwrap();
+        // A symlink that resolves: still somebody's settings.
+        let real = dir.path().join("elsewhere");
+        std::fs::write(&real, "[Context]\n").unwrap();
+        std::os::unix::fs::symlink(&real, root.join("org.chromium.Chromium")).unwrap();
+        // The wreckage: a distribution's overrides directory that this
+        // machine does not have, inherited across an image switch.
+        let gone = Path::new("/usr/share/ublue-os/flatpak-overrides/io.github.kolunmi.Bazaar");
+        std::os::unix::fs::symlink(gone, root.join("io.github.kolunmi.Bazaar")).unwrap();
+
+        let roots = [root.clone()];
+        let found = dangling_overrides(&roots);
+        assert_eq!(found.len(), 1, "only the dangling link is a finding: {found:?}");
+        assert_eq!(found[0].0, root.join("io.github.kolunmi.Bazaar"));
+        assert_eq!(found[0].1, gone, "the report names what it points at");
+
+        // A directory that does not exist is not an error: plenty of
+        // machines have no overrides at all.
+        assert!(dangling_overrides(&[dir.path().join("nothing-here")]).is_empty());
+
+        let mut graded = Vec::new();
+        check_overrides(&[root], &mut |grade, name, detail, action| {
+            graded.push((grade, name.to_string(), detail, action))
+        });
+        assert_eq!(graded.len(), 1);
+        assert!(matches!(graded[0].0, Grade::Warn), "a machine with one is not broken");
+        assert!(graded[0].2.contains("io.github.kolunmi.Bazaar"));
+        let fix = graded[0].3.as_ref().unwrap();
+        assert!(fix.cmd.starts_with("rm ") || fix.cmd.starts_with("sudo rm "), "{}", fix.cmd);
+        assert!(
+            fix.cmd.ends_with("io.github.kolunmi.Bazaar"),
+            "the fix names the link: {}",
+            fix.cmd
+        );
     }
 
     /// The quiet failure this check exists for: a converger whose last
