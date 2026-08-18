@@ -5,6 +5,32 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+### Fixed
+
+- One app's broken download no longer fails Flatpak convergence forever. A
+  remote can serve a static delta whose decompressed part is larger than
+  ostree will accept, and the limit is computed per machine, so the same
+  update fails byte-identically on every retry: Flathub's Firefox did this,
+  the unit failed six times, systemd stopped trying, and the machine sat
+  unconverged until someone read the journal and ran flatpak by hand. Both
+  download paths now retry without static deltas, which trades the delta's
+  bandwidth saving for a whole download on the path that already failed and
+  changes nothing anywhere else. The retry covers the declared-install pass as
+  well as the update, because `--or-update` means the install is where an app
+  already present takes its new version, and that is the pass that failed.
+- `kuma sync` recovers a converger that spent its start limit. The units are
+  configured to retry a handful of times before systemd gives up, and a unit
+  in that state refuses `systemctl start` outright. `kuma doctor` prints
+  `kuma sync` as the fix for a failed converger, so the prescribed fix was
+  refused by systemd rather than run, and the only way out was knowing to run
+  `systemctl reset-failed` first. Sync now resets before it starts.
+- `kuma doctor` quotes what a failed converger actually said. `last run:
+  exit-code` is true and says nothing a person can act on; the sentence naming
+  the cause was one `journalctl` away, for anyone who knew to look. The line
+  now carries it, read from the failed run's own output rather than filtered
+  out of the unit's journal by string, so systemd's own "Failed to start" is
+  never mistaken for the service's explanation of why.
+
 ## v0.11.0 (2026-08-18)
 
 The media is a download. v0.10.0 built the ISO in CI and booted it on every

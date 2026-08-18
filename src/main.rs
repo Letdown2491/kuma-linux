@@ -1558,6 +1558,28 @@ fn rollback_facts(json: &serde_json::Value) -> Option<(String, bool)> {
     Some((target, slot("staged").is_some()))
 }
 
+/// The systemctl calls a sync makes, in the order they must run, each
+/// with whether the sync depends on it.
+///
+/// reset-failed comes first because a unit that spent its start limit
+/// refuses `systemctl start` outright, and that is the exact state this
+/// verb exists to leave. A converger that fails often enough burns
+/// StartLimitBurst, doctor grades it Fail and prints `kuma sync` as the
+/// fix, and without this the prescribed fix was refused by systemd
+/// rather than run: the tool told a person to do something that could
+/// not work until they knew to reset-failed by hand first.
+fn convergence_calls(units: &[&str]) -> Vec<(Vec<String>, bool)> {
+    [("reset-failed", false), ("start", true)]
+        .iter()
+        .map(|(verb, must_succeed)| {
+            let mut call: Vec<String> =
+                ["sudo", "systemctl", verb].iter().map(|s| s.to_string()).collect();
+            call.extend(units.iter().map(|u| u.to_string()));
+            (call, *must_succeed)
+        })
+        .collect()
+}
+
 /// On-demand convergence: start the same units boot and the daily timer
 /// run, so there stays exactly one convergence path. systemctl blocks
 /// until each oneshot finishes, so success here means converged.
@@ -1588,9 +1610,14 @@ fn sync(json: bool) -> Result<()> {
         }
         bail!("not a kuma machine; sync converges a machine booted into a kuma image (`kuma vm` boots one)");
     }
-    let mut args = vec!["sudo", "systemctl", "start"];
-    args.extend(&units);
-    run_host(&args)?;
+    for (call, must_succeed) in convergence_calls(&units) {
+        let args: Vec<&str> = call.iter().map(String::as_str).collect();
+        if must_succeed {
+            run_host(&args)?;
+        } else {
+            let _ = run_host(&args);
+        }
+    }
     // The machine now matches its baked declaration, so the honest next
     // move is to confirm it: `kuma diff` should report no drift. Every
     // other mutating verb ends at an affordance; sync was the one that
@@ -2883,6 +2910,29 @@ fn path_str(path: &Path) -> Result<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Doctor prints `kuma sync` as the fix for a failed converger, and
+    /// a converger fails often enough to spend StartLimitBurst, after
+    /// which systemd refuses to start it at all. If the reset does not
+    /// come first, the fix the tool prescribes cannot run in the state
+    /// the tool prescribes it for.
+    #[test]
+    fn sync_clears_a_spent_start_limit_before_starting() {
+        let calls = convergence_calls(&["kuma-flatpak-sync.service", "kuma-brew-sync.service"]);
+        let verbs: Vec<&String> = calls.iter().map(|(call, _)| &call[2]).collect();
+        assert_eq!(verbs, ["reset-failed", "start"], "reset-failed must precede start");
+        for (call, must_succeed) in &calls {
+            assert_eq!(call[0], "sudo");
+            assert!(
+                call.contains(&"kuma-flatpak-sync.service".to_string())
+                    && call.contains(&"kuma-brew-sync.service".to_string()),
+                "both calls name every unit being converged"
+            );
+            // A healthy unit has nothing to reset, so requiring the
+            // reset to succeed would fail syncs that had no problem.
+            assert_eq!(*must_succeed, call[2] == "start");
+        }
+    }
 
     /// A disk image that boots to a black screen after a correct
     /// password is indistinguishable from a broken install, and the

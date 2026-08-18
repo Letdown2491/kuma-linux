@@ -606,19 +606,38 @@ fi
 /// cannot leave authority tracking behind and silently strand a removal
 /// until the next successful run. Pruning comes last so the runtimes the
 /// update orphans go in the same pass.
+///
+/// Both download paths retry without static deltas, because a remote can
+/// serve a delta this machine refuses. ostree caps how large a
+/// decompressed delta part may be, the cap is computed per machine, and
+/// a delta over it fails byte-identically on every retry: Flathub's
+/// Firefox did exactly this and the unit failed six times before systemd
+/// stopped trying. Retrying is what the whole download is for. It costs
+/// bandwidth on the path that already failed and nothing anywhere else,
+/// since the second pass sees only what is still pending.
+///
+/// The retry belongs on the install too, not just the update. `xargs`
+/// exits 123 when the command it ran failed, which is the status that
+/// failure wore, and `--or-update` means the declared-install pass is
+/// where an app already present gets its new version. Fixing only the
+/// update line would have left the failure exactly where it was.
 const FLATPAK_SYNC_SCRIPT: &str = r#"#!/usr/bin/bash
 set -euo pipefail
 declared=/usr/lib/kuma/flatpaks
 state=/var/lib/kuma/flatpaks-installed
 mkdir -p /var/lib/kuma
 [ -f "$state" ] || : > "$state"
-xargs -r -a "$declared" flatpak install --system --assumeyes --noninteractive --or-update flathub
+install_declared() {
+    xargs -r -a "$declared" flatpak install --system --assumeyes --noninteractive --or-update "$@" flathub
+}
+install_declared || install_declared --no-static-deltas
 while read -r app; do
     grep -qxF "$app" "$declared" \
         || flatpak uninstall --system --assumeyes --noninteractive "$app" || true
 done < "$state"
 cp "$declared" "$state"
-flatpak update --system --assumeyes --noninteractive
+flatpak update --system --assumeyes --noninteractive \
+    || flatpak update --system --assumeyes --noninteractive --no-static-deltas
 flatpak uninstall --system --unused --assumeyes --noninteractive
 "#;
 
@@ -3105,6 +3124,39 @@ mod tests {
         assert!(timer.contains("Persistent=true"), "a laptop asleep at the hour still snapshots");
     }
 
+    /// A remote that serves a delta this machine refuses fails the same
+    /// way forever, so every download the converger does has to be able
+    /// to fall back to the whole file. The install pass is the one that
+    /// caught fire in the field: `--or-update` means it, not the update
+    /// line, is where an already-present app takes a new version.
+    #[test]
+    fn every_flatpak_download_can_retry_without_deltas() {
+        for path in ["install_declared || install_declared --no-static-deltas", "flatpak update"] {
+            assert!(FLATPAK_SYNC_SCRIPT.contains(path), "missing download path: {path}");
+        }
+        let update = FLATPAK_SYNC_SCRIPT
+            .split("cp \"$declared\" \"$state\"")
+            .nth(1)
+            .expect("the update runs after the state file is written");
+        assert!(
+            update.contains(
+                "|| flatpak update --system --assumeyes --noninteractive --no-static-deltas"
+            ),
+            "the update pass must retry without deltas"
+        );
+        // The retry is a fallback, not the default: deltas are why an
+        // update is a few megabytes instead of a few hundred.
+        assert_eq!(
+            FLATPAK_SYNC_SCRIPT.matches("--no-static-deltas").count(),
+            2,
+            "one retry per download path, and no path defaulting to whole downloads"
+        );
+        assert!(
+            !FLATPAK_SYNC_SCRIPT.contains("install_declared --no-static-deltas\ninstall"),
+            "the fallback runs only after the delta attempt failed"
+        );
+    }
+
     #[test]
     fn flatpak_sync_removes_only_what_it_installed() {
         assert!(FLATPAK_SYNC_SCRIPT.contains("flatpak uninstall --system"));
@@ -3582,8 +3634,19 @@ mod tests {
         assert_eq!(list, "org.mozilla.firefox\norg.gnome.Loupe\n");
         let script = std::fs::read_to_string(dir.path().join("kuma-flatpak-sync")).unwrap();
         // remote pinned: multiple remotes offering the same ref would make
-        // non-interactive installs fail
-        assert!(script.contains("--or-update flathub"));
+        // non-interactive installs fail. Asserted as a property of the
+        // install line rather than as adjacent words, which broke the
+        // moment a flag was passed through to it: the remote is the last
+        // word because xargs appends the app names after it.
+        let install = script
+            .lines()
+            .find(|l| l.contains("flatpak install --system"))
+            .expect("the declared list has to be installed by something");
+        assert!(install.contains("--or-update"));
+        assert!(
+            install.trim_end().ends_with("flathub"),
+            "the install must name exactly one remote: {install}"
+        );
     }
 
     #[test]

@@ -488,16 +488,37 @@ fn image_list_stale(path: &str, declared: &BTreeSet<&str>) -> bool {
 struct UnitFacts {
     active: String,
     result: String,
+    /// The last run's invocation, which is how its own output is found
+    /// again after it has exited.
+    invocation: String,
 }
 
 fn unit_facts(units: &[&str]) -> BTreeMap<String, UnitFacts> {
-    let mut facts: BTreeMap<String, UnitFacts> = BTreeMap::new();
     if units.is_empty() {
-        return facts;
+        return BTreeMap::new();
     }
-    let mut args = vec!["systemctl", "show", "-p", "Id", "-p", "ActiveState", "-p", "Result"];
+    let mut args = vec![
+        "systemctl",
+        "show",
+        "-p",
+        "Id",
+        "-p",
+        "ActiveState",
+        "-p",
+        "Result",
+        "-p",
+        "InvocationID",
+    ];
     args.extend(units);
-    let text = host_output_any(&args).unwrap_or_default();
+    parse_unit_facts(&host_output_any(&args).unwrap_or_default())
+}
+
+/// Split from the call so the property that matters is testable: every
+/// field lands on the unit whose `Id=` preceded it. `systemctl show`
+/// emits one flat stream for many units, so a key attributed to the
+/// wrong Id would misreport one unit's health as another's.
+fn parse_unit_facts(text: &str) -> BTreeMap<String, UnitFacts> {
+    let mut facts: BTreeMap<String, UnitFacts> = BTreeMap::new();
     let mut current = String::new();
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else { continue };
@@ -505,10 +526,93 @@ fn unit_facts(units: &[&str]) -> BTreeMap<String, UnitFacts> {
             "Id" => current = value.to_string(),
             "ActiveState" => facts.entry(current.clone()).or_default().active = value.to_string(),
             "Result" => facts.entry(current.clone()).or_default().result = value.to_string(),
+            "InvocationID" => {
+                facts.entry(current.clone()).or_default().invocation = value.to_string()
+            }
             _ => {}
         }
     }
     facts
+}
+
+/// How much of a failing unit's own words a health report will carry.
+/// Long enough for the sentence that names the cause, short enough that
+/// a report stays a column and not a transcript. Set by the line this
+/// was built for: at 100 the flatpak failure could show which app broke
+/// or why, but not both.
+const REASON_MAX: usize = 120;
+
+/// One line, bounded, no control characters: a journal line is arbitrary
+/// text from whatever the unit ran, and this one gets printed inside a
+/// health report.
+///
+/// What gets dropped is the middle, not the tail. Errors nest their
+/// context front to back, so the first clause names the thing that
+/// failed and the last one says why: flatpak's was "Failed to update
+/// org.mozilla.firefox: While pulling … : Decompressed delta part
+/// exceeds configured limit". Cutting the end kept the half a person
+/// could already guess from the unit's name and threw away the half
+/// they came for.
+fn one_line_reason(line: &str) -> String {
+    const JOIN: &str = " ... ";
+    let clean: String = line.trim().chars().filter(|c| !c.is_control()).collect();
+    let chars: Vec<char> = clean.chars().collect();
+    if chars.len() <= REASON_MAX {
+        return clean;
+    }
+    let room = REASON_MAX - JOIN.chars().count();
+    let head = room / 2;
+    let tail = room - head;
+    let front: String = chars[..head].iter().collect();
+    let back: String = chars[chars.len() - tail..].iter().collect();
+    // Land on word boundaries when one is within reach. A cut through
+    // the middle of a word reads as corruption rather than as elision
+    // ("While pullin ... ssed delta part"), and the few characters it
+    // costs are characters nobody could read anyway. A boundary further
+    // off than this is not worth the text it would eat, so the hard cut
+    // stands: long paths and URLs have no spaces to find.
+    const NUDGE: usize = 12;
+    let front = match front.rfind(' ') {
+        Some(cut) if front.len() - cut <= NUDGE => &front[..cut],
+        _ => front.as_str(),
+    };
+    let back = match back.find(' ') {
+        Some(cut) if cut <= NUDGE => &back[cut..],
+        _ => back.as_str(),
+    };
+    format!("{}{JOIN}{}", front.trim_end(), back.trim_start())
+}
+
+/// The last thing a failed unit said, scoped to the invocation that
+/// failed.
+///
+/// `Result=exit-code` is true and inert: it says a run failed and
+/// withholds the only sentence a person can act on, which cost a
+/// journalctl round trip every time. Scoping by invocation ID rather
+/// than filtering the unit's journal by string is what keeps systemd's
+/// own "Failed to start" lines out of it; those are about the unit, not
+/// from it, and they say nothing the grade did not already say.
+fn last_run_reason(invocation: &str) -> Option<String> {
+    if invocation.is_empty() {
+        return None;
+    }
+    let out = host_output_any(&[
+        "journalctl",
+        &format!("_SYSTEMD_INVOCATION_ID={invocation}"),
+        "-o",
+        "cat",
+        "-n",
+        "50",
+        "--no-pager",
+    ])
+    .ok()?;
+    let line = out.lines().rev().find(|l| !l.trim().is_empty())?;
+    let reason = one_line_reason(line);
+    if reason.is_empty() {
+        None
+    } else {
+        Some(reason)
+    }
 }
 
 fn unit_state(unit: &str) -> String {
@@ -1192,7 +1296,11 @@ fn check_convergence(report: &mut impl FnMut(Grade, &str, String, Option<Action>
             report(Grade::Ok, name, format!("{unit} last run succeeded"), None);
         } else {
             let fix = Action::new("sync", "kuma sync", "re-run convergence now");
-            report(Grade::Fail, name, format!("{unit} last run: {}", fact.result), Some(fix));
+            let detail = match last_run_reason(&fact.invocation) {
+                Some(reason) => format!("{unit} last run: {} ({reason})", fact.result),
+                None => format!("{unit} last run: {}", fact.result),
+            };
+            report(Grade::Fail, name, detail, Some(fix));
         }
     }
     if Path::new("/usr/lib/kuma/flatpaks").exists() {
@@ -1847,6 +1955,71 @@ mod tests {
 
     fn set(items: &[&str]) -> BTreeSet<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// `systemctl show` answers for many units in one flat stream, and
+    /// every key belongs to the `Id=` above it. Attributing one unit's
+    /// invocation to another would quote the wrong unit's failure back
+    /// at a person, which is worse than quoting none.
+    #[test]
+    fn unit_facts_keep_every_key_with_its_own_unit() {
+        let text = "Id=kuma-flatpak-sync.service\n\
+                    ActiveState=failed\n\
+                    Result=exit-code\n\
+                    InvocationID=aaaa1111\n\
+                    Id=kuma-brew-sync.service\n\
+                    ActiveState=active\n\
+                    Result=success\n\
+                    InvocationID=bbbb2222\n";
+        let facts = parse_unit_facts(text);
+        let flatpak = &facts["kuma-flatpak-sync.service"];
+        assert_eq!((flatpak.active.as_str(), flatpak.result.as_str()), ("failed", "exit-code"));
+        assert_eq!(flatpak.invocation, "aaaa1111");
+        assert_eq!(facts["kuma-brew-sync.service"].invocation, "bbbb2222");
+    }
+
+    /// The reason is arbitrary output from whatever the unit ran, and it
+    /// gets printed inside a health report: one line, bounded, and no
+    /// control characters that could rewrite the lines around it.
+    #[test]
+    fn a_failure_reason_stays_one_bounded_line() {
+        let plain = "Error: Failed to update org.mozilla.firefox";
+        assert_eq!(one_line_reason(plain), plain);
+        assert_eq!(one_line_reason("  spaced  "), "spaced");
+
+        let escape = one_line_reason("Error:\u{1b}[2Ktampered\nsecond line");
+        assert!(!escape.contains('\u{1b}'), "an escape sequence would rewrite the report");
+        assert!(!escape.contains('\n'), "a health report is one line per check");
+
+        let long = one_line_reason(&"x".repeat(500));
+        assert!(long.chars().count() <= REASON_MAX);
+        assert!(long.contains(" ... "), "a truncated reason says that it was truncated");
+
+        // The real line that motivated all of this. Both ends have to
+        // survive: the head names what failed, the tail says why, and
+        // an earlier cut kept only the head.
+        let real = "Error: Failed to update org.mozilla.firefox: While pulling \
+                    app/org.mozilla.firefox/x86_64/stable from remote flathub: Decompressed \
+                    delta part exceeds configured limit of 76330069 bytes";
+        let shown = one_line_reason(real);
+        assert!(shown.chars().count() <= REASON_MAX);
+        assert!(shown.contains("org.mozilla.firefox"), "the reason must name what failed");
+        assert!(shown.contains("exceeds configured limit"), "the reason must say why");
+        // Elision, not damage: neither end may stop mid-word when a
+        // space was within reach of the cut.
+        let (head, tail) = shown.split_once(" ... ").expect("a truncated reason marks the gap");
+        assert!(real.contains(&format!("{head} ")), "the head stopped mid-word: {head}");
+        assert!(real.contains(&format!(" {tail}")), "the tail started mid-word: {tail}");
+
+        // A run of characters with no space in it has no boundary to
+        // find, and hunting for one would eat the text instead.
+        let unbroken = one_line_reason(&format!("prefix {} suffix", "u".repeat(400)));
+        assert!(unbroken.chars().count() <= REASON_MAX);
+        assert!(unbroken.contains(" ... "));
+        assert!(
+            unbroken.chars().count() > REASON_MAX / 2,
+            "walking to a distant space would throw away most of the line: {unbroken}"
+        );
     }
 
     /// The epoch values come from `date -u -d … +%s`. A date crate would
