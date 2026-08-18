@@ -491,6 +491,9 @@ struct UnitFacts {
     /// The last run's invocation, which is how its own output is found
     /// again after it has exited.
     invocation: String,
+    /// When the last run ended, as a unix epoch. Absent for a unit that
+    /// has never run.
+    last_exit: Option<i64>,
 }
 
 fn unit_facts(units: &[&str]) -> BTreeMap<String, UnitFacts> {
@@ -500,6 +503,9 @@ fn unit_facts(units: &[&str]) -> BTreeMap<String, UnitFacts> {
     let mut args = vec![
         "systemctl",
         "show",
+        // Timestamps default to a locale-shaped string; this one is
+        // arithmetic, so ask for the epoch rather than parse prose.
+        "--timestamp=unix",
         "-p",
         "Id",
         "-p",
@@ -508,6 +514,8 @@ fn unit_facts(units: &[&str]) -> BTreeMap<String, UnitFacts> {
         "Result",
         "-p",
         "InvocationID",
+        "-p",
+        "ExecMainExitTimestamp",
     ];
     args.extend(units);
     parse_unit_facts(&host_output_any(&args).unwrap_or_default())
@@ -528,6 +536,12 @@ fn parse_unit_facts(text: &str) -> BTreeMap<String, UnitFacts> {
             "Result" => facts.entry(current.clone()).or_default().result = value.to_string(),
             "InvocationID" => {
                 facts.entry(current.clone()).or_default().invocation = value.to_string()
+            }
+            // `@1787093909` with --timestamp=unix, and empty for a unit
+            // that has never run.
+            "ExecMainExitTimestamp" => {
+                facts.entry(current.clone()).or_default().last_exit =
+                    value.strip_prefix('@').and_then(|e| e.parse().ok())
             }
             _ => {}
         }
@@ -1083,8 +1097,43 @@ fn leading_number(field: &str) -> Option<i64> {
 /// reads as zero rather than as an enormous unsigned number.
 fn days_since(stamp: &str) -> Option<u64> {
     let then = epoch_from_rfc3339(stamp)?;
+    days_since_epoch(then)
+}
+
+fn days_since_epoch(then: i64) -> Option<u64> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
     Some(now.saturating_sub(then).max(0) as u64 / 86_400)
+}
+
+/// How long a machine may go without converging before that is a
+/// finding.
+///
+/// The convergers run at boot and on a daily timer with
+/// `Persistent=true`, so a machine that has been asleep catches up when
+/// it wakes and a machine that is running converges every day. Seven
+/// days is therefore seven missed firings plus every boot in between: it
+/// cannot be reached by a laptop that was shut for a week, only by a
+/// loop that has stopped turning.
+const STALE_CONVERGENCE_DAYS: u64 = 7;
+
+/// Days since the last run, when that is long enough to report.
+///
+/// This is the quiet half of the failure that cost a day on 2026-08-18.
+/// The loud half is a converger whose last run failed, which `Result=`
+/// already answers. The quiet half is a converger whose last run
+/// succeeded three weeks ago, because "last run succeeded" and "timer
+/// active" are both true of a machine that has silently stopped
+/// converging, and nothing else here can tell them apart.
+///
+/// `None` for a machine that is fine, and also for a missing timestamp:
+/// grading a machine unhealthy because systemd stopped emitting a field
+/// would be reporting on systemd, not on the machine.
+fn convergence_staleness(
+    last_exit: Option<i64>,
+    days_since: impl Fn(i64) -> Option<u64>,
+) -> Option<u64> {
+    let days = days_since(last_exit?)?;
+    (days >= STALE_CONVERGENCE_DAYS).then_some(days)
 }
 
 /// bootc status needs root; a sudo prompt out of `kuma doctor` is the
@@ -1293,7 +1342,15 @@ fn check_convergence(report: &mut impl FnMut(Grade, &str, String, Option<Action>
             // true field and a false sentence.
             report(Grade::Ok, name, format!("{unit} is running now"), None);
         } else if fact.result == "success" {
-            report(Grade::Ok, name, format!("{unit} last run succeeded"), None);
+            match convergence_staleness(fact.last_exit, days_since_epoch) {
+                Some(days) => {
+                    let fix = Action::new("sync", "kuma sync", "converge this machine now");
+                    let detail =
+                        format!("{unit} last converged {days} days ago; it runs at boot and daily");
+                    report(Grade::Fail, name, detail, Some(fix));
+                }
+                None => report(Grade::Ok, name, format!("{unit} last run succeeded"), None),
+            }
         } else {
             let fix = Action::new("sync", "kuma sync", "re-run convergence now");
             let detail = match last_run_reason(&fact.invocation) {
@@ -1967,15 +2024,54 @@ mod tests {
                     ActiveState=failed\n\
                     Result=exit-code\n\
                     InvocationID=aaaa1111\n\
+                    ExecMainExitTimestamp=@1787093909\n\
                     Id=kuma-brew-sync.service\n\
                     ActiveState=active\n\
                     Result=success\n\
-                    InvocationID=bbbb2222\n";
+                    InvocationID=bbbb2222\n\
+                    ExecMainExitTimestamp=\n";
         let facts = parse_unit_facts(text);
         let flatpak = &facts["kuma-flatpak-sync.service"];
         assert_eq!((flatpak.active.as_str(), flatpak.result.as_str()), ("failed", "exit-code"));
         assert_eq!(flatpak.invocation, "aaaa1111");
-        assert_eq!(facts["kuma-brew-sync.service"].invocation, "bbbb2222");
+        assert_eq!(flatpak.last_exit, Some(1_787_093_909));
+        let brew = &facts["kuma-brew-sync.service"];
+        assert_eq!(brew.invocation, "bbbb2222");
+        assert_eq!(brew.last_exit, None, "a unit that never ran has no exit time");
+    }
+
+    /// The quiet failure this check exists for: a converger whose last
+    /// run succeeded, weeks ago, on a machine where nothing has
+    /// converged since. `Result=success` and an active timer are both
+    /// true of that machine.
+    #[test]
+    fn a_machine_that_stopped_converging_is_a_finding() {
+        let ago = |days: u64| move |_: i64| Some(days);
+        assert_eq!(convergence_staleness(Some(1), ago(0)), None, "converged today");
+        assert_eq!(convergence_staleness(Some(1), ago(6)), None, "six days is six timer firings");
+        assert_eq!(
+            convergence_staleness(Some(1), ago(STALE_CONVERGENCE_DAYS)),
+            Some(STALE_CONVERGENCE_DAYS),
+            "the threshold itself reports"
+        );
+        assert_eq!(convergence_staleness(Some(1), ago(30)), Some(30));
+
+        // Reporting on systemd rather than on the machine is not this
+        // check's job: a unit that never ran, or a field that stopped
+        // being emitted, is not a stale machine.
+        assert_eq!(convergence_staleness(None, ago(365)), None, "a unit that never ran");
+        assert_eq!(convergence_staleness(Some(1), |_| None), None, "an unreadable clock");
+
+        // The real arithmetic, not the stub: a timestamp from the future
+        // (an unset RTC) must not read as ancient.
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+        assert_eq!(convergence_staleness(Some(now + 86_400), days_since_epoch), None);
+        assert_eq!(convergence_staleness(Some(now), days_since_epoch), None);
+        let long_ago = now - (STALE_CONVERGENCE_DAYS as i64 + 3) * 86_400;
+        assert_eq!(
+            convergence_staleness(Some(long_ago), days_since_epoch),
+            Some(STALE_CONVERGENCE_DAYS + 3)
+        );
     }
 
     /// The reason is arbitrary output from whatever the unit ran, and it

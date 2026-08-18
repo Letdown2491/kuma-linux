@@ -617,6 +617,137 @@ pub(crate) mod tests {
         );
     }
 
+    /// What executes a command the walkthrough hands somebody.
+    enum Proof {
+        /// A file that runs it, and the text in that file which proves
+        /// it. The text is read and checked, so an entry here is
+        /// evidence rather than a claim.
+        Runs(&'static str, &'static str),
+        /// Nothing runs it, recorded as a decision rather than left as
+        /// an oversight. Shrinking this list is what turns "somebody
+        /// walked the walkthrough once" into a gate.
+        Unexecuted(&'static str),
+    }
+
+    /// Every command in the walkthrough, and what proves it.
+    ///
+    /// The walkthrough is the front door: it is what a stranger types,
+    /// in order, having never seen kuma. A command in it that nothing
+    /// executes is a claim, and a command that drifts from what kuma
+    /// actually accepts is a 404 with extra steps.
+    ///
+    /// This table cannot make an unrun command run. What it does is stop
+    /// the count being unknown: a new command in the docs fails this
+    /// test until somebody decides which list it belongs in, and a
+    /// `Runs` entry whose evidence disappears fails the moment CI stops
+    /// running it.
+    const WALKTHROUGH: &[(&str, Proof)] = &[
+        (
+            "curl -LO https://github.com/Letdown2491/kuma-linux/releases/latest/download/kuma-x86_64.iso",
+            Proof::Unexecuted("the asset name is asserted by the sibling test; the download itself is not run"),
+        ),
+        (
+            "sudo dd if=kuma-x86_64.iso of=/dev/sdX bs=4M status=progress",
+            Proof::Unexecuted("writes a physical disk; CI boots the ISO file directly instead"),
+        ),
+        ("kuma install", Proof::Unexecuted("smoke.sh always passes --disk; the interactive live-media form is not run")),
+        ("kuma", Proof::Unexecuted("the bare status line is not run anywhere")),
+        ("kuma init", Proof::Unexecuted("nothing runs it; the starter declaration is only read as a fixture")),
+        (
+            "curl -LO https://github.com/Letdown2491/kuma-linux/releases/latest/download/kuma-x86_64-unknown-linux-musl",
+            Proof::Unexecuted("the asset name is asserted by the sibling test; the download itself is not run"),
+        ),
+        ("chmod +x kuma-x86_64-unknown-linux-musl", Proof::Unexecuted("plain shell, nothing of kuma's to prove")),
+        ("sudo mv kuma-x86_64-unknown-linux-musl /usr/local/bin/kuma", Proof::Unexecuted("plain shell, nothing of kuma's to prove")),
+        ("kuma check", Proof::Runs("scripts/smoke.sh", "\"$KUMA\" --config \"$file\" check")),
+        ("kuma build", Proof::Runs("scripts/smoke.sh", "\"$KUMA\" --config \"$file\" build --tag")),
+        ("kuma switch --yes", Proof::Unexecuted("mutates a deployment; nothing runs it, and it is how a built image is taken")),
+        // smoke.sh runs `vm --no-run --rebuild` and then boots the disk
+        // with qemu itself, so kuma's own boot path is the half nothing
+        // covers, and that half is what the walkthrough is selling.
+        ("kuma vm", Proof::Unexecuted("smoke.sh runs vm --no-run to build a disk and boots it with qemu directly")),
+        ("kuma vm --apply", Proof::Unexecuted("smoke.sh runs vm --no-run; nothing exercises --apply")),
+        ("kuma iso --live", Proof::Runs("scripts/smoke.sh", "iso --live --tag")),
+        (
+            "kuma install --image ghcr.io/<owner>/kuma:<tag>",
+            Proof::Runs("scripts/smoke.sh", "install --disk \"$raw\" --image"),
+        ),
+        ("kuma doctor", Proof::Runs("scripts/smoke.sh", "kuma doctor --json")),
+        ("kuma update --check", Proof::Runs("scripts/smoke.sh", "update --check")),
+        ("kuma update --yes", Proof::Unexecuted("builds and stages a deployment; nothing runs it")),
+        ("kuma rollback --yes", Proof::Unexecuted("mutates the boot order; nothing runs it")),
+    ];
+
+    /// Commands as the walkthrough gives them: `$ ` prefixed, with the
+    /// trailing comment (which is prose, not argument) removed.
+    fn walkthrough_commands() -> Vec<String> {
+        let text = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/docs/getting-started.md"
+        ))
+        .unwrap();
+        let mut seen: Vec<String> = Vec::new();
+        for line in text.lines() {
+            let Some(rest) = line.trim().strip_prefix("$ ") else { continue };
+            // No documented command contains a literal '#', so this
+            // splits off the explanatory comment and nothing else.
+            let cmd = rest.split('#').next().unwrap_or("").trim().to_string();
+            if !cmd.is_empty() && !seen.contains(&cmd) {
+                seen.push(cmd);
+            }
+        }
+        seen
+    }
+
+    /// The gate item of 0.12, and the honest version of "somebody walked
+    /// the walkthrough and it worked".
+    #[test]
+    fn every_command_in_the_walkthrough_is_executed_or_named_as_unexecuted() {
+        let documented = walkthrough_commands();
+        assert!(
+            documented.len() > 10,
+            "the walkthrough should hand somebody more than a handful of commands"
+        );
+
+        for cmd in &documented {
+            assert!(
+                WALKTHROUGH.iter().any(|(known, _)| known == cmd),
+                "the walkthrough gained a command nothing has decided about: {cmd}\n\
+                 add it to WALKTHROUGH as Runs(file, evidence) or Unexecuted(reason)"
+            );
+        }
+        for (known, _) in WALKTHROUGH {
+            assert!(
+                documented.iter().any(|cmd| cmd == known),
+                "WALKTHROUGH names a command the docs no longer give: {known}"
+            );
+        }
+
+        // Every claim of coverage is read back out of the file that
+        // makes it, so this cannot decay into a list of good intentions.
+        let mut executed = 0;
+        for (cmd, proof) in WALKTHROUGH {
+            match proof {
+                Proof::Runs(file, evidence) => {
+                    let text =
+                        std::fs::read_to_string(format!("{}/{file}", env!("CARGO_MANIFEST_DIR")))
+                            .unwrap_or_else(|_| {
+                                panic!("{cmd} claims {file} runs it, and there is no such file")
+                            });
+                    assert!(
+                        text.contains(evidence),
+                        "{cmd} claims {file} runs it, but {file} no longer contains: {evidence}"
+                    );
+                    executed += 1;
+                }
+                Proof::Unexecuted(reason) => {
+                    assert!(!reason.trim().is_empty(), "{cmd} is unexecuted for no stated reason");
+                }
+            }
+        }
+        assert!(executed > 0, "nothing in the walkthrough is executed by anything");
+    }
+
     /// The release workflow pulls a tag's notes out of CHANGELOG.md and
     /// refuses to publish without them, which is what stops the file
     /// rotting. That check runs after the tag exists, and a tag is the one

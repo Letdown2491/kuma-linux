@@ -5,6 +5,17 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+### Added
+
+- `kuma doctor` reports a machine that has stopped converging. It already
+  graded whether the last convergence attempt failed; it could not see a
+  machine whose last attempt succeeded three weeks ago, because "last run
+  succeeded" and "timer active" are both true of a machine that quietly
+  stopped converging. The convergers run at boot and on a daily timer that
+  catches up after a machine was asleep, so seven days without one is seven
+  missed firings and every boot in between: a loop that has stopped turning
+  rather than a laptop that was shut for a week.
+
 ### Fixed
 
 - One app's broken download no longer fails Flatpak convergence forever. A
