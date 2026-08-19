@@ -69,11 +69,14 @@ pushing, so a boot can break on a tree that was green yesterday. COSMIC is
 built on every push and not booted; that is what calling it experimental
 means here.
 
-`published.yml` is separate and manual or weekly: it installs and boots
-what is on the registry, upgrades an older published version to the current
-one, and boots an encrypted install. Run it after publishing an image and
-before tagging, so the artifact a stranger gets is verified while there is
-still time to republish.
+`published.yml` is separate: it installs and boots what is on the registry,
+upgrades an older published version to the current one, and boots an
+encrypted install. `publish.yml` calls it with the image it just pushed, so
+the artifact a stranger gets is verified without anybody remembering to ask.
+Running it by hand is still there for asking about an image that was
+published earlier, which is the only case where the order is yours to get
+right: it reads the moving tag, so running it before a publish tests the
+previous release.
 
 The image stage is the one part that does not repeat on a tag. Cutting a
 release means tagging a commit that already went green on main, so the tag

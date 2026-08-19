@@ -215,8 +215,9 @@ jobs:
   # that the published image installs and boots, and nothing it finds can
   # unpublish anything. What it can do is tell somebody the same day.
   #
-  # published.yml keeps its own schedule for what it separately watches:
-  # rot in an artifact that is sitting still.
+  # This is published.yml's only automatic trigger. It used to have a
+  # weekly schedule as well, which re-tested an unchanged artifact every
+  # Monday; the dispatch is still there for asking on purpose.
   validate:
     needs: publish
     uses: ./.github/workflows/published.yml

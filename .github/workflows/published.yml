@@ -39,12 +39,13 @@ on:
         description: "Older image the cross-version job installs first"
         required: false
         default: "ghcr.io/letdown2491/kuma:niri-0.7.0"
-  schedule:
-    # Weekly rather than daily. The daily heartbeat in ci.yml watches a
-    # base that moves on its own; a published tag only moves when someone
-    # publishes it, so the thing this guards against is rot in an artifact
-    # that is already sitting still.
-    - cron: "0 7 * * 1"
+  # No schedule. There was a weekly one, on the reasoning that a published
+  # tag sits still and could rot underneath. What it actually watched was
+  # ghcr, sigstore and the runner image, and it re-tested the same
+  # unchanged artifact every Monday to do it. The answer here can only
+  # change when the registry changes, and publish.yml now says when that
+  # happens, so the trigger is the event rather than the calendar. Anyone
+  # who wants the old behaviour has the dispatch above.
 
 env:
   CARGO_TERM_COLOR: always
