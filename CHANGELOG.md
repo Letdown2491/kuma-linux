@@ -5,6 +5,24 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+## v0.12.0 (2026-08-20)
+
+This release is about the difference between a thing being true and a thing
+being checked. It exists because the day v0.11.0 shipped, a machine stopped
+converging and only a person reading a journal could tell.
+
+Three of its claims were true and unchecked: that a converger recovers on its
+own, that the walkthrough a stranger types still describes the tool, and that
+a declaration written for any released kuma keeps working. All three are now
+commands that pass or fail.
+
+It also grew a face. `kuma menu` was meant for a later release and was built
+on a branch to keep this one honest; it earned its way in by being finished,
+and by being the first thing here a person sees rather than a thing they can
+check. The rule that governs it is the same one this release is about: a menu
+entry is one keystroke with no diff and no pause, so it may change machine
+state immediately and may never write your declaration.
+
 ### Added
 
 - `kuma menu` opens a menu in the desktop's own launcher: apps, connect,
@@ -13,9 +31,11 @@ as its release notes.
   itself, so two keys for one job would have left one of them showing strictly
   less. The stock bind is grepped for before it is replaced, so a niri release
   that renames it fails the build rather than shipping media whose main key
-  does nothing. The desktop
-  kuma assembles had no face of its own, so every device-level setting was
-  somebody else's control panel and nothing at all owned the system. This is
+  does nothing.
+
+  The desktop kuma assembles had no face of its own, so every device-level
+  setting was somebody else's control panel and nothing at all owned the
+  system. This is
   not a settings application, which is a desktop environment's job and never
   finishes; it is a tree rendered by `fuzzel --dmenu`, themed by the fuzzel
   config kuma already ships, in the launcher the clipboard picker already
@@ -107,33 +127,6 @@ as its release notes.
   another system, and it is the only network tool left on a machine whose
   session will not start.
 
-### Fixed
-
-- Every verb is named somewhere a person reads. One test walked the docs and
-  checked each command against the CLI; nothing walked it the other way, which
-  is the direction a new verb goes missing in. `kuma menu` was written, tested,
-  and documented nowhere while every test passed. The exception is named rather
-  than filtered by a rule: `kuma boot-titles` is hidden because a systemd unit
-  runs it and nothing asks a person to.
-- A keybinding that spawns a kuma verb now names one that exists. The binds
-  are strings in a file the compiler never reads, so a renamed verb left a key
-  that did nothing and said nothing; a test walks every `spawn "kuma"` in the
-  shipped binds and checks the verb against the CLI's own definition.
-
-## v0.12.0 (2026-08-19)
-
-Nothing here is a feature. This release is about the difference between a
-thing being true and a thing being checked, and it exists because the day
-v0.11.0 shipped, a machine stopped converging and only a person reading a
-journal could tell.
-
-Three of its claims were true and unchecked: that a converger recovers on its
-own, that the walkthrough a stranger types still describes the tool, and that
-a declaration written for any released kuma keeps working. All three are now
-commands that pass or fail.
-
-### Added
-
 - `kuma doctor` reports a Flatpak permission override that points at nothing.
   A machine that was another distribution first can carry an override symlink
   into a directory that distribution shipped and kuma does not have, and it
@@ -178,6 +171,17 @@ commands that pass or fail.
   is one somebody meets by opening a file they downloaded.
 
 ### Fixed
+
+- Every verb is named somewhere a person reads. One test walked the docs and
+  checked each command against the CLI; nothing walked it the other way, which
+  is the direction a new verb goes missing in. `kuma menu` was written, tested,
+  and documented nowhere while every test passed. The exception is named rather
+  than filtered by a rule: `kuma boot-titles` is hidden because a systemd unit
+  runs it and nothing asks a person to.
+- A keybinding that spawns a kuma verb now names one that exists. The binds
+  are strings in a file the compiler never reads, so a renamed verb left a key
+  that did nothing and said nothing; a test walks every `spawn "kuma"` in the
+  shipped binds and checks the verb against the CLI's own definition.
 
 - Publishing an image now runs the checks that install and boot it. They read
   the moving tag a publish moves, so running them beforehand only re-tested
