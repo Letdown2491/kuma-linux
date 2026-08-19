@@ -5,7 +5,7 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
-## v0.12.0 (2026-08-20)
+## v0.12.0 (2026-08-19)
 
 This release is about the difference between a thing being true and a thing
 being checked. It exists because the day v0.11.0 shipped, a machine stopped
