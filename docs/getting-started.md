@@ -268,6 +268,18 @@ Running bare `kuma` is always safe and always tells you where you are. Every
 command ends by naming what you can legally do next, so you can follow the
 prompts rather than remember the verbs.
 
+**On a desktop, `Mod+D` opens kuma's menu.** Your applications are in it, so
+it is the launcher; so are the settings tools kuma does not own (network,
+bluetooth, audio), the ones it does (your declaration, health, updates,
+rollback), and lock, suspend, reboot and power off. Opening it shows the
+groups and typing searches every row, so `reboot` finds the reboot without
+going anywhere. It never writes your declaration: those rows open the file or
+run a command that asks first. To read it without a desktop:
+
+```console
+$ kuma menu --list      # the rows the menu would offer on this machine
+```
+
 **When something is wrong and you want help.** `kuma doctor --report` prints
 one JSON document with the findings, which kuma is running, which image is
 booted and its digest, and the declaration the machine was built from. That is

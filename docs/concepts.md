@@ -170,6 +170,57 @@ was built to be, not what it is now. Comparing the two is what `kuma diff`
 does, and what the machine has that the file does not name is a fork rather
 than a fault.
 
+## The menu
+
+`Mod+D` on a niri desktop opens `kuma menu`. It is not an application: it is a
+list rendered by the launcher the desktop already has, themed by the same file
+the launcher is themed by. Nothing extra is installed and nothing extra is
+drawn.
+
+It holds your applications, the device settings kuma does not own, the ones it
+does, and the power actions:
+
+```console
+$ kuma menu --list
+  Apps   ›
+  Connect   ›
+  Declaration   ›
+  System   ›
+  Notifications   ›
+  Power   ›
+· Apps · Firefox
+· Connect · Network
+· Declaration · Show drift
+· System · Health
+· Power · Reboot
+```
+
+Opening it shows the groups. Typing searches every row, including the ones
+below them, so `reboot` finds the reboot and `power` finds the whole group.
+Opening a group narrows what is shown and never what can be found: from inside
+`Connect` you can still type `reboot` and get it. `--list` prints the rows
+instead of drawing them, marking with `·` the ones only typing reaches.
+
+**The menu never writes your declaration.** This is the rule that decides what
+may be in it, and it comes straight from
+[what happens to changes you make by hand](#what-happens-to-changes-you-make-by-hand):
+`kuma capture` is the one deliberate path from what a machine has to what the
+file says, and its safety is that it shows you a diff and waits. A menu entry
+is one keystroke with no diff and no pause. So the declaration entries open the
+file in your editor or run a verb that asks for itself, and only machine state
+changes immediately.
+
+That is the same line the desktop set is drawn on. Picking a wifi network,
+pairing a speaker, muting a microphone, locking the screen: machine state, and
+the menu changes it the moment you pick it. What packages exist, which desktop,
+which firmware: system definition, and that goes through the file, a build and
+a reboot.
+
+A row appears only if the program behind it is installed, so the menu offers
+the terminal tool where there is one, the graphical tool where there is not,
+and no row at all where there is neither. Nothing it runs to draw itself needs
+root, so opening it never asks for a password.
+
 ## Why a desktop installs things you did not name
 
 Choosing a desktop installs packages you did not name. That set is session

@@ -770,6 +770,18 @@ smoke_published() {
         fi
         ok "kuma doctor finds nothing failing"
 
+        # The menu, on a real image, without a display. --list is the
+        # whole thing except the drawing: it reads the desktop entries,
+        # ranks them, and builds every row. A crash here is a menu that
+        # cannot open, and nothing else would find it, because the menu
+        # is the one surface no automated boot ever touches.
+        local menu_rows
+        menu_rows=$(guest kuma menu --list 2>/dev/null | wc -l || echo 0)
+        [ "$menu_rows" -ge 20 ] || bad "kuma menu --list produced $menu_rows rows"
+        guest kuma menu --list | grep -q "Power . Power off" \
+            || bad "kuma menu is missing rows it always has"
+        ok "kuma menu builds $menu_rows rows on this image"
+
         # Named rather than left to the scan above, because the ways this
         # control goes missing are all graded `warn`: no policy file, one
         # that will not parse, or one that does not name kuma's

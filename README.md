@@ -149,6 +149,7 @@ The file stays the interface. These read it or edit it for you:
 
 ```console
 $ kuma                                     # where this machine is, and its next moves
+$ kuma menu                                # the desktop menu: apps, settings, system, power
 $ kuma add --flatpak org.mozilla.firefox   # declare (--rpm / --brew too)
 $ kuma remove org.mozilla.firefox          # drop from whichever list declares it
 $ kuma capture                             # declare what this machine already runs
@@ -171,6 +172,12 @@ verbs.
 `add`, `remove`, and `capture` preserve your comments and formatting.
 `check`, `diff`, `doctor`, and `update --check` change nothing. Everything
 speaks `--json`.
+
+On a niri desktop `kuma menu` is bound to `Mod+D`, and it is the launcher:
+your applications, the settings kuma does not own (network, bluetooth, audio),
+the ones it does (the declaration, health, updates, rollback), and the power
+actions. It never writes the declaration. `kuma menu --list` prints the rows
+instead of drawing them, which is how to read it over ssh.
 
 Three more exist for when you need them and never otherwise: `kuma passwd`
 hashes a password for `[user]`, `kuma schema` prints the JSON Schema for

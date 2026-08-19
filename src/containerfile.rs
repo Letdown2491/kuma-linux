@@ -1437,6 +1437,25 @@ fn icon_theme() -> String {
     )
 }
 
+/// What `Mod+D` becomes.
+///
+/// Stock niri binds it to plain fuzzel, which was the right launcher
+/// until `kuma menu` started listing applications itself. Two keys for
+/// one job, one of which shows strictly less, is not a choice worth
+/// giving anybody, so the menu takes the key the hand already goes to
+/// and plain fuzzel stops being bound.
+///
+/// Substituted into the stock config rather than added beside it: niri
+/// takes the last bind for a key, so a second `Mod+D` would leave the
+/// original in the file, working or not depending on merge order.
+const NIRI_MENU_BIND: &str = r#"Mod+D hotkey-overlay-title="Kuma Menu: apps, settings, system, power" { spawn "kuma" "menu"; }"#;
+
+/// The stock line it replaces. Grepped for before the rewrite, so a niri
+/// release that renames it fails the build instead of shipping media
+/// whose main key does nothing.
+const NIRI_STOCK_LAUNCHER: &str =
+    r#"Mod+D hotkey-overlay-title="Run an Application: fuzzel" { spawn "fuzzel"; }"#;
+
 /// Media-key binds routed through kuma-osd, spliced INTO the stock
 /// `binds {}` section during the merge (niri rejects a second binds
 /// node) while the stock wpctl/brightnessctl lines are sed-stripped.
@@ -1454,7 +1473,6 @@ const NIRI_MEDIA_BINDS: &str = r#"    XF86AudioRaiseVolume allow-when-locked=tru
     Mod+Shift+N { spawn "makoctl" "mode" "-t" "do-not-disturb"; }
     Mod+Alt+R { spawn "/usr/libexec/kuma-record"; }
     Mod+Print { spawn "sh" "-c" "grim -g \"$(slurp)\" - | swappy -f -"; }
-    Mod+Alt+Space hotkey-overlay-title="Kuma Menu: settings, system, power" { spawn "kuma" "menu"; }
 "#;
 
 /// GTK theme settings travel two roads: Wayland-native apps read
@@ -1911,7 +1929,7 @@ pub fn generate(config: &Config) -> String {
         // stops naming alacritty, fail the build instead of silently
         // shipping a Mod+T that spawns a terminal the image doesn't have.
         out.push_str(
-            "RUN grep -q '\"alacritty\"' /usr/share/doc/niri/default-config.kdl \\\n    && mkdir -p /etc/niri \\\n    && sed -e 's/alacritty/kitty/g' -e '/starts waybar/d' -e '/^spawn-at-startup \"waybar\"$/d' -e '/XF86Audio/d' -e '/XF86MonBrightness/d' -e '/^binds {/r /usr/lib/kuma/niri-binds.kdl' /usr/share/doc/niri/default-config.kdl > /etc/niri/config.kdl \\\n    && cat /usr/lib/kuma/niri-extras.kdl >> /etc/niri/config.kdl \\\n    && niri validate --config /etc/niri/config.kdl\n",
+            &format!("RUN grep -q '\"alacritty\"' /usr/share/doc/niri/default-config.kdl \\\n    && grep -qF '{NIRI_STOCK_LAUNCHER}' /usr/share/doc/niri/default-config.kdl \\\n    && mkdir -p /etc/niri \\\n    && sed -e 's/alacritty/kitty/g' -e '/starts waybar/d' -e '/^spawn-at-startup \"waybar\"$/d' -e '/XF86Audio/d' -e '/XF86MonBrightness/d' -e 's|{NIRI_STOCK_LAUNCHER}|{NIRI_MENU_BIND}|' -e '/^binds {{/r /usr/lib/kuma/niri-binds.kdl' /usr/share/doc/niri/default-config.kdl > /etc/niri/config.kdl \\\n    && cat /usr/lib/kuma/niri-extras.kdl >> /etc/niri/config.kdl \\\n    && niri validate --config /etc/niri/config.kdl\n"),
         );
         // Every "attach a file" button in every app did nothing, silently.
         //
@@ -3604,6 +3622,31 @@ mod tests {
         assert!(!without.contains("[initial_session]"));
     }
 
+    /// Mod+D opens the menu, and the stock line it replaces is grepped
+    /// for first. A niri release that renames that line must fail the
+    /// build rather than ship media whose main key does nothing.
+    #[test]
+    fn the_launcher_key_opens_the_menu_and_fails_loudly_if_it_cannot() {
+        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
+        assert!(
+            out.contains(&format!("grep -qF '{NIRI_STOCK_LAUNCHER}'")),
+            "the stock bind is a gate"
+        );
+        assert!(
+            out.contains(&format!("s|{NIRI_STOCK_LAUNCHER}|{NIRI_MENU_BIND}|")),
+            "and is replaced"
+        );
+        assert!(NIRI_MENU_BIND.contains("Mod+D"), "the key is the one the hand already goes to");
+        assert!(!NIRI_MENU_BIND.contains("fuzzel"), "plain fuzzel is no longer what it opens");
+        assert!(
+            !NIRI_MEDIA_BINDS.contains("kuma\" \"menu"),
+            "one key for the menu, not a second chord beside it"
+        );
+        // The stock line is what niri actually ships, not a guess: this
+        // is the pairing that makes the grep meaningful.
+        assert!(NIRI_STOCK_LAUNCHER.contains(r#"spawn "fuzzel";"#));
+    }
+
     /// A keybinding that spawns `kuma` names the verb in a string, in a
     /// file the compiler never reads, so a renamed verb leaves a key
     /// that does nothing and says nothing. Same failure the menu's own
@@ -3653,7 +3696,7 @@ mod tests {
         let verbs: Vec<String> =
             cli.get_subcommands().map(|sub| sub.get_name().to_string()).collect();
         let mut found = 0;
-        for bind in [NIRI_MEDIA_BINDS, NIRI_EXTRAS] {
+        for bind in [NIRI_MEDIA_BINDS, NIRI_EXTRAS, NIRI_MENU_BIND] {
             for (index, _) in bind.match_indices(r#"spawn "kuma""#) {
                 let rest = &bind[index..];
                 let verb =

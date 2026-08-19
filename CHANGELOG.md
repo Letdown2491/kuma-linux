@@ -7,8 +7,13 @@ as its release notes.
 
 ### Added
 
-- `kuma menu` opens a menu in the desktop's own launcher: connect, declaration,
-  system, notifications, power. Bound to Mod+Alt+Space on niri. The desktop
+- `kuma menu` opens a menu in the desktop's own launcher: apps, connect,
+  declaration, system, notifications, power. Bound to `Mod+D` on niri, which is
+  the key that used to open the bare launcher; the menu lists applications
+  itself, so two keys for one job would have left one of them showing strictly
+  less. The stock bind is grepped for before it is replaced, so a niri release
+  that renames it fails the build rather than shipping media whose main key
+  does nothing. The desktop
   kuma assembles had no face of its own, so every device-level setting was
   somebody else's control panel and nothing at all owned the system. This is
   not a settings application, which is a desktop environment's job and never
@@ -31,7 +36,8 @@ as its release notes.
   **`kuma menu --list` prints the rows instead of drawing them**, marking
   which are on screen at rest and which only typing reaches. How to see the
   menu over ssh, in a VM with no session, or when wondering why a row is
-  missing.
+  missing. `scripts/smoke.sh` runs it on every installed machine it boots,
+  which is the only automated thing that touches the menu at all.
 
   **Descending narrows what is shown, never what can be found.** Opening a
   group shows that group's rows and a way back; every other row is still in
@@ -103,6 +109,12 @@ as its release notes.
 
 ### Fixed
 
+- Every verb is named somewhere a person reads. One test walked the docs and
+  checked each command against the CLI; nothing walked it the other way, which
+  is the direction a new verb goes missing in. `kuma menu` was written, tested,
+  and documented nowhere while every test passed. The exception is named rather
+  than filtered by a rule: `kuma boot-titles` is hidden because a systemd unit
+  runs it and nothing asks a person to.
 - A keybinding that spawns a kuma verb now names one that exists. The binds
   are strings in a file the compiler never reads, so a renamed verb left a key
   that did nothing and said nothing; a test walks every `spawn "kuma"` in the

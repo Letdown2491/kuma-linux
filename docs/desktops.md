@@ -51,15 +51,24 @@ explicitly.
 | Portals | `xdg-desktop-portal-gtk`, `xdg-desktop-portal-gnome` |
 | Audio | `pipewire`, `pipewire-pulseaudio`, `wireplumber`, `pavucontrol` |
 | Graphics | `mesa-dri-drivers`, `mesa-vulkan-drivers`, `vulkan-loader` |
-| Hardware | `NetworkManager-wifi`, `wpa_supplicant`, `bluez`, `blueman`, `brightnessctl`, `power-profiles-daemon` |
+| Hardware | `NetworkManager-wifi`, `NetworkManager-tui`, `wpa_supplicant`, `bluez`, `blueman`, `brightnessctl`, `power-profiles-daemon` |
 | Printing and discovery | `cups`, `system-config-printer`, `avahi`, `nss-mdns` |
 | Screen and clipboard | `grim`, `slurp`, `swappy`, `wf-recorder`, `wl-clipboard`, `cliphist` |
 | Session glue | `polkit`, `mate-polkit`, `dconf`, `gnome-keyring`, `xsettingsd`, `xdg-user-dirs`, `firewalld`, `flatpak` |
-| Fonts | sans, mono, emoji, CJK, and Font Awesome (free and brands) |
+| Fonts and icons | sans, mono, emoji, CJK, Font Awesome (free and brands), `adwaita-icon-theme` |
 
-Graphical settings for wifi, bluetooth, audio, and printers are included on
+Settings tools for wifi, bluetooth, audio, and printers are included on
 purpose. Those are machine state, not system definition: the declaration
 describes what a machine is, and picking a network is not that.
+
+`Mod+D` opens `kuma menu` rather than the bare launcher. The menu lists your
+applications, so it replaces what that key used to do, and adds the settings
+tools above, the declaration, machine health, updates, rollback, and the power
+actions that stock niri binds no key for at all. See
+[the menu](concepts.md#the-menu).
+
+COSMIC has no menu: it ships no fuzzel, and `kuma menu` says so rather than
+guessing at another launcher.
 
 ## COSMIC
 

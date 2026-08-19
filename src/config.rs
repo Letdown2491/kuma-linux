@@ -696,10 +696,59 @@ pub(crate) mod tests {
             Proof::Runs("scripts/smoke.sh", "install --disk \"$raw\" --image"),
         ),
         ("kuma doctor", Proof::Runs("scripts/smoke.sh", "kuma doctor --json")),
+        ("kuma menu --list", Proof::Runs("scripts/smoke.sh", "kuma menu --list")),
         ("kuma update --check", Proof::Runs("scripts/smoke.sh", "update --check")),
         ("kuma update --yes", Proof::Unexecuted("builds and stages a deployment; nothing runs it")),
         ("kuma rollback --yes", Proof::Unexecuted("mutates the boot order; nothing runs it")),
     ];
+
+    /// Every verb is named somewhere a person reads.
+    ///
+    /// The sibling test walks the docs and checks each command against
+    /// the CLI. This walks it the other way, which is the direction a
+    /// new verb goes missing in: `kuma menu` shipped, worked, and was
+    /// documented nowhere, and every test passed. A verb nobody can find
+    /// is a feature nobody has.
+    ///
+    /// The exceptions are named rather than filtered by a rule, so that
+    /// adding one is a decision somebody makes on purpose.
+    #[test]
+    fn every_verb_is_documented_somewhere() {
+        use clap::CommandFactory;
+        /// Verbs deliberately absent from the prose.
+        const UNDOCUMENTED: &[(&str, &str)] = &[(
+            "boot-titles",
+            "hidden; kuma-boot-titles.service runs it and nothing asks a person to",
+        )];
+        let docs: String = [
+            "README.md",
+            "docs/getting-started.md",
+            "docs/concepts.md",
+            "docs/desktops.md",
+            "docs/agents.md",
+        ]
+        .iter()
+        .map(|name| {
+            std::fs::read_to_string(format!("{}/{name}", env!("CARGO_MANIFEST_DIR")))
+                .unwrap_or_default()
+        })
+        .collect();
+        let mut missing: Vec<String> = Vec::new();
+        for sub in crate::Cli::command().get_subcommands() {
+            let verb = sub.get_name();
+            if UNDOCUMENTED.iter().any(|(name, _)| *name == verb) {
+                continue;
+            }
+            if !docs.contains(&format!("kuma {verb}")) {
+                missing.push(verb.to_string());
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "these verbs exist and no page mentions them: {}",
+            missing.join(", ")
+        );
+    }
 
     /// Commands as the walkthrough gives them: `$ ` prefixed, with the
     /// trailing comment (which is prose, not argument) removed.
