@@ -16,6 +16,15 @@ as its release notes.
   config kuma already ships, in the launcher the clipboard picker already
   uses. Nothing new is installed and nothing new is drawn.
 
+  **The list is flat**, one row per action, prefixed with its group. A tree of
+  submenus reads well and searches terribly: a launcher can only match the
+  lines it was handed, so typing `reboot` at the top of a nested menu matches
+  nothing and the person who knew what they wanted navigates anyway. Flat, a
+  row is found by its own word (`reboot`) or by its group (`power`). Every row
+  carries an icon through fuzzel's dmenu icon protocol, and selection comes
+  back as an index rather than as text, so a typo that matches nothing cannot
+  be mistaken for a choice.
+
   **The menu never writes the declaration.** `kuma capture` is the one
   deliberate path from what the machine has to what the file says, and its
   safety is the ceremony: dry run, review, confirm. A menu entry is one

@@ -23,10 +23,17 @@
 //! writer safe. Declaration entries open the file or run a verb that has
 //! its own confirmation; machine state (a lock, a suspend, a
 //! notification mode) is changed immediately, because that is the half a
-//! launcher is genuinely better at. `no_leaf_writes_the_declaration`
+//! launcher is genuinely better at. `no_item_writes_the_declaration`
 //! enforces it.
 //!
-//! **A leaf appears only when its program is here.** The tree is a pure
+//! **The menu is flat, and that is a decision rather than a shortcut.**
+//! A launcher can only match against the lines it was handed, so a tree
+//! of submenus searches terribly: typing `reboot` at the top of one
+//! matches nothing, and the person who knew exactly what they wanted
+//! navigates anyway. Flattening costs a word of prefix per row and makes
+//! every entry reachable by typing any part of its name or its group.
+//!
+//! **A row appears only when its program is here.** The list is a pure
 //! function of what `Tools` observed, so a menu built on a machine
 //! without `nmtui` offers the graphical editor instead, and one built
 //! without either offers neither rather than a row that does nothing.
@@ -133,7 +140,7 @@ fn on_path(program: &str) -> bool {
     std::env::split_paths(&path).any(|dir| dir.join(program).is_file())
 }
 
-/// How a leaf is run.
+/// How an item is run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Run {
     /// Detached, silent, immediate: locking, suspending, toggling a
@@ -145,176 +152,290 @@ pub(crate) enum Run {
     Terminal,
 }
 
+/// One row.
+///
+/// **The menu is flat, and that is the whole design.** A tree of
+/// submenus reads well and searches terribly: a launcher can only match
+/// against the lines it was handed, so typing `reboot` at the top of a
+/// nested menu matches nothing, and the person who knew exactly what
+/// they wanted has to navigate to it anyway. Flattening costs one word
+/// of prefix per row and makes every entry in the menu reachable by
+/// typing any part of its name or its group.
 #[derive(Debug, Clone)]
-pub(crate) enum Kind {
-    Submenu(Vec<Entry>),
-    Leaf { argv: Vec<String>, run: Run },
+pub(crate) struct Item {
+    /// The section this belongs to. Rendered as part of the line, so it
+    /// is searchable: `connect` narrows to the network entries the same
+    /// way `wifi` would.
+    pub(crate) group: &'static str,
+    pub(crate) label: &'static str,
+    /// Freedesktop icon name, with a plainer fallback after the comma
+    /// for themes that carry only the legacy name. Every item has one:
+    /// fuzzel leaves a hole where an icon is missing, and one hole makes
+    /// the whole list look broken.
+    pub(crate) icon: &'static str,
+    pub(crate) argv: Vec<String>,
+    pub(crate) run: Run,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct Entry {
-    pub(crate) label: String,
-    pub(crate) kind: Kind,
-}
-
-/// The label that pops one level. Spelled out rather than relying on
-/// cancel, because a dmenu offers no other way to say "up" and a person
-/// who cancels means "away", not "back".
-const BACK: &str = "..  back";
-
-fn submenu(label: &str, entries: Vec<Entry>) -> Option<Entry> {
-    // A group whose every entry was unavailable is not an empty group,
-    // it is an absent one. Otherwise a machine without a single network
-    // tool still offers "Connect" and answers with nothing.
-    if entries.is_empty() {
-        return None;
+impl Item {
+    /// The line fuzzel is handed. `\0icon\x1f<name>` is fuzzel's dmenu
+    /// icon protocol; everything before the NUL is what is displayed and
+    /// what the search matches against.
+    fn line(&self) -> String {
+        format!("{} · {}\u{0}icon\u{1f}{}", self.group, self.label, self.icon)
     }
-    let mut with_back = entries;
-    with_back.push(Entry { label: BACK.to_string(), kind: Kind::Submenu(Vec::new()) });
-    Some(Entry { label: label.to_string(), kind: Kind::Submenu(with_back) })
-}
 
-fn leaf(label: &str, argv: &[&str], run: Run) -> Entry {
-    Entry {
-        label: label.to_string(),
-        kind: Kind::Leaf { argv: argv.iter().map(|a| (*a).to_string()).collect(), run },
+    /// What the person reads and types against, without the protocol.
+    #[cfg(test)]
+    fn text(&self) -> String {
+        format!("{} · {}", self.group, self.label)
     }
 }
 
-/// A leaf that runs a program only if this machine has it.
-fn tool(tools: &Tools, label: &str, argv: &[&str], run: Run) -> Option<Entry> {
+fn item(
+    group: &'static str,
+    label: &'static str,
+    icon: &'static str,
+    argv: &[&str],
+    run: Run,
+) -> Item {
+    Item { group, label, icon, argv: argv.iter().map(|a| (*a).to_string()).collect(), run }
+}
+
+/// An item whose program this machine has, or nothing.
+fn tool(
+    tools: &Tools,
+    group: &'static str,
+    label: &'static str,
+    icon: &'static str,
+    argv: &[&str],
+    run: Run,
+) -> Option<Item> {
     let program = argv.first().copied().unwrap_or_default();
-    tools.has(program).then(|| leaf(label, argv, run))
+    tools.has(program).then(|| item(group, label, icon, argv, run))
 }
 
 /// The whole menu, as a pure function of what is installed.
-pub(crate) fn tree(tools: &Tools) -> Vec<Entry> {
-    let mut root = Vec::new();
+pub(crate) fn items(tools: &Tools) -> Vec<Item> {
+    let mut out = Vec::new();
 
-    if let Some(entry) = tools.has("fuzzel").then(|| leaf("apps", &["fuzzel"], Run::Detached)) {
-        root.push(entry);
+    if tools.has("fuzzel") {
+        out.push(item(
+            "apps",
+            "launch an application",
+            "applications-system-symbolic,applications-system",
+            &["fuzzel"],
+            Run::Detached,
+        ));
     }
 
-    let mut connect = Vec::new();
-    // nmtui first: it is a terminal program, so it inherits the
-    // terminal's own theme instead of arriving as a GTK window that
-    // looks like it came from another system. It also works in a TTY,
-    // which matters on the machine whose session will not start.
+    // nmtui before the graphical editor: a terminal program inherits the
+    // terminal's theme instead of arriving as a window from another
+    // system, and it works in a TTY, which is the only place left when a
+    // session will not start.
     if let Some(wifi) = tools.first(&["nmtui", "nm-connection-editor"]) {
         let run = if wifi == "nmtui" { Run::Terminal } else { Run::Detached };
-        connect.push(leaf("network", &[&wifi], run));
+        out.push(item(
+            "connect",
+            "network",
+            "network-wireless-symbolic,network-wireless",
+            &[&wifi],
+            run,
+        ));
     }
-    if let Some(entry) = tool(tools, "bluetooth", &["blueman-manager"], Run::Detached) {
-        connect.push(entry);
-    }
+    out.extend(tool(
+        tools,
+        "connect",
+        "bluetooth",
+        "bluetooth-symbolic,bluetooth",
+        &["blueman-manager"],
+        Run::Detached,
+    ));
     if let Some(audio) = tools.first(&["wiremix", "pavucontrol"]) {
         let run = if audio == "wiremix" { Run::Terminal } else { Run::Detached };
-        connect.push(leaf("audio", &[&audio], run));
+        out.push(item(
+            "connect",
+            "audio",
+            "audio-volume-high-symbolic,audio-volume-high",
+            &[&audio],
+            run,
+        ));
     }
-    if let Some(entry) = tool(tools, "displays", &["wdisplays"], Run::Detached) {
-        connect.push(entry);
-    }
-    root.extend(submenu("connect", connect));
+    out.extend(tool(
+        tools,
+        "connect",
+        "displays",
+        "video-display-symbolic,video-display",
+        &["wdisplays"],
+        Run::Detached,
+    ));
 
     // Declaration: opens and shows, never writes. `capture` is the one
     // entry that can end in a write, and it does its own asking.
-    let declaration = vec![
-        leaf("edit the declaration", &["kuma", "edit"], Run::Terminal),
-        leaf("show drift", &["kuma", "diff"], Run::Terminal),
-        leaf("review proposals", &["kuma", "capture"], Run::Terminal),
-    ];
-    root.extend(submenu("declaration", declaration));
+    out.push(item(
+        "declaration",
+        "edit",
+        "text-editor-symbolic,text-editor",
+        &["kuma", "edit"],
+        Run::Terminal,
+    ));
+    out.push(item(
+        "declaration",
+        "show drift",
+        "edit-find-symbolic,edit-find",
+        &["kuma", "diff"],
+        Run::Terminal,
+    ));
+    out.push(item(
+        "declaration",
+        "review proposals",
+        "dialog-information-symbolic,dialog-information",
+        &["kuma", "capture"],
+        Run::Terminal,
+    ));
 
-    let system = vec![
-        leaf("health", &["kuma", "doctor"], Run::Terminal),
-        leaf("check for updates", &["kuma", "update", "--check"], Run::Terminal),
-        leaf("rebuild", &["kuma", "build"], Run::Terminal),
-        leaf("roll back", &["kuma", "rollback"], Run::Terminal),
-        leaf("snapshots", &["kuma", "snapshot"], Run::Terminal),
-    ];
-    root.extend(submenu("system", system));
+    out.push(item(
+        "system",
+        "health",
+        "emblem-system-symbolic,emblem-system",
+        &["kuma", "doctor"],
+        Run::Terminal,
+    ));
+    out.push(item(
+        "system",
+        "check for updates",
+        "software-update-available-symbolic,software-update-available",
+        &["kuma", "update", "--check"],
+        Run::Terminal,
+    ));
+    out.push(item(
+        "system",
+        "rebuild",
+        "view-refresh-symbolic,view-refresh",
+        &["kuma", "build"],
+        Run::Terminal,
+    ));
+    out.push(item(
+        "system",
+        "roll back",
+        "go-previous-symbolic,go-previous",
+        &["kuma", "rollback"],
+        Run::Terminal,
+    ));
+    out.push(item(
+        "system",
+        "snapshots",
+        "drive-harddisk-symbolic,drive-harddisk",
+        &["kuma", "snapshot"],
+        Run::Terminal,
+    ));
 
-    let mut notifications = Vec::new();
-    if let Some(entry) =
-        tool(tools, "do not disturb", &["makoctl", "mode", "-t", "do-not-disturb"], Run::Detached)
-    {
-        notifications.push(entry);
-    }
-    if let Some(entry) = tool(tools, "dismiss all", &["makoctl", "dismiss", "-a"], Run::Detached) {
-        notifications.push(entry);
-    }
-    root.extend(submenu("notifications", notifications));
+    out.extend(tool(
+        tools,
+        "notifications",
+        "do not disturb",
+        "media-playback-pause-symbolic,media-playback-pause",
+        &["makoctl", "mode", "-t", "do-not-disturb"],
+        Run::Detached,
+    ));
+    out.extend(tool(
+        tools,
+        "notifications",
+        "dismiss all",
+        "user-trash-symbolic,user-trash",
+        &["makoctl", "dismiss", "-a"],
+        Run::Detached,
+    ));
 
     // Power. Stock niri binds a lock and a quit and nothing else, so
     // suspend, reboot and power off have no key and no menu on a kuma
     // desktop today. systemctl reaches them without sudo: logind grants
     // them to the session that owns the seat.
-    let mut power = Vec::new();
-    if let Some(entry) = tool(tools, "lock", &["swaylock"], Run::Detached) {
-        power.push(entry);
-    }
-    power.push(leaf("suspend", &["systemctl", "suspend"], Run::Detached));
-    if let Some(entry) = tool(tools, "log out", &["niri", "msg", "action", "quit"], Run::Detached) {
-        power.push(entry);
-    }
-    power.push(leaf("reboot", &["systemctl", "reboot"], Run::Detached));
-    power.push(leaf("power off", &["systemctl", "poweroff"], Run::Detached));
-    root.extend(submenu("power", power));
+    out.extend(tool(
+        tools,
+        "power",
+        "lock",
+        "system-lock-screen-symbolic,system-lock-screen",
+        &["swaylock"],
+        Run::Detached,
+    ));
+    // Adwaita has no system-suspend icon, symbolic or otherwise; the
+    // night one is what every panel uses for the same idea.
+    out.push(item(
+        "power",
+        "suspend",
+        "weather-clear-night-symbolic,weather-clear-night",
+        &["systemctl", "suspend"],
+        Run::Detached,
+    ));
+    out.extend(tool(
+        tools,
+        "power",
+        "log out",
+        "system-log-out-symbolic,system-log-out",
+        &["niri", "msg", "action", "quit"],
+        Run::Detached,
+    ));
+    out.push(item(
+        "power",
+        "reboot",
+        "system-reboot-symbolic,system-reboot",
+        &["systemctl", "reboot"],
+        Run::Detached,
+    ));
+    out.push(item(
+        "power",
+        "power off",
+        "system-shutdown-symbolic,system-shutdown",
+        &["systemctl", "poweroff"],
+        Run::Detached,
+    ));
 
-    root
+    out
 }
 
-/// Ask fuzzel to pick one of `labels`. `Ok(None)` is a cancel, which is
-/// a person saying "away" and not an error.
-fn pick(labels: &[String], prompt: &str) -> Result<Option<String>> {
-    let input = labels.join("\n");
-    let chosen = host_output_stdin(&["fuzzel", "--dmenu", "--prompt", prompt], &input)
-        .context("cannot run fuzzel")?;
-    Ok(chosen.map(|line| line.trim().to_string()).filter(|line| !line.is_empty()))
+/// Ask fuzzel to pick one. `Ok(None)` is a cancel, which is a person
+/// saying "away" and not an error.
+///
+/// `--index` rather than the chosen text: fuzzel in dmenu mode echoes
+/// whatever was typed when it matches nothing, so matching the answer
+/// back against labels would make a typo indistinguishable from a
+/// choice, and would quietly require every line to be unique. An index
+/// is unambiguous or it is out of range.
+fn pick(items: &[Item]) -> Result<Option<usize>> {
+    let input: Vec<String> = items.iter().map(Item::line).collect();
+    let chosen = host_output_stdin(
+        &["fuzzel", "--dmenu", "--index", "--prompt", "kuma  ", "--counter"],
+        &input.join("\n"),
+    )
+    .context("cannot run fuzzel")?;
+    Ok(chosen_index(chosen.as_deref(), items.len()))
 }
 
-/// Run the menu: pick, descend, dispatch, exit.
+/// What fuzzel's answer means, as a pure function so it can be tested
+/// without a launcher.
+///
+/// Three ways to get nothing: cancelled (`None`), an index that is not a
+/// number (fuzzel prints `-1` when the input was accepted but matched no
+/// row), and an index past the end. The last cannot happen today and is
+/// checked anyway, because the caller indexes a slice with the result
+/// and the difference between a wrong answer and a panic is this line.
+fn chosen_index(answer: Option<&str>, count: usize) -> Option<usize> {
+    answer?.trim().parse::<usize>().ok().filter(|index| *index < count)
+}
+
+/// Run the menu: pick, dispatch, exit.
 pub fn menu(config_path: &Path) -> Result<()> {
     let tools = Tools::observe();
     if !tools.has("fuzzel") {
         anyhow::bail!("kuma menu needs fuzzel, which this image does not have");
     }
-    let mut stack = vec![tree(&tools)];
-    let mut trail: Vec<String> = Vec::new();
-
-    loop {
-        let level = stack.last().expect("the stack is never emptied without returning");
-        let labels: Vec<String> = level.iter().map(|entry| entry.label.clone()).collect();
-        let prompt = if trail.is_empty() {
-            "kuma ".to_string()
-        } else {
-            format!("kuma {} ", trail.join(" "))
-        };
-        let Some(chosen) = pick(&labels, &prompt)? else {
-            return Ok(());
-        };
-        if chosen == BACK {
-            stack.pop();
-            trail.pop();
-            if stack.is_empty() {
-                return Ok(());
-            }
-            continue;
-        }
-        let Some(entry) = level.iter().find(|entry| entry.label == chosen) else {
-            // fuzzel in dmenu mode returns whatever was typed when it
-            // matches nothing. Treated as a cancel rather than an error:
-            // the person asked for something this menu does not have.
-            return Ok(());
-        };
-        match &entry.kind {
-            Kind::Submenu(entries) => {
-                trail.push(entry.label.clone());
-                stack.push(entries.clone());
-            }
-            Kind::Leaf { argv, run } => return dispatch(&tools, config_path, argv, *run),
-        }
-    }
+    let items = items(&tools);
+    let Some(index) = pick(&items)? else {
+        return Ok(());
+    };
+    let chosen = &items[index];
+    dispatch(&tools, config_path, &chosen.argv, chosen.run)
 }
 
 fn dispatch(tools: &Tools, config_path: &Path, argv: &[String], run: Run) -> Result<()> {
@@ -327,8 +448,8 @@ fn dispatch(tools: &Tools, config_path: &Path, argv: &[String], run: Run) -> Res
             let mut full = vec![terminal, "-e".to_string()];
             // `kuma edit` is not a verb; the declaration opens in the
             // person's own editor, which is the whole of what "edit"
-            // means here. Expanded at dispatch rather than in the tree
-            // so the tree stays a list of commands and the editor stays
+            // means here. Expanded at dispatch rather than in the list
+            // so the list stays a list of commands and the editor stays
             // one lookup.
             if argv.len() == 2 && argv[1] == "edit" {
                 full.push(tools.editor.clone());
@@ -354,7 +475,7 @@ fn kuma_program() -> String {
         .unwrap_or_else(|| "kuma".to_string())
 }
 
-/// Whether `path` is the declaration this menu would open. Used by the
+/// Whether this is the entry that opens the declaration. Used by the
 /// boundary test, and by nothing else.
 #[cfg(test)]
 fn opens_declaration(argv: &[String]) -> bool {
@@ -364,21 +485,6 @@ fn opens_declaration(argv: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn leaves(entries: &[Entry], out: &mut Vec<(String, Vec<String>, Run)>) {
-        for entry in entries {
-            match &entry.kind {
-                Kind::Submenu(children) => leaves(children, out),
-                Kind::Leaf { argv, run } => out.push((entry.label.clone(), argv.clone(), *run)),
-            }
-        }
-    }
-
-    fn all_leaves(tools: &Tools) -> Vec<(String, Vec<String>, Run)> {
-        let mut out = Vec::new();
-        leaves(&tree(tools), &mut out);
-        out
-    }
 
     fn everything() -> Tools {
         Tools::with(super::PROBED)
@@ -390,96 +496,92 @@ mod tests {
     /// because it opens the file in an editor the person then saves
     /// themselves.
     #[test]
-    fn no_leaf_writes_the_declaration() {
+    fn no_item_writes_the_declaration() {
         const WRITERS: &[&str] = &["add", "remove", "init", "sync", "switch", "install"];
-        for (label, argv, _) in all_leaves(&everything()) {
-            if argv[0] != "kuma" {
+        for entry in items(&everything()) {
+            if entry.argv[0] != "kuma" {
                 continue;
             }
-            let verb = argv[1].as_str();
+            let verb = entry.argv[1].as_str();
             assert!(
                 !WRITERS.contains(&verb),
-                "{label} runs `kuma {verb}`, which writes; the menu may not"
+                "{} runs `kuma {verb}`, which writes; the menu may not",
+                entry.label
             );
             assert!(
-                !argv.iter().any(|arg| arg == "--yes"),
-                "{label} passes --yes; every write from this menu must be confirmed by the verb itself"
-            );
-            assert!(
-                verb != "capture" || !argv.iter().any(|arg| arg == "--yes"),
-                "{label} would capture without asking"
+                !entry.argv.iter().any(|arg| arg == "--yes"),
+                "{} passes --yes; every write from this menu must be confirmed by the verb itself",
+                entry.label
             );
         }
     }
 
-    /// The declaration is reachable, or the group is a lie.
+    /// The declaration is reachable, and reachable exactly one way.
     #[test]
     fn the_declaration_can_be_opened_and_only_opened() {
-        let opens: Vec<_> = all_leaves(&everything())
-            .into_iter()
-            .filter(|(_, argv, _)| opens_declaration(argv))
-            .collect();
+        let opens: Vec<Item> =
+            items(&everything()).into_iter().filter(|i| opens_declaration(&i.argv)).collect();
         assert_eq!(opens.len(), 1, "exactly one entry opens kuma.toml");
-        assert_eq!(opens[0].2, Run::Terminal, "an editor needs a terminal");
+        assert_eq!(opens[0].run, Run::Terminal, "an editor needs a terminal");
     }
 
-    /// Every `kuma` leaf names a verb the CLI actually has. The menu is
+    /// Every `kuma` item names a verb the CLI actually has. The menu is
     /// a second enumeration of what kuma can do, sitting outside the
     /// code that does it, so it rots exactly the way a docs page rots.
     /// Same shape as the walkthrough's coverage test, same reason.
     #[test]
-    fn every_kuma_leaf_names_a_real_verb() {
+    fn every_kuma_item_names_a_real_verb() {
         use clap::CommandFactory;
         let cli = crate::Cli::command();
         let verbs: BTreeSet<String> =
             cli.get_subcommands().map(|sub| sub.get_name().to_string()).collect();
-        for (label, argv, _) in all_leaves(&everything()) {
-            if argv[0] != "kuma" || opens_declaration(&argv) {
+        for entry in items(&everything()) {
+            if entry.argv[0] != "kuma" || opens_declaration(&entry.argv) {
                 continue;
             }
             assert!(
-                verbs.contains(&argv[1]),
-                "{label} runs `kuma {}`, which is not a verb",
-                argv[1]
+                verbs.contains(&entry.argv[1]),
+                "{} runs `kuma {}`, which is not a verb",
+                entry.label,
+                entry.argv[1]
             );
         }
     }
 
     /// A machine with nothing installed offers nothing that would fail.
-    /// The only leaves that survive are the ones whose program is kuma
-    /// itself (it is running, so it is here) and systemctl (pid 1's own
-    /// client, present in every image kuma can build).
+    /// The only items that survive name kuma itself (it is running, so
+    /// it is here) and systemctl (pid 1's own client, in every image
+    /// kuma can build).
     #[test]
-    fn a_leaf_appears_only_when_its_program_does() {
-        for (label, argv, _) in all_leaves(&Tools::none()) {
+    fn an_item_appears_only_when_its_program_does() {
+        for entry in items(&Tools::none()) {
             assert!(
-                argv[0] == "kuma" || argv[0] == "systemctl",
-                "{label} runs {}, which nothing checked for",
-                argv[0]
+                entry.argv[0] == "kuma" || entry.argv[0] == "systemctl",
+                "{} runs {}, which nothing checked for",
+                entry.label,
+                entry.argv[0]
             );
         }
     }
 
-    /// Every probed program earns its place, and every program a leaf
-    /// names was probed. Without the second half a leaf can quietly stop
-    /// being gated and offer a row that does nothing; without the first,
-    /// PROBED grows entries nothing reads.
+    /// Every probed program earns its place, and every program an item
+    /// names was probed. Without the second half an item can quietly
+    /// stop being gated and offer a row that does nothing; without the
+    /// first, PROBED grows entries nothing reads.
     ///
-    /// Two probed programs are named by no leaf on any machine, and both
+    /// Two probed programs are named by no item on any machine, and both
     /// are checked rather than excused: a terminal is what a talking
-    /// leaf gets wrapped in, and a fallback only appears on a machine
+    /// item gets wrapped in, and a fallback only appears on a machine
     /// that lacks the tool it stands in for.
     #[test]
     fn probed_and_named_are_the_same_set() {
         fn programs(tools: &Tools) -> BTreeSet<String> {
-            all_leaves(tools)
+            items(tools)
                 .into_iter()
-                .map(|(_, argv, _)| argv[0].clone())
+                .map(|entry| entry.argv[0].clone())
                 .filter(|program| program != "kuma" && program != "systemctl")
                 .collect()
         }
-        // The machine where every fallback wins, so the tools that only
-        // ever appear as second choices are named too.
         let fallbacks: Vec<&str> =
             PROBED.iter().copied().filter(|p| *p != "nmtui" && *p != "wiremix").collect();
         let mut named = programs(&everything());
@@ -496,53 +598,94 @@ mod tests {
         }
 
         let probed: BTreeSet<String> = PROBED.iter().map(|p| (*p).to_string()).collect();
-        assert_eq!(named, probed, "PROBED and the programs leaves name have drifted");
+        assert_eq!(named, probed, "PROBED and the programs items name have drifted");
     }
 
-    /// A selection comes back as a string and is matched by label, so
-    /// two entries sharing one at the same level would make the second
-    /// unreachable.
+    /// Flat means every entry is typed for directly, so no two may read
+    /// the same. Selection is by index and would not break, but a person
+    /// looking at two identical rows has no way to tell them apart.
     #[test]
-    fn labels_are_unique_within_a_level() {
-        fn check(entries: &[Entry], path: &str) {
-            let mut seen = BTreeSet::new();
-            for entry in entries {
-                assert!(seen.insert(entry.label.clone()), "duplicate `{}` in {path}", entry.label);
-                if let Kind::Submenu(children) = &entry.kind {
-                    check(children, &entry.label);
-                }
-            }
+    fn no_two_rows_read_the_same() {
+        let mut seen = BTreeSet::new();
+        for entry in items(&everything()) {
+            assert!(seen.insert(entry.text()), "two rows read `{}`", entry.text());
         }
-        check(&tree(&everything()), "root");
     }
 
-    /// Back exists everywhere it is needed and nowhere it is not: the
-    /// root has no level above it, and a cancel from there means away.
+    /// A group's rows are contiguous, so the flat list still reads as
+    /// sections when nothing has been typed. Sorting is not applied
+    /// anywhere: the authored order is the browse order.
     #[test]
-    fn every_submenu_can_be_left_and_the_root_cannot() {
-        let root = tree(&everything());
-        assert!(!root.iter().any(|entry| entry.label == BACK), "the root offers no way up");
-        for entry in &root {
-            if let Kind::Submenu(children) = &entry.kind {
+    fn rows_of_a_group_stay_together() {
+        let mut seen: Vec<&str> = Vec::new();
+        for entry in items(&everything()) {
+            if seen.last() != Some(&entry.group) {
                 assert!(
-                    children.iter().any(|child| child.label == BACK),
-                    "{} cannot be left",
-                    entry.label
+                    !seen.contains(&entry.group),
+                    "{} is split into more than one run of rows",
+                    entry.group
                 );
+                seen.push(entry.group);
             }
+        }
+        assert!(seen.len() > 1, "a menu of one group is not a menu");
+    }
+
+    /// The search argument for flattening, as an assertion: typing a
+    /// leaf's own word finds it without naming its group, and typing the
+    /// group finds all of them. Both fail on a menu of submenus, because
+    /// a launcher can only match the lines it was handed.
+    #[test]
+    fn a_row_is_found_by_its_own_word_and_by_its_group() {
+        let rows: Vec<String> = items(&everything()).iter().map(Item::text).collect();
+        let matching = |needle: &str| rows.iter().filter(|row| row.contains(needle)).count();
+        assert_eq!(matching("reboot"), 1, "typing `reboot` should find exactly the reboot");
+        assert_eq!(matching("power"), 5, "typing `power` should find the whole power group");
+        assert!(matching("drift") == 1, "typing `drift` should find the drift row");
+    }
+
+    /// Every row carries an icon. fuzzel leaves a hole where one is
+    /// missing, and a single hole makes the whole list look broken.
+    #[test]
+    fn every_row_has_an_icon_with_a_fallback() {
+        for entry in items(&everything()) {
+            assert!(!entry.icon.is_empty(), "{} has no icon", entry.label);
+            assert!(
+                entry.icon.contains(','),
+                "{} names one icon with no fallback for a theme that lacks it",
+                entry.label
+            );
         }
     }
 
-    /// A group with nothing in it is absent, not empty. The machine that
-    /// proves it is one with no network, audio or display tool at all.
+    /// The line handed to fuzzel is the displayed text, a NUL, and the
+    /// icon protocol. Asserted on the bytes because a launcher that does
+    /// not understand them shows the protocol to the person instead.
     #[test]
-    fn a_group_whose_entries_are_all_missing_does_not_appear() {
-        let bare = tree(&Tools::with(&["fuzzel", "kitty"]));
-        assert!(!bare.iter().any(|entry| entry.label == "connect"));
-        assert!(!bare.iter().any(|entry| entry.label == "notifications"));
-        // system and declaration are kuma's own and always available.
-        assert!(bare.iter().any(|entry| entry.label == "system"));
-        assert!(bare.iter().any(|entry| entry.label == "declaration"));
+    fn a_row_is_encoded_the_way_fuzzel_reads_icons() {
+        let row = item(
+            "power",
+            "reboot",
+            "system-reboot-symbolic,system-reboot",
+            &["true"],
+            Run::Detached,
+        );
+        assert_eq!(row.line(), "power · reboot\u{0}icon\u{1f}system-reboot-symbolic,system-reboot");
+        assert_eq!(row.line().split('\u{0}').next(), Some("power · reboot"));
+    }
+
+    /// Every way fuzzel can answer, including the two that must not
+    /// reach a slice index.
+    #[test]
+    fn an_answer_is_a_row_or_it_is_nothing() {
+        assert_eq!(chosen_index(Some("0"), 20), Some(0));
+        assert_eq!(chosen_index(Some("19\n"), 20), Some(19));
+        assert_eq!(chosen_index(None, 20), None, "a cancel is not a choice");
+        assert_eq!(chosen_index(Some("-1"), 20), None, "fuzzel's no-match answer is not a choice");
+        assert_eq!(chosen_index(Some(""), 20), None);
+        assert_eq!(chosen_index(Some("power · reboot"), 20), None, "text is not an index");
+        assert_eq!(chosen_index(Some("20"), 20), None, "one past the end is not a row");
+        assert_eq!(chosen_index(Some("0"), 0), None, "an empty menu has no rows to choose");
     }
 
     /// The terminal tools win where both are installed. This is the
@@ -553,7 +696,7 @@ mod tests {
         let both =
             Tools::with(&["fuzzel", "nmtui", "nm-connection-editor", "wiremix", "pavucontrol"]);
         let named: Vec<String> =
-            all_leaves(&both).into_iter().map(|(_, argv, _)| argv[0].clone()).collect();
+            items(&both).into_iter().map(|entry| entry.argv[0].clone()).collect();
         assert!(named.contains(&"nmtui".to_string()));
         assert!(!named.contains(&"nm-connection-editor".to_string()));
         assert!(named.contains(&"wiremix".to_string()));
@@ -566,17 +709,21 @@ mod tests {
     fn a_graphical_tool_is_offered_when_it_is_the_only_one() {
         let gtk = Tools::with(&["fuzzel", "nm-connection-editor", "pavucontrol"]);
         let named: Vec<String> =
-            all_leaves(&gtk).into_iter().map(|(_, argv, _)| argv[0].clone()).collect();
+            items(&gtk).into_iter().map(|entry| entry.argv[0].clone()).collect();
         assert!(named.contains(&"nm-connection-editor".to_string()));
         assert!(named.contains(&"pavucontrol".to_string()));
     }
 
-    /// Opening the menu must never prompt for a password, so nothing
-    /// that builds it may run sudo.
+    /// Opening the menu must never prompt for a password, so nothing it
+    /// runs may be sudo.
     #[test]
     fn nothing_the_menu_runs_to_draw_itself_needs_root() {
-        for (label, argv, _) in all_leaves(&everything()) {
-            assert_ne!(argv[0], "sudo", "{label} would prompt from inside a launcher");
+        for entry in items(&everything()) {
+            assert_ne!(
+                entry.argv[0], "sudo",
+                "{} would prompt from inside a launcher",
+                entry.label
+            );
         }
     }
 
@@ -584,13 +731,15 @@ mod tests {
     /// does neither must not steal one, or locking the screen flashes a
     /// window.
     #[test]
-    fn only_leaves_with_something_to_say_open_a_terminal() {
-        for (label, argv, run) in all_leaves(&everything()) {
-            let talks = argv[0] == "kuma" || argv[0] == "nmtui" || argv[0] == "wiremix";
+    fn only_rows_with_something_to_say_open_a_terminal() {
+        for entry in items(&everything()) {
+            let talks =
+                entry.argv[0] == "kuma" || entry.argv[0] == "nmtui" || entry.argv[0] == "wiremix";
             assert_eq!(
-                run == Run::Terminal,
+                entry.run == Run::Terminal,
                 talks,
-                "{label} is run the wrong way for what it prints"
+                "{} is run the wrong way for what it prints",
+                entry.label
             );
         }
     }
