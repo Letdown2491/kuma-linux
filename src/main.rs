@@ -322,8 +322,8 @@ enum Cmd {
     },
     /// Open kuma's menu in the desktop's launcher: apps, settings, system, power
     ///
-    /// Bound to Mod+Alt+Space on the niri desktop. Needs a graphical
-    /// session and fuzzel; it draws nothing itself.
+    /// Bound to Mod+D on the niri desktop. Needs a graphical session
+    /// and fuzzel; it draws nothing itself.
     Menu {
         /// Print the rows instead of drawing them (read-only). What the
         /// menu would offer on this machine, applications included.

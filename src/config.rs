@@ -715,6 +715,19 @@ pub(crate) mod tests {
     #[test]
     fn every_verb_is_documented_somewhere() {
         use clap::CommandFactory;
+        /// Whether the docs name `kuma <verb>` as a command rather than
+        /// as the first two words of a longer one. "kuma builds an
+        /// image" is prose about the tool, and a substring match cannot
+        /// tell it from the verb `build` being documented.
+        fn names_command(docs: &str, verb: &str) -> bool {
+            let needle = format!("kuma {verb}");
+            docs.match_indices(&needle).any(|(at, _)| {
+                docs[at + needle.len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(|next| !next.is_alphanumeric() && next != '-' && next != '_')
+            })
+        }
         /// Verbs deliberately absent from the prose.
         const UNDOCUMENTED: &[(&str, &str)] = &[(
             "boot-titles",
@@ -733,13 +746,22 @@ pub(crate) mod tests {
                 .unwrap_or_default()
         })
         .collect();
+        // The matcher, proven on prose before it is trusted on the
+        // pages: every verb passes today, so nothing about running it
+        // over the docs could show it apart.
+        assert!(names_command("run `kuma build` first", "build"), "a command is a mention");
+        assert!(
+            !names_command("kuma builds an image from it", "build"),
+            "prose about the tool is not the verb being documented"
+        );
+
         let mut missing: Vec<String> = Vec::new();
         for sub in crate::Cli::command().get_subcommands() {
             let verb = sub.get_name();
             if UNDOCUMENTED.iter().any(|(name, _)| *name == verb) {
                 continue;
             }
-            if !docs.contains(&format!("kuma {verb}")) {
+            if !names_command(&docs, verb) {
                 missing.push(verb.to_string());
             }
         }

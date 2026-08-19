@@ -52,8 +52,19 @@ use std::path::Path;
 
 use crate::host::{host_output_stdin, spawn_detached};
 
-/// The group applications land in.
+/// The groups, named once.
+///
+/// Each of these is written twice otherwise: once where the rows are
+/// authored and once where the group's own icon is chosen. A typo in
+/// either copy is a group that draws the fallback gear, which
+/// `every_group_has_its_own_icon` catches, but a name the compiler
+/// checks is better than a name a test catches.
 pub(crate) const APPS: &str = "Apps";
+const CONNECT: &str = "Connect";
+const DECLARATION: &str = "Declaration";
+const SYSTEM: &str = "System";
+const NOTIFICATIONS: &str = "Notifications";
+const POWER: &str = "Power";
 
 /// The icon theme the build generates and the menu asks for.
 pub(crate) const ICON_THEME: &str = "kuma";
@@ -190,7 +201,18 @@ fn on_path(program: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
-    std::env::split_paths(&path).any(|dir| dir.join(program).is_file())
+    std::env::split_paths(&path).any(|dir| is_executable(&dir.join(program)))
+}
+
+/// A file somebody can actually run. `is_file` alone would offer a row
+/// for a program that is on PATH and not executable, which is a row
+/// that draws and then does nothing. Metadata rather than symlink
+/// metadata, because a PATH entry pointing at a real binary is the
+/// normal shape of one.
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
 /// How an item is run.
@@ -310,11 +332,11 @@ pub(crate) fn items(tools: &Tools) -> Vec<Item> {
     // session will not start.
     if let Some(wifi) = tools.first(&["nmtui", "nm-connection-editor"]) {
         let run = if wifi == "nmtui" { Run::Terminal } else { Run::Detached };
-        out.push(item("Connect", "Network", "network-wireless-symbolic", &[&wifi], run));
+        out.push(item(CONNECT, "Network", "network-wireless-symbolic", &[&wifi], run));
     }
     out.extend(tool(
         tools,
-        "Connect",
+        CONNECT,
         "Bluetooth",
         "bluetooth-symbolic",
         &["blueman-manager"],
@@ -322,11 +344,11 @@ pub(crate) fn items(tools: &Tools) -> Vec<Item> {
     ));
     if let Some(audio) = tools.first(&["wiremix", "pavucontrol"]) {
         let run = if audio == "wiremix" { Run::Terminal } else { Run::Detached };
-        out.push(item("Connect", "Audio", "audio-volume-high-symbolic", &[&audio], run));
+        out.push(item(CONNECT, "Audio", "audio-volume-high-symbolic", &[&audio], run));
     }
     out.extend(tool(
         tools,
-        "Connect",
+        CONNECT,
         "Displays",
         "video-display-symbolic",
         &["wdisplays"],
@@ -335,46 +357,40 @@ pub(crate) fn items(tools: &Tools) -> Vec<Item> {
 
     // Declaration: opens and shows, never writes. `capture` is the one
     // entry that can end in a write, and it does its own asking.
-    out.push(item("Declaration", "Edit", "text-editor-symbolic", &["kuma", "edit"], Run::Terminal));
+    out.push(item(DECLARATION, "Edit", "text-editor-symbolic", &["kuma", "edit"], Run::Terminal));
     out.push(item(
-        "Declaration",
+        DECLARATION,
         "Show drift",
         "edit-find-symbolic",
         &["kuma", "diff"],
         Run::Terminal,
     ));
     out.push(item(
-        "Declaration",
+        DECLARATION,
         "Review proposals",
         "dialog-information-symbolic",
         &["kuma", "capture"],
         Run::Terminal,
     ));
 
+    out.push(item(SYSTEM, "Health", "emblem-system-symbolic", &["kuma", "doctor"], Run::Terminal));
     out.push(item(
-        "System",
-        "Health",
-        "emblem-system-symbolic",
-        &["kuma", "doctor"],
-        Run::Terminal,
-    ));
-    out.push(item(
-        "System",
+        SYSTEM,
         "Check for updates",
         "software-update-available-symbolic",
         &["kuma", "update", "--check"],
         Run::Terminal,
     ));
-    out.push(item("System", "Rebuild", "view-refresh-symbolic", &["kuma", "build"], Run::Terminal));
+    out.push(item(SYSTEM, "Rebuild", "view-refresh-symbolic", &["kuma", "build"], Run::Terminal));
     out.push(item(
-        "System",
+        SYSTEM,
         "Roll back",
         "go-previous-symbolic",
         &["kuma", "rollback"],
         Run::Terminal,
     ));
     out.push(item(
-        "System",
+        SYSTEM,
         "Snapshots",
         "drive-harddisk-symbolic",
         &["kuma", "snapshot"],
@@ -383,7 +399,7 @@ pub(crate) fn items(tools: &Tools) -> Vec<Item> {
 
     out.extend(tool(
         tools,
-        "Notifications",
+        NOTIFICATIONS,
         "Do not disturb",
         "media-playback-pause-symbolic",
         &["makoctl", "mode", "-t", "do-not-disturb"],
@@ -391,7 +407,7 @@ pub(crate) fn items(tools: &Tools) -> Vec<Item> {
     ));
     out.extend(tool(
         tools,
-        "Notifications",
+        NOTIFICATIONS,
         "Dismiss all",
         "user-trash-symbolic",
         &["makoctl", "dismiss", "-a"],
@@ -404,14 +420,14 @@ pub(crate) fn items(tools: &Tools) -> Vec<Item> {
     // them to the session that owns the seat.
     out.extend(tool(
         tools,
-        "Power",
+        POWER,
         "Lock",
         "system-lock-screen-symbolic",
         &["swaylock"],
         Run::Detached,
     ));
     out.push(item(
-        "Power",
+        POWER,
         "Suspend",
         "weather-clear-night-symbolic",
         &["systemctl", "suspend"],
@@ -419,21 +435,21 @@ pub(crate) fn items(tools: &Tools) -> Vec<Item> {
     ));
     out.extend(tool(
         tools,
-        "Power",
+        POWER,
         "Log out",
         "system-log-out-symbolic",
         &["niri", "msg", "action", "quit"],
         Run::Detached,
     ));
     out.push(item(
-        "Power",
+        POWER,
         "Reboot",
         "system-reboot-symbolic",
         &["systemctl", "reboot"],
         Run::Detached,
     ));
     out.push(item(
-        "Power",
+        POWER,
         "Power off",
         "system-shutdown-symbolic",
         &["systemctl", "poweroff"],
@@ -496,12 +512,12 @@ pub(crate) enum Row {
 
 fn group_icon(group: &str) -> Option<&'static str> {
     Some(match group {
-        "Apps" => "applications-system-symbolic",
-        "Connect" => "network-wireless-symbolic",
-        "Declaration" => "text-editor-symbolic",
-        "System" => "preferences-system-symbolic",
-        "Notifications" => "dialog-information-symbolic",
-        "Power" => "system-shutdown-symbolic",
+        APPS => "applications-system-symbolic",
+        CONNECT => "network-wireless-symbolic",
+        DECLARATION => "text-editor-symbolic",
+        SYSTEM => "preferences-system-symbolic",
+        NOTIFICATIONS => "dialog-information-symbolic",
+        POWER => "system-shutdown-symbolic",
         _ => return None,
     })
 }
@@ -716,8 +732,7 @@ pub fn menu(config_path: &Path, list: bool) -> Result<()> {
 }
 
 fn dispatch(tools: &Tools, config_path: &Path, argv: &[String], run: Run) -> Result<()> {
-    let argv: Vec<String> =
-        argv.iter().map(|arg| if arg == "kuma" { kuma_program() } else { arg.clone() }).collect();
+    let argv = with_this_kuma(argv);
     match run {
         Run::Detached => spawn_detached(&argv),
         Run::Terminal => {
@@ -790,6 +805,22 @@ fn shell_quote(arg: &str) -> String {
     format!("'{}'", arg.replace('\'', r"'\''"))
 }
 
+/// The row's command, with `kuma` resolved to the binary drawing the
+/// menu.
+///
+/// **The program only, never an argument that happens to read the
+/// same.** An application row's argv is somebody else's `Exec=` line,
+/// so a literal `kuma` further along one is a word being handed to
+/// another program, and rewriting it to this binary's path would change
+/// what that program was asked to do.
+fn with_this_kuma(argv: &[String]) -> Vec<String> {
+    let mut out = argv.to_vec();
+    if out.first().is_some_and(|program| program == "kuma") {
+        out[0] = kuma_program();
+    }
+    out
+}
+
 /// The kuma to run, which is this one. A menu entry that says `kuma`
 /// must not find a different kuma on PATH than the one drawing the menu:
 /// the image bakes a copy and a developer's `~/.cargo/bin` shadows it,
@@ -842,17 +873,37 @@ mod tests {
     /// because it is a dry run that asks before it writes, and `edit`
     /// because it opens the file in an editor the person then saves
     /// themselves.
+    ///
+    /// **An allowlist, because a list of verbs to refuse cannot know
+    /// about a verb that does not exist yet.** This was six names to
+    /// refuse, which meant a writing verb added later would pass
+    /// unnoticed, and the two rungs after this one are declaration
+    /// completeness and migrations: exactly where such a verb comes
+    /// from. Every verb the menu names is written here with the reason
+    /// it is safe, so admitting one is a sentence somebody has to write.
     #[test]
     fn no_item_writes_the_declaration() {
-        const WRITERS: &[&str] = &["add", "remove", "init", "sync", "switch", "install"];
+        const ALLOWED: &[(&str, &str)] = &[
+            ("edit", "opens the file in the person's own editor; they save it themselves"),
+            ("diff", "read-only"),
+            ("capture", "a dry run that shows a proposal and waits to be told yes"),
+            ("doctor", "read-only"),
+            ("update", "only ever `--check` here, which reads"),
+            ("build", "builds an image and writes the lock, never the declaration"),
+            ("rollback", "moves the boot order, and prints unless --yes"),
+            ("snapshot", "lists; restoring takes an argument no row passes"),
+        ];
         for entry in items(&everything()) {
             if entry.argv[0] != "kuma" {
                 continue;
             }
-            let verb = entry.argv[1].as_str();
+            // `get` rather than `[1]`: a bare `kuma` row would panic
+            // here, and a test that panics reports the wrong thing.
+            let verb = entry.argv.get(1).map(String::as_str).unwrap_or_default();
             assert!(
-                !WRITERS.contains(&verb),
-                "{} runs `kuma {verb}`, which writes; the menu may not",
+                ALLOWED.iter().any(|(name, _)| *name == verb),
+                "{} runs `kuma {verb}`, which is not in the menu's allowlist; \
+                 add it there with the reason it cannot write the declaration",
                 entry.label
             );
             assert!(
@@ -1311,6 +1362,36 @@ mod tests {
             items(&gtk).into_iter().map(|entry| entry.argv[0].clone()).collect();
         assert!(named.contains(&"nm-connection-editor".to_string()));
         assert!(named.contains(&"pavucontrol".to_string()));
+    }
+
+    /// `kuma` becomes the binary drawing the menu, and only where it is
+    /// the program. The image bakes a copy and a developer's
+    /// `~/.cargo/bin` shadows it, so a row that ran whichever one PATH
+    /// found would be driving a different kuma than the one on screen.
+    #[test]
+    fn only_the_program_is_resolved_to_this_kuma() {
+        let own = with_this_kuma(&["kuma".to_string(), "doctor".to_string()]);
+        assert_eq!(own[0], kuma_program(), "the row runs the kuma that drew the menu");
+        assert_eq!(own[1], "doctor", "and its arguments are untouched");
+
+        // An application row's argv comes from a desktop file, which
+        // can say anything at all.
+        let foreign = vec!["grep".to_string(), "kuma".to_string(), "/etc/hosts".to_string()];
+        assert_eq!(with_this_kuma(&foreign), foreign, "an argument reading `kuma` is a word");
+    }
+
+    /// A file on PATH that cannot be run is not a program, and a row
+    /// offered for one draws and then does nothing.
+    #[test]
+    fn a_program_on_path_has_to_be_runnable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("nmtui");
+        std::fs::write(&file, "").unwrap();
+        assert!(!is_executable(&file), "a file nobody can execute is not a program");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(is_executable(&file), "and one they can, is");
+        assert!(!is_executable(dir.path()), "nor is the directory it sits in");
     }
 
     /// Opening the menu must never prompt for a password, so nothing it

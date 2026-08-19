@@ -103,13 +103,30 @@ fn shown(entry: &Entry, desktop: &str) -> bool {
         return false;
     }
     let only = entry.list("OnlyShowIn");
-    if !only.is_empty() && !only.iter().any(|name| name.eq_ignore_ascii_case(desktop)) {
+    if !only.is_empty() && !names_this_desktop(&only, desktop) {
         return false;
     }
-    if entry.list("NotShowIn").iter().any(|name| name.eq_ignore_ascii_case(desktop)) {
+    if names_this_desktop(&entry.list("NotShowIn"), desktop) {
         return false;
     }
     true
+}
+
+/// Whether any of `names` is a desktop we are currently in.
+///
+/// `XDG_CURRENT_DESKTOP` is a colon-separated list by the spec, most
+/// specific first, and a name matches if it is anywhere in that list: a
+/// session that calls itself `niri:wlroots` is both. Compared as one
+/// string this went the wrong way silently, hiding every entry that
+/// named the session's own first word under `OnlyShowIn`. kuma's own
+/// session file sets a single `DesktopNames=niri`, so nothing on a kuma
+/// machine could reach it; an entry read under somebody else's session
+/// could.
+fn names_this_desktop(names: &[&str], desktop: &str) -> bool {
+    desktop
+        .split(':')
+        .filter(|current| !current.is_empty())
+        .any(|current| names.iter().any(|name| name.eq_ignore_ascii_case(current)))
 }
 
 /// Whether `TryExec` is satisfied. Absent means yes.
@@ -435,6 +452,32 @@ mod tests {
         let not_niri =
             "[Desktop Entry]\nType=Application\nName=Thing\nExec=thing\nNotShowIn=niri;\n";
         assert_eq!(app_from(not_niri, "t.desktop", "niri", &always), None);
+    }
+
+    /// `XDG_CURRENT_DESKTOP` is a colon-separated list by the spec, and
+    /// a session that calls itself `niri:wlroots` is both of those. Read
+    /// as one string it matched neither, so an entry scoped to the
+    /// session's own name went missing from the list under exactly the
+    /// desktop it was written for.
+    #[test]
+    fn a_compound_desktop_name_is_matched_name_by_name() {
+        let only =
+            "[Desktop Entry]\nType=Application\nName=Thing\nExec=thing\nOnlyShowIn=wlroots;\n";
+        assert!(
+            app_from(only, "t.desktop", "niri:wlroots", &always).is_some(),
+            "a session is every name it lists"
+        );
+        assert_eq!(
+            app_from(only, "t.desktop", "GNOME:gnome-shell", &always),
+            None,
+            "and only those"
+        );
+        let not = "[Desktop Entry]\nType=Application\nName=Thing\nExec=thing\nNotShowIn=wlroots;\n";
+        assert_eq!(
+            app_from(not, "t.desktop", "niri:wlroots", &always),
+            None,
+            "a later name excludes just as a first one does"
+        );
     }
 
     /// Only the first group, and only the unsuffixed keys. A localised

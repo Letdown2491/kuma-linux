@@ -1409,10 +1409,22 @@ done
 /// entry names, which lives in Adwaita or hicolor. Without the
 /// inheritance every application in the list would draw a hole.
 ///
-/// Then it checks its own work. Every output is grepped for a colour
-/// that is not the one we set, and the build fails naming the file. A
-/// generator that cannot say whether it worked is how the icons went
-/// out invisible the first time.
+/// Then it checks its own work, twice, because a generator that cannot
+/// say whether it worked is how the icons went out invisible the first
+/// time. **Every `fill=` and `color=` in the output has to be the fill
+/// we set, or `none`.** Grepping only for a stray *hex* would pass an
+/// Adwaita that had moved to `fill="currentColor"` or a named colour:
+/// the sed would rewrite nothing, no hex would be left to find, and the
+/// icons would draw near-black on `#0e1626` again, which is exactly the
+/// failure this check exists to prevent. The hex sweep stays as well,
+/// for a colour hiding somewhere neither attribute reaches, such as a
+/// `style=`.
+///
+/// Adwaita is walked once and the list is reused, rather than a `find`
+/// per icon across a tree of thousands of files. `grep -m1` over the
+/// sorted list also makes the choice deterministic where two files
+/// share a name; `find -print -quit` took whichever one the filesystem
+/// happened to yield.
 fn icon_theme() -> String {
     let names = crate::menu::ICONS.join(" ");
     let fill = crate::menu::ICON_FILL;
@@ -1423,11 +1435,14 @@ fn icon_theme() -> String {
     format!(
         r##"RUN set -eu \
     && mkdir -p /usr/share/icons/{theme}/scalable/actions \
+    && found=$(find /usr/share/icons/Adwaita -name '*.svg' | sort) \
     && for name in {names}; do \
-         src=$(find /usr/share/icons/Adwaita -name "$name.svg" -print -quit); \
+         src=$(printf '%s\n' "$found" | grep -m1 "/$name\.svg$" || true); \
          [ -n "$src" ] || {{ echo "kuma: Adwaita has no $name" >&2; exit 1; }}; \
          out=/usr/share/icons/{theme}/scalable/actions/$name.svg; \
          sed -E 's/(fill|color)="#[0-9a-fA-F]{{3,8}}"/\1="{fill}"/g' "$src" > "$out"; \
+         painted=$(grep -oiE '(fill|color)="[^"]*"' "$out" | sort -u | grep -viE '"({fill}|none)"' || true); \
+         [ -z "$painted" ] || {{ echo "kuma: $name kept $painted" >&2; exit 1; }}; \
          stray=$(grep -oiE '#[0-9a-f]{{3,8}}' "$out" | sort -u | grep -vix '{fill}' || true); \
          [ -z "$stray" ] || {{ echo "kuma: $name kept $stray" >&2; exit 1; }}; \
        done \
@@ -2855,7 +2870,17 @@ mod tests {
         assert!(out.contains(
             "COPY kuma-boot-titles.service /usr/lib/systemd/system/kuma-boot-titles.service"
         ));
-        assert!(out.contains("kuma-boot-titles.service\n"), "and is enabled");
+        // The enable line itself, not a bare `contains`: the COPY above
+        // ends on exactly that file name, so `contains` was satisfied
+        // by the line before it and dropping the unit from the enable
+        // would have left this test green.
+        assert!(
+            out.lines().any(|line| {
+                line.starts_with("RUN systemctl enable")
+                    && line.contains("kuma-boot-titles.service")
+            }),
+            "and is enabled"
+        );
         // The unit calls the binary the image ships, so the image has to
         // ship one.
         assert!(out.contains("COPY --chmod=755 kuma /usr/bin/kuma"));
@@ -3645,6 +3670,37 @@ mod tests {
         // The stock line is what niri actually ships, not a guess: this
         // is the pairing that makes the grep meaningful.
         assert!(NIRI_STOCK_LAUNCHER.contains(r#"spawn "fuzzel";"#));
+    }
+
+    /// `kuma menu --help` names the key that opens the menu, and names
+    /// no other.
+    ///
+    /// This release moved the menu from Mod+Alt+Space to Mod+D and left
+    /// the help text behind, so a person who typed `--help` was told to
+    /// press a key bound to nothing. Neither docs test caught it: one
+    /// walks the docs to the CLI and the other walks the CLI to the
+    /// docs, and **clap's own help is a third surface, which nothing
+    /// read.** The bind is the authority here, so the two cannot part
+    /// company again.
+    #[test]
+    fn the_menu_help_names_the_key_that_opens_it() {
+        use clap::CommandFactory;
+        let key = NIRI_MENU_BIND.split_whitespace().next().expect("a bind starts with its key");
+        let help = crate::Cli::command()
+            .find_subcommand_mut("menu")
+            .expect("kuma menu")
+            .render_long_help()
+            .to_string();
+        assert!(help.contains(key), "`kuma menu --help` does not name {key}, which opens it");
+        // Every chord the help names has to be that one. Without this
+        // half, moving the bind again leaves the old key in the prose
+        // beside the new one and the assertion above still passes.
+        for word in help.split_whitespace() {
+            let chord = word.trim_end_matches(['.', ',', ';', ':']);
+            if chord.starts_with("Mod+") || chord.starts_with("Super+") {
+                assert_eq!(chord, key, "the help names {chord}, which is not what opens the menu");
+            }
+        }
     }
 
     /// A keybinding that spawns `kuma` names the verb in a string, in a
