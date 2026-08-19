@@ -1041,6 +1041,58 @@ ExecStart=/usr/libexec/kuma-fstab-sync
 WantedBy=multi-user.target
 "#;
 
+/// The boot menu's titles, converged at the only two moments they can be
+/// made right.
+///
+/// `Before=ostree-finalize-staged.service` is the whole design, and it
+/// reads backwards. systemd stops units in the reverse of the order it
+/// starts them, and the rotation this exists to follow happens in
+/// ostree's own ExecStop, at shutdown: the deployment symlinks move onto
+/// the new order and the entry files, whose titles ostree does not
+/// compare, are left as they were. Ordering *before* finalize-staged at
+/// start is therefore what puts this *after* it at stop, with the
+/// deployments moved and the titles not yet. ostree wires its own hold
+/// unit into this slot the same way; `After=` on that hold unit is what
+/// keeps this pass inside the window where /boot is still mounted.
+///
+/// Doing it when kuma stages an image instead would write titles for an
+/// arrangement that has not happened yet: `kuma switch` only stages, and
+/// a staged deployment becomes the default at shutdown, or never does.
+///
+/// ExecStart is the same idempotent pass at boot. It costs a few file
+/// reads and it covers the machine that lost power before its shutdown
+/// finished, the first boot on an image that predates this unit, and
+/// `bootc rollback` rotating the deployments mid-session.
+///
+/// DefaultDependencies=no, with Conflicts= and Before= on final.target
+/// spelled out, because this has to stop in the late slot
+/// finalize-staged stops in. The ordinary slot carries an implicit
+/// Before=shutdown.target, which contradicts stopping after a unit that
+/// stops at final.target, and systemd resolves a contradiction like that
+/// by dropping one of the two rules rather than by saying anything.
+const BOOT_TITLES_SERVICE: &str = r#"[Unit]
+Description=Name the boot menu's entries after the deployments they boot
+ConditionPathExists=/run/ostree-booted
+DefaultDependencies=no
+RequiresMountsFor=/boot /sysroot
+After=local-fs.target
+After=ostree-finalize-staged-hold.service
+Before=ostree-finalize-staged.service
+Before=basic.target final.target
+Conflicts=final.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/kuma boot-titles
+ExecStop=/usr/bin/kuma boot-titles
+TimeoutStartSec=30s
+TimeoutStopSec=2m
+
+[Install]
+WantedBy=basic.target
+"#;
+
 /// Before the health check only for tidiness — the hook matters at the
 /// NEXT grub run, so any point in this boot converges in time.
 const BOOT_HEALTH_SYNC_SERVICE: &str = r#"[Unit]
@@ -2021,7 +2073,10 @@ pub fn generate(config: &Config) -> String {
     out.push_str("COPY --chmod=755 kuma-fstab-sync /usr/libexec/kuma-fstab-sync\n");
     out.push_str("COPY kuma-fstab-sync.service /usr/lib/systemd/system/kuma-fstab-sync.service\n");
     out.push_str(
-        "RUN systemctl enable greenboot-healthcheck.service greenboot-set-rollback-trigger.service greenboot-success.target kuma-boot-health-sync.service kuma-fstab-sync.service\n",
+        "COPY kuma-boot-titles.service /usr/lib/systemd/system/kuma-boot-titles.service\n",
+    );
+    out.push_str(
+        "RUN systemctl enable greenboot-healthcheck.service greenboot-set-rollback-trigger.service greenboot-success.target kuma-boot-health-sync.service kuma-fstab-sync.service kuma-boot-titles.service\n",
     );
 
     // What the machine will and will not accept from a registry. On every
@@ -2221,6 +2276,7 @@ pub fn write_context(
     std::fs::write(dir.join("kuma-boot-health-sync.service"), BOOT_HEALTH_SYNC_SERVICE)?;
     std::fs::write(dir.join("kuma-fstab-sync"), FSTAB_SYNC_SCRIPT)?;
     std::fs::write(dir.join("kuma-fstab-sync.service"), FSTAB_SYNC_SERVICE)?;
+    std::fs::write(dir.join("kuma-boot-titles.service"), BOOT_TITLES_SERVICE)?;
     std::fs::write(dir.join("containers-policy.json"), signature_policy())?;
     std::fs::write(dir.join("kuma-sigstore.yaml"), registries_d())?;
     std::fs::write(dir.join("cosign.pub"), COSIGN_PUB)?;
@@ -2362,6 +2418,36 @@ mod tests {
             std::fs::read_to_string(dir.path().join("kuma")).unwrap(),
             "not really a binary\n"
         );
+    }
+
+    /// Every file the Containerfile copies is a file the build context
+    /// actually holds.
+    ///
+    /// The two halves live hundreds of lines apart: a `COPY` is pushed
+    /// where the feature is assembled and the file is written where the
+    /// context is staged, so adding one and forgetting the other is a
+    /// build that dies at `podman build` on somebody's machine, minutes
+    /// in, with a message about a file nobody named. Asserted over the
+    /// whole file rather than per feature, so the next one is covered
+    /// without anybody remembering to cover it.
+    #[test]
+    fn every_copied_file_is_staged() {
+        for toml in ["schema_version = 1", "schema_version = 1\n[system]\ndesktop = \"niri\""] {
+            let dir = tempfile::tempdir().unwrap();
+            context(toml, dir.path());
+            let containerfile = std::fs::read_to_string(dir.path().join("Containerfile")).unwrap();
+            let sources = containerfile.lines().filter_map(|line| {
+                let rest = line.strip_prefix("COPY ")?;
+                // the source is the first word that is not a --flag
+                rest.split_whitespace().find(|word| !word.starts_with("--"))
+            });
+            for source in sources {
+                assert!(
+                    dir.path().join(source).exists(),
+                    "the Containerfile copies {source}, which nothing stages"
+                );
+            }
+        }
     }
 
     /// The staged binary is the build host's, so a musl host or a foreign
@@ -2629,6 +2715,21 @@ mod tests {
         assert!(!out.contains("kuma-greeter-check"));
     }
 
+    /// Every image, because every image's menu goes stale the same way:
+    /// the titles drift on any deploy that reuses the kernel, which is
+    /// every kuma deploy that does not move the base.
+    #[test]
+    fn boot_titles_ship_in_every_image() {
+        let out = generate(&config("schema_version = 1"));
+        assert!(out.contains(
+            "COPY kuma-boot-titles.service /usr/lib/systemd/system/kuma-boot-titles.service"
+        ));
+        assert!(out.contains("kuma-boot-titles.service\n"), "and is enabled");
+        // The unit calls the binary the image ships, so the image has to
+        // ship one.
+        assert!(out.contains("COPY --chmod=755 kuma /usr/bin/kuma"));
+    }
+
     #[test]
     fn boot_health_sync_converges_the_grub_hook() {
         // The heredoc block must carry the exact markers the script
@@ -2682,6 +2783,40 @@ mod tests {
         // The unit is inert anywhere that is not an ostree deployment,
         // since on a package system that fstab line is load-bearing.
         assert!(FSTAB_SYNC_SERVICE.contains("ConditionPathExists=/run/ostree-booted"));
+    }
+
+    /// The one line that decides whether the boot-menu titles are ever
+    /// right, stated as a test because it reads backwards and is
+    /// therefore exactly the kind of thing a later reader "fixes".
+    ///
+    /// The rotation happens in ostree's ExecStop at shutdown. systemd
+    /// stops in reverse start order, so this unit runs after that
+    /// rotation only while it is ordered BEFORE finalize-staged.
+    /// Flipping it to After= makes the unit start later, stop earlier,
+    /// and write the titles of an arrangement that is about to change:
+    /// green, quiet, and useless.
+    #[test]
+    fn boot_titles_runs_after_the_rotation_it_follows() {
+        assert!(BOOT_TITLES_SERVICE.contains("Before=ostree-finalize-staged.service"));
+        assert!(
+            !BOOT_TITLES_SERVICE.contains("After=ostree-finalize-staged.service"),
+            "After= would order this before the rotation, not after it"
+        );
+        // Inside the hold unit's window, so /boot is still mounted when
+        // the ExecStop pass writes to it.
+        assert!(BOOT_TITLES_SERVICE.contains("After=ostree-finalize-staged-hold.service"));
+        assert!(BOOT_TITLES_SERVICE.contains("RequiresMountsFor=/boot"));
+        // The late shutdown slot. Without DefaultDependencies=no the
+        // implicit Before=shutdown.target contradicts stopping after a
+        // unit that stops at final.target, and systemd drops one of the
+        // two rules silently.
+        assert!(BOOT_TITLES_SERVICE.contains("DefaultDependencies=no"));
+        assert!(BOOT_TITLES_SERVICE.contains("Conflicts=final.target"));
+        // Both passes: the shutdown one is the point, the boot one
+        // covers a machine that lost power before finishing a shutdown.
+        assert!(BOOT_TITLES_SERVICE.contains("ExecStop=/usr/bin/kuma boot-titles"));
+        assert!(BOOT_TITLES_SERVICE.contains("ExecStart=/usr/bin/kuma boot-titles"));
+        assert!(BOOT_TITLES_SERVICE.contains("ConditionPathExists=/run/ostree-booted"));
     }
 
     /// The window for making /var/home a subvolume is one boot wide, and

@@ -835,6 +835,7 @@ pub fn doctor(json: bool, as_report: bool) -> Result<()> {
         check_overrides(&override_roots(), &mut report);
         check_snapshots(&mut report);
         check_boot_health(&mut report);
+        check_boot_titles(Path::new(crate::bootentries::ENTRIES), Path::new("/"), &mut report);
         check_encryption(&mut report);
         check_etc_drift(&mut report);
     } else if Path::new("/usr/lib/kuma").is_dir() {
@@ -1819,6 +1820,51 @@ fn check_etc_drift(report: &mut impl FnMut(Grade, &str, String, Option<Action>))
 /// did THIS boot pass its checks, and does the bootloader actually
 /// consult the boot counter — the part that can silently be missing on
 /// machines whose bootloader config predates greenboot in the image.
+/// Whether the boot menu names what it boots.
+///
+/// This grade exists because there is a repair behind it. ostree leaves
+/// the entry titles alone whenever a deploy reuses the kernel and the
+/// kargs, which is every kuma deploy that does not move the base, so
+/// each title drifts one deployment behind the slot it labels.
+/// `kuma-boot-titles.service` rewrites them at boot and after the
+/// shutdown rotation; this is the check that says whether it did, and
+/// the same pass is the fix it prescribes.
+///
+/// Takes its paths so the finding path is testable: on a machine where
+/// the unit is working, the interesting branch is the one that never
+/// runs.
+fn check_boot_titles(
+    entries: &Path,
+    sysroot: &Path,
+    report: &mut impl FnMut(Grade, &str, String, Option<Action>),
+) {
+    if !entries.is_dir() {
+        return;
+    }
+    let stale = crate::bootentries::stale(entries, sysroot);
+    if stale.is_empty() {
+        report(Grade::Ok, "boot menu", "entry titles name the deployments they boot".into(), None);
+        return;
+    }
+    for retitle in stale {
+        report(
+            Grade::Warn,
+            "boot menu",
+            format!(
+                "{} is titled \"{}\" but boots {}",
+                retitle.name(),
+                crate::bootentries::without_slot(&retitle.from),
+                crate::bootentries::without_slot(&retitle.to)
+            ),
+            Some(Action::new(
+                "retitle",
+                "sudo kuma boot-titles",
+                "name each entry after the deployment it boots",
+            )),
+        );
+    }
+}
+
 fn check_boot_health(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     if !Path::new("/usr/libexec/greenboot/greenboot").exists() {
         report(

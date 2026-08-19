@@ -51,7 +51,6 @@ commands that pass or fail.
   words, not the behaviour: what the commands do is proven by CI where CI can
   reach it, and the walkthrough now carries a record of which of its commands
   that is true of.
-
 ### Fixed
 
 - Publishing an image now runs the checks that install and boot it. They read
@@ -82,6 +81,20 @@ commands that pass or fail.
   now carries it, read from the failed run's own output rather than filtered
   out of the unit's journal by string, so systemd's own "Failed to start" is
   never mistaken for the service's explanation of why.
+- The boot menu names the version it boots. ostree rewrites a boot entry only
+  when the kernel or the kernel arguments move, and a kuma release moves
+  neither: the lock pins the base digest, so a rebuild reuses the same
+  composed base and the same kernel. Every deploy therefore rotated the
+  deployments underneath entries whose titles stayed where they were, and each
+  entry ended up naming the version that used to hold its slot. A machine
+  booted into 0.12.0 offered `Kuma 0.11.0` as its default and `Kuma 0.10.0` as
+  its rollback. The order was always right, so the menu booted what it should;
+  it named all of it wrong, and it does that at the one moment the menu is
+  what somebody is reading, which is when the machine will not come up far
+  enough to run `kuma rollback`. Each entry now takes its title from the
+  deployment its own `ostree=` argument points at, rewritten at boot and again
+  after the deployments rotate at shutdown, and `kuma doctor` grades the
+  result rather than only naming the problem.
 
 ## v0.11.0 (2026-08-18)
 

@@ -1,3 +1,4 @@
+mod bootentries;
 mod capture;
 mod compose;
 mod config;
@@ -341,6 +342,15 @@ enum Cmd {
         /// Shell to generate for
         shell: clap_complete::Shell,
     },
+    /// Rewrite the boot menu's titles to name the deployments they boot
+    ///
+    /// Hidden because nothing asks a person to run it:
+    /// kuma-boot-titles.service runs it at boot and again after ostree
+    /// rotates the deployments at shutdown. It is a verb rather than a
+    /// libexec script so the logic that writes into /boot can be tested
+    /// against a directory tree instead of asserted about a heredoc.
+    #[command(hide = true)]
+    BootTitles,
 }
 
 fn main() -> Result<()> {
@@ -534,6 +544,7 @@ fn run(
             let config = Config::load(&path)?;
             snapshot::snapshot(&config, &path, restore.as_deref(), from.as_deref(), yes, json)
         }
+        Cmd::BootTitles => boot_titles(),
         Cmd::Schema => schema(),
         Cmd::Passwd => passwd(),
         Cmd::Completions { shell } => {
@@ -1471,6 +1482,29 @@ fn lock_diff_json(moved: Option<&lock::LockDiff>) -> serde_json::Value {
             },
         }),
     }
+}
+
+/// Run by `kuma-boot-titles.service`: once at boot, and again after
+/// ostree rotates the deployments at shutdown, which is when the titles
+/// actually go out of date.
+///
+/// Silent on a machine with nothing to fix. It runs on every boot of
+/// every kuma machine, and a converger that narrates itself into the
+/// journal on every boot is a converger whose one interesting line
+/// nobody sees. Silent too where there is no menu to write to at all (a
+/// container, a build, live media) rather than failing a unit that had
+/// no work to do.
+fn boot_titles() -> Result<()> {
+    let entries = Path::new(bootentries::ENTRIES);
+    if !entries.is_dir() {
+        return Ok(());
+    }
+    let moved =
+        bootentries::apply(entries, Path::new("/")).context("rewriting the boot menu's titles")?;
+    for retitle in &moved {
+        println!("{}: {} -> {}", retitle.name(), retitle.from, retitle.to);
+    }
+    Ok(())
 }
 
 /// The update's undo. bootc keeps the previous deployment around exactly

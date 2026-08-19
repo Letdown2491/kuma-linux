@@ -355,6 +355,15 @@ Two deliberate choices:
   health entered its image would count nothing and reboot-loop forever
   instead of falling back. `kuma-boot-health-sync` converges that on every
   boot, and removes it again if the bootloader learns to count natively.
+- **The menu names what it boots.** ostree rewrites a boot entry only when the
+  kernel or the kernel arguments move, and a release that reuses the same base
+  moves neither, so entries kept naming the version that used to hold their
+  slot: a machine running 0.12.0 offered `Kuma 0.11.0`. The order was still
+  right, so it booted the right thing, but the menu is what you read when the
+  machine will not come up far enough to run `kuma rollback`.
+  `kuma-boot-titles.service` takes each entry's title from the deployment its
+  own kernel argument points at, at boot and again after the deployments
+  rotate at shutdown.
 
 A rollback isn't silent: the failed deployment stays in the rollback slot,
 and `kuma doctor` grades both this boot's verdict and whether the bootloader
