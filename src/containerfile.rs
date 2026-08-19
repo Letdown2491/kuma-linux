@@ -1404,6 +1404,11 @@ done
 /// `fill="none"` is deliberately untouched: it means transparent, and
 /// painting it would fill a shape that should not be there.
 ///
+/// **`Inherits=` is load-bearing.** The menu asks fuzzel for this theme
+/// by name, and application rows carry whatever `Icon=` their desktop
+/// entry names, which lives in Adwaita or hicolor. Without the
+/// inheritance every application in the list would draw a hole.
+///
 /// Then it checks its own work. Every output is grepped for a colour
 /// that is not the one we set, and the build fails naming the file. A
 /// generator that cannot say whether it worked is how the icons went
@@ -1426,7 +1431,7 @@ fn icon_theme() -> String {
          stray=$(grep -oiE '#[0-9a-f]{{3,8}}' "$out" | sort -u | grep -vix '{fill}' || true); \
          [ -z "$stray" ] || {{ echo "kuma: $name kept $stray" >&2; exit 1; }}; \
        done \
-    && printf '[Icon Theme]\nName={theme}\nComment=kuma menu icons, repainted for the launcher palette\nDirectories=scalable/actions\n\n[scalable/actions]\nSize=16\nMinSize=8\nMaxSize=512\nType=Scalable\nContext=Actions\n' \
+    && printf '[Icon Theme]\nName={theme}\nComment=kuma menu icons, repainted for the launcher palette\nInherits=Adwaita,hicolor\nDirectories=scalable/actions\n\n[scalable/actions]\nSize=16\nMinSize=8\nMaxSize=512\nType=Scalable\nContext=Actions\n' \
        > /usr/share/icons/{theme}/index.theme
 "##
     )
@@ -3623,6 +3628,10 @@ mod tests {
         assert!(!step.contains("#2e3436"), "a sed for one known dark leaves the others invisible");
         assert!(step.contains("exit 1"), "the step must fail the build rather than ship a hole");
         assert!(step.contains("kept"), "the step must name the icon it could not repaint");
+        assert!(
+            step.contains("Inherits=Adwaita,hicolor"),
+            "an application row's icon comes from the themes this one inherits"
+        );
     }
 
     /// The desktop that has the menu has the icons, and says so rather

@@ -1,3 +1,4 @@
+mod apps;
 mod bootentries;
 mod capture;
 mod compose;
@@ -319,11 +320,16 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Open kuma's menu in the desktop's launcher: settings, system, power
+    /// Open kuma's menu in the desktop's launcher: apps, settings, system, power
     ///
     /// Bound to Mod+Alt+Space on the niri desktop. Needs a graphical
     /// session and fuzzel; it draws nothing itself.
-    Menu,
+    Menu {
+        /// Print the rows instead of drawing them (read-only). What the
+        /// menu would offer on this machine, applications included.
+        #[arg(long)]
+        list: bool,
+    },
     /// List the snapshots this machine has taken, or restore a path from one
     Snapshot {
         /// Restore this path (absolute, inside the snapshot target)
@@ -550,7 +556,7 @@ fn run(
             let config = Config::load(&path)?;
             snapshot::snapshot(&config, &path, restore.as_deref(), from.as_deref(), yes, json)
         }
-        Cmd::Menu => menu::menu(config_path),
+        Cmd::Menu { list } => menu::menu(config_path, list),
         Cmd::BootTitles => boot_titles(),
         Cmd::Schema => schema(),
         Cmd::Passwd => passwd(),

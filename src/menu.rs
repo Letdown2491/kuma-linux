@@ -52,6 +52,9 @@ use std::path::Path;
 
 use crate::host::{host_output_stdin, spawn_detached};
 
+/// The group applications land in.
+pub(crate) const APPS: &str = "Apps";
+
 /// The icon theme the build generates and the menu asks for.
 pub(crate) const ICON_THEME: &str = "kuma";
 
@@ -216,8 +219,8 @@ pub(crate) struct Item {
     /// The section this belongs to. Rendered as part of the line, so it
     /// is searchable: `connect` narrows to the network entries the same
     /// way `wifi` would.
-    pub(crate) group: &'static str,
-    pub(crate) label: &'static str,
+    pub(crate) group: String,
+    pub(crate) label: String,
     /// The icon this row wears, named in kuma's own theme.
     ///
     /// **Adwaita's own icons could not be used directly, and that was
@@ -234,7 +237,12 @@ pub(crate) struct Item {
     /// column is a fixed-width slot, so the rows align exactly, and the
     /// colour is right by construction because it is derived from the
     /// same palette the launcher is themed with.
-    pub(crate) icon: &'static str,
+    pub(crate) icon: String,
+    /// The desktop file ID, for an application row. Empty for kuma's own
+    /// rows, which have nothing to remember: their order is the browse
+    /// order, and sorting them by use would move Power off under
+    /// somebody's finger.
+    pub(crate) id: String,
     pub(crate) argv: Vec<String>,
     pub(crate) run: Run,
 }
@@ -253,7 +261,7 @@ impl Item {
     }
 
     fn text_within(&self, within: Option<&str>) -> String {
-        if within == Some(self.group) {
+        if within == Some(self.group.as_str()) {
             self.label.to_string()
         } else {
             format!("{} · {}", self.group, self.label)
@@ -268,22 +276,23 @@ impl Item {
     }
 }
 
-fn item(
-    group: &'static str,
-    label: &'static str,
-    icon: &'static str,
-    argv: &[&str],
-    run: Run,
-) -> Item {
-    Item { group, label, icon, argv: argv.iter().map(|a| (*a).to_string()).collect(), run }
+fn item(group: &str, label: &str, icon: &str, argv: &[&str], run: Run) -> Item {
+    Item {
+        group: group.to_string(),
+        label: label.to_string(),
+        icon: icon.to_string(),
+        id: String::new(),
+        argv: argv.iter().map(|a| (*a).to_string()).collect(),
+        run,
+    }
 }
 
 /// An item whose program this machine has, or nothing.
 fn tool(
     tools: &Tools,
-    group: &'static str,
-    label: &'static str,
-    icon: &'static str,
+    group: &str,
+    label: &str,
+    icon: &str,
     argv: &[&str],
     run: Run,
 ) -> Option<Item> {
@@ -294,16 +303,6 @@ fn tool(
 /// The whole menu, as a pure function of what is installed.
 pub(crate) fn items(tools: &Tools) -> Vec<Item> {
     let mut out = Vec::new();
-
-    if tools.has("fuzzel") {
-        out.push(item(
-            "Apps",
-            "Launch an application",
-            "applications-system-symbolic",
-            &["fuzzel"],
-            Run::Detached,
-        ));
-    }
 
     // nmtui before the graphical editor: a terminal program inherits the
     // terminal's theme instead of arriving as a window from another
@@ -444,6 +443,42 @@ pub(crate) fn items(tools: &Tools) -> Vec<Item> {
     out
 }
 
+/// The application rows.
+///
+/// Separate from `items` because these are discovered rather than
+/// authored: their labels are somebody else's `Name=` and their icons
+/// are somebody else's `Icon=`, so the assertions that hold kuma's own
+/// rows to kuma's own icon theme cannot apply to them.
+pub(crate) fn app_items(apps: &[crate::apps::App]) -> Vec<Item> {
+    apps.iter()
+        .map(|app| Item {
+            group: APPS.to_string(),
+            label: app.name.clone(),
+            icon: app.icon.clone(),
+            id: app.id.clone(),
+            argv: app.argv.clone(),
+            // Terminal=true means the program has no window of its own.
+            // It gets the same treatment as kuma's own printing rows,
+            // including the wait, so one that exits immediately does not
+            // take its output with it.
+            run: if app.terminal { Run::Terminal } else { Run::Detached },
+        })
+        .collect()
+}
+
+/// Every row the menu holds: applications first, then the rows kuma
+/// authors.
+///
+/// A function rather than two lines inside `menu`, because the order is
+/// a decision: it puts Apps at the top of the group list, which is where
+/// the menu opens. Sabotage swapped the two at the call site and every
+/// test still passed, because the tests were building their own list.
+pub(crate) fn all_items(tools: &Tools, apps: &[crate::apps::App]) -> Vec<Item> {
+    let mut rows = app_items(apps);
+    rows.extend(items(tools));
+    rows
+}
+
 /// A row of whichever level is on screen.
 ///
 /// `Item` carries an index into the one list of items rather than a
@@ -454,7 +489,8 @@ pub(crate) enum Row {
     /// Up to the groups. Only ever below the top level, where there is
     /// nothing above to go to and a cancel means away.
     Back,
-    Group(&'static str),
+    /// An index into the level's group list.
+    Group(usize),
     Item(usize),
 }
 
@@ -472,11 +508,11 @@ fn group_icon(group: &str) -> Option<&'static str> {
 
 /// The groups present in `items`, in the order they first appear. Not
 /// sorted: the authored order is the browse order.
-fn groups(items: &[Item]) -> Vec<&'static str> {
-    let mut out: Vec<&'static str> = Vec::new();
+fn groups(items: &[Item]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
     for entry in items {
         if !out.contains(&entry.group) {
-            out.push(entry.group);
+            out.push(entry.group.clone());
         }
     }
     out
@@ -491,18 +527,18 @@ fn group_line(group: &str) -> String {
 
 /// The text of a row, without the icon protocol: what is displayed, what
 /// is searched, and what the window's width is measured from.
-fn row_text(row: Row, items: &[Item], within: Option<&str>) -> String {
+fn row_text(row: Row, items: &[Item], groups: &[String], within: Option<&str>) -> String {
     match row {
         Row::Back => "Back".to_string(),
-        Row::Group(group) => format!("{group}   ›"),
+        Row::Group(index) => format!("{}   ›", groups[index]),
         Row::Item(index) => items[index].text_within(within),
     }
 }
 
-fn row_line(row: Row, items: &[Item], within: Option<&str>) -> String {
+fn row_line(row: Row, items: &[Item], groups: &[String], within: Option<&str>) -> String {
     match row {
         Row::Back => format!("Back\u{0}icon\u{1f}{BACK_ICON}"),
-        Row::Group(group) => group_line(group),
+        Row::Group(index) => group_line(&groups[index]),
         Row::Item(index) => items[index].line(within),
     }
 }
@@ -515,8 +551,8 @@ fn row_line(row: Row, items: &[Item], within: Option<&str>) -> String {
 /// ends up being `items.len()` with nothing to notice: sabotage flipped
 /// exactly that at the call site and every test still passed, because
 /// the argument lived inside the shell-out where no test could see it.
-fn top_level(items: &[Item], groups: &[&'static str]) -> (Vec<Row>, usize) {
-    let mut rows: Vec<Row> = groups.iter().map(|group| Row::Group(group)).collect();
+fn top_level(items: &[Item], groups: &[String]) -> (Vec<Row>, usize) {
+    let mut rows: Vec<Row> = (0..groups.len()).map(Row::Group).collect();
     let visible = rows.len();
     rows.extend((0..items.len()).map(Row::Item));
     (rows, visible)
@@ -538,6 +574,22 @@ fn group_level(items: &[Item], group: &str) -> (Vec<Row>, usize) {
     let visible = rows.len();
     rows.extend((0..items.len()).filter(|index| !mine(index)).map(Row::Item));
     (rows, visible)
+}
+
+/// What the menu would offer, as text.
+///
+/// The marker is the fold: rows above it are what opening the menu
+/// shows, rows below it are what typing reaches. A listing that hid the
+/// difference would misreport the thing it exists to explain.
+fn listing(items: &[Item], groups: &[String]) -> String {
+    let (rows, visible) = top_level(items, groups);
+    rows.iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let marker = if index < visible { " " } else { "·" };
+            format!("{marker} {}\n", row_text(*row, items, groups, None))
+        })
+        .collect()
 }
 
 /// Ask fuzzel to pick one of `lines`, showing `visible` of them at rest.
@@ -604,30 +656,59 @@ fn chosen_index(answer: Option<&str>, count: usize) -> Option<usize> {
 }
 
 /// Run the menu: pick, descend or come back, dispatch, exit.
-pub fn menu(config_path: &Path) -> Result<()> {
+pub fn menu(config_path: &Path, list: bool) -> Result<()> {
     let tools = Tools::observe();
-    if !tools.has("fuzzel") {
+    // --list is how the menu is looked at without a display: over ssh,
+    // in a VM with no session, and by whoever is wondering why a row is
+    // missing. It needs no launcher, so the refusal comes after it.
+    if !list && !tools.has("fuzzel") {
         anyhow::bail!("kuma menu needs fuzzel, which this image does not have");
     }
-    let items = items(&tools);
+    // Applications first, so Apps is the group the menu opens on.
+    let mut apps = crate::apps::discover(
+        &crate::apps::search_dirs(),
+        &std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(),
+        &on_path,
+    );
+    crate::apps::rank(
+        &mut apps,
+        &crate::apps::cache_path().map(|path| crate::apps::load_counts(&path)).unwrap_or_default(),
+    );
+    let items = all_items(&tools, &apps);
     let groups = groups(&items);
-    let mut inside: Option<&'static str> = None;
+    if list {
+        // One write, not one per row: `kuma menu --list | head` closes
+        // the pipe partway through, and a println! after that panics.
+        print!("{}", listing(&items, &groups));
+        return Ok(());
+    }
+    let mut inside: Option<String> = None;
 
     loop {
-        let (rows, visible) = match inside {
+        let within = inside.as_deref();
+        let (rows, visible) = match within {
             None => top_level(&items, &groups),
             Some(group) => group_level(&items, group),
         };
-        let lines: Vec<String> = rows.iter().map(|row| row_line(*row, &items, inside)).collect();
-        let texts: Vec<String> = rows.iter().map(|row| row_text(*row, &items, inside)).collect();
+        let lines: Vec<String> =
+            rows.iter().map(|row| row_line(*row, &items, &groups, within)).collect();
+        let texts: Vec<String> =
+            rows.iter().map(|row| row_text(*row, &items, &groups, within)).collect();
         let Some(index) = pick(&lines, &texts, visible)? else {
             return Ok(());
         };
         match rows[index] {
             Row::Back => inside = None,
-            Row::Group(group) => inside = Some(group),
+            Row::Group(group) => inside = Some(groups[group].clone()),
             Row::Item(item) => {
                 let chosen = &items[item];
+                // An app row is remembered so the list stops being
+                // alphabetical; kuma's own rows are not, because their
+                // order is the browse order and shuffling it would move
+                // Power off under somebody's finger.
+                if chosen.group == APPS {
+                    crate::apps::record(&chosen.id);
+                }
                 return dispatch(&tools, config_path, &chosen.argv, chosen.run);
             }
         }
@@ -737,6 +818,25 @@ mod tests {
         Tools::with(super::PROBED)
     }
 
+    /// One application, standing in for a machine's whole list. The Apps
+    /// group only exists once something is in it, so the tests that hold
+    /// the groups have to be given one.
+    fn an_app() -> crate::apps::App {
+        crate::apps::App {
+            id: "org.example.Thing.desktop".to_string(),
+            name: "Thing".to_string(),
+            icon: "thing".to_string(),
+            argv: vec!["thing".to_string()],
+            terminal: false,
+        }
+    }
+
+    /// The menu as it is actually built: applications first, then the
+    /// rows kuma authors.
+    fn everything_with_apps() -> Vec<Item> {
+        all_items(&everything(), &[an_app()])
+    }
+
     /// The invariant that makes the menu safe to grow: a person cannot
     /// change the declaration from a launcher. `capture` is allowed
     /// because it is a dry run that asks before it writes, and `edit`
@@ -834,6 +934,11 @@ mod tests {
         let mut named = programs(&everything());
         named.extend(programs(&Tools::with(&fallbacks)));
 
+        // fuzzel draws the menu rather than being launched by a row,
+        // and it is probed because `menu()` refuses without it.
+        assert!(!Tools::none().has("fuzzel"), "the probe is what that refusal reads");
+        named.insert("fuzzel".to_string());
+
         const TERMINALS: &[&str] = &["kitty", "cosmic-term"];
         for terminal in TERMINALS {
             assert_eq!(
@@ -864,7 +969,7 @@ mod tests {
     /// anywhere: the authored order is the browse order.
     #[test]
     fn rows_of_a_group_stay_together() {
-        let mut seen: Vec<&str> = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
         for entry in items(&everything()) {
             if seen.last() != Some(&entry.group) {
                 assert!(
@@ -872,7 +977,7 @@ mod tests {
                     "{} is split into more than one run of rows",
                     entry.group
                 );
-                seen.push(entry.group);
+                seen.push(entry.group.clone());
             }
         }
         assert!(seen.len() > 1, "a menu of one group is not a menu");
@@ -895,6 +1000,53 @@ mod tests {
         assert_eq!(matching("drift"), 1, "typing `drift` should find the drift row");
     }
 
+    /// The listing shows every row and says which are on screen at
+    /// rest, because it exists to explain exactly that.
+    #[test]
+    fn the_listing_marks_the_fold() {
+        let items = everything_with_apps();
+        let groups = groups(&items);
+        let text = listing(&items, &groups);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), groups.len() + items.len(), "every row is listed");
+        assert!(
+            lines[..groups.len()].iter().all(|line| line.starts_with("  ")),
+            "the fold is below the groups"
+        );
+        assert!(
+            lines[groups.len()..].iter().all(|line| line.starts_with('·')),
+            "and everything else is under it"
+        );
+        assert!(text.ends_with('\n'), "a listing is lines, and the last one ends");
+    }
+
+    /// Applications come first, so the menu opens on Apps, and they
+    /// carry the ID their launch count is remembered against. kuma's own
+    /// rows carry none, because their order is the browse order.
+    #[test]
+    fn application_rows_come_first_and_are_the_only_ones_remembered() {
+        let rows = everything_with_apps();
+        assert_eq!(rows[0].group, APPS, "the menu opens on Apps");
+        assert_eq!(groups(&rows).first().map(String::as_str), Some(APPS));
+        for row in &rows {
+            if row.group == APPS {
+                assert!(!row.id.is_empty(), "{} has nothing to remember it by", row.label);
+            } else {
+                assert!(row.id.is_empty(), "{} is not an application", row.label);
+            }
+        }
+    }
+
+    /// An application that wants a terminal gets one, and one that does
+    /// not must not have a window flash open behind it.
+    #[test]
+    fn an_application_is_run_the_way_its_entry_asks() {
+        let mut console = an_app();
+        console.terminal = true;
+        assert_eq!(app_items(&[console])[0].run, Run::Terminal);
+        assert_eq!(app_items(&[an_app()])[0].run, Run::Detached);
+    }
+
     /// Every icon a row names is one the build generates, and every
     /// icon the build generates is one some row can name. Half of this
     /// stops a row drawing a hole; the other half stops the list growing
@@ -906,15 +1058,19 @@ mod tests {
         let items = items(&everything());
         for entry in &items {
             assert!(
-                generated.contains(entry.icon),
+                generated.contains(entry.icon.as_str()),
                 "{} names {}, ungenerated",
                 entry.label,
                 entry.icon
             );
-            named.insert(entry.icon);
+            named.insert(entry.icon.as_str());
         }
-        for group in groups(&items) {
-            let icon = group_icon(group).expect("every group names its own icon");
+        // Application rows are exempt by nature: their icon is somebody
+        // else's `Icon=`, resolved through the themes the launcher
+        // already searches. Everything kuma authors is not, and the Apps
+        // group's own icon only exists once something is in it.
+        for group in groups(&everything_with_apps()) {
+            let icon = group_icon(&group).expect("every group names its own icon");
             assert!(generated.contains(icon), "{group} names {icon}, ungenerated");
             named.insert(icon);
         }
@@ -931,7 +1087,7 @@ mod tests {
     #[test]
     fn every_group_has_its_own_icon() {
         for group in groups(&items(&everything())) {
-            assert!(group_icon(group).is_some(), "{group} has no icon of its own");
+            assert!(group_icon(&group).is_some(), "{group} has no icon of its own");
         }
     }
 
@@ -963,8 +1119,8 @@ mod tests {
         assert_eq!(rows.len(), groups.len() + items.len(), "every row is in the list fuzzel sees");
         assert_eq!(visible, groups.len(), "the window at rest is exactly the groups");
         assert!(visible < rows.len(), "the rows below the fold are what typing reaches");
-        for (index, group) in groups.iter().enumerate() {
-            assert_eq!(rows[index], Row::Group(group), "the first rows are the groups, in order");
+        for (index, row) in rows.iter().take(groups.len()).enumerate() {
+            assert_eq!(*row, Row::Group(index), "the first rows are the groups, in order");
         }
         assert_eq!(rows[groups.len()], Row::Item(0), "then the items, in order");
     }
@@ -983,7 +1139,7 @@ mod tests {
     fn a_group_shows_its_own_rows_and_a_way_back() {
         let items = items(&everything());
         for group in groups(&items) {
-            let (rows, visible) = group_level(&items, group);
+            let (rows, visible) = group_level(&items, &group);
             let mine = items.iter().filter(|entry| entry.group == group).count();
             assert_eq!(visible, mine + 1, "{group} shows its rows and the way back");
             for row in rows.iter().take(mine) {
@@ -1002,7 +1158,7 @@ mod tests {
     fn every_row_is_still_reachable_from_inside_a_group() {
         let items = items(&everything());
         for group in groups(&items) {
-            let (rows, visible) = group_level(&items, group);
+            let (rows, visible) = group_level(&items, &group);
             let reachable: BTreeSet<usize> = rows
                 .iter()
                 .filter_map(|row| match row {
@@ -1042,7 +1198,7 @@ mod tests {
         let items = items(&everything());
         for group in groups(&items) {
             let shown =
-                group_line(group).split('\u{0}').next().expect("a row has text").to_string();
+                group_line(&group).split('\u{0}').next().expect("a row has text").to_string();
             assert!(shown.ends_with('›'), "{group}'s row does not say it descends");
         }
         for entry in &items {

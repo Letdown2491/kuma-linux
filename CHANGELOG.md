@@ -16,6 +16,23 @@ as its release notes.
   config kuma already ships, in the launcher the clipboard picker already
   uses. Nothing new is installed and nothing new is drawn.
 
+  **Applications are rows in it.** Apps was a group holding one entry that
+  opened a second launcher on top of the first; now the menu lists the
+  applications itself, so typing `firefox` at the top finds Firefox the same
+  way `reboot` finds reboot. That means implementing the desktop entry spec
+  rather than gesturing at it, and the parts people skip are the parts that
+  bite: on the machine this was written on, 11 of 32 entries are
+  `NoDisplay=true` and must never appear, and 12 carry field codes (`%U`,
+  `%F`) that arrive as literal arguments if nothing strips them. `TryExec`,
+  `Hidden`, `OnlyShowIn`, `NotShowIn`, `Terminal` and the spec's quoting are
+  all honoured, entries earlier in the search path shadow later ones, and
+  launch counts are kept so the list is not alphabetical forever.
+
+  **`kuma menu --list` prints the rows instead of drawing them**, marking
+  which are on screen at rest and which only typing reaches. How to see the
+  menu over ssh, in a VM with no session, or when wondering why a row is
+  missing.
+
   **Descending narrows what is shown, never what can be found.** Opening a
   group shows that group's rows and a way back; every other row is still in
   the list, so someone who opens Connect and then remembers they wanted to
