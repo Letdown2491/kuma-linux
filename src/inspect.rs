@@ -567,8 +567,48 @@ const REASON_MAX: usize = 120;
 /// exceeds configured limit". Cutting the end kept the half a person
 /// could already guess from the unit's name and threw away the half
 /// they came for.
+/// crypt(5) hashes, masked wherever a unit's own output is about to be
+/// repeated back.
+///
+/// `doctor --report` exists to be pasted, which is why the declaration
+/// it carries goes through `redact_declaration` first. A unit's journal
+/// is a second way into that same report and this is its equivalent:
+/// `kuma-user-sync` holds the declared hash in its environment and pipes
+/// it to `chpasswd -e`, so the material is one `set -x` away from the
+/// journal. Nothing echoes it today. That is a fact about the current
+/// script rather than a property of the report, and the report is the
+/// place this project already decided not to rely on luck.
+///
+/// Matches the shape rather than any particular hash, so it also covers
+/// a hash the machine has and the declaration does not.
+fn mask_hashes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('$') {
+        let (before, from_dollar) = rest.split_at(at);
+        out.push_str(before);
+        // `$id$` opens every crypt hash: $6$, $y$, $2b$, $argon2id$.
+        let id: String =
+            from_dollar[1..].chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+        let opens = !id.is_empty() && from_dollar[1 + id.len()..].starts_with('$');
+        if !opens {
+            out.push('$');
+            rest = &from_dollar[1..];
+            continue;
+        }
+        out.push_str("<redacted>");
+        // A hash runs to the next whitespace; everything after it on the
+        // line is still the sentence somebody needs.
+        let end = from_dollar.find(char::is_whitespace).unwrap_or(from_dollar.len());
+        rest = &from_dollar[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn one_line_reason(line: &str) -> String {
     const JOIN: &str = " ... ";
+    let line = mask_hashes(line);
     let clean: String = line.trim().chars().filter(|c| !c.is_control()).collect();
     let chars: Vec<char> = clean.chars().collect();
     if chars.len() <= REASON_MAX {
@@ -1102,8 +1142,18 @@ fn days_since(stamp: &str) -> Option<u64> {
 }
 
 fn days_since_epoch(then: i64) -> Option<u64> {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
-    Some(now.saturating_sub(then).max(0) as u64 / 86_400)
+    Some(whole_days_between(then, now_epoch()?))
+}
+
+fn now_epoch() -> Option<i64> {
+    Some(SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64)
+}
+
+/// Clock skew is real on a machine whose RTC has not been set: a
+/// timestamp in the future reads as zero rather than as an enormous
+/// unsigned number.
+fn whole_days_between(then: i64, now: i64) -> u64 {
+    now.saturating_sub(then).max(0) as u64 / 86_400
 }
 
 /// How long a machine may go without converging before that is a
@@ -1126,14 +1176,22 @@ const STALE_CONVERGENCE_DAYS: u64 = 7;
 /// active" are both true of a machine that has silently stopped
 /// converging, and nothing else here can tell them apart.
 ///
+/// Only asked of units a timer runs again. A boot-only unit's last run
+/// is the last boot, so its age measures uptime and answers nothing
+/// about the machine's health.
+///
 /// `None` for a machine that is fine, and also for a missing timestamp:
 /// grading a machine unhealthy because systemd stopped emitting a field
 /// would be reporting on systemd, not on the machine.
 fn convergence_staleness(
+    on_a_timer: bool,
     last_exit: Option<i64>,
-    days_since: impl Fn(i64) -> Option<u64>,
+    now: Option<i64>,
 ) -> Option<u64> {
-    let days = days_since(last_exit?)?;
+    if !on_a_timer {
+        return None;
+    }
+    let days = whole_days_between(last_exit?, now?);
     (days >= STALE_CONVERGENCE_DAYS).then_some(days)
 }
 
@@ -1354,7 +1412,7 @@ fn check_overrides(
 ) {
     for (link, target) in dangling_overrides(roots) {
         let name = link.file_name().unwrap_or_default().to_string_lossy().to_string();
-        let sudo = if link.starts_with("/var/lib") { "sudo " } else { "" };
+        let sudo = if link.starts_with(SYSTEM_OVERRIDES) { "sudo " } else { "" };
         let fix = Action::new(
             "remove-override",
             format!("{sudo}rm {}", link.display()),
@@ -1388,22 +1446,42 @@ fn user_sync_has_an_account(baked: &Path, installed: &Path) -> bool {
 
 /// The oneshots record their last run in Result=; the timers are what
 /// keeps long-uptime machines converged.
+///
+/// The third column is whether a timer runs this unit again, and it is
+/// what makes "how long since it last ran" a question worth asking.
+/// `kuma-user-sync.service` is `WantedBy=multi-user.target` and nothing
+/// else, so its last run is always the last boot: asking a machine with
+/// eight days of uptime why its account has not been converged in eight
+/// days is asking about the uptime, not about the account.
+fn convergence_targets(
+    has_account: bool,
+    has_flatpaks: bool,
+    has_brews: bool,
+) -> Vec<(&'static str, &'static str, bool)> {
+    let mut targets: Vec<(&str, &str, bool)> = Vec::new();
+    if has_account {
+        targets.push(("kuma-user-sync.service", "user", false));
+    }
+    if has_flatpaks {
+        targets.push(("kuma-flatpak-sync.service", "flatpak sync", true));
+        targets.push(("kuma-flatpak-sync.timer", "flatpak sync", false));
+    }
+    if has_brews {
+        targets.push(("kuma-brew-sync.service", "brew sync", true));
+        targets.push(("kuma-brew-sync.timer", "brew sync", false));
+    }
+    targets
+}
+
 fn check_convergence(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
-    let mut targets: Vec<(&str, &str)> = Vec::new();
-    if user_sync_has_an_account(Path::new(BAKED_USER), Path::new(INSTALLED_USER)) {
-        targets.push(("kuma-user-sync.service", "user"));
-    }
-    if Path::new("/usr/lib/kuma/flatpaks").exists() {
-        targets.push(("kuma-flatpak-sync.service", "flatpak sync"));
-        targets.push(("kuma-flatpak-sync.timer", "flatpak sync"));
-    }
-    if Path::new("/usr/lib/kuma/brews").exists() {
-        targets.push(("kuma-brew-sync.service", "brew sync"));
-        targets.push(("kuma-brew-sync.timer", "brew sync"));
-    }
-    let names: Vec<&str> = targets.iter().map(|(unit, _)| *unit).collect();
+    let targets = convergence_targets(
+        user_sync_has_an_account(Path::new(BAKED_USER), Path::new(INSTALLED_USER)),
+        Path::new("/usr/lib/kuma/flatpaks").exists(),
+        Path::new("/usr/lib/kuma/brews").exists(),
+    );
+    let names: Vec<&str> = targets.iter().map(|(unit, _, _)| *unit).collect();
     let facts = unit_facts(&names);
-    for (unit, name) in &targets {
+    for (unit, name, on_a_timer) in &targets {
         let Some(fact) = facts.get(*unit) else {
             report(Grade::Warn, name, format!("{unit} state unavailable"), None);
             continue;
@@ -1427,7 +1505,7 @@ fn check_convergence(report: &mut impl FnMut(Grade, &str, String, Option<Action>
             // true field and a false sentence.
             report(Grade::Ok, name, format!("{unit} is running now"), None);
         } else if fact.result == "success" {
-            match convergence_staleness(fact.last_exit, days_since_epoch) {
+            match convergence_staleness(*on_a_timer, fact.last_exit, now_epoch()) {
                 Some(days) => {
                     let fix = Action::new("sync", "kuma sync", "converge this machine now");
                     let detail =
@@ -2178,32 +2256,96 @@ mod tests {
     /// true of that machine.
     #[test]
     fn a_machine_that_stopped_converging_is_a_finding() {
-        let ago = |days: u64| move |_: i64| Some(days);
-        assert_eq!(convergence_staleness(Some(1), ago(0)), None, "converged today");
-        assert_eq!(convergence_staleness(Some(1), ago(6)), None, "six days is six timer firings");
+        const DAY: i64 = 86_400;
+        let now = 1_800_000_000;
+        let ago = |days: i64| Some(now - days * DAY);
+        let stale = |days: i64| convergence_staleness(true, ago(days), Some(now));
+
+        assert_eq!(stale(0), None, "converged today");
+        assert_eq!(stale(6), None, "six days is six timer firings");
         assert_eq!(
-            convergence_staleness(Some(1), ago(STALE_CONVERGENCE_DAYS)),
+            stale(STALE_CONVERGENCE_DAYS as i64),
             Some(STALE_CONVERGENCE_DAYS),
             "the threshold itself reports"
         );
-        assert_eq!(convergence_staleness(Some(1), ago(30)), Some(30));
+        assert_eq!(stale(30), Some(30));
+
+        // A unit no timer runs again last ran at boot, so its age is the
+        // machine's uptime. kuma-user-sync is that unit, and asking it
+        // this question failed healthy machines for staying up a week.
+        assert_eq!(
+            convergence_staleness(false, ago(30), Some(now)),
+            None,
+            "a boot-only unit is never stale, however long the uptime"
+        );
 
         // Reporting on systemd rather than on the machine is not this
         // check's job: a unit that never ran, or a field that stopped
         // being emitted, is not a stale machine.
-        assert_eq!(convergence_staleness(None, ago(365)), None, "a unit that never ran");
-        assert_eq!(convergence_staleness(Some(1), |_| None), None, "an unreadable clock");
+        assert_eq!(convergence_staleness(true, None, Some(now)), None, "a unit that never ran");
+        assert_eq!(convergence_staleness(true, ago(365), None), None, "an unreadable clock");
 
-        // The real arithmetic, not the stub: a timestamp from the future
-        // (an unset RTC) must not read as ancient.
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
-        assert_eq!(convergence_staleness(Some(now + 86_400), days_since_epoch), None);
-        assert_eq!(convergence_staleness(Some(now), days_since_epoch), None);
-        let long_ago = now - (STALE_CONVERGENCE_DAYS as i64 + 3) * 86_400;
-        assert_eq!(
-            convergence_staleness(Some(long_ago), days_since_epoch),
-            Some(STALE_CONVERGENCE_DAYS + 3)
+        // An unset RTC puts the last run in the future; that is zero days
+        // old, not an enormous unsigned number.
+        assert_eq!(convergence_staleness(true, Some(now + DAY), Some(now)), None);
+    }
+
+    /// Whether a unit is judged on how long ago it last ran is a column
+    /// in a table, and a column is a thing somebody can flip. The table
+    /// carries its own answer: a service is run again by a timer exactly
+    /// when this list also carries that timer, so the two halves cannot
+    /// disagree without saying so.
+    #[test]
+    fn only_units_a_timer_runs_again_are_judged_on_their_age() {
+        let all = convergence_targets(true, true, true);
+        assert_eq!(all.len(), 5, "an account, and a service plus a timer for each converger");
+        for (unit, _, on_a_timer) in &all {
+            let Some(stem) = unit.strip_suffix(".service") else {
+                assert!(!on_a_timer, "{unit} is a timer; nothing asks a timer its age");
+                continue;
+            };
+            let timer = format!("{stem}.timer");
+            let has_timer = all.iter().any(|(u, _, _)| *u == timer);
+            assert_eq!(
+                *on_a_timer, has_timer,
+                "{unit} is judged on its age as if a timer ran it, and {timer} is not here"
+            );
+        }
+        // The one that made this a bug rather than a hypothetical.
+        assert!(
+            all.iter().any(|(u, _, timed)| *u == "kuma-user-sync.service" && !timed),
+            "user-sync runs at boot only; its last run is the last boot"
         );
+        // Nothing is graded on a machine that declares neither.
+        assert!(convergence_targets(false, false, false).is_empty());
+    }
+
+    /// `doctor --report` is written to be pasted, which is why the
+    /// declaration inside it is redacted. A failed unit's own words are a
+    /// second way into the same report, and `kuma-user-sync` runs with
+    /// the declared hash in its environment.
+    #[test]
+    fn a_quoted_failure_cannot_carry_a_password_hash() {
+        let real = "chpasswd: line 1: user 'mira' \
+                    $6$rounds=656000$abcdefgh$0123456789abcdef not found";
+        let masked = one_line_reason(real);
+        assert!(!masked.contains("$6$"), "the hash survived: {masked}");
+        assert!(!masked.contains("0123456789abcdef"), "the hash survived: {masked}");
+        assert!(masked.contains("<redacted>"));
+        // Redaction that eats the sentence would just move the problem.
+        assert!(masked.contains("chpasswd") && masked.contains("not found"), "{masked}");
+
+        for shape in ["$y$j9T$abc", "$2b$12$abcdefgh", "$argon2id$v=19$m=64"] {
+            let out = mask_hashes(&format!("failed with {shape} here"));
+            assert!(!out.contains(shape), "{shape} survived: {out}");
+            assert!(out.ends_with(" here"), "the rest of the line survives: {out}");
+        }
+
+        // A lone dollar is money, a shell variable, or an exit code, and
+        // masking those would make ordinary failures unreadable.
+        for kept in ["exit $?", "costs $5 a month", "PATH=$HOME/bin not found"] {
+            assert_eq!(mask_hashes(kept), kept);
+        }
     }
 
     /// The reason is arbitrary output from whatever the unit ran, and it
