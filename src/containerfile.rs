@@ -49,6 +49,11 @@ const NIRI_PACKAGES: &[&str] = &[
     "glibc-langpack-en",
     // hardware enablement — the minimal base targets servers
     "NetworkManager-wifi",
+    // The icons `kuma menu` repaints into its own theme. GTK already
+    // drags this in, but the menu depends on the individual files by
+    // name, which is not something to leave to somebody else's
+    // dependency graph.
+    "adwaita-icon-theme",
     // nmtui: what `kuma menu` offers for wifi, in preference to the
     // graphical editor below, because a terminal program inherits the
     // terminal's theme instead of arriving as a window from another
@@ -1384,6 +1389,49 @@ while sleep 60; do
 done
 "#;
 
+/// The build step that gives `kuma menu` its icons.
+///
+/// Adwaita's symbolic icons are the right drawings and the wrong colour:
+/// each hardcodes a near-black fill, fuzzel renders the file as it is,
+/// and kuma's launcher is `#0e1626`. So every icon the menu names is
+/// copied and repainted in the launcher's own foreground, into a theme
+/// kuma owns.
+///
+/// **Any hex is rewritten, not one known value.** The twenty files carry
+/// three different darks (`#2e3436`, `#474747`, `#222222`) and one of
+/// them also sets `color=`; a sed for the common one would have left two
+/// icons invisible, which reads as a glitch rather than as a bug.
+/// `fill="none"` is deliberately untouched: it means transparent, and
+/// painting it would fill a shape that should not be there.
+///
+/// Then it checks its own work. Every output is grepped for a colour
+/// that is not the one we set, and the build fails naming the file. A
+/// generator that cannot say whether it worked is how the icons went
+/// out invisible the first time.
+fn icon_theme() -> String {
+    let names = crate::menu::ICONS.join(" ");
+    let fill = crate::menu::ICON_FILL;
+    let theme = crate::menu::ICON_THEME;
+    // r##"…"## rather than r#"…"#: the sed contains `="#`, which would
+    // end a single-hash raw string in the middle of the pattern it is
+    // matching.
+    format!(
+        r##"RUN set -eu \
+    && mkdir -p /usr/share/icons/{theme}/scalable/actions \
+    && for name in {names}; do \
+         src=$(find /usr/share/icons/Adwaita -name "$name.svg" -print -quit); \
+         [ -n "$src" ] || {{ echo "kuma: Adwaita has no $name" >&2; exit 1; }}; \
+         out=/usr/share/icons/{theme}/scalable/actions/$name.svg; \
+         sed -E 's/(fill|color)="#[0-9a-fA-F]{{3,8}}"/\1="{fill}"/g' "$src" > "$out"; \
+         stray=$(grep -oiE '#[0-9a-f]{{3,8}}' "$out" | sort -u | grep -vix '{fill}' || true); \
+         [ -z "$stray" ] || {{ echo "kuma: $name kept $stray" >&2; exit 1; }}; \
+       done \
+    && printf '[Icon Theme]\nName={theme}\nComment=kuma menu icons, repainted for the launcher palette\nDirectories=scalable/actions\n\n[scalable/actions]\nSize=16\nMinSize=8\nMaxSize=512\nType=Scalable\nContext=Actions\n' \
+       > /usr/share/icons/{theme}/index.theme
+"##
+    )
+}
+
 /// Media-key binds routed through kuma-osd, spliced INTO the stock
 /// `binds {}` section during the merge (niri rejects a second binds
 /// node) while the stock wpctl/brightnessctl lines are sed-stripped.
@@ -1800,6 +1848,10 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY waybar-config.jsonc /etc/xdg/waybar/config.jsonc\n");
         out.push_str("COPY waybar-style.css /etc/xdg/waybar/style.css\n");
         out.push_str("COPY fuzzel.ini /etc/xdg/fuzzel/fuzzel.ini\n");
+        // The menu's icons, repainted from Adwaita into kuma's own theme.
+        // Beside the fuzzel config on purpose: that file supplies the
+        // colour they are painted in, and the two are one decision.
+        out.push_str(&icon_theme());
         out.push_str("COPY mako.conf /usr/lib/kuma/mako.conf\n");
         out.push_str("COPY --chmod=755 kuma-mako /usr/libexec/kuma-mako\n");
         out.push_str("COPY mako-dropin.conf /usr/lib/systemd/user/mako.service.d/kuma.conf\n");
@@ -3552,6 +3604,39 @@ mod tests {
     /// that does nothing and says nothing. Same failure the menu's own
     /// leaf test prevents, one layer out: found by sabotage, which
     /// renamed the bound verb and watched every test still pass.
+    /// The icons the menu draws and the icons the build generates are
+    /// one list, so a row cannot name a file the image does not carry.
+    /// The step also has to check its own work: the first version of
+    /// these icons shipped invisible, and a generator that cannot say
+    /// whether it worked is how that happens twice.
+    #[test]
+    fn the_icon_step_generates_exactly_what_the_menu_names() {
+        let step = icon_theme();
+        for icon in crate::menu::ICONS {
+            assert!(step.contains(icon), "the build does not generate {icon}");
+        }
+        assert!(step.contains(crate::menu::ICON_FILL), "the icons are not repainted");
+        assert!(
+            step.contains("(fill|color)=") && step.contains("[0-9a-fA-F]"),
+            "any colour must be rewritten, not one known value: Adwaita ships three darks"
+        );
+        assert!(!step.contains("#2e3436"), "a sed for one known dark leaves the others invisible");
+        assert!(step.contains("exit 1"), "the step must fail the build rather than ship a hole");
+        assert!(step.contains("kept"), "the step must name the icon it could not repaint");
+    }
+
+    /// The desktop that has the menu has the icons, and says so rather
+    /// than relying on GTK to drag the theme in.
+    #[test]
+    fn the_niri_image_generates_the_menus_icons() {
+        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
+        assert!(out.contains("/usr/share/icons/kuma/index.theme"));
+        assert!(
+            NIRI_PACKAGES.contains(&"adwaita-icon-theme"),
+            "the source of the icons is declared"
+        );
+    }
+
     #[test]
     fn every_kuma_verb_a_keybinding_spawns_is_a_real_verb() {
         use clap::CommandFactory;

@@ -52,6 +52,56 @@ use std::path::Path;
 
 use crate::host::{host_output_stdin, spawn_detached};
 
+/// The icon theme the build generates and the menu asks for.
+pub(crate) const ICON_THEME: &str = "kuma";
+
+/// The colour every generated icon is painted in.
+///
+/// Must be `assets/fuzzel.ini`'s `text=`, because the icons sit in the
+/// same rows as that text and any drift makes them look like a different
+/// product. `the_icon_fill_is_the_launchers_own_foreground` reads the
+/// ini and asserts it, so the two files cannot part company quietly.
+pub(crate) const ICON_FILL: &str = "#dce7f0";
+
+/// What a row wears when nothing better is named. Named here so the
+/// build generates it too; a fallback that is missing from the theme is
+/// a hole in the list rather than a fallback.
+pub(crate) const FALLBACK_ICON: &str = "preferences-system-symbolic";
+
+/// The way back out of a group.
+pub(crate) const BACK_ICON: &str = "go-previous-symbolic";
+
+/// Every icon the menu can name, and therefore exactly what the build
+/// generates into `/usr/share/icons/kuma`.
+///
+/// One list, read by `containerfile.rs` to write the build step and by
+/// the menu to draw the rows, so a row cannot name an icon the image
+/// does not carry. `every_icon_a_row_names_is_one_the_build_generates`
+/// checks both directions.
+pub(crate) const ICONS: &[&str] = &[
+    "applications-system-symbolic",
+    "audio-volume-high-symbolic",
+    "bluetooth-symbolic",
+    "dialog-information-symbolic",
+    "drive-harddisk-symbolic",
+    "edit-find-symbolic",
+    "emblem-system-symbolic",
+    "go-previous-symbolic",
+    "media-playback-pause-symbolic",
+    "network-wireless-symbolic",
+    "preferences-system-symbolic",
+    "software-update-available-symbolic",
+    "system-lock-screen-symbolic",
+    "system-log-out-symbolic",
+    "system-reboot-symbolic",
+    "system-shutdown-symbolic",
+    "text-editor-symbolic",
+    "user-trash-symbolic",
+    "video-display-symbolic",
+    "view-refresh-symbolic",
+    "weather-clear-night-symbolic",
+];
+
 /// What is on this machine, as far as the menu is concerned.
 ///
 /// Every program the tree can name is probed once, up front, so building
@@ -168,44 +218,64 @@ pub(crate) struct Item {
     /// way `wifi` would.
     pub(crate) group: &'static str,
     pub(crate) label: &'static str,
-    /// A Font Awesome glyph, as a character rather than an icon name.
+    /// The icon this row wears, named in kuma's own theme.
     ///
-    /// **Not fuzzel's dmenu icon protocol, and that was measured.**
-    /// Every one of Adwaita's 587 symbolic SVGs hardcodes
-    /// `fill="#2e3436"`, fuzzel renders the file as it is, and kuma's
-    /// launcher background is `#0e1626`: the icons drew, in near-black
-    /// on near-black, and no choice of icon name could have fixed it
-    /// because the whole theme is that colour. A glyph is text, so it
-    /// takes the row's own foreground colour and cannot go invisible.
-    /// It is also what waybar already uses, so the menu and the bar
-    /// speak the same alphabet.
+    /// **Adwaita's own icons could not be used directly, and that was
+    /// measured.** Every symbolic SVG it ships hardcodes a near-black
+    /// fill (three different ones: `#2e3436`, `#474747`, `#222222`),
+    /// fuzzel draws the file as it is, and kuma's launcher background is
+    /// `#0e1626`. The icons rendered, invisibly. Font Awesome glyphs
+    /// fixed the colour by being text, and could not be aligned for the
+    /// same reason: a proportional face gives every glyph a different
+    /// width, so the labels after them never line up.
     ///
-    /// Referenced by codepoint, never by font name: face names carry the
-    /// major version (`fontawesome-6-*` becomes `fontawesome-7-*` in
-    /// Fedora 45) while codepoints do not, and fontconfig finds whoever
-    /// provides the glyph. Same reasoning as the metapackage in the
-    /// desktop set.
-    pub(crate) glyph: char,
+    /// So the build generates `/usr/share/icons/kuma` from Adwaita's
+    /// files, repainted in the launcher's own foreground. fuzzel's icon
+    /// column is a fixed-width slot, so the rows align exactly, and the
+    /// colour is right by construction because it is derived from the
+    /// same palette the launcher is themed with.
+    pub(crate) icon: &'static str,
     pub(crate) argv: Vec<String>,
     pub(crate) run: Run,
 }
 
 impl Item {
-    /// The line fuzzel is handed, which is also what it searches.
-    fn line(&self) -> String {
-        format!("{}  {} · {}", self.glyph, self.group, self.label)
+    /// The line fuzzel is handed. Everything before the NUL is displayed
+    /// and searched; `\0icon\x1f<name>` is fuzzel's dmenu icon protocol.
+    ///
+    /// `within` is the group being browsed, if any. A row inside its own
+    /// group drops the prefix, because repeating `Connect ·` on every
+    /// row of the Connect list says nothing. Rows from elsewhere keep it,
+    /// which is what makes them legible when search pulls them up from
+    /// below the fold.
+    fn line(&self, within: Option<&str>) -> String {
+        format!("{}\u{0}icon\u{1f}{}", self.text_within(within), self.icon)
     }
 
-    /// What the row says, without its glyph: the part a person types
+    fn text_within(&self, within: Option<&str>) -> String {
+        if within == Some(self.group) {
+            self.label.to_string()
+        } else {
+            format!("{} · {}", self.group, self.label)
+        }
+    }
+
+    /// What the row says at the top level: the part a person types
     /// against and the part the tests read.
     #[cfg(test)]
     fn text(&self) -> String {
-        format!("{} · {}", self.group, self.label)
+        self.text_within(None)
     }
 }
 
-fn item(group: &'static str, label: &'static str, glyph: char, argv: &[&str], run: Run) -> Item {
-    Item { group, label, glyph, argv: argv.iter().map(|a| (*a).to_string()).collect(), run }
+fn item(
+    group: &'static str,
+    label: &'static str,
+    icon: &'static str,
+    argv: &[&str],
+    run: Run,
+) -> Item {
+    Item { group, label, icon, argv: argv.iter().map(|a| (*a).to_string()).collect(), run }
 }
 
 /// An item whose program this machine has, or nothing.
@@ -213,12 +283,12 @@ fn tool(
     tools: &Tools,
     group: &'static str,
     label: &'static str,
-    glyph: char,
+    icon: &'static str,
     argv: &[&str],
     run: Run,
 ) -> Option<Item> {
     let program = argv.first().copied().unwrap_or_default();
-    tools.has(program).then(|| item(group, label, glyph, argv, run))
+    tools.has(program).then(|| item(group, label, icon, argv, run))
 }
 
 /// The whole menu, as a pure function of what is installed.
@@ -226,7 +296,13 @@ pub(crate) fn items(tools: &Tools) -> Vec<Item> {
     let mut out = Vec::new();
 
     if tools.has("fuzzel") {
-        out.push(item("Apps", "Launch an application", '\u{f009}', &["fuzzel"], Run::Detached));
+        out.push(item(
+            "Apps",
+            "Launch an application",
+            "applications-system-symbolic",
+            &["fuzzel"],
+            Run::Detached,
+        ));
     }
 
     // nmtui before the graphical editor: a terminal program inherits the
@@ -235,51 +311,82 @@ pub(crate) fn items(tools: &Tools) -> Vec<Item> {
     // session will not start.
     if let Some(wifi) = tools.first(&["nmtui", "nm-connection-editor"]) {
         let run = if wifi == "nmtui" { Run::Terminal } else { Run::Detached };
-        out.push(item("Connect", "Network", '\u{f1eb}', &[&wifi], run));
+        out.push(item("Connect", "Network", "network-wireless-symbolic", &[&wifi], run));
     }
     out.extend(tool(
         tools,
         "Connect",
         "Bluetooth",
-        '\u{f293}',
+        "bluetooth-symbolic",
         &["blueman-manager"],
         Run::Detached,
     ));
     if let Some(audio) = tools.first(&["wiremix", "pavucontrol"]) {
         let run = if audio == "wiremix" { Run::Terminal } else { Run::Detached };
-        out.push(item("Connect", "Audio", '\u{f028}', &[&audio], run));
+        out.push(item("Connect", "Audio", "audio-volume-high-symbolic", &[&audio], run));
     }
-    out.extend(tool(tools, "Connect", "Displays", '\u{f108}', &["wdisplays"], Run::Detached));
+    out.extend(tool(
+        tools,
+        "Connect",
+        "Displays",
+        "video-display-symbolic",
+        &["wdisplays"],
+        Run::Detached,
+    ));
 
     // Declaration: opens and shows, never writes. `capture` is the one
     // entry that can end in a write, and it does its own asking.
-    out.push(item("Declaration", "Edit", '\u{f044}', &["kuma", "edit"], Run::Terminal));
-    out.push(item("Declaration", "Show drift", '\u{f002}', &["kuma", "diff"], Run::Terminal));
+    out.push(item("Declaration", "Edit", "text-editor-symbolic", &["kuma", "edit"], Run::Terminal));
+    out.push(item(
+        "Declaration",
+        "Show drift",
+        "edit-find-symbolic",
+        &["kuma", "diff"],
+        Run::Terminal,
+    ));
     out.push(item(
         "Declaration",
         "Review proposals",
-        '\u{f05a}',
+        "dialog-information-symbolic",
         &["kuma", "capture"],
         Run::Terminal,
     ));
 
-    out.push(item("System", "Health", '\u{f21e}', &["kuma", "doctor"], Run::Terminal));
+    out.push(item(
+        "System",
+        "Health",
+        "emblem-system-symbolic",
+        &["kuma", "doctor"],
+        Run::Terminal,
+    ));
     out.push(item(
         "System",
         "Check for updates",
-        '\u{f021}',
+        "software-update-available-symbolic",
         &["kuma", "update", "--check"],
         Run::Terminal,
     ));
-    out.push(item("System", "Rebuild", '\u{f0ad}', &["kuma", "build"], Run::Terminal));
-    out.push(item("System", "Roll back", '\u{f0e2}', &["kuma", "rollback"], Run::Terminal));
-    out.push(item("System", "Snapshots", '\u{f0c7}', &["kuma", "snapshot"], Run::Terminal));
+    out.push(item("System", "Rebuild", "view-refresh-symbolic", &["kuma", "build"], Run::Terminal));
+    out.push(item(
+        "System",
+        "Roll back",
+        "go-previous-symbolic",
+        &["kuma", "rollback"],
+        Run::Terminal,
+    ));
+    out.push(item(
+        "System",
+        "Snapshots",
+        "drive-harddisk-symbolic",
+        &["kuma", "snapshot"],
+        Run::Terminal,
+    ));
 
     out.extend(tool(
         tools,
         "Notifications",
         "Do not disturb",
-        '\u{f1f6}',
+        "media-playback-pause-symbolic",
         &["makoctl", "mode", "-t", "do-not-disturb"],
         Run::Detached,
     ));
@@ -287,7 +394,7 @@ pub(crate) fn items(tools: &Tools) -> Vec<Item> {
         tools,
         "Notifications",
         "Dismiss all",
-        '\u{f2ed}',
+        "user-trash-symbolic",
         &["makoctl", "dismiss", "-a"],
         Run::Detached,
     ));
@@ -296,18 +403,43 @@ pub(crate) fn items(tools: &Tools) -> Vec<Item> {
     // suspend, reboot and power off have no key and no menu on a kuma
     // desktop today. systemctl reaches them without sudo: logind grants
     // them to the session that owns the seat.
-    out.extend(tool(tools, "Power", "Lock", '\u{f023}', &["swaylock"], Run::Detached));
-    out.push(item("Power", "Suspend", '\u{f186}', &["systemctl", "suspend"], Run::Detached));
+    out.extend(tool(
+        tools,
+        "Power",
+        "Lock",
+        "system-lock-screen-symbolic",
+        &["swaylock"],
+        Run::Detached,
+    ));
+    out.push(item(
+        "Power",
+        "Suspend",
+        "weather-clear-night-symbolic",
+        &["systemctl", "suspend"],
+        Run::Detached,
+    ));
     out.extend(tool(
         tools,
         "Power",
         "Log out",
-        '\u{f2f5}',
+        "system-log-out-symbolic",
         &["niri", "msg", "action", "quit"],
         Run::Detached,
     ));
-    out.push(item("Power", "Reboot", '\u{f01e}', &["systemctl", "reboot"], Run::Detached));
-    out.push(item("Power", "Power off", '\u{f011}', &["systemctl", "poweroff"], Run::Detached));
+    out.push(item(
+        "Power",
+        "Reboot",
+        "system-reboot-symbolic",
+        &["systemctl", "reboot"],
+        Run::Detached,
+    ));
+    out.push(item(
+        "Power",
+        "Power off",
+        "system-shutdown-symbolic",
+        &["systemctl", "poweroff"],
+        Run::Detached,
+    ));
 
     out
 }
@@ -326,14 +458,14 @@ pub(crate) enum Row {
     Item(usize),
 }
 
-fn group_glyph(group: &str) -> Option<char> {
+fn group_icon(group: &str) -> Option<&'static str> {
     Some(match group {
-        "Apps" => '\u{f009}',
-        "Connect" => '\u{f1eb}',
-        "Declaration" => '\u{f044}',
-        "System" => '\u{f013}',
-        "Notifications" => '\u{f0f3}',
-        "Power" => '\u{f011}',
+        "Apps" => "applications-system-symbolic",
+        "Connect" => "network-wireless-symbolic",
+        "Declaration" => "text-editor-symbolic",
+        "System" => "preferences-system-symbolic",
+        "Notifications" => "dialog-information-symbolic",
+        "Power" => "system-shutdown-symbolic",
         _ => return None,
     })
 }
@@ -353,15 +485,25 @@ fn groups(items: &[Item]) -> Vec<&'static str> {
 /// What a group's row reads. The chevron says it descends, and keeps a
 /// group's row from reading identically to an item's.
 fn group_line(group: &str) -> String {
-    let glyph = group_glyph(group).unwrap_or('\u{f013}');
-    format!("{glyph}  {group}   ›")
+    let icon = group_icon(group).unwrap_or(FALLBACK_ICON);
+    format!("{group}   ›\u{0}icon\u{1f}{icon}")
 }
 
-fn row_line(row: Row, items: &[Item]) -> String {
+/// The text of a row, without the icon protocol: what is displayed, what
+/// is searched, and what the window's width is measured from.
+fn row_text(row: Row, items: &[Item], within: Option<&str>) -> String {
     match row {
-        Row::Back => format!("{}  Back", '\u{f053}'),
+        Row::Back => "Back".to_string(),
+        Row::Group(group) => format!("{group}   ›"),
+        Row::Item(index) => items[index].text_within(within),
+    }
+}
+
+fn row_line(row: Row, items: &[Item], within: Option<&str>) -> String {
+    match row {
+        Row::Back => format!("Back\u{0}icon\u{1f}{BACK_ICON}"),
         Row::Group(group) => group_line(group),
-        Row::Item(index) => items[index].line(),
+        Row::Item(index) => items[index].line(within),
     }
 }
 
@@ -407,22 +549,46 @@ fn group_level(items: &[Item], group: &str) -> (Vec<Row>, usize) {
 /// back against labels would make a typo indistinguishable from a
 /// choice, and would quietly require every line to be unique. An index
 /// is unambiguous or it is out of range.
-fn pick(lines: &[String], visible: usize) -> Result<Option<usize>> {
+fn pick(lines: &[String], texts: &[String], visible: usize) -> Result<Option<usize>> {
     let chosen = host_output_stdin(
         &[
             "fuzzel",
             "--dmenu",
             "--index",
+            // Never return a custom entry: this is a menu, and a
+            // hand-typed line that matches nothing is not one of its
+            // rows. chosen_index still guards the index, because a
+            // launcher's promise is not a bounds check.
+            "--only-match",
             "--prompt",
             "kuma  ",
             "--counter",
+            "--icon-theme",
+            ICON_THEME,
             "--lines",
             &visible.to_string(),
+            "--width",
+            &width_for(texts).to_string(),
         ],
         &lines.join("\n"),
     )
     .context("cannot run fuzzel")?;
     Ok(chosen_index(chosen.as_deref(), lines.len()))
+}
+
+/// How wide the window should be, in characters.
+///
+/// Sized to the longest row rather than left at the launcher's own
+/// width, which is chosen for application names and leaves this menu
+/// with a hand's width of empty space down its right side. The padding
+/// covers fuzzel's estimate being an estimate: `--width` is in
+/// characters and the face is proportional, so a row measured exactly
+/// would sometimes wrap.
+fn width_for(texts: &[String]) -> usize {
+    const PADDING: usize = 6;
+    const NARROWEST: usize = 20;
+    let longest = texts.iter().map(|text| text.chars().count()).max().unwrap_or(0);
+    (longest + PADDING).max(NARROWEST)
 }
 
 /// What fuzzel's answer means, as a pure function so it can be tested
@@ -452,8 +618,9 @@ pub fn menu(config_path: &Path) -> Result<()> {
             None => top_level(&items, &groups),
             Some(group) => group_level(&items, group),
         };
-        let lines: Vec<String> = rows.iter().map(|row| row_line(*row, &items)).collect();
-        let Some(index) = pick(&lines, visible)? else {
+        let lines: Vec<String> = rows.iter().map(|row| row_line(*row, &items, inside)).collect();
+        let texts: Vec<String> = rows.iter().map(|row| row_text(*row, &items, inside)).collect();
+        let Some(index) = pick(&lines, &texts, visible)? else {
             return Ok(());
         };
         match rows[index] {
@@ -677,29 +844,61 @@ mod tests {
         assert_eq!(matching("drift"), 1, "typing `drift` should find the drift row");
     }
 
-    /// Every row carries a glyph, and every glyph is a real one. The
-    /// Private Use Area check is what catches an ASCII placeholder
-    /// standing in for a symbol nobody looked up.
+    /// Every icon a row names is one the build generates, and every
+    /// icon the build generates is one some row can name. Half of this
+    /// stops a row drawing a hole; the other half stops the list growing
+    /// entries nothing reads.
     #[test]
-    fn every_row_has_a_glyph_from_the_icon_font() {
-        for entry in items(&everything()) {
+    fn every_icon_a_row_names_is_one_the_build_generates() {
+        let generated: BTreeSet<&str> = ICONS.iter().copied().collect();
+        let mut named: BTreeSet<&str> = BTreeSet::new();
+        let items = items(&everything());
+        for entry in &items {
             assert!(
-                ('\u{e000}'..='\u{f8ff}').contains(&entry.glyph),
-                "{} has {:?}, which is not an icon-font glyph",
+                generated.contains(entry.icon),
+                "{} names {}, ungenerated",
                 entry.label,
-                entry.glyph
+                entry.icon
             );
+            named.insert(entry.icon);
+        }
+        for group in groups(&items) {
+            let icon = group_icon(group).expect("every group names its own icon");
+            assert!(generated.contains(icon), "{group} names {icon}, ungenerated");
+            named.insert(icon);
+        }
+        for icon in [BACK_ICON, FALLBACK_ICON] {
+            assert!(generated.contains(icon), "{icon} is named but not generated");
+            named.insert(icon);
+        }
+        assert_eq!(named, generated, "ICONS holds entries nothing draws");
+    }
+
+    /// A group with no icon falls back to a gear, which is how a new
+    /// group ships looking like an afterthought. Asserted so that adding
+    /// one to the list means naming it here too.
+    #[test]
+    fn every_group_has_its_own_icon() {
+        for group in groups(&items(&everything())) {
+            assert!(group_icon(group).is_some(), "{group} has no icon of its own");
         }
     }
 
-    /// A group with no glyph falls back to a gear, which is how a new
-    /// group ships looking like an afterthought. Asserted so that adding
-    /// one to the list means adding it here too.
+    /// The icons are painted in the launcher's own foreground. They sit
+    /// in the same rows as that text, so a drift between these two files
+    /// is a menu that looks like two products.
     #[test]
-    fn every_group_has_its_own_glyph() {
-        for group in groups(&items(&everything())) {
-            assert!(group_glyph(group).is_some(), "{group} has no glyph of its own");
-        }
+    fn the_icon_fill_is_the_launchers_own_foreground() {
+        let ini = include_str!("../assets/fuzzel.ini");
+        let text = ini
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("text="))
+            .expect("fuzzel.ini sets a text colour");
+        assert_eq!(
+            format!("#{}", &text[..6]),
+            ICON_FILL,
+            "the generated icons and the launcher's text have parted company"
+        );
     }
 
     /// Opening the menu shows the groups and nothing else: they come
@@ -791,34 +990,46 @@ mod tests {
     fn a_group_row_says_it_descends_and_an_item_row_does_not() {
         let items = items(&everything());
         for group in groups(&items) {
-            assert!(group_line(group).ends_with('›'), "{group}'s row does not say it descends");
+            let shown =
+                group_line(group).split('\u{0}').next().expect("a row has text").to_string();
+            assert!(shown.ends_with('›'), "{group}'s row does not say it descends");
         }
         for entry in &items {
-            assert!(!entry.line().contains('›'), "{} reads like a group", entry.label);
+            assert!(!entry.line(None).contains('›'), "{} reads like a group", entry.label);
         }
     }
 
-    /// The line handed to fuzzel is the glyph and the row's own words,
-    /// so what is displayed is exactly what the search matches.
+    /// The line handed to fuzzel is the row's words, a NUL, and the icon
+    /// protocol. Asserted on the bytes because a launcher that does not
+    /// understand them shows the protocol to the person instead.
     #[test]
-    fn a_row_reads_as_its_glyph_then_its_words() {
-        let row = item("Power", "Reboot", '\u{f01e}', &["true"], Run::Detached);
-        assert_eq!(row.line(), "\u{f01e}  Power · Reboot");
-        assert!(row.line().ends_with(&row.text()));
+    fn a_row_is_encoded_the_way_fuzzel_reads_icons() {
+        let row = item("Power", "Reboot", "system-reboot-symbolic", &["true"], Run::Detached);
+        assert_eq!(row.line(None), "Power · Reboot\u{0}icon\u{1f}system-reboot-symbolic");
+        assert_eq!(row.line(None).split('\u{0}').next(), Some("Power · Reboot"));
     }
 
-    /// Every way fuzzel can answer, including the two that must not
-    /// reach a slice index.
+    /// Inside its own group a row drops the prefix, because repeating
+    /// `Connect ·` down the Connect list says nothing. Everywhere else
+    /// it keeps it, which is what makes a row legible when search pulls
+    /// it up from another group.
     #[test]
-    fn an_answer_is_a_row_or_it_is_nothing() {
-        assert_eq!(chosen_index(Some("0"), 20), Some(0));
-        assert_eq!(chosen_index(Some("19\n"), 20), Some(19));
-        assert_eq!(chosen_index(None, 20), None, "a cancel is not a choice");
-        assert_eq!(chosen_index(Some("-1"), 20), None, "fuzzel's no-match answer is not a choice");
-        assert_eq!(chosen_index(Some(""), 20), None);
-        assert_eq!(chosen_index(Some("power · reboot"), 20), None, "text is not an index");
-        assert_eq!(chosen_index(Some("20"), 20), None, "one past the end is not a row");
-        assert_eq!(chosen_index(Some("0"), 0), None, "an empty menu has no rows to choose");
+    fn a_row_drops_its_group_only_inside_that_group() {
+        let row = item("Connect", "Network", "network-wireless-symbolic", &["true"], Run::Detached);
+        assert_eq!(row.text_within(Some("Connect")), "Network");
+        assert_eq!(row.text_within(Some("Power")), "Connect · Network");
+        assert_eq!(row.text_within(None), "Connect · Network");
+    }
+
+    /// The window is sized to what it holds, not left at the launcher's
+    /// own width, which is chosen for application names.
+    #[test]
+    fn the_window_is_sized_to_its_longest_row() {
+        let narrow = width_for(&["Back".to_string()]);
+        let wide = width_for(&["System · Check for updates".to_string(), "Back".to_string()]);
+        assert!(wide > narrow, "a longer row makes a wider window");
+        assert!(wide > "System · Check for updates".len(), "the longest row fits with room over");
+        assert_eq!(width_for(&[]), width_for(&["".to_string()]), "an empty menu still has a width");
     }
 
     /// The terminal tools win where both are installed. This is the

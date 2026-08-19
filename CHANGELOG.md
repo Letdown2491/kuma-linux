@@ -30,17 +30,29 @@ as its release notes.
   sections while typing reaches all of them. `reboot` finds the row, `power`
   finds the group and its five. A group's row descends into just its own.
 
-  Rows are labelled with Font Awesome glyphs rather than icon files, which is
-  measured rather than preferred: every one of Adwaita's 587 symbolic SVGs
-  hardcodes `fill="#2e3436"`, and against kuma's `#0e1626` launcher they drew
-  in near-black on near-black. A glyph is text, so it takes the row's own
-  foreground colour and cannot go invisible, and it is the alphabet waybar
-  already speaks. Referenced by codepoint, never by font name, for the same
-  reason the desktop set names a metapackage: face names carry the major
-  version, codepoints do not.
+  **The build gives the menu its own icon theme.** Adwaita's symbolic icons
+  are the right drawings and the wrong colour: each hardcodes a near-black
+  fill, fuzzel renders the file as it is, and kuma's launcher is `#0e1626`, so
+  they drew invisibly. Every icon the menu names is now copied and repainted
+  in the launcher's own foreground into `/usr/share/icons/kuma`, which also
+  buys alignment that text glyphs cannot: fuzzel's icon column is a
+  fixed-width slot, while a proportional face gives every glyph a different
+  width and leaves the labels ragged.
 
-  Selection comes back as an index rather than as text, so a typo that matches
-  nothing cannot be mistaken for a choice.
+  Any hex is rewritten rather than one known value, because the twenty files
+  carry three different darks and a sed for the common one would have left two
+  icons invisible, which reads as a glitch rather than as a bug.
+  `fill="none"` is left alone, since it means transparent. Then the step
+  checks its own work and fails the build naming the file, because a generator
+  that cannot say whether it worked is how the icons went out invisible the
+  first time. The colour is asserted equal to `assets/fuzzel.ini`'s, so the
+  icons and the text they sit beside cannot part company.
+
+  Selection comes back as an index rather than as text, and fuzzel is asked
+  for `--only-match`, so a typo that matches nothing cannot be mistaken for a
+  choice. The window is sized to its longest row rather than to the app
+  launcher's width, and a row inside its own group drops the prefix that the
+  group heading already said.
 
   **The menu never writes the declaration.** `kuma capture` is the one
   deliberate path from what the machine has to what the file says, and its
