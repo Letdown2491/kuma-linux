@@ -132,6 +132,47 @@ fn reason(stderr: &[u8]) -> String {
     }
 }
 
+/// Run a selector: hand it `input` on stdin, capture what it chose.
+///
+/// `Ok(None)` is the command exiting non-zero, which for a dmenu is a
+/// person pressing escape. That is an answer ("nothing"), not a failure,
+/// and the distinction matters because `host_output` would turn a
+/// cancelled menu into an error somebody has to read.
+pub fn host_output_stdin<S: AsRef<str>>(args: &[S], input: &str) -> Result<Option<String>> {
+    use std::io::Write;
+    let mut cmd = host_command(args)?;
+    cmd.stdin(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped());
+    let mut child = cmd.spawn().with_context(|| format!("failed to run {}", args[0].as_ref()))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        // EPIPE here means the selector exited before reading the list,
+        // which the exit status below reports better than this write can.
+        let _ = stdin.write_all(input.as_bytes());
+    }
+    let out =
+        child.wait_with_output().with_context(|| format!("failed to run {}", args[0].as_ref()))?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_string()))
+}
+
+/// Start a program and stop caring about it.
+///
+/// For everything the menu launches: a lock screen, a settings window, a
+/// terminal running a verb. The menu is spawned from a keybinding and
+/// exits immediately, so waiting would either hold a process nobody is
+/// watching or kill the window when the menu goes away. Streams go to
+/// /dev/null for the same reason: there is no terminal behind this.
+pub fn spawn_detached<S: AsRef<str>>(args: &[S]) -> Result<()> {
+    let mut cmd = host_command(args)?;
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    cmd.spawn().with_context(|| format!("failed to run {}", args[0].as_ref()))?;
+    Ok(())
+}
+
 /// Capture stdout even when the command exits non-zero — for tools like
 /// `systemctl is-enabled` that report state through stdout AND exit status.
 /// Err only when the command cannot run at all.

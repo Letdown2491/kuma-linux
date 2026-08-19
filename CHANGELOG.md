@@ -5,6 +5,47 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+### Added
+
+- `kuma menu` opens a menu in the desktop's own launcher: connect, declaration,
+  system, notifications, power. Bound to Mod+Alt+Space on niri. The desktop
+  kuma assembles had no face of its own, so every device-level setting was
+  somebody else's control panel and nothing at all owned the system. This is
+  not a settings application, which is a desktop environment's job and never
+  finishes; it is a tree rendered by `fuzzel --dmenu`, themed by the fuzzel
+  config kuma already ships, in the launcher the clipboard picker already
+  uses. Nothing new is installed and nothing new is drawn.
+
+  **The menu never writes the declaration.** `kuma capture` is the one
+  deliberate path from what the machine has to what the file says, and its
+  safety is the ceremony: dry run, review, confirm. A menu entry is one
+  keystroke with no diff and no pause, so a second writer would not add
+  convenience, it would remove the only thing that made the first one safe.
+  Declaration entries open the file in your editor or run a verb that asks for
+  itself. Machine state (lock, suspend, notification mode) changes
+  immediately, because that is the half a launcher is better at than a panel.
+
+  Entries appear only when their program is present, so the menu offers the
+  terminal tool where there is one, the graphical tool where there is not, and
+  no row at all where there is neither. A group whose every entry is missing is
+  absent rather than empty. Nothing runs as root to draw the menu, so opening
+  it never prompts.
+- Suspend, reboot and power off have a menu. Stock niri binds a lock and a
+  quit and nothing else, so on a laptop the only way to suspend from the
+  desktop was a terminal.
+- `NetworkManager-tui` on the niri desktop. It is what the menu offers for
+  the network in preference to the graphical editor, because a terminal
+  program inherits the terminal's theme rather than arriving as a window from
+  another system, and it is the only network tool left on a machine whose
+  session will not start.
+
+### Fixed
+
+- A keybinding that spawns a kuma verb now names one that exists. The binds
+  are strings in a file the compiler never reads, so a renamed verb left a key
+  that did nothing and said nothing; a test walks every `spawn "kuma"` in the
+  shipped binds and checks the verb against the CLI's own definition.
+
 ## v0.12.0 (2026-08-19)
 
 Nothing here is a feature. This release is about the difference between a

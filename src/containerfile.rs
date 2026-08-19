@@ -49,6 +49,13 @@ const NIRI_PACKAGES: &[&str] = &[
     "glibc-langpack-en",
     // hardware enablement — the minimal base targets servers
     "NetworkManager-wifi",
+    // nmtui: what `kuma menu` offers for wifi, in preference to the
+    // graphical editor below, because a terminal program inherits the
+    // terminal's theme instead of arriving as a window from another
+    // system. It also runs in a TTY, which is the only place left when
+    // a session refuses to start and the machine needs the network to
+    // be fixed at all.
+    "NetworkManager-tui",
     "wpa_supplicant",
     "brightnessctl",
     "power-profiles-daemon",
@@ -1394,6 +1401,7 @@ const NIRI_MEDIA_BINDS: &str = r#"    XF86AudioRaiseVolume allow-when-locked=tru
     Mod+Shift+N { spawn "makoctl" "mode" "-t" "do-not-disturb"; }
     Mod+Alt+R { spawn "/usr/libexec/kuma-record"; }
     Mod+Print { spawn "sh" "-c" "grim -g \"$(slurp)\" - | swappy -f -"; }
+    Mod+Alt+Space hotkey-overlay-title="Kuma Menu: settings, system, power" { spawn "kuma" "menu"; }
 "#;
 
 /// GTK theme settings travel two roads: Wayland-native apps read
@@ -3537,6 +3545,33 @@ mod tests {
 
         let without = greetd_config(&config("schema_version = 1\n[user]\nname = \"mira\"\n"));
         assert!(!without.contains("[initial_session]"));
+    }
+
+    /// A keybinding that spawns `kuma` names the verb in a string, in a
+    /// file the compiler never reads, so a renamed verb leaves a key
+    /// that does nothing and says nothing. Same failure the menu's own
+    /// leaf test prevents, one layer out: found by sabotage, which
+    /// renamed the bound verb and watched every test still pass.
+    #[test]
+    fn every_kuma_verb_a_keybinding_spawns_is_a_real_verb() {
+        use clap::CommandFactory;
+        let cli = crate::Cli::command();
+        let verbs: Vec<String> =
+            cli.get_subcommands().map(|sub| sub.get_name().to_string()).collect();
+        let mut found = 0;
+        for bind in [NIRI_MEDIA_BINDS, NIRI_EXTRAS] {
+            for (index, _) in bind.match_indices(r#"spawn "kuma""#) {
+                let rest = &bind[index..];
+                let verb =
+                    rest.split('"').nth(3).expect("a spawn line names a verb after the program");
+                assert!(
+                    verbs.contains(&verb.to_string()),
+                    "a keybinding spawns `kuma {verb}`, which is not a verb"
+                );
+                found += 1;
+            }
+        }
+        assert!(found > 0, "nothing spawns kuma from a keybinding any more");
     }
 
     #[test]

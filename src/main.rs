@@ -9,6 +9,7 @@ mod inspect;
 mod install;
 mod liveiso;
 mod lock;
+mod menu;
 mod partition;
 mod snapshot;
 mod state;
@@ -318,6 +319,11 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Open kuma's menu in the desktop's launcher: settings, system, power
+    ///
+    /// Bound to Mod+Alt+Space on the niri desktop. Needs a graphical
+    /// session and fuzzel; it draws nothing itself.
+    Menu,
     /// List the snapshots this machine has taken, or restore a path from one
     Snapshot {
         /// Restore this path (absolute, inside the snapshot target)
@@ -544,6 +550,7 @@ fn run(
             let config = Config::load(&path)?;
             snapshot::snapshot(&config, &path, restore.as_deref(), from.as_deref(), yes, json)
         }
+        Cmd::Menu => menu::menu(config_path),
         Cmd::BootTitles => boot_titles(),
         Cmd::Schema => schema(),
         Cmd::Passwd => passwd(),
