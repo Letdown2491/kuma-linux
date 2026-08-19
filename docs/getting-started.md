@@ -258,7 +258,7 @@ Five commands cover ordinary use. All of them read the same declaration.
 
 ```console
 $ kuma                  # where this machine is, and what it can do next
-$ kuma doctor           # a health check: image age, drift, encryption, disk
+$ kuma doctor           # a health check: image age, convergence, drift, encryption, disk
 $ kuma update --check   # what has moved in Fedora's packages, security first
 $ kuma update --yes     # build a current image and stage it for next boot
 $ kuma rollback --yes   # go back to the deployment you were on before
@@ -272,8 +272,9 @@ prompts rather than remember the verbs.
 one JSON document with the findings, which kuma is running, which image is
 booted and its digest, and the declaration the machine was built from. That is
 what to attach to a bug report. The password hash is removed before it prints,
-and a declaration kuma cannot parse is left out entirely rather than pasted
-raw.
+a declaration kuma cannot parse is left out entirely rather than pasted raw,
+and where a report quotes what a failed service said, anything shaped like a
+password hash is masked in that too.
 
 **Updates never happen behind your back.** Kuma tells you when there is
 something to take and leaves the taking to you. `kuma update --yes` builds a

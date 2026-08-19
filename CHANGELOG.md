@@ -5,6 +5,18 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+## v0.12.0 (2026-08-19)
+
+Nothing here is a feature. This release is about the difference between a
+thing being true and a thing being checked, and it exists because the day
+v0.11.0 shipped, a machine stopped converging and only a person reading a
+journal could tell.
+
+Three of its claims were true and unchecked: that a converger recovers on its
+own, that the walkthrough a stranger types still describes the tool, and that
+a declaration written for any released kuma keeps working. All three are now
+commands that pass or fail.
+
 ### Added
 
 - `kuma doctor` reports a Flatpak permission override that points at nothing.
@@ -19,11 +31,11 @@ as its release notes.
   graded whether the last convergence attempt failed; it could not see a
   machine whose last attempt succeeded three weeks ago, because "last run
   succeeded" and "timer active" are both true of a machine that quietly
-  stopped converging. The convergers run at boot and on a daily timer that
+  stopped converging. Asked only of the convergers a timer runs again, which
+  is what makes the age meaningful: they run at boot and on a daily timer that
   catches up after a machine was asleep, so seven days without one is seven
-  missed firings and every boot in between: a loop that has stopped turning
-  rather than a laptop that was shut for a week.
-
+  missed firings and every boot in between. The account converger runs at boot
+  only, so its age would measure uptime and it is not asked.
 - Every declaration this project has shipped as an example is now tested
   against the kuma being built. Schema v1 is claimed permanent, and nothing
   held anyone to it: a renamed field or a changed default would have been
@@ -32,6 +44,13 @@ as its release notes.
   that changes has to be recorded there before it ships. This covers old
   declarations on new kuma; the other direction, a newer declaration read by
   an older kuma, is still a hard error and still undecided.
+- Every command the documentation tells you to run is now checked against the
+  command line kuma actually has. Using the machine proves the tool works and
+  never reads the docs, so a renamed flag is noticed the moment somebody types
+  it while the page still naming the old one rots unread. This catches the
+  words, not the behaviour: what the commands do is proven by CI where CI can
+  reach it, and the walkthrough now carries a record of which of its commands
+  that is true of.
 
 ### Fixed
 

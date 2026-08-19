@@ -49,7 +49,10 @@ The loop is: probe, execute one of the actions it named, probe again.
   the same shape and place, so anything already reading `--json` reads a
   report unchanged. `user.password_hash` is removed before it prints, and a
   declaration kuma cannot parse arrives as `declaration.omitted` rather than
-  as raw text. That is the payload to attach to a bug report.
+  as raw text. A check whose detail quotes a failed unit's own output carries
+  it masked of anything shaped like a crypt hash, so a pasted report cannot
+  leak one by way of a journal line. That is the payload to attach to a bug
+  report.
 - **Write.** `kuma schema` prints the JSON Schema for `kuma.toml`, generated
   from the same types that parse it, so it cannot drift from reality.
 - **Mutate.** `build`, `switch`, `update`, `rollback`, `sync`, `add`,
