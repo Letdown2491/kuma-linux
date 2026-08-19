@@ -641,21 +641,72 @@ fn dispatch(tools: &Tools, config_path: &Path, argv: &[String], run: Run) -> Res
         Run::Detached => spawn_detached(&argv),
         Run::Terminal => {
             let terminal = tools.terminal().context("no terminal in this image to run that in")?;
-            let mut full = vec![terminal, "-e".to_string()];
-            // `kuma edit` is not a verb; the declaration opens in the
-            // person's own editor, which is the whole of what "edit"
-            // means here. Expanded at dispatch rather than in the list
-            // so the list stays a list of commands and the editor stays
-            // one lookup.
-            if argv.len() == 2 && argv[1] == "edit" {
-                full.push(tools.editor.clone());
-                full.push(config_path.to_string_lossy().to_string());
-            } else {
-                full.extend(argv);
-            }
-            spawn_detached(&full)
+            spawn_detached(&terminal_argv(&terminal, &tools.editor, config_path, argv))
         }
     }
+}
+
+/// The whole command line a terminal row is spawned as.
+///
+/// A function rather than four pushes at the call site, because what it
+/// decides cannot be seen from outside otherwise: sabotage dropped the
+/// hold from the spawn and every test still passed, which is the same
+/// hole the window height had.
+fn terminal_argv(
+    terminal: &str,
+    editor: &str,
+    config_path: &Path,
+    argv: Vec<String>,
+) -> Vec<String> {
+    // `kuma edit` is not a verb; the declaration opens in the person's
+    // own editor, which is the whole of what "edit" means here. Expanded
+    // here rather than in the list so the list stays a list of commands
+    // and the editor stays one lookup.
+    let command = if argv.len() == 2 && argv[1] == "edit" {
+        vec![editor.to_string(), config_path.to_string_lossy().to_string()]
+    } else {
+        argv
+    };
+    vec![
+        terminal.to_string(),
+        "-e".to_string(),
+        "sh".to_string(),
+        "-c".to_string(),
+        hold_script(&command),
+    ]
+}
+
+/// Run a command in the terminal window and keep the window there
+/// afterwards.
+///
+/// A terminal launched as `kitty -e <command>` closes the instant the
+/// command exits, which for a row like Health means a sudo prompt
+/// appears and the window vanishes as the password is finished. Every
+/// row here prints something worth reading, and one that runs for a
+/// second is exactly the one whose output is never seen.
+///
+/// A script rather than `kitty --hold`, because that flag is kitty's and
+/// this dispatches into whatever terminal the desktop has. It also
+/// reports a non-zero exit, which the terminal would otherwise swallow
+/// along with the window.
+fn hold_script(argv: &[String]) -> String {
+    let command = argv.iter().map(|arg| shell_quote(arg)).collect::<Vec<String>>().join(" ");
+    let wait = concat!(
+        "status=$?; printf '\\n'; ",
+        "[ \"$status\" -eq 0 ] || printf 'exited %s\\n' \"$status\"; ",
+        "printf '[kuma] press enter to close '; read -r _"
+    );
+    format!("{command}; {wait}")
+}
+
+/// One shell word, whatever is in it.
+///
+/// The declaration's path arrives here from the caller and a home
+/// directory can hold a space or a quote; a command assembled by
+/// concatenation is how that becomes two words or an unterminated
+/// string.
+fn shell_quote(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', r"'\''"))
 }
 
 /// The kuma to run, which is this one. A menu entry that says `kuma`
@@ -1030,6 +1081,54 @@ mod tests {
         assert!(wide > narrow, "a longer row makes a wider window");
         assert!(wide > "System · Check for updates".len(), "the longest row fits with room over");
         assert_eq!(width_for(&[]), width_for(&["".to_string()]), "an empty menu still has a width");
+    }
+
+    /// A terminal row has to leave its output on the screen. `kitty -e`
+    /// closes the window when the command exits, so Health would show a
+    /// sudo prompt and then disappear as the password was finished.
+    #[test]
+    fn a_terminal_row_keeps_its_window_after_the_command_exits() {
+        let script = hold_script(&["kuma".to_string(), "doctor".to_string()]);
+        assert!(script.starts_with("'kuma' 'doctor';"), "the command runs first");
+        assert!(script.contains("read -r _"), "and the window waits");
+        assert!(script.contains("press enter"), "with something on screen saying so");
+        assert!(script.contains("$status"), "a failure says so rather than vanishing");
+        let command_at = script.find("'doctor'").expect("the command is in there");
+        let wait_at = script.find("read -r _").expect("the wait is in there");
+        assert!(command_at < wait_at, "the wait comes after the command, not before");
+    }
+
+    /// A terminal row is spawned as the terminal, a shell, and the held
+    /// script. Asserted here because the spawn itself cannot be.
+    #[test]
+    fn a_terminal_row_is_spawned_through_a_shell_that_waits() {
+        let argv = vec!["kuma".to_string(), "doctor".to_string()];
+        let full = terminal_argv("kitty", "vi", Path::new("/etc/kuma.toml"), argv);
+        assert_eq!(full[..4], ["kitty", "-e", "sh", "-c"]);
+        assert_eq!(full.len(), 5, "the script is one argument, whatever is in it");
+        assert!(full[4].contains("'kuma' 'doctor'"), "the row's command is what runs");
+        assert!(full[4].contains("read -r _"), "and the window is held");
+    }
+
+    /// Edit is not a verb: it opens the resolved declaration in the
+    /// person's own editor.
+    #[test]
+    fn the_edit_row_opens_this_machines_declaration() {
+        let argv = vec!["kuma".to_string(), "edit".to_string()];
+        let full =
+            terminal_argv("kitty", "nano", Path::new("/home/x/.config/kuma/kuma.toml"), argv);
+        assert!(full[4].starts_with("'nano' '/home/x/.config/kuma/kuma.toml'"));
+        assert!(!full[4].contains("'kuma' 'edit'"), "there is no such verb to run");
+    }
+
+    /// The declaration's path is passed through here and a home
+    /// directory can hold a space or a quote.
+    #[test]
+    fn an_argument_survives_being_put_in_a_shell() {
+        let script = hold_script(&["vi".to_string(), "/home/a b/kuma.toml".to_string()]);
+        assert!(script.contains("'/home/a b/kuma.toml'"), "a space stays one word");
+        let awkward = hold_script(&["vi".to_string(), "it's.toml".to_string()]);
+        assert!(awkward.contains(r"'it'\''s.toml'"), "a quote does not end the word early");
     }
 
     /// The terminal tools win where both are installed. This is the

@@ -48,6 +48,13 @@ as its release notes.
   first time. The colour is asserted equal to `assets/fuzzel.ini`'s, so the
   icons and the text they sit beside cannot part company.
 
+  A row that prints keeps its window. A terminal launched as `kitty -e
+  <command>` closes the moment the command exits, so Health would have shown a
+  sudo prompt and vanished as the password was finished, and every row that
+  runs for a second is exactly the one whose output is never read. The command
+  runs through a shell that waits, which also reports a non-zero exit the
+  closing window would otherwise have swallowed.
+
   Selection comes back as an index rather than as text, and fuzzel is asked
   for `--only-match`, so a typo that matches nothing cannot be mistaken for a
   choice. The window is sized to its longest row rather than to the app
