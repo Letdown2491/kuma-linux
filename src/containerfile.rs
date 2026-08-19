@@ -2047,6 +2047,31 @@ pub fn generate(config: &Config) -> String {
         out.push_str(&format!("\nRUN {}\n", services.join(" && ")));
     }
 
+    // FUSE 2, in every image, so an AppImage runs by being executable.
+    //
+    // An AppImage is a squashfs the runtime mounts over FUSE before it
+    // starts, and Fedora ships only FUSE 3: `fuse3-libs` and
+    // `fusermount3`. The runtime asks for `libfuse.so.2` by name, so a
+    // downloaded AppImage on a stock kuma machine died at `dlopen():
+    // error loading libfuse.so.2` before any of its own code ran.
+    //
+    // Both packages, because neither implies the other and each one
+    // alone gets a different failure. `fuse` requires only fuse-common
+    // and `which`, so on its own the dlopen still fails; `fuse-libs`
+    // alone loads the library and then dies at `failed to exec
+    // fusermount`, since libfuse.so.2 mounts by exec'ing the setuid
+    // helper that only `fuse` ships. Measured against a real AppImage,
+    // all three ways.
+    //
+    // Not gated on a desktop. AppImages are how a lot of software is
+    // shipped to Linux at all, the two packages are well under a
+    // megabyte, and the failure they prevent is one a person hits by
+    // double-clicking a file they downloaded, which is the worst place
+    // to learn that a declaration needed another line. Coexists with
+    // FUSE 3: separate libraries, separate helpers, shared fuse-common.
+    out.push('\n');
+    out.push_str(&dnf_install("fuse fuse-libs"));
+
     // Boot health, in every image: greenboot arms a GRUB boot counter on
     // the first boot of each new deployment; a boot that never reaches
     // the health check leaves the counter counting down, GRUB falls back
@@ -2420,6 +2445,25 @@ mod tests {
         );
     }
 
+    /// An AppImage is a squashfs its runtime mounts over FUSE 2 before
+    /// any of its own code runs, and Fedora ships only FUSE 3.
+    ///
+    /// Both packages named exactly, because each one alone fails and
+    /// they fail differently: without `fuse-libs` the runtime cannot
+    /// load libfuse.so.2, and without `fuse` the loaded library cannot
+    /// exec the setuid `fusermount` it mounts with. Half of this fix
+    /// looks like the whole of it right up until somebody runs an
+    /// AppImage.
+    #[test]
+    fn appimages_run_on_every_image() {
+        for toml in ["schema_version = 1", "schema_version = 1\n[system]\ndesktop = \"niri\""] {
+            assert!(
+                generate(&config(toml)).contains(&dnf_install("fuse fuse-libs")),
+                "every image needs both halves of FUSE 2"
+            );
+        }
+    }
+
     /// Every file the Containerfile copies is a file the build context
     /// actually holds.
     ///
@@ -2492,10 +2536,14 @@ mod tests {
         // The default base is kuma's own composed one, content-addressed
         // so the FROM is deterministic before any compose has run.
         assert!(out.contains("FROM localhost/kuma-base:m"));
-        // Boot health is the one dnf layer even a minimal image carries:
-        // the never-worse-than-before promise is not opt-in.
-        assert_eq!(out.matches("dnf -y install").count(), 1);
+        // Two dnf layers even in a minimal image, and both are promises
+        // rather than features: greenboot's never-worse-than-before
+        // rollback, and the FUSE 2 pair that lets a downloaded AppImage
+        // run without a declaration naming it. Everything else is
+        // opt-in, and the count is what keeps it that way.
+        assert_eq!(out.matches("dnf -y install").count(), 2);
         assert!(out.contains(&dnf_install("greenboot")));
+        assert!(out.contains(&dnf_install("fuse fuse-libs")));
         assert!(out.contains("bootc container lint"));
         // The lint runs unqualified first: the --skip is a fallback for
         // one upstream crash, never the path a healthy build takes, and

@@ -51,6 +51,17 @@ commands that pass or fail.
   words, not the behaviour: what the commands do is proven by CI where CI can
   reach it, and the walkthrough now carries a record of which of its commands
   that is true of.
+- AppImages run on a kuma machine without a declaration naming anything. An
+  AppImage is a squashfs its runtime mounts over FUSE before any of its own
+  code runs, and Fedora ships only FUSE 3, so a downloaded AppImage failed at
+  `dlopen(): error loading libfuse.so.2` on a machine that was otherwise
+  complete. Both halves of FUSE 2 are in every image now: the library the
+  runtime loads, and the setuid helper that library mounts with. They are
+  separate packages and neither requires the other, so naming one looks like
+  the fix and leaves a different error in the same place. Not gated on a
+  desktop, because the packages are under a megabyte together and the failure
+  is one somebody meets by opening a file they downloaded.
+
 ### Fixed
 
 - Publishing an image now runs the checks that install and boot it. They read

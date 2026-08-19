@@ -151,6 +151,14 @@ machine installed from an ISO that has never had a `kuma.toml` anywhere,
 because read-only commands fall back to the baked one. `kuma init` on such a
 machine seeds a copy true to that machine rather than a generic starter.
 
+Every image also carries FUSE 2, which is what makes an AppImage run by being
+executable. An AppImage is a squashfs its runtime mounts before any of its own
+code runs, and Fedora ships only FUSE 3, so without this a file you downloaded
+fails at `dlopen(): error loading libfuse.so.2` on a machine that is otherwise
+complete. It is two small packages, one for the library and one for the setuid
+helper it mounts with, and they are not gated on a desktop: needing to edit a
+declaration before a downloaded file will run is a poor way to find out.
+
 The lock is deliberately not included. A `kuma.lock` belongs in git next to
 the declaration it pins, not on every machine built from it.
 
