@@ -16,6 +16,12 @@ as its release notes.
   config kuma already ships, in the launcher the clipboard picker already
   uses. Nothing new is installed and nothing new is drawn.
 
+  **Descending narrows what is shown, never what can be found.** Opening a
+  group shows that group's rows and a way back; every other row is still in
+  the list, so someone who opens Connect and then remembers they wanted to
+  reboot types `reboot` and gets it, rather than finding that the menu quietly
+  became a smaller menu.
+
   **It opens on its groups and searches every row.** A launcher can only match
   against the lines it was handed, so a menu of submenus cannot be searched:
   typing `reboot` at the top of one matches nothing and the person who knew

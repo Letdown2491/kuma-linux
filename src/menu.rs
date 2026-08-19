@@ -226,7 +226,7 @@ pub(crate) fn items(tools: &Tools) -> Vec<Item> {
     let mut out = Vec::new();
 
     if tools.has("fuzzel") {
-        out.push(item("apps", "launch an application", '\u{f009}', &["fuzzel"], Run::Detached));
+        out.push(item("Apps", "Launch an application", '\u{f009}', &["fuzzel"], Run::Detached));
     }
 
     // nmtui before the graphical editor: a terminal program inherits the
@@ -235,58 +235,58 @@ pub(crate) fn items(tools: &Tools) -> Vec<Item> {
     // session will not start.
     if let Some(wifi) = tools.first(&["nmtui", "nm-connection-editor"]) {
         let run = if wifi == "nmtui" { Run::Terminal } else { Run::Detached };
-        out.push(item("connect", "network", '\u{f1eb}', &[&wifi], run));
+        out.push(item("Connect", "Network", '\u{f1eb}', &[&wifi], run));
     }
     out.extend(tool(
         tools,
-        "connect",
-        "bluetooth",
+        "Connect",
+        "Bluetooth",
         '\u{f293}',
         &["blueman-manager"],
         Run::Detached,
     ));
     if let Some(audio) = tools.first(&["wiremix", "pavucontrol"]) {
         let run = if audio == "wiremix" { Run::Terminal } else { Run::Detached };
-        out.push(item("connect", "audio", '\u{f028}', &[&audio], run));
+        out.push(item("Connect", "Audio", '\u{f028}', &[&audio], run));
     }
-    out.extend(tool(tools, "connect", "displays", '\u{f108}', &["wdisplays"], Run::Detached));
+    out.extend(tool(tools, "Connect", "Displays", '\u{f108}', &["wdisplays"], Run::Detached));
 
     // Declaration: opens and shows, never writes. `capture` is the one
     // entry that can end in a write, and it does its own asking.
-    out.push(item("declaration", "edit", '\u{f044}', &["kuma", "edit"], Run::Terminal));
-    out.push(item("declaration", "show drift", '\u{f002}', &["kuma", "diff"], Run::Terminal));
+    out.push(item("Declaration", "Edit", '\u{f044}', &["kuma", "edit"], Run::Terminal));
+    out.push(item("Declaration", "Show drift", '\u{f002}', &["kuma", "diff"], Run::Terminal));
     out.push(item(
-        "declaration",
-        "review proposals",
+        "Declaration",
+        "Review proposals",
         '\u{f05a}',
         &["kuma", "capture"],
         Run::Terminal,
     ));
 
-    out.push(item("system", "health", '\u{f21e}', &["kuma", "doctor"], Run::Terminal));
+    out.push(item("System", "Health", '\u{f21e}', &["kuma", "doctor"], Run::Terminal));
     out.push(item(
-        "system",
-        "check for updates",
+        "System",
+        "Check for updates",
         '\u{f021}',
         &["kuma", "update", "--check"],
         Run::Terminal,
     ));
-    out.push(item("system", "rebuild", '\u{f0ad}', &["kuma", "build"], Run::Terminal));
-    out.push(item("system", "roll back", '\u{f0e2}', &["kuma", "rollback"], Run::Terminal));
-    out.push(item("system", "snapshots", '\u{f0c7}', &["kuma", "snapshot"], Run::Terminal));
+    out.push(item("System", "Rebuild", '\u{f0ad}', &["kuma", "build"], Run::Terminal));
+    out.push(item("System", "Roll back", '\u{f0e2}', &["kuma", "rollback"], Run::Terminal));
+    out.push(item("System", "Snapshots", '\u{f0c7}', &["kuma", "snapshot"], Run::Terminal));
 
     out.extend(tool(
         tools,
-        "notifications",
-        "do not disturb",
+        "Notifications",
+        "Do not disturb",
         '\u{f1f6}',
         &["makoctl", "mode", "-t", "do-not-disturb"],
         Run::Detached,
     ));
     out.extend(tool(
         tools,
-        "notifications",
-        "dismiss all",
+        "Notifications",
+        "Dismiss all",
         '\u{f2ed}',
         &["makoctl", "dismiss", "-a"],
         Run::Detached,
@@ -296,38 +296,44 @@ pub(crate) fn items(tools: &Tools) -> Vec<Item> {
     // suspend, reboot and power off have no key and no menu on a kuma
     // desktop today. systemctl reaches them without sudo: logind grants
     // them to the session that owns the seat.
-    out.extend(tool(tools, "power", "lock", '\u{f023}', &["swaylock"], Run::Detached));
-    out.push(item("power", "suspend", '\u{f186}', &["systemctl", "suspend"], Run::Detached));
+    out.extend(tool(tools, "Power", "Lock", '\u{f023}', &["swaylock"], Run::Detached));
+    out.push(item("Power", "Suspend", '\u{f186}', &["systemctl", "suspend"], Run::Detached));
     out.extend(tool(
         tools,
-        "power",
-        "log out",
+        "Power",
+        "Log out",
         '\u{f2f5}',
         &["niri", "msg", "action", "quit"],
         Run::Detached,
     ));
-    out.push(item("power", "reboot", '\u{f01e}', &["systemctl", "reboot"], Run::Detached));
-    out.push(item("power", "power off", '\u{f011}', &["systemctl", "poweroff"], Run::Detached));
+    out.push(item("Power", "Reboot", '\u{f01e}', &["systemctl", "reboot"], Run::Detached));
+    out.push(item("Power", "Power off", '\u{f011}', &["systemctl", "poweroff"], Run::Detached));
 
     out
 }
 
-/// A group's own row, and the glyph it wears.
+/// A row of whichever level is on screen.
 ///
-/// The group rows come first and the window is sized to exactly their
-/// number, so opening the menu shows the six sections and nothing else.
-/// Everything below them is still in the list fuzzel was handed, which
-/// is the whole point: browsing sees sections, typing sees rows. A
-/// launcher can only match against what it was given, so the two
-/// behaviours cannot be split without giving up one of them.
+/// `Item` carries an index into the one list of items rather than a
+/// reference, so a level is a cheap plan that any test can build and
+/// compare without cloning the menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Row {
+    /// Up to the groups. Only ever below the top level, where there is
+    /// nothing above to go to and a cancel means away.
+    Back,
+    Group(&'static str),
+    Item(usize),
+}
+
 fn group_glyph(group: &str) -> Option<char> {
     Some(match group {
-        "apps" => '\u{f009}',
-        "connect" => '\u{f1eb}',
-        "declaration" => '\u{f044}',
-        "system" => '\u{f013}',
-        "notifications" => '\u{f0f3}',
-        "power" => '\u{f011}',
+        "Apps" => '\u{f009}',
+        "Connect" => '\u{f1eb}',
+        "Declaration" => '\u{f044}',
+        "System" => '\u{f013}',
+        "Notifications" => '\u{f0f3}',
+        "Power" => '\u{f011}',
         _ => return None,
     })
 }
@@ -345,24 +351,51 @@ fn groups(items: &[Item]) -> Vec<&'static str> {
 }
 
 /// What a group's row reads. The chevron says it descends, and keeps a
-/// group's row from reading identically to a one-row group's item.
+/// group's row from reading identically to an item's.
 fn group_line(group: &str) -> String {
     let glyph = group_glyph(group).unwrap_or('\u{f013}');
     format!("{glyph}  {group}   ›")
 }
 
-/// Every row of the top level, and how many of them the window shows at
-/// rest: the groups, then every item, sized to the groups.
+fn row_line(row: Row, items: &[Item]) -> String {
+    match row {
+        Row::Back => format!("{}  Back", '\u{f053}'),
+        Row::Group(group) => group_line(group),
+        Row::Item(index) => items[index].line(),
+    }
+}
+
+/// The top level: the groups, then every item, with the window sized to
+/// the groups.
 ///
 /// The pair is one function because they are one decision. Handing
 /// fuzzel a list and separately telling it a height is how the height
 /// ends up being `items.len()` with nothing to notice: sabotage flipped
 /// exactly that at the call site and every test still passed, because
 /// the argument lived inside the shell-out where no test could see it.
-fn top_level(items: &[Item], groups: &[&'static str]) -> (Vec<String>, usize) {
-    let mut lines: Vec<String> = groups.iter().map(|group| group_line(group)).collect();
-    lines.extend(items.iter().map(Item::line));
-    (lines, groups.len())
+fn top_level(items: &[Item], groups: &[&'static str]) -> (Vec<Row>, usize) {
+    let mut rows: Vec<Row> = groups.iter().map(|group| Row::Group(group)).collect();
+    let visible = rows.len();
+    rows.extend((0..items.len()).map(Row::Item));
+    (rows, visible)
+}
+
+/// Inside a group: its own rows, a way back, and then every other row
+/// there is.
+///
+/// **The tail is the point.** Descending must not narrow what can be
+/// found, only what is shown: a person who opens `Connect` and then
+/// remembers they wanted to reboot should type `reboot` and get it,
+/// rather than discovering that the menu quietly became a smaller menu.
+/// Same trick as the top level, one level down: the window shows the
+/// group, the list holds everything.
+fn group_level(items: &[Item], group: &str) -> (Vec<Row>, usize) {
+    let mine = |index: &usize| items[*index].group == group;
+    let mut rows: Vec<Row> = (0..items.len()).filter(mine).map(Row::Item).collect();
+    rows.push(Row::Back);
+    let visible = rows.len();
+    rows.extend((0..items.len()).filter(|index| !mine(index)).map(Row::Item));
+    (rows, visible)
 }
 
 /// Ask fuzzel to pick one of `lines`, showing `visible` of them at rest.
@@ -404,7 +437,7 @@ fn chosen_index(answer: Option<&str>, count: usize) -> Option<usize> {
     answer?.trim().parse::<usize>().ok().filter(|index| *index < count)
 }
 
-/// Run the menu: pick, maybe descend once, dispatch, exit.
+/// Run the menu: pick, descend or come back, dispatch, exit.
 pub fn menu(config_path: &Path) -> Result<()> {
     let tools = Tools::observe();
     if !tools.has("fuzzel") {
@@ -412,24 +445,26 @@ pub fn menu(config_path: &Path) -> Result<()> {
     }
     let items = items(&tools);
     let groups = groups(&items);
-    let (lines, visible) = top_level(&items, &groups);
-    let Some(index) = pick(&lines, visible)? else {
-        return Ok(());
-    };
-    // Below the group rows, the rest of the list is the items in order.
-    let chosen = match index.checked_sub(groups.len()) {
-        Some(item) => &items[item],
-        None => {
-            let group = groups[index];
-            let scoped: Vec<&Item> = items.iter().filter(|entry| entry.group == group).collect();
-            let lines: Vec<String> = scoped.iter().map(|entry| entry.line()).collect();
-            let Some(index) = pick(&lines, scoped.len())? else {
-                return Ok(());
-            };
-            scoped[index]
+    let mut inside: Option<&'static str> = None;
+
+    loop {
+        let (rows, visible) = match inside {
+            None => top_level(&items, &groups),
+            Some(group) => group_level(&items, group),
+        };
+        let lines: Vec<String> = rows.iter().map(|row| row_line(*row, &items)).collect();
+        let Some(index) = pick(&lines, visible)? else {
+            return Ok(());
+        };
+        match rows[index] {
+            Row::Back => inside = None,
+            Row::Group(group) => inside = Some(group),
+            Row::Item(item) => {
+                let chosen = &items[item];
+                return dispatch(&tools, config_path, &chosen.argv, chosen.run);
+            }
         }
-    };
-    dispatch(&tools, config_path, &chosen.argv, chosen.run)
+    }
 }
 
 fn dispatch(tools: &Tools, config_path: &Path, argv: &[String], run: Run) -> Result<()> {
@@ -625,17 +660,21 @@ mod tests {
         assert!(seen.len() > 1, "a menu of one group is not a menu");
     }
 
-    /// The search argument for flattening, as an assertion: typing a
-    /// leaf's own word finds it without naming its group, and typing the
-    /// group finds all of them. Both fail on a menu of submenus, because
+    /// The search argument, as an assertion: a row is found by its own
+    /// word and by its group's. Both fail on a menu of submenus, because
     /// a launcher can only match the lines it was handed.
+    ///
+    /// Matched case-insensitively because that is how fuzzel matches,
+    /// and because the rows are written for a person to read rather than
+    /// for a person to type exactly.
     #[test]
     fn a_row_is_found_by_its_own_word_and_by_its_group() {
-        let rows: Vec<String> = items(&everything()).iter().map(Item::text).collect();
+        let rows: Vec<String> =
+            items(&everything()).iter().map(|entry| entry.text().to_lowercase()).collect();
         let matching = |needle: &str| rows.iter().filter(|row| row.contains(needle)).count();
         assert_eq!(matching("reboot"), 1, "typing `reboot` should find exactly the reboot");
         assert_eq!(matching("power"), 5, "typing `power` should find the whole power group");
-        assert!(matching("drift") == 1, "typing `drift` should find the drift row");
+        assert_eq!(matching("drift"), 1, "typing `drift` should find the drift row");
     }
 
     /// Every row carries a glyph, and every glyph is a real one. The
@@ -670,20 +709,79 @@ mod tests {
     fn the_menu_opens_on_its_groups_and_hides_nothing() {
         let items = items(&everything());
         let groups = groups(&items);
-        let (lines, visible) = top_level(&items, &groups);
-        assert_eq!(lines.len(), groups.len() + items.len(), "every row is in the list fuzzel sees");
+        let (rows, visible) = top_level(&items, &groups);
+        assert_eq!(rows.len(), groups.len() + items.len(), "every row is in the list fuzzel sees");
         assert_eq!(visible, groups.len(), "the window at rest is exactly the groups");
-        assert!(visible < lines.len(), "the rows below the fold are what typing reaches");
+        assert!(visible < rows.len(), "the rows below the fold are what typing reaches");
         for (index, group) in groups.iter().enumerate() {
-            assert_eq!(
-                &lines[index],
-                &group_line(group),
-                "the first rows are the groups, in order"
+            assert_eq!(rows[index], Row::Group(group), "the first rows are the groups, in order");
+        }
+        assert_eq!(rows[groups.len()], Row::Item(0), "then the items, in order");
+    }
+
+    /// There is nothing above the top level, so a cancel means away and
+    /// a back row would be a lie.
+    #[test]
+    fn the_top_level_offers_no_way_back() {
+        let items = items(&everything());
+        let (rows, _) = top_level(&items, &groups(&items));
+        assert!(!rows.contains(&Row::Back));
+    }
+
+    /// Descending shows a group and a way out of it.
+    #[test]
+    fn a_group_shows_its_own_rows_and_a_way_back() {
+        let items = items(&everything());
+        for group in groups(&items) {
+            let (rows, visible) = group_level(&items, group);
+            let mine = items.iter().filter(|entry| entry.group == group).count();
+            assert_eq!(visible, mine + 1, "{group} shows its rows and the way back");
+            for row in rows.iter().take(mine) {
+                let Row::Item(index) = row else { panic!("{group} opens on something else") };
+                assert_eq!(items[*index].group, group);
+            }
+            assert_eq!(rows[mine], Row::Back, "the way back is the last row in view");
+        }
+    }
+
+    /// **Descending narrows what is shown, never what can be found.** A
+    /// person who opens Connect and then remembers they wanted to reboot
+    /// types `reboot` and gets it; without the tail the menu would have
+    /// quietly become a smaller menu.
+    #[test]
+    fn every_row_is_still_reachable_from_inside_a_group() {
+        let items = items(&everything());
+        for group in groups(&items) {
+            let (rows, visible) = group_level(&items, group);
+            let reachable: BTreeSet<usize> = rows
+                .iter()
+                .filter_map(|row| match row {
+                    Row::Item(index) => Some(*index),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(reachable.len(), items.len(), "{group} cannot reach every row");
+            assert!(visible < rows.len(), "{group} shows everything it holds");
+        }
+    }
+
+    /// Rows read like something a person wrote, not like an identifier.
+    #[test]
+    fn every_row_reads_as_written_english() {
+        let items = items(&everything());
+        for group in groups(&items) {
+            assert!(
+                group.starts_with(|c: char| c.is_ascii_uppercase()),
+                "the group `{group}` is not capitalised"
             );
         }
-        // The row after the groups is the first item, which is what
-        // makes `index - groups.len()` an item index in menu().
-        assert_eq!(lines[groups.len()], items[0].line());
+        for entry in &items {
+            assert!(
+                entry.label.starts_with(|c: char| c.is_ascii_uppercase()),
+                "the row `{}` is not capitalised",
+                entry.label
+            );
+        }
     }
 
     /// A group's row is distinguishable from an item's. They sit in one
@@ -704,8 +802,8 @@ mod tests {
     /// so what is displayed is exactly what the search matches.
     #[test]
     fn a_row_reads_as_its_glyph_then_its_words() {
-        let row = item("power", "reboot", '\u{f01e}', &["true"], Run::Detached);
-        assert_eq!(row.line(), "\u{f01e}  power · reboot");
+        let row = item("Power", "Reboot", '\u{f01e}', &["true"], Run::Detached);
+        assert_eq!(row.line(), "\u{f01e}  Power · Reboot");
         assert!(row.line().ends_with(&row.text()));
     }
 
