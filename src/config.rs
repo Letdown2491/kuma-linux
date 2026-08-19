@@ -707,6 +707,109 @@ pub(crate) mod tests {
         super::documented_commands("docs/getting-started.md")
     }
 
+    /// Publishing moves the mutable tag, and three of the four jobs that
+    /// validate a published image read that tag. So dispatching them
+    /// before a publish re-tests the previous release, and the mechanism
+    /// keeping the order right was somebody remembering it: for v0.11.0
+    /// the validation was simply never run, and its cross-version job
+    /// still holds an unanswered question about that release.
+    #[test]
+    fn publishing_triggers_the_workflow_that_validates_what_was_published() {
+        let read = |name: &str| {
+            std::fs::read_to_string(format!(
+                "{}/.github/workflows/{name}",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap()
+        };
+        let publish = read("publish.yml");
+        assert!(
+            publish.contains("uses: ./.github/workflows/published.yml"),
+            "publish.yml should call the workflow that validates what it published"
+        );
+        assert!(
+            publish.contains("needs: publish"),
+            "the validation runs after the publish, so nothing it finds can unpublish anything"
+        );
+        assert!(
+            publish.contains("image: ${{ needs.publish.outputs.remote }}"),
+            "the validation should test the image this run published, not a default"
+        );
+        assert!(
+            read("published.yml").contains("workflow_call:"),
+            "published.yml has to be callable for publish.yml to call it"
+        );
+    }
+
+    /// The half of "your declaration keeps working" that can be checked
+    /// today.
+    ///
+    /// Schema v1 is claimed permanent, and until now nothing held anyone
+    /// to it: every field could be renamed, every default changed, and
+    /// the only thing that would notice is somebody upgrading a machine
+    /// whose declaration predates the change. `tests/declarations/` holds
+    /// every distinct shape this project has ever shipped as an example,
+    /// named for the release that introduced it, and all of them have to
+    /// parse and validate on the kuma being built now.
+    ///
+    /// The examples are a proxy for declarations nobody here can see.
+    /// They are the ones that shipped as documentation, so they are the
+    /// ones a stranger copied.
+    ///
+    /// This says nothing about the other direction, a declaration from a
+    /// newer kuma read by an older one, which is a hard parse error today
+    /// (`deny_unknown_fields`) and the design question 0.14 exists for.
+    #[test]
+    fn every_declaration_this_project_ever_shipped_still_works() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/declarations");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(dir).expect("the corpus directory exists").flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            let config: Config =
+                toml::from_str(&text).unwrap_or_else(|e| panic!("{name} no longer parses: {e}"));
+            config.validate().unwrap_or_else(|e| panic!("{name} no longer validates: {e}"));
+            checked += 1;
+        }
+        assert!(checked >= 7, "the corpus should hold every shape that shipped, found {checked}");
+
+        // What keeps the corpus from rotting: whatever ships today is
+        // what somebody copies tomorrow, so it has to be in here before
+        // it becomes history.
+        for example in
+            std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/examples")).unwrap().flatten()
+        {
+            let path = example.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            // `.gitignore` keeps `examples/*.kuma.toml` and
+            // `examples/kuma.toml` out of the repo: those are somebody's
+            // own machine, sitting in the same directory as the ones that
+            // ship. Reading them would fail this test on the machine that
+            // has one and pass in CI, which is worse than either.
+            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            if name == "kuma.toml" || name.ends_with(".kuma.toml") {
+                continue;
+            }
+            let current = std::fs::read_to_string(&path).unwrap();
+            let in_corpus = std::fs::read_dir(dir)
+                .unwrap()
+                .flatten()
+                .any(|f| std::fs::read_to_string(f.path()).map(|t| t == current).unwrap_or(false));
+            assert!(
+                in_corpus,
+                "{} changed and is not in tests/declarations/; copy it there as \
+                 <next-version>-<name>.toml so it keeps parsing after it ships",
+                path.display()
+            );
+        }
+    }
+
     /// The gate item of 0.12, and the honest version of "somebody walked
     /// the walkthrough and it worked".
     #[test]

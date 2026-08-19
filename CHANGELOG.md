@@ -24,8 +24,22 @@ as its release notes.
   missed firings and every boot in between: a loop that has stopped turning
   rather than a laptop that was shut for a week.
 
+- Every declaration this project has shipped as an example is now tested
+  against the kuma being built. Schema v1 is claimed permanent, and nothing
+  held anyone to it: a renamed field or a changed default would have been
+  found by somebody upgrading a machine whose declaration predated it. The
+  corpus is every distinct example shape from every release, and an example
+  that changes has to be recorded there before it ships. This covers old
+  declarations on new kuma; the other direction, a newer declaration read by
+  an older kuma, is still a hard error and still undecided.
+
 ### Fixed
 
+- Publishing an image now runs the checks that install and boot it. They read
+  the moving tag a publish moves, so running them beforehand only re-tested
+  the previous release, and keeping the order right was something a person had
+  to remember. They run after the publish, so nothing they find can unpublish
+  anything; what they can do is say so the same day.
 - One app's broken download no longer fails Flatpak convergence forever. A
   remote can serve a static delta whose decompressed part is larger than
   ostree will accept, and the limit is computed per machine, so the same

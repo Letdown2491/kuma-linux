@@ -37,6 +37,8 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    outputs:
+      remote: ${{ steps.ref.outputs.remote }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -206,3 +208,17 @@ jobs:
             echo "sudo bootc switch ${{ steps.ref.outputs.remote }}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # The registry question can only change when the registry changes, so
+  # the publish that changes it triggers the validation rather than a
+  # person remembering to. Runs after, deliberately: this is the check
+  # that the published image installs and boots, and nothing it finds can
+  # unpublish anything. What it can do is tell somebody the same day.
+  #
+  # published.yml keeps its own schedule for what it separately watches:
+  # rot in an artifact that is sitting still.
+  validate:
+    needs: publish
+    uses: ./.github/workflows/published.yml
+    with:
+      image: ${{ needs.publish.outputs.remote }}

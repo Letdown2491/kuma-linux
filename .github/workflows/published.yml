@@ -12,6 +12,23 @@ name: published
 # `kuma install` writes one, and until this existed nothing ever booted a
 # disk it had written.
 on:
+  # publish.yml calls this when it has moved the tag, which is the only
+  # moment the answer can change. Three of these four jobs read the
+  # mutable `:niri` tag, so dispatching them before a publish just
+  # re-tests the previous release, and remembering the order was the
+  # whole mechanism until now.
+  workflow_call:
+    inputs:
+      image:
+        description: "Image reference to install and boot, and to upgrade to"
+        required: false
+        type: string
+        default: "ghcr.io/letdown2491/kuma:niri"
+      from_image:
+        description: "Older image the cross-version job installs first"
+        required: false
+        type: string
+        default: "ghcr.io/letdown2491/kuma:niri-0.7.0"
   workflow_dispatch:
     inputs:
       image:
