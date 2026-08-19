@@ -59,6 +59,12 @@ before installing is what you get, and nothing is written until you say so.
 inside a LUKS container, which the machine unlocks with a passphrase at
 every boot.
 
+**Machine state.** What is true of one machine rather than of the system it
+runs: which wifi network is joined, which speaker is paired, the volume, the
+hostname, the timezone. Kuma deliberately does not put these in the
+declaration, because a file that described them could not be shared, and
+tools own them instead. The opposite of **system definition**.
+
 **ostree.** The technology underneath bootc that stores the system
 read-only and merges your `/etc` onto each new deployment. It is why a file
 you edited by hand keeps winning over later images, and why `kuma doctor`
@@ -86,6 +92,11 @@ reboot is yours to choose.
 
 **Subvolume.** A btrfs filesystem within a filesystem, which can be
 snapshotted on its own. Kuma installs the system into one named `root`.
+
+**System definition.** What is true of every machine built from a
+declaration: which packages, which desktop, which firmware, which shell.
+This is what `kuma.toml` describes, and changing it means a build and a
+reboot rather than an immediate effect. The opposite of **machine state**.
 
 **Tag.** A moving name for an image, like `fedora-bootc:44`. What it points
 at changes when a new one is published, which is why a build records the
