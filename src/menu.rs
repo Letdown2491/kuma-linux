@@ -168,38 +168,44 @@ pub(crate) struct Item {
     /// way `wifi` would.
     pub(crate) group: &'static str,
     pub(crate) label: &'static str,
-    /// Freedesktop icon name, with a plainer fallback after the comma
-    /// for themes that carry only the legacy name. Every item has one:
-    /// fuzzel leaves a hole where an icon is missing, and one hole makes
-    /// the whole list look broken.
-    pub(crate) icon: &'static str,
+    /// A Font Awesome glyph, as a character rather than an icon name.
+    ///
+    /// **Not fuzzel's dmenu icon protocol, and that was measured.**
+    /// Every one of Adwaita's 587 symbolic SVGs hardcodes
+    /// `fill="#2e3436"`, fuzzel renders the file as it is, and kuma's
+    /// launcher background is `#0e1626`: the icons drew, in near-black
+    /// on near-black, and no choice of icon name could have fixed it
+    /// because the whole theme is that colour. A glyph is text, so it
+    /// takes the row's own foreground colour and cannot go invisible.
+    /// It is also what waybar already uses, so the menu and the bar
+    /// speak the same alphabet.
+    ///
+    /// Referenced by codepoint, never by font name: face names carry the
+    /// major version (`fontawesome-6-*` becomes `fontawesome-7-*` in
+    /// Fedora 45) while codepoints do not, and fontconfig finds whoever
+    /// provides the glyph. Same reasoning as the metapackage in the
+    /// desktop set.
+    pub(crate) glyph: char,
     pub(crate) argv: Vec<String>,
     pub(crate) run: Run,
 }
 
 impl Item {
-    /// The line fuzzel is handed. `\0icon\x1f<name>` is fuzzel's dmenu
-    /// icon protocol; everything before the NUL is what is displayed and
-    /// what the search matches against.
+    /// The line fuzzel is handed, which is also what it searches.
     fn line(&self) -> String {
-        format!("{} · {}\u{0}icon\u{1f}{}", self.group, self.label, self.icon)
+        format!("{}  {} · {}", self.glyph, self.group, self.label)
     }
 
-    /// What the person reads and types against, without the protocol.
+    /// What the row says, without its glyph: the part a person types
+    /// against and the part the tests read.
     #[cfg(test)]
     fn text(&self) -> String {
         format!("{} · {}", self.group, self.label)
     }
 }
 
-fn item(
-    group: &'static str,
-    label: &'static str,
-    icon: &'static str,
-    argv: &[&str],
-    run: Run,
-) -> Item {
-    Item { group, label, icon, argv: argv.iter().map(|a| (*a).to_string()).collect(), run }
+fn item(group: &'static str, label: &'static str, glyph: char, argv: &[&str], run: Run) -> Item {
+    Item { group, label, glyph, argv: argv.iter().map(|a| (*a).to_string()).collect(), run }
 }
 
 /// An item whose program this machine has, or nothing.
@@ -207,12 +213,12 @@ fn tool(
     tools: &Tools,
     group: &'static str,
     label: &'static str,
-    icon: &'static str,
+    glyph: char,
     argv: &[&str],
     run: Run,
 ) -> Option<Item> {
     let program = argv.first().copied().unwrap_or_default();
-    tools.has(program).then(|| item(group, label, icon, argv, run))
+    tools.has(program).then(|| item(group, label, glyph, argv, run))
 }
 
 /// The whole menu, as a pure function of what is installed.
@@ -220,13 +226,7 @@ pub(crate) fn items(tools: &Tools) -> Vec<Item> {
     let mut out = Vec::new();
 
     if tools.has("fuzzel") {
-        out.push(item(
-            "apps",
-            "launch an application",
-            "applications-system-symbolic,applications-system",
-            &["fuzzel"],
-            Run::Detached,
-        ));
+        out.push(item("apps", "launch an application", '\u{f009}', &["fuzzel"], Run::Detached));
     }
 
     // nmtui before the graphical editor: a terminal program inherits the
@@ -235,106 +235,51 @@ pub(crate) fn items(tools: &Tools) -> Vec<Item> {
     // session will not start.
     if let Some(wifi) = tools.first(&["nmtui", "nm-connection-editor"]) {
         let run = if wifi == "nmtui" { Run::Terminal } else { Run::Detached };
-        out.push(item(
-            "connect",
-            "network",
-            "network-wireless-symbolic,network-wireless",
-            &[&wifi],
-            run,
-        ));
+        out.push(item("connect", "network", '\u{f1eb}', &[&wifi], run));
     }
     out.extend(tool(
         tools,
         "connect",
         "bluetooth",
-        "bluetooth-symbolic,bluetooth",
+        '\u{f293}',
         &["blueman-manager"],
         Run::Detached,
     ));
     if let Some(audio) = tools.first(&["wiremix", "pavucontrol"]) {
         let run = if audio == "wiremix" { Run::Terminal } else { Run::Detached };
-        out.push(item(
-            "connect",
-            "audio",
-            "audio-volume-high-symbolic,audio-volume-high",
-            &[&audio],
-            run,
-        ));
+        out.push(item("connect", "audio", '\u{f028}', &[&audio], run));
     }
-    out.extend(tool(
-        tools,
-        "connect",
-        "displays",
-        "video-display-symbolic,video-display",
-        &["wdisplays"],
-        Run::Detached,
-    ));
+    out.extend(tool(tools, "connect", "displays", '\u{f108}', &["wdisplays"], Run::Detached));
 
     // Declaration: opens and shows, never writes. `capture` is the one
     // entry that can end in a write, and it does its own asking.
-    out.push(item(
-        "declaration",
-        "edit",
-        "text-editor-symbolic,text-editor",
-        &["kuma", "edit"],
-        Run::Terminal,
-    ));
-    out.push(item(
-        "declaration",
-        "show drift",
-        "edit-find-symbolic,edit-find",
-        &["kuma", "diff"],
-        Run::Terminal,
-    ));
+    out.push(item("declaration", "edit", '\u{f044}', &["kuma", "edit"], Run::Terminal));
+    out.push(item("declaration", "show drift", '\u{f002}', &["kuma", "diff"], Run::Terminal));
     out.push(item(
         "declaration",
         "review proposals",
-        "dialog-information-symbolic,dialog-information",
+        '\u{f05a}',
         &["kuma", "capture"],
         Run::Terminal,
     ));
 
-    out.push(item(
-        "system",
-        "health",
-        "emblem-system-symbolic,emblem-system",
-        &["kuma", "doctor"],
-        Run::Terminal,
-    ));
+    out.push(item("system", "health", '\u{f21e}', &["kuma", "doctor"], Run::Terminal));
     out.push(item(
         "system",
         "check for updates",
-        "software-update-available-symbolic,software-update-available",
+        '\u{f021}',
         &["kuma", "update", "--check"],
         Run::Terminal,
     ));
-    out.push(item(
-        "system",
-        "rebuild",
-        "view-refresh-symbolic,view-refresh",
-        &["kuma", "build"],
-        Run::Terminal,
-    ));
-    out.push(item(
-        "system",
-        "roll back",
-        "go-previous-symbolic,go-previous",
-        &["kuma", "rollback"],
-        Run::Terminal,
-    ));
-    out.push(item(
-        "system",
-        "snapshots",
-        "drive-harddisk-symbolic,drive-harddisk",
-        &["kuma", "snapshot"],
-        Run::Terminal,
-    ));
+    out.push(item("system", "rebuild", '\u{f0ad}', &["kuma", "build"], Run::Terminal));
+    out.push(item("system", "roll back", '\u{f0e2}', &["kuma", "rollback"], Run::Terminal));
+    out.push(item("system", "snapshots", '\u{f0c7}', &["kuma", "snapshot"], Run::Terminal));
 
     out.extend(tool(
         tools,
         "notifications",
         "do not disturb",
-        "media-playback-pause-symbolic,media-playback-pause",
+        '\u{f1f6}',
         &["makoctl", "mode", "-t", "do-not-disturb"],
         Run::Detached,
     ));
@@ -342,7 +287,7 @@ pub(crate) fn items(tools: &Tools) -> Vec<Item> {
         tools,
         "notifications",
         "dismiss all",
-        "user-trash-symbolic,user-trash",
+        '\u{f2ed}',
         &["makoctl", "dismiss", "-a"],
         Run::Detached,
     ));
@@ -351,65 +296,100 @@ pub(crate) fn items(tools: &Tools) -> Vec<Item> {
     // suspend, reboot and power off have no key and no menu on a kuma
     // desktop today. systemctl reaches them without sudo: logind grants
     // them to the session that owns the seat.
-    out.extend(tool(
-        tools,
-        "power",
-        "lock",
-        "system-lock-screen-symbolic,system-lock-screen",
-        &["swaylock"],
-        Run::Detached,
-    ));
-    // Adwaita has no system-suspend icon, symbolic or otherwise; the
-    // night one is what every panel uses for the same idea.
-    out.push(item(
-        "power",
-        "suspend",
-        "weather-clear-night-symbolic,weather-clear-night",
-        &["systemctl", "suspend"],
-        Run::Detached,
-    ));
+    out.extend(tool(tools, "power", "lock", '\u{f023}', &["swaylock"], Run::Detached));
+    out.push(item("power", "suspend", '\u{f186}', &["systemctl", "suspend"], Run::Detached));
     out.extend(tool(
         tools,
         "power",
         "log out",
-        "system-log-out-symbolic,system-log-out",
+        '\u{f2f5}',
         &["niri", "msg", "action", "quit"],
         Run::Detached,
     ));
-    out.push(item(
-        "power",
-        "reboot",
-        "system-reboot-symbolic,system-reboot",
-        &["systemctl", "reboot"],
-        Run::Detached,
-    ));
-    out.push(item(
-        "power",
-        "power off",
-        "system-shutdown-symbolic,system-shutdown",
-        &["systemctl", "poweroff"],
-        Run::Detached,
-    ));
+    out.push(item("power", "reboot", '\u{f01e}', &["systemctl", "reboot"], Run::Detached));
+    out.push(item("power", "power off", '\u{f011}', &["systemctl", "poweroff"], Run::Detached));
 
     out
 }
 
-/// Ask fuzzel to pick one. `Ok(None)` is a cancel, which is a person
-/// saying "away" and not an error.
+/// A group's own row, and the glyph it wears.
+///
+/// The group rows come first and the window is sized to exactly their
+/// number, so opening the menu shows the six sections and nothing else.
+/// Everything below them is still in the list fuzzel was handed, which
+/// is the whole point: browsing sees sections, typing sees rows. A
+/// launcher can only match against what it was given, so the two
+/// behaviours cannot be split without giving up one of them.
+fn group_glyph(group: &str) -> Option<char> {
+    Some(match group {
+        "apps" => '\u{f009}',
+        "connect" => '\u{f1eb}',
+        "declaration" => '\u{f044}',
+        "system" => '\u{f013}',
+        "notifications" => '\u{f0f3}',
+        "power" => '\u{f011}',
+        _ => return None,
+    })
+}
+
+/// The groups present in `items`, in the order they first appear. Not
+/// sorted: the authored order is the browse order.
+fn groups(items: &[Item]) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for entry in items {
+        if !out.contains(&entry.group) {
+            out.push(entry.group);
+        }
+    }
+    out
+}
+
+/// What a group's row reads. The chevron says it descends, and keeps a
+/// group's row from reading identically to a one-row group's item.
+fn group_line(group: &str) -> String {
+    let glyph = group_glyph(group).unwrap_or('\u{f013}');
+    format!("{glyph}  {group}   ›")
+}
+
+/// Every row of the top level, and how many of them the window shows at
+/// rest: the groups, then every item, sized to the groups.
+///
+/// The pair is one function because they are one decision. Handing
+/// fuzzel a list and separately telling it a height is how the height
+/// ends up being `items.len()` with nothing to notice: sabotage flipped
+/// exactly that at the call site and every test still passed, because
+/// the argument lived inside the shell-out where no test could see it.
+fn top_level(items: &[Item], groups: &[&'static str]) -> (Vec<String>, usize) {
+    let mut lines: Vec<String> = groups.iter().map(|group| group_line(group)).collect();
+    lines.extend(items.iter().map(Item::line));
+    (lines, groups.len())
+}
+
+/// Ask fuzzel to pick one of `lines`, showing `visible` of them at rest.
+/// `Ok(None)` is a cancel, which is a person saying "away" and not an
+/// error.
 ///
 /// `--index` rather than the chosen text: fuzzel in dmenu mode echoes
 /// whatever was typed when it matches nothing, so matching the answer
 /// back against labels would make a typo indistinguishable from a
 /// choice, and would quietly require every line to be unique. An index
 /// is unambiguous or it is out of range.
-fn pick(items: &[Item]) -> Result<Option<usize>> {
-    let input: Vec<String> = items.iter().map(Item::line).collect();
+fn pick(lines: &[String], visible: usize) -> Result<Option<usize>> {
     let chosen = host_output_stdin(
-        &["fuzzel", "--dmenu", "--index", "--prompt", "kuma  ", "--counter"],
-        &input.join("\n"),
+        &[
+            "fuzzel",
+            "--dmenu",
+            "--index",
+            "--prompt",
+            "kuma  ",
+            "--counter",
+            "--lines",
+            &visible.to_string(),
+        ],
+        &lines.join("\n"),
     )
     .context("cannot run fuzzel")?;
-    Ok(chosen_index(chosen.as_deref(), items.len()))
+    Ok(chosen_index(chosen.as_deref(), lines.len()))
 }
 
 /// What fuzzel's answer means, as a pure function so it can be tested
@@ -424,17 +404,31 @@ fn chosen_index(answer: Option<&str>, count: usize) -> Option<usize> {
     answer?.trim().parse::<usize>().ok().filter(|index| *index < count)
 }
 
-/// Run the menu: pick, dispatch, exit.
+/// Run the menu: pick, maybe descend once, dispatch, exit.
 pub fn menu(config_path: &Path) -> Result<()> {
     let tools = Tools::observe();
     if !tools.has("fuzzel") {
         anyhow::bail!("kuma menu needs fuzzel, which this image does not have");
     }
     let items = items(&tools);
-    let Some(index) = pick(&items)? else {
+    let groups = groups(&items);
+    let (lines, visible) = top_level(&items, &groups);
+    let Some(index) = pick(&lines, visible)? else {
         return Ok(());
     };
-    let chosen = &items[index];
+    // Below the group rows, the rest of the list is the items in order.
+    let chosen = match index.checked_sub(groups.len()) {
+        Some(item) => &items[item],
+        None => {
+            let group = groups[index];
+            let scoped: Vec<&Item> = items.iter().filter(|entry| entry.group == group).collect();
+            let lines: Vec<String> = scoped.iter().map(|entry| entry.line()).collect();
+            let Some(index) = pick(&lines, scoped.len())? else {
+                return Ok(());
+            };
+            scoped[index]
+        }
+    };
     dispatch(&tools, config_path, &chosen.argv, chosen.run)
 }
 
@@ -644,34 +638,75 @@ mod tests {
         assert!(matching("drift") == 1, "typing `drift` should find the drift row");
     }
 
-    /// Every row carries an icon. fuzzel leaves a hole where one is
-    /// missing, and a single hole makes the whole list look broken.
+    /// Every row carries a glyph, and every glyph is a real one. The
+    /// Private Use Area check is what catches an ASCII placeholder
+    /// standing in for a symbol nobody looked up.
     #[test]
-    fn every_row_has_an_icon_with_a_fallback() {
+    fn every_row_has_a_glyph_from_the_icon_font() {
         for entry in items(&everything()) {
-            assert!(!entry.icon.is_empty(), "{} has no icon", entry.label);
             assert!(
-                entry.icon.contains(','),
-                "{} names one icon with no fallback for a theme that lacks it",
-                entry.label
+                ('\u{e000}'..='\u{f8ff}').contains(&entry.glyph),
+                "{} has {:?}, which is not an icon-font glyph",
+                entry.label,
+                entry.glyph
             );
         }
     }
 
-    /// The line handed to fuzzel is the displayed text, a NUL, and the
-    /// icon protocol. Asserted on the bytes because a launcher that does
-    /// not understand them shows the protocol to the person instead.
+    /// A group with no glyph falls back to a gear, which is how a new
+    /// group ships looking like an afterthought. Asserted so that adding
+    /// one to the list means adding it here too.
     #[test]
-    fn a_row_is_encoded_the_way_fuzzel_reads_icons() {
-        let row = item(
-            "power",
-            "reboot",
-            "system-reboot-symbolic,system-reboot",
-            &["true"],
-            Run::Detached,
-        );
-        assert_eq!(row.line(), "power · reboot\u{0}icon\u{1f}system-reboot-symbolic,system-reboot");
-        assert_eq!(row.line().split('\u{0}').next(), Some("power · reboot"));
+    fn every_group_has_its_own_glyph() {
+        for group in groups(&items(&everything())) {
+            assert!(group_glyph(group).is_some(), "{group} has no glyph of its own");
+        }
+    }
+
+    /// Opening the menu shows the groups and nothing else: they come
+    /// first and the window is sized to exactly their number. Typing
+    /// still reaches every row, because they are all in the same list.
+    #[test]
+    fn the_menu_opens_on_its_groups_and_hides_nothing() {
+        let items = items(&everything());
+        let groups = groups(&items);
+        let (lines, visible) = top_level(&items, &groups);
+        assert_eq!(lines.len(), groups.len() + items.len(), "every row is in the list fuzzel sees");
+        assert_eq!(visible, groups.len(), "the window at rest is exactly the groups");
+        assert!(visible < lines.len(), "the rows below the fold are what typing reaches");
+        for (index, group) in groups.iter().enumerate() {
+            assert_eq!(
+                &lines[index],
+                &group_line(group),
+                "the first rows are the groups, in order"
+            );
+        }
+        // The row after the groups is the first item, which is what
+        // makes `index - groups.len()` an item index in menu().
+        assert_eq!(lines[groups.len()], items[0].line());
+    }
+
+    /// A group's row is distinguishable from an item's. They sit in one
+    /// list and both start with a glyph, so without the chevron the row
+    /// that descends looks exactly like a row that acts.
+    #[test]
+    fn a_group_row_says_it_descends_and_an_item_row_does_not() {
+        let items = items(&everything());
+        for group in groups(&items) {
+            assert!(group_line(group).ends_with('›'), "{group}'s row does not say it descends");
+        }
+        for entry in &items {
+            assert!(!entry.line().contains('›'), "{} reads like a group", entry.label);
+        }
+    }
+
+    /// The line handed to fuzzel is the glyph and the row's own words,
+    /// so what is displayed is exactly what the search matches.
+    #[test]
+    fn a_row_reads_as_its_glyph_then_its_words() {
+        let row = item("power", "reboot", '\u{f01e}', &["true"], Run::Detached);
+        assert_eq!(row.line(), "\u{f01e}  power · reboot");
+        assert!(row.line().ends_with(&row.text()));
     }
 
     /// Every way fuzzel can answer, including the two that must not

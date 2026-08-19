@@ -16,14 +16,25 @@ as its release notes.
   config kuma already ships, in the launcher the clipboard picker already
   uses. Nothing new is installed and nothing new is drawn.
 
-  **The list is flat**, one row per action, prefixed with its group. A tree of
-  submenus reads well and searches terribly: a launcher can only match the
-  lines it was handed, so typing `reboot` at the top of a nested menu matches
-  nothing and the person who knew what they wanted navigates anyway. Flat, a
-  row is found by its own word (`reboot`) or by its group (`power`). Every row
-  carries an icon through fuzzel's dmenu icon protocol, and selection comes
-  back as an index rather than as text, so a typo that matches nothing cannot
-  be mistaken for a choice.
+  **It opens on its groups and searches every row.** A launcher can only match
+  against the lines it was handed, so a menu of submenus cannot be searched:
+  typing `reboot` at the top of one matches nothing and the person who knew
+  what they wanted navigates anyway. Every row is in one list, the groups come
+  first, and the window is sized to exactly their number, so browsing sees six
+  sections while typing reaches all of them. `reboot` finds the row, `power`
+  finds the group and its five. A group's row descends into just its own.
+
+  Rows are labelled with Font Awesome glyphs rather than icon files, which is
+  measured rather than preferred: every one of Adwaita's 587 symbolic SVGs
+  hardcodes `fill="#2e3436"`, and against kuma's `#0e1626` launcher they drew
+  in near-black on near-black. A glyph is text, so it takes the row's own
+  foreground colour and cannot go invisible, and it is the alphabet waybar
+  already speaks. Referenced by codepoint, never by font name, for the same
+  reason the desktop set names a metapackage: face names carry the major
+  version, codepoints do not.
+
+  Selection comes back as an index rather than as text, so a typo that matches
+  nothing cannot be mistaken for a choice.
 
   **The menu never writes the declaration.** `kuma capture` is the one
   deliberate path from what the machine has to what the file says, and its
