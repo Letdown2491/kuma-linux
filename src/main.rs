@@ -193,6 +193,12 @@ enum Cmd {
         /// password, never from a flag.
         #[arg(long)]
         encrypt: bool,
+        /// Put this machine's home directory back from an offsite backup
+        /// on its first boot. Takes a file setting RESTIC_REPOSITORY and
+        /// the repository's credentials: the machine has no declaration
+        /// of its own yet, so the address comes from the file.
+        #[arg(long, value_name = "FILE")]
+        restore: Option<PathBuf>,
         /// Do it. Without this, print the plan and change nothing.
         #[arg(long)]
         yes: bool,
@@ -496,6 +502,7 @@ fn run(
             hostname,
             shell,
             encrypt,
+            restore,
             yes,
             json,
         } => {
@@ -524,6 +531,7 @@ fn run(
                 hostname,
                 shell,
                 encrypt,
+                restore,
                 yes,
                 json,
             };
@@ -2168,6 +2176,7 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         hostname,
         shell,
         encrypt: encrypt_flag,
+        restore,
         yes,
         json,
     } = request;
@@ -2450,9 +2459,23 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     std::fs::write(&user_file, install::user_file(&account))?;
     restrict_to_owner(&user_file)?;
     std::fs::write(dir.path().join("kuma-hostname"), format!("{hostname}\n"))?;
+    // The restore file is read and checked here, before anything is
+    // written to a disk. A restore that cannot work is worth finding out
+    // about while the old machine's data is still the only copy.
+    if let Some(path) = &restore {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("cannot read the restore file {}", path.display()))?;
+        if let Err(why) = install::restore_file_is_usable(&text) {
+            bail!("refusing to install: {why}");
+        }
+        let secret = dir.path().join("kuma-restore-secret");
+        std::fs::write(&secret, &text)?;
+        restrict_to_owner(&secret)?;
+        std::fs::write(dir.path().join("kuma-restore-request"), "requested by kuma install\n")?;
+    }
     std::fs::write(
         dir.path().join("Containerfile"),
-        install::install_containerfile(image, &account),
+        install::install_containerfile(image, &account, restore.is_some()),
     )?;
 
     // Said before anything is written, and only when it can be known

@@ -742,6 +742,72 @@ fn backup_script(config: &Config) -> String {
         .replace("{keep_monthly}", &config.backup.keep_monthly.to_string())
 }
 
+/// Put a home directory back on a machine that has just been installed.
+///
+/// **Why this is a first-boot unit and not part of `kuma install`.**
+/// `/var/home` does not exist at install time. The image ships none;
+/// `rpm-ostree-0-integration.conf` has tmpfiles create it every boot,
+/// and `kuma-home-subvol` turns it into a btrfs subvolume with the right
+/// SELinux label while it is still empty. Restoring during the install
+/// would leave an ordinary directory with files in it, which is exactly
+/// the state `kuma-home-subvol` steps back from, so the machine would
+/// come up with no subvolume, no snapshots and nothing saying why.
+///
+/// So the install writes the request and the credential onto the target
+/// the same way it writes the account, and this runs once, after the
+/// subvolume exists and after the account it will own does.
+///
+/// It removes the request before restoring rather than after. A restore
+/// interrupted halfway is resumable by hand and restic is incremental
+/// about it; a request that survives its own failure is a unit that
+/// re-runs on every boot forever, and a machine that spends its life
+/// pulling a home directory over the network is worse than one that
+/// tells you the restore stopped.
+const RESTORE_SCRIPT: &str = r#"#!/usr/bin/bash
+set -euo pipefail
+request=/var/lib/kuma/restore-request
+secret=/var/lib/kuma/secrets/restore.env
+
+[ -f "$request" ] || exit 0
+if [ ! -r "$secret" ]; then
+    echo "a restore was requested and $secret is not there" >&2
+    rm -f "$request"
+    exit 1
+fi
+
+# Before the work, not after. See the doc comment: a request that
+# outlives its own failure is a boot loop wearing a feature's clothes.
+rm -f "$request"
+
+set -a
+. "$secret"
+set +a
+
+echo "restoring /var/home from $RESTIC_REPOSITORY"
+restic restore latest --target / --include /var/home
+echo "restore finished"
+"#;
+
+/// Ordered behind both of the units that have to have run first, and
+/// conditioned on the request file so that every other boot skips it
+/// without a unit that failed.
+const RESTORE_SERVICE: &str = r#"[Unit]
+Description=Restore this machine's home directory from the declared repository
+ConditionPathExists=/var/lib/kuma/restore-request
+Wants=network-online.target
+After=network-online.target
+After=kuma-home-subvol.service kuma-user-sync.service
+Before=greetd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/kuma-restore
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target
+"#;
+
 const SNAPSHOT_SERVICE: &str = r#"[Unit]
 Description=Snapshot the declared btrfs subvolume
 
@@ -2491,6 +2557,12 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY kuma-backup.service /usr/lib/systemd/system/kuma-backup.service\n");
         out.push_str("COPY kuma-backup.timer /usr/lib/systemd/system/kuma-backup.timer\n");
         out.push_str("RUN systemctl enable kuma-backup.timer\n");
+        // The other end of the promise. Enabled always and gated on a
+        // request file, because the machine that needs it has been
+        // installed exactly once and there is nobody to start it.
+        out.push_str("COPY --chmod=755 kuma-restore /usr/libexec/kuma-restore\n");
+        out.push_str("COPY kuma-restore.service /usr/lib/systemd/system/kuma-restore.service\n");
+        out.push_str("RUN systemctl enable kuma-restore.service\n");
     }
 
     // Every image can adopt a kuma vm host timezone; no-op on hardware.
@@ -2765,6 +2837,8 @@ pub fn write_context(
         std::fs::write(dir.join("kuma-backup"), backup_script(config))?;
         std::fs::write(dir.join("kuma-backup.service"), backup_service(config))?;
         std::fs::write(dir.join("kuma-backup.timer"), backup_timer(&config.backup.interval))?;
+        std::fs::write(dir.join("kuma-restore"), RESTORE_SCRIPT)?;
+        std::fs::write(dir.join("kuma-restore.service"), RESTORE_SERVICE)?;
     }
     // Unconditional, like the Containerfile lines that copy them: the
     // converger has to be present in an image that declares no account,
@@ -3906,6 +3980,49 @@ mod tests {
         );
     }
 
+    /// The unit that puts a home directory back on a machine that has
+    /// just been installed, and the one ordering constraint that makes
+    /// it possible at all.
+    #[test]
+    fn the_restore_runs_after_the_subvolume_exists() {
+        // /var/home is not a subvolume until kuma-home-subvol has run,
+        // and a restore that beat it would fill an ordinary directory,
+        // which is the exact state that unit steps back from. The
+        // machine would come up with no subvolume, no snapshots, and
+        // nothing saying why.
+        assert!(
+            RESTORE_SERVICE.contains("After=kuma-home-subvol.service kuma-user-sync.service"),
+            "{RESTORE_SERVICE}"
+        );
+        // Gated on the request rather than on being enabled, because
+        // every boot after the first has to skip it without looking
+        // like a unit that failed.
+        assert!(RESTORE_SERVICE.contains("ConditionPathExists=/var/lib/kuma/restore-request"));
+        // A home directory over a slow link outlasts any default.
+        assert!(RESTORE_SERVICE.contains("TimeoutStartSec=infinity"));
+
+        // The request is cleared before the work, not after: one that
+        // survives its own failure is a machine that spends every boot
+        // pulling a home directory over the network.
+        let cleared = RESTORE_SCRIPT.find(r#"rm -f "$request""#).unwrap();
+        let restored = RESTORE_SCRIPT.find("restic restore").unwrap();
+        assert!(cleared < restored, "the request outlives a failed restore: {RESTORE_SCRIPT}");
+
+        let out = std::process::Command::new("bash")
+            .args(["-n", "/dev/stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                child.stdin.take().unwrap().write_all(RESTORE_SCRIPT.as_bytes())?;
+                child.wait_with_output()
+            })
+            .expect("bash");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+
     /// Declaring no backup must leave no trace of one, and declaring one
     /// must layer the binary it needs. A timer that dies on a missing
     /// restic is a backup that silently is not one.
@@ -3913,6 +4030,7 @@ mod tests {
     fn backup_is_absent_until_declared() {
         let without = generate(&config("schema_version = 1\n[snapshots]\nenable = true\n"));
         assert!(!without.contains("kuma-backup"));
+        assert!(!without.contains("kuma-restore"), "no backup means nothing to restore from");
         assert!(!without.contains("restic"));
 
         let with = generate(&config(

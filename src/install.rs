@@ -58,6 +58,9 @@ pub struct Request {
     /// way to answer the question early rather than the only way to
     /// answer it at all.
     pub encrypt: bool,
+    /// A file naming the repository and its credentials, written onto
+    /// the target so its first boot puts the home directory back.
+    pub restore: Option<std::path::PathBuf>,
     pub yes: bool,
     pub json: bool,
 }
@@ -105,7 +108,7 @@ pub fn user_file(account: &Account) -> String {
 /// 0600 on the user file for the same reason the baked one is: it holds a
 /// password hash and only the root-run converger reads it. This image is
 /// thrown away once the install finishes; nothing tags it for keeping.
-pub fn install_containerfile(source: &str, account: &Account) -> String {
+pub fn install_containerfile(source: &str, account: &Account, restore: bool) -> String {
     let shell = account.shell.as_deref();
     // `useradd -s /usr/bin/nonsense` does not fail. It makes the account
     // with a shell that is not there and the machine comes up unable to
@@ -125,9 +128,52 @@ pub fn install_containerfile(source: &str, account: &Account) -> String {
          {guard}\
          COPY --chmod=600 kuma-user /var/lib/kuma/user\n\
          COPY kuma-hostname /var/lib/kuma/hostname\n\
-         {}",
-        drop_foreign_autologin(&account.name)
+         {restore}{}",
+        drop_foreign_autologin(&account.name),
+        restore = if restore { RESTORE_LAYER } else { "" }
     )
+}
+
+/// The request and the credential, written onto the target exactly the
+/// way the account is: bootc fills `/var` from the image once, at
+/// install, and never again, which is what install-time answers need.
+///
+/// 0600 because it is a credential, and in `/var/lib/kuma/secrets` so it
+/// sits where the machine's own credential would, under the fixed name
+/// the first-boot unit looks for. The declaration's `secret` name is not
+/// used here: the machine being restored has no declaration of its own
+/// yet, and the file it is given is the one that names the repository.
+const RESTORE_LAYER: &str =
+    "COPY --chmod=600 kuma-restore-secret /var/lib/kuma/secrets/restore.env\n\
+     COPY kuma-restore-request /var/lib/kuma/restore-request\n";
+
+/// What a restore file has to say before an install will accept it.
+///
+/// `RESTIC_REPOSITORY` rather than a second flag, because the machine
+/// being restored has no declaration yet and the address has to come
+/// from somewhere. That makes the whole recovery one file: put it on the
+/// stick beside the ISO and a dead disk needs nothing else typed.
+///
+/// Checked here rather than at first boot, where the only person who
+/// could read the error has already walked away.
+pub fn restore_file_is_usable(text: &str) -> Result<(), String> {
+    let names: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_once('=').map(|(k, _)| k.trim()))
+        .collect();
+    if !names.contains(&"RESTIC_REPOSITORY") {
+        return Err("the restore file must set RESTIC_REPOSITORY: the machine being restored has \
+             no declaration yet, so the address has to come from the file"
+            .to_string());
+    }
+    if !names.iter().any(|n| n.starts_with("RESTIC_PASSWORD")) {
+        return Err("the restore file sets no RESTIC_PASSWORD (or RESTIC_PASSWORD_FILE), so \
+             nothing could open the repository"
+            .to_string());
+    }
+    Ok(())
 }
 
 /// Where the greeter autologins somebody who will not exist here.
@@ -814,7 +860,7 @@ tmpfs /tmp tmpfs rw 0 0
     #[test]
     fn the_derived_layer_carries_the_answers_at_0600() {
         let bare = Account { shell: None, ..account() };
-        let out = install_containerfile("ghcr.io/example/kuma:niri", &bare);
+        let out = install_containerfile("ghcr.io/example/kuma:niri", &bare, false);
         assert!(out.contains("FROM ghcr.io/example/kuma:niri"));
         assert!(out.contains("COPY --chmod=600 kuma-user /var/lib/kuma/user"));
         assert!(out.contains("COPY kuma-hostname /var/lib/kuma/hostname"));
@@ -833,7 +879,7 @@ tmpfs /tmp tmpfs rw 0 0
     /// restarts, then no greeter at all.
     #[test]
     fn autologin_for_an_account_this_machine_lacks_is_removed() {
-        let out = install_containerfile("localhost/kuma:latest", &account());
+        let out = install_containerfile("localhost/kuma:latest", &account(), false);
         // Both files, because the two desktops autologin through
         // different ones and only one of them would be noticed.
         assert!(out.contains(crate::containerfile::GREETD_CONF));
@@ -848,6 +894,53 @@ tmpfs /tmp tmpfs rw 0 0
     }
 
     /// The other half of the same hazard, which no code can undo: the
+    /// A restore that cannot work is worth refusing while the old
+    /// machine's disk is still the only copy of the data. At first boot
+    /// the only person who could read the error has walked away.
+    #[test]
+    fn a_restore_file_that_could_not_open_the_repository_is_refused() {
+        // The address has to be in the file: the machine being restored
+        // has no declaration yet, so there is nowhere else for it.
+        let no_repo = "RESTIC_PASSWORD=hunter2\n";
+        assert!(restore_file_is_usable(no_repo).unwrap_err().contains("RESTIC_REPOSITORY"));
+
+        let no_password = "RESTIC_REPOSITORY=b2:kuma\n";
+        assert!(restore_file_is_usable(no_password).unwrap_err().contains("RESTIC_PASSWORD"));
+
+        let usable = "# recovery\nRESTIC_REPOSITORY=s3:https://minio.example:9000/kuma\n\
+                      RESTIC_PASSWORD=hunter2\nAWS_ACCESS_KEY_ID=k\nAWS_SECRET_ACCESS_KEY=s\n";
+        restore_file_is_usable(usable).unwrap();
+
+        // A password held in a file beside it counts, which is the
+        // shape restic prefers and the one that keeps a secret out of
+        // an environment children inherit.
+        let by_file = "RESTIC_REPOSITORY=b2:kuma\nRESTIC_PASSWORD_FILE=/run/key\n";
+        restore_file_is_usable(by_file).unwrap();
+    }
+
+    /// The request rides in the same layer as the account, because it is
+    /// the same kind of thing: an install-time answer that /var carries
+    /// once. Without --restore it must leave no trace, so an ordinary
+    /// install cannot end up with a unit waiting for a file it will
+    /// never get.
+    #[test]
+    fn a_restore_request_rides_the_install_layer_only_when_asked() {
+        let plain = install_containerfile("ghcr.io/example/kuma:niri", &account(), false);
+        assert!(!plain.contains("restore"), "{plain}");
+
+        let restoring = install_containerfile("ghcr.io/example/kuma:niri", &account(), true);
+        assert!(restoring
+            .contains("COPY --chmod=600 kuma-restore-secret /var/lib/kuma/secrets/restore.env"));
+        assert!(restoring.contains("/var/lib/kuma/restore-request"));
+        // 0600 on the credential and not on the request: one is a
+        // secret and the other is a flag saying to look for it.
+        let secret_line = restoring
+            .lines()
+            .find(|l| l.contains("restore.env"))
+            .expect("the credential is copied");
+        assert!(secret_line.contains("--chmod=600"), "{secret_line}");
+    }
+
     /// image carries a password hash for an account this disk will never
     /// create. `kuma iso` warns about the same thing for media.
     #[test]
@@ -875,7 +968,7 @@ tmpfs /tmp tmpfs rw 0 0
     /// install that stops and a machine nobody can log into.
     #[test]
     fn an_asked_for_shell_is_checked_before_the_account_is_written() {
-        let out = install_containerfile("ghcr.io/example/kuma:niri", &account());
+        let out = install_containerfile("ghcr.io/example/kuma:niri", &account(), false);
         let guard = out.find("RUN test -x /usr/bin/fish").unwrap();
         assert!(guard < out.find("COPY --chmod=600").unwrap());
     }
