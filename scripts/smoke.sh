@@ -1578,14 +1578,22 @@ port=2300
 # The published stage answers a question about the registry, not about
 # the examples, so it runs on its own and returns rather than joining the
 # loop below. Nothing here builds an image.
+# Ends here rather than falling through, the same way --published does.
+# This stage picks its own declaration and builds its own image, so
+# continuing into the sweep that builds every committed example means
+# twenty minutes of work nobody asked for and, worse, a verdict buried
+# under four unrelated ones.
 if [ $DEAD_DISK -eq 1 ]; then
     note "dead disk: install, back up, destroy, restore, boot"
     if (smoke_dead_disk dead-disk "$port"); then
-        ok "a dead disk is recoverable"
-    else
-        stop_minio
-        exit 1
+        note "summary"
+        printf '\n   a dead disk is recoverable\n'
+        exit 0
     fi
+    stop_minio
+    note "summary"
+    printf '\n   FAIL: a dead disk is NOT recoverable\n'
+    exit 1
 fi
 
 if [ -n "$PUBLISHED" ]; then
