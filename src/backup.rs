@@ -74,31 +74,6 @@ fn restic_argv_within(
     argv
 }
 
-/// What the far end turned out to be. Absent and unreachable are
-/// different sentences to a person and the same one to a timeout, so
-/// they are told apart by what restic said.
-enum Repo {
-    Present,
-    Absent,
-    Unreachable,
-}
-
-fn probe_repo(secret: &str, repo: &str) -> Repo {
-    match host_output(&restic_argv_within(secret, repo, Some(30), &["cat", "config"])) {
-        Ok(_) => Repo::Present,
-        Err(e) => {
-            let said = format!("{e:#}").to_lowercase();
-            if said.contains("does not exist") || said.contains("is there a repository") {
-                Repo::Absent
-            } else {
-                Repo::Unreachable
-            }
-        }
-    }
-}
-
-/// The two questions every subcommand here has to ask before it can do
-/// anything, kept together so each one answers them the same way.
 fn ready(config: &Config) -> Result<(String, String)> {
     if !config.backup.enable {
         bail!(
@@ -148,8 +123,23 @@ pub fn backup(
 /// drift from the first.
 fn seed(config: &Config) -> Result<()> {
     let (secret, repo) = ready(config)?;
-    match probe_repo(&secret, &repo) {
-        Repo::Present => {
+
+    // No "is there one yet" probe first, deliberately. Asking costs a
+    // round of restic's retry backoff on exactly the machine that has
+    // never been seeded, and `restic init` gives the answer for free: it
+    // creates the bucket when there is none and refuses when there is
+    // already a repository, which are the only two answers the question
+    // had.
+    //
+    // The first version did ask, and classified the reply by matching
+    // restic's words in the error. It failed on a real machine, because
+    // host_output keeps the last two lines of stderr and restic's last
+    // two are its shutdown rather than its reason: an ordinary unseeded
+    // repository read as unreachable and seeding refused itself.
+    println!("Creating a repository at {repo}");
+    if let Err(e) = run_host(&restic_argv(&secret, &repo, &["init"])) {
+        let said = format!("{e:#}").to_lowercase();
+        if said.contains("already exists") || said.contains("already initialized") {
             println!("{repo} already holds a repository; nothing to seed.");
             println!(
                 "The timer copies the difference from here on. \
@@ -157,19 +147,8 @@ fn seed(config: &Config) -> Result<()> {
             );
             return Ok(());
         }
-        // Said rather than guessed at: seeding an unreachable repository
-        // fails minutes later with restic's own retry storm in front of
-        // the reason, which is a worse way to learn the network is down.
-        Repo::Unreachable => {
-            bail!(
-                "cannot reach {repo} within 30s. Nothing has been changed. Check the \
-                 address and that this machine can get to it, then run this again."
-            );
-        }
-        Repo::Absent => {}
+        return Err(e);
     }
-    println!("Creating a repository at {repo}");
-    run_host(&restic_argv(&secret, &repo, &["init"]))?;
     println!();
     println!("Now making the first copy. This is the whole of your data rather than");
     println!("the difference since yesterday, so it takes as long as it takes.");
@@ -260,7 +239,17 @@ fn status(config: &Config, json: bool) -> Result<()> {
 
 fn list_snapshots(config: &Config, json: bool) -> Result<()> {
     let (secret, repo) = ready(config)?;
-    let raw = host_output(&restic_argv(&secret, &repo, &["snapshots", "--tag", "kuma", "--json"]))?;
+    // Bounded, because a repository that is not there answers this the
+    // slow way: restic treats a missing bucket as transient and retries
+    // with backoff, so `--list` on an unseeded machine sits silent for
+    // minutes. A minute is long enough for a slow link and short enough
+    // to be an answer.
+    let raw = host_output(&restic_argv_within(
+        &secret,
+        &repo,
+        Some(60),
+        &["snapshots", "--tag", "kuma", "--json"],
+    ))?;
     if json {
         println!("{raw}");
         return Ok(());
@@ -385,15 +374,15 @@ mod tests {
         assert_eq!(with_space.last().unwrap(), "/var/home/a b");
     }
 
-    /// Only the probe gets a clock. A backup or a restore is allowed to
+    /// Only a question gets a clock. A backup or a restore is allowed to
     /// take as long as it takes, and a deadline on those would kill a
     /// first copy of a home directory over a slow link.
     #[test]
     fn only_the_question_has_a_deadline() {
-        let probe = restic_argv_within("/s.env", "b2:kuma", Some(30), &["cat", "config"]);
+        let listing = restic_argv_within("/s.env", "b2:kuma", Some(60), &["snapshots"]);
         assert!(
-            probe.iter().any(|a| a.contains("timeout 30 restic")),
-            "the existence probe must not wait out restic's retry storm: {probe:?}"
+            listing.iter().any(|a| a.contains("timeout 60 restic")),
+            "listing an absent repository must not wait out the retry storm: {listing:?}"
         );
         let work = restic_argv("/s.env", "b2:kuma", &["backup", "/var/home"]);
         assert!(
