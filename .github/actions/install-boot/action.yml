@@ -1,0 +1,85 @@
+name: install-boot
+description: >-
+  Build kuma, get a runner ready to boot a disk, and run one smoke stage.
+
+# Every job that boots a disk had the same twenty lines in front of it and
+# the same eight behind it, differing only in which smoke stage ran in the
+# middle. That sameness is not cosmetic: the jobs split across two
+# workflows for a reason (ci.yml asks whether the tree works, published.yml
+# asks whether the registry works), and a shared prelude is what lets that
+# split follow the question rather than the machinery. Before this, the one
+# job that installs an image built from *this tree* lived in published.yml
+# purely because that is where the KVM-and-install steps already were, so
+# it ran only when something was published, which is after a tag.
+#
+# The podman step is here rather than in the kvm action beside it because
+# it mutates the runner to suit `kuma install`, while that one only
+# asserts the runner is usable. Both notions of TOOL_DIRS now live in one
+# place; they had drifted apart, with the kvm action counting
+# /usr/local/bin and the boot job not.
+#
+# Scope is everything up to and including the stage: get ready, build,
+# run one smoke stage. What a failure leaves behind stays with the job,
+# for the reason at the bottom of this file.
+
+inputs:
+  smoke_args:
+    description: "Arguments to scripts/smoke.sh for the stage under test"
+    required: true
+  prebuild:
+    description: >-
+      Example to build first with `--keep`, for stages that install an
+      image from this tree rather than one from a registry. Empty to skip.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+    - shell: bash
+      run: cargo build --locked
+
+    - uses: ./.github/actions/kvm
+      with:
+        sshpass: "true"
+
+    # `kuma install` refuses to touch a disk when a tool it needs is
+    # absent, and it looks in fixed directories rather than $PATH, because
+    # it runs under sudo and sudo's PATH is not the one asking. That is
+    # right on the media kuma installs from and wrong here: the runner
+    # keeps podman somewhere else, so the first CI install failed on
+    # `podman (dnf install podman)` while the image job was building with
+    # it happily.
+    - name: make podman visible to the install preflight
+      shell: bash
+      run: |
+        echo "podman resolves to: $(command -v podman)"
+        for d in /usr/local/bin /usr/local/sbin /usr/bin /usr/sbin /bin /sbin; do
+          [ -x "$d/podman" ] && echo "already at $d/podman" && exit 0
+        done
+        sudo ln -s "$(command -v podman)" /usr/bin/podman
+        echo "linked $(command -v podman) -> /usr/bin/podman"
+
+    # --keep, because the stage below installs the tag this leaves behind.
+    - name: build this tree's image
+      if: inputs.prebuild != ''
+      shell: bash
+      run: ./scripts/smoke.sh --keep ${{ inputs.prebuild }}
+
+    - name: smoke
+      shell: bash
+      env:
+        QEMU_VGA: virtio-vga
+        QEMU_DISPLAY: none
+      run: ./scripts/smoke.sh ${{ inputs.smoke_args }}
+
+# Keeping the console on failure is deliberately NOT in here, and the
+# reason is worth stating so nobody folds it in later for symmetry.
+# Whether `if: failure()` runs a step inside a composite action after an
+# earlier composite step failed is a behaviour this repo has never
+# measured, and the one time it matters is the one time nothing else can
+# tell you what happened. A shared prelude that silently ate the guest
+# console would be a worse trade than eight duplicated lines per job. If
+# somebody measures it, this is the place it belongs.

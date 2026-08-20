@@ -161,35 +161,10 @@ jobs:
         example: [niri]
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --locked
-
-      - uses: ./.github/actions/kvm
-        with:
-          sshpass: "true"
-
-      # `kuma install` refuses to touch a disk when a tool it needs is
-      # absent, and it looks in /usr/bin, /usr/sbin, /bin and /sbin rather
-      # than $PATH, because it runs under sudo and sudo's PATH is not the
-      # one asking. That is right on the media kuma installs from and
-      # wrong here: the runner keeps podman somewhere else, so the first
-      # CI install failed on `podman (dnf install podman)` while the image
-      # job was building with it happily.
-      - name: make podman visible to the install preflight
-        run: |
-          echo "podman resolves to: $(command -v podman)"
-          for d in /usr/bin /usr/sbin /bin /sbin; do
-            [ -x "$d/podman" ] && echo "already at $d/podman" && exit 0
-          done
-          sudo ln -s "$(command -v podman)" /usr/bin/podman
-          echo "linked $(command -v podman) -> /usr/bin/podman"
-
       - name: smoke (install + boot)
-        env:
-          QEMU_VGA: virtio-vga
-          QEMU_DISPLAY: none
-        run: ./scripts/smoke.sh --install --boot ${{ matrix.example }}
+        uses: ./.github/actions/install-boot
+        with:
+          smoke_args: --install --boot ${{ matrix.example }}
 
       # A boot failure is only useful if the guest's own account of it
       # survives the runner.
@@ -201,6 +176,49 @@ jobs:
         with:
           name: console-${{ matrix.example }}
           path: vm-smoke/${{ matrix.example }}/console.log
+          if-no-files-found: warn
+
+  # The only job that installs and boots an image built from THIS TREE.
+  #
+  # That makes it the only place an unreleased change to install-time or
+  # first-boot behaviour can be tested at all. The published jobs test an
+  # artifact that by definition cannot contain it, and the boot job above
+  # uses bootc-image-builder disks, which are ext4: every path that only
+  # runs on a btrfs root does nothing there, so a broken converger and a
+  # working one look identical. It is also where the ordering-cycle
+  # assertion runs, and systemd resolves a cycle by deleting a job, which
+  # on an ext4 disk would go unnoticed.
+  #
+  # It lived in published.yml until 0.14 and was called `fix-verification`
+  # there, a name from the one fix it was written for. Being in that file
+  # meant it ran on publish.yml's call, i.e. after a tag was already
+  # public: the only job that could catch an install-time regression could
+  # only report one too late to stop it. v0.13.0 shipped two new boot-time
+  # units with no coverage here for exactly that reason. It tests the
+  # tree, so it runs when the tree changes.
+  install:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name != 'pull_request' &&
+      !startsWith(github.ref, 'refs/tags/') &&
+      (github.event_name != 'schedule' || github.event.schedule == '0 5 * * *')
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - name: install the image this tree builds, and boot it
+        uses: ./.github/actions/install-boot
+        with:
+          prebuild: niri
+          smoke_args: --published localhost/kuma-smoke-niri:latest
+
+      - name: guest console
+        if: failure()
+        run: tail -200 vm-smoke/published/console.log || true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: console-install
+          path: vm-smoke/published/console.log
           if-no-files-found: warn
 
   # The artifact a stranger downloads, and the only one that was built by

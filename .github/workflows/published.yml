@@ -6,17 +6,24 @@ name: published
 # putting it in ci.yml would turn a registry hiccup into a red mark on
 # somebody's pull request and teach people to ignore red.
 #
-# It is also the only check that installs an image kuma published rather
-# than one it just built, which is what makes `kuma-home-subvol`
-# verifiable: that converger only does anything on a btrfs root, only
-# `kuma install` writes one, and until this existed nothing ever booted a
-# disk it had written.
+# Everything here installs an image kuma published rather than one it
+# just built, which is what makes `kuma-home-subvol` verifiable: that
+# converger only does anything on a btrfs root, only `kuma install`
+# writes one, and until this existed nothing ever booted a disk it had
+# written.
 on:
   # publish.yml calls this when it has moved the tag, which is the only
-  # moment the answer can change. Three of these four jobs read the
-  # mutable `:niri` tag, so dispatching them before a publish just
-  # re-tests the previous release, and remembering the order was the
-  # whole mechanism until now.
+  # moment the answer can change. Every job here reads the mutable
+  # `:niri` tag, so dispatching them before a publish just re-tests the
+  # previous release, and remembering the order was the whole mechanism
+  # until now.
+  #
+  # It reads "every job" rather than "three of four" because the fourth
+  # never belonged: `fix-verification` installed an image built from the
+  # tree, not from the registry, and lived here only because this is
+  # where the KVM-and-install steps were. That made the one job covering
+  # install-time and first-boot regressions run *after* a tag was public.
+  # It is `install` in ci.yml now, on the harness both share.
   workflow_call:
     inputs:
       image:
@@ -56,20 +63,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --locked
-
-      - uses: ./.github/actions/kvm
-        with:
-          sshpass: "true"
-
       - name: install the published image and boot the disk it wrote
-        env:
-          QEMU_VGA: virtio-vga
-          QEMU_DISPLAY: none
-        run: |
-          ./scripts/smoke.sh --published "${{ inputs.image || 'ghcr.io/letdown2491/kuma:niri' }}"
+        uses: ./.github/actions/install-boot
+        with:
+          smoke_args: --published ${{ inputs.image || 'ghcr.io/letdown2491/kuma:niri' }}
 
       - name: guest console
         if: failure()
@@ -78,51 +75,6 @@ jobs:
         if: failure()
         with:
           name: console-published
-          path: vm-smoke/published/console.log
-          if-no-files-found: warn
-
-  # The only job that installs and boots an image built from this tree.
-  #
-  # That makes it the only place an unreleased change to install-time or
-  # first-boot behaviour can be tested at all. The published jobs test an
-  # artifact that by definition cannot contain it, and ci.yml's boot job
-  # uses bootc-image-builder disks, which are ext4: every path that only
-  # runs on a btrfs root does nothing there, so a broken converger and a
-  # working one look identical.
-  #
-  # It is also where the ordering-cycle assertion runs. systemd resolves
-  # a cycle by deleting a job, and on an ext4 disk the deleted job would
-  # go unnoticed.
-  fix-verification:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --locked
-
-      - uses: ./.github/actions/kvm
-        with:
-          sshpass: "true"
-
-      # --keep so the tag survives for the install below.
-      - name: build this tree's niri image
-        run: ./scripts/smoke.sh --keep niri
-
-      - name: install the image this tree builds, and boot it
-        env:
-          QEMU_VGA: virtio-vga
-          QEMU_DISPLAY: none
-        run: ./scripts/smoke.sh --published localhost/kuma-smoke-niri:latest
-
-      - name: guest console
-        if: failure()
-        run: tail -200 vm-smoke/published/console.log || true
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: console-fix-verification
           path: vm-smoke/published/console.log
           if-no-files-found: warn
 
@@ -143,20 +95,12 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --locked
-      - uses: ./.github/actions/kvm
-        with:
-          sshpass: "true"
-
       - name: install an encrypted disk, then unlock it at the console
-        env:
-          QEMU_VGA: virtio-vga
-          QEMU_DISPLAY: none
-        run: |
-          ./scripts/smoke.sh --encrypted \
-            --published "${{ inputs.image || 'ghcr.io/letdown2491/kuma:niri' }}"
+        uses: ./.github/actions/install-boot
+        with:
+          smoke_args: >-
+            --encrypted
+            --published ${{ inputs.image || 'ghcr.io/letdown2491/kuma:niri' }}
 
       - name: guest console
         if: failure()
@@ -188,22 +132,12 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --locked
-
-      - uses: ./.github/actions/kvm
-        with:
-          sshpass: "true"
-
       - name: install an old version, upgrade it, and boot what it became
-        env:
-          QEMU_VGA: virtio-vga
-          QEMU_DISPLAY: none
-        run: |
-          ./scripts/smoke.sh \
-            --published "${{ inputs.from_image || 'ghcr.io/letdown2491/kuma:niri-0.7.0' }}" \
-            --upgrade-to "${{ inputs.image || 'ghcr.io/letdown2491/kuma:niri' }}"
+        uses: ./.github/actions/install-boot
+        with:
+          smoke_args: >-
+            --published ${{ inputs.from_image || 'ghcr.io/letdown2491/kuma:niri-0.7.0' }}
+            --upgrade-to ${{ inputs.image || 'ghcr.io/letdown2491/kuma:niri' }}
 
       - name: guest console
         if: failure()
