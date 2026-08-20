@@ -1474,6 +1474,12 @@ WantedBy=basic.target
 /// NEXT grub run, so any point in this boot converges in time.
 const BOOT_HEALTH_SYNC_SERVICE: &str = r#"[Unit]
 Description=Converge the bootloader's boot-counter fallback hook
+# The same gate its sibling kuma-fstab-sync carries, and the one
+# liveiso.rs already credited this unit with having. It did not: it
+# skipped on live media only because the grub config it looks for is not
+# there, which is an accident rather than a decision, and an accident
+# that a future change to the script could remove without anyone noticing.
+ConditionPathExists=/run/ostree-booted
 RequiresMountsFor=/boot
 Before=greenboot-healthcheck.service
 
@@ -4183,6 +4189,20 @@ mod tests {
         );
         assert!(niri.contains(BAKED_OVERRIDES), "nothing copies {BAKED_OVERRIDES} into the image");
 
+        // The session constants exist so a session command cannot change
+        // in one of two places, and their own doc comment says exactly
+        // that, while the greeter config beside them spelled the command
+        // out again. A const cannot interpolate into a const, so the
+        // agreement is asserted instead of deduplicated.
+        assert!(
+            GREETD_CONFIG.contains(NIRI_SESSION),
+            "the greeter starts a session the constants do not name"
+        );
+        assert!(
+            niri.contains(GREETD_CONF),
+            "the greeter config is copied somewhere greetd does not read"
+        );
+
         assert!(
             BACKUP_SCRIPT.contains(&format!("stamp={}", crate::backup::STAMP)),
             "the converger stamps somewhere doctor does not read"
@@ -4200,6 +4220,62 @@ mod tests {
             service.contains(&format!("EnvironmentFile=-{dir}/named.env")),
             "the unit loads a credential from somewhere else entirely: {service}"
         );
+    }
+
+    /// Every kuma unit an image enables has to be accounted for on live
+    /// media: masked, or carrying a condition that makes it skip itself
+    /// there.
+    ///
+    /// The mask list in liveiso.rs is hand-maintained and its written
+    /// justification had already gone stale: it credits
+    /// kuma-boot-health-sync with `ConditionPathExists=/run/ostree-booted`,
+    /// which that unit does not carry. It self-skips today by accident,
+    /// because the file it looks for is not there. A unit that starts
+    /// converging inside a live session is converging something nobody
+    /// installed, and the media is a newcomer's first impression.
+    #[test]
+    fn every_enabled_kuma_unit_is_accounted_for_on_live_media() {
+        let dir = tempfile::tempdir().unwrap();
+        context(EVERYTHING_ON, dir.path());
+        let containerfile = std::fs::read_to_string(dir.path().join("Containerfile")).unwrap();
+
+        let enabled: Vec<String> = containerfile
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("RUN systemctl enable "))
+            .flat_map(|rest| rest.split_whitespace())
+            .filter(|u| u.starts_with("kuma-"))
+            .map(String::from)
+            .collect();
+        assert!(enabled.len() > 5, "expected the image to enable kuma's units: {enabled:?}");
+
+        // Deliberately live-safe: enabled, unmasked, and correct there.
+        // Named with the reason rather than left to be rediscovered,
+        // the same way the walkthrough table records what nothing runs.
+        const LIVE_SAFE: &[(&str, &str)] = &[(
+            "kuma-vm-timezone.service",
+            "adopts the host's timezone through qemu fw_cfg, which a live session inside \
+             `kuma vm` wants, and exits 0 immediately when that channel is absent",
+        )];
+
+        for unit in &enabled {
+            if crate::liveiso::LIVE_MASKED.contains(&unit.as_str()) {
+                continue;
+            }
+            if let Some((_, why)) = LIVE_SAFE.iter().find(|(u, _)| u == unit) {
+                assert!(!why.trim().is_empty(), "{unit} is called live-safe for no stated reason");
+                continue;
+            }
+            // Not masked, so it must decline on its own. Either it is
+            // gated on an ostree boot, or on a file a live session does
+            // not have.
+            let staged = dir.path().join(unit);
+            let text = std::fs::read_to_string(&staged).unwrap_or_default();
+            assert!(
+                text.contains("ConditionPathExists="),
+                "{unit} is enabled, is not masked on live media, and carries no condition \
+                 that would make it skip there"
+            );
+        }
     }
 
     /// The unit that puts a home directory back on a machine that has
