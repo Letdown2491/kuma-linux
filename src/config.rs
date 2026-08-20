@@ -22,6 +22,10 @@ pub struct Config {
     pub services: Services,
     #[serde(default)]
     pub snapshots: Snapshots,
+    /// Offsite copies of what [snapshots] keeps locally. Names the
+    /// credential it opens the repository with; never holds it.
+    #[serde(default)]
+    pub backup: Backup,
     /// Flatpak permission overrides, declared per app and converged per
     /// key. Everything else in the same file stays whoever's it was,
     /// which is what lets Flatseal and kuma both write one app without
@@ -37,10 +41,9 @@ pub struct Config {
 ///
 /// Deliberately the cheap half of the problem: this survives a bad
 /// update, an overwrite, or a deleted directory, and not a dead disk or
-/// a stolen laptop. Offsite backup is a different feature with a
-/// credential in it, and credentials do not belong in a file that gets
-/// committed and baked world-readable into an image — the same boundary
-/// capture.rs draws around [user].
+/// a stolen laptop. [backup] is the other half, and it reads from here
+/// rather than from the live subvolume, which is why enabling it
+/// requires enabling this.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Snapshots {
@@ -85,6 +88,92 @@ impl Default for Snapshots {
             interval: default_snapshot_interval(),
             keep_recent: default_keep_recent(),
             keep_daily: default_keep_daily(),
+        }
+    }
+}
+
+/// Offsite copies of the one thing a rebuild cannot produce.
+///
+/// [snapshots] survives a mistake; this survives the disk. It reads from
+/// a read-only snapshot rather than from the live subvolume, so files
+/// cannot change under it mid-run, which is why `enable` here requires
+/// `snapshots.enable` and says so at `kuma check` rather than at 3am.
+///
+/// **The credential is named here and held on the machine, and that is
+/// not a hole in the declaration.** A declaration is written to be
+/// committed and is baked world-readable into an image, which is the
+/// wrong place for a secret and the same boundary capture.rs draws
+/// around [user]. Naming it keeps this file complete: that a credential
+/// exists, and what it is called, is declared here; only its value lives
+/// elsewhere. The practical consequence is about recovery rather than
+/// about the file, namely that restoring a machine takes two things
+/// instead of one.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Backup {
+    #[serde(default)]
+    pub enable: bool,
+    /// A restic repository, spelled the way restic spells it:
+    /// `s3:https://host/bucket`, `sftp:user@host:/path`,
+    /// `rclone:remote:path`, `b2:bucket`.
+    ///
+    /// One string rather than a `provider` key beside it, because
+    /// restic's own scheme prefix already says which backend this is and
+    /// two places to say one thing can disagree.
+    #[serde(default)]
+    pub repo: String,
+    /// The name of the credential this repository is opened with, never
+    /// the credential. The machine holds the value at
+    /// `/var/lib/kuma/secrets/<secret>.env`, 0600 root, put there by
+    /// hand.
+    #[serde(default = "default_backup_secret")]
+    pub secret: String,
+    /// A systemd OnCalendar expression, as in [snapshots].
+    #[serde(default = "default_backup_interval")]
+    pub interval: String,
+    /// Retention handed to `restic forget`. Zero disables that tier;
+    /// all three at zero is refused, since it would delete every
+    /// snapshot on the run that made it.
+    #[serde(default = "default_backup_keep_daily")]
+    pub keep_daily: u32,
+    #[serde(default = "default_backup_keep_weekly")]
+    pub keep_weekly: u32,
+    #[serde(default = "default_backup_keep_monthly")]
+    pub keep_monthly: u32,
+    /// Excluded on top of the curated set, never instead of it. The
+    /// curated entries are the trees a declaration already rebuilds, so
+    /// dropping them would mean paying to store what kuma can recreate.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+}
+
+fn default_backup_secret() -> String {
+    "backup".to_string()
+}
+fn default_backup_interval() -> String {
+    "daily".to_string()
+}
+fn default_backup_keep_daily() -> u32 {
+    7
+}
+fn default_backup_keep_weekly() -> u32 {
+    4
+}
+fn default_backup_keep_monthly() -> u32 {
+    6
+}
+
+impl Default for Backup {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            repo: String::new(),
+            secret: default_backup_secret(),
+            interval: default_backup_interval(),
+            keep_daily: default_backup_keep_daily(),
+            keep_weekly: default_backup_keep_weekly(),
+            keep_monthly: default_backup_keep_monthly(),
+            exclude: Vec::new(),
         }
     }
 }
@@ -519,6 +608,69 @@ impl Config {
                     "snapshots keeps nothing: keep_recent and keep_daily are both 0, \
                      so every snapshot would be deleted by the run that took it"
                 );
+            }
+        }
+        if self.backup.enable {
+            if self.backup.repo.is_empty() {
+                bail!("backup.enable is set and backup.repo names nowhere to put it");
+            }
+            // A repository with a password in it puts the secret back in
+            // the file this design exists to keep it out of, and it would
+            // arrive by copy-paste from a working restic command line
+            // rather than by anyone deciding to. Refused rather than
+            // warned about, for the same reason a private key in
+            // system.ca_certificates is: the file gets committed, and
+            // baked world-readable into every image built from it.
+            //
+            // `sftp:user@host:/path` is ordinary and must pass, so what
+            // is rejected is a colon inside the userinfo, not an `@`.
+            if let Some(at) = self.backup.repo.find('@') {
+                let before = &self.backup.repo[..at];
+                let userinfo = match before.rsplit_once("://") {
+                    Some((_, after)) => after,
+                    None => before.split_once(':').map_or(before, |(_, rest)| rest),
+                };
+                if userinfo.contains(':') {
+                    bail!(
+                        "backup.repo carries a password. The repository address belongs \
+                         here and the credential does not: name it with backup.secret and \
+                         put the value in /var/lib/kuma/secrets/<name>.env instead"
+                    );
+                }
+            }
+            // Reading from a live subvolume means restic sees files
+            // change under it, so the answer is "which snapshot" rather
+            // than "whatever /var/home looked like across ten minutes".
+            if !self.snapshots.enable {
+                bail!(
+                    "backup.enable requires snapshots.enable: a backup reads from a \
+                     read-only snapshot so nothing changes under it mid-run"
+                );
+            }
+            // Becomes a file name under /var/lib/kuma/secrets.
+            validate_name(&self.backup.secret, "backup.secret", &['.', '-', '_'])?;
+            validate_name(
+                &self.backup.interval,
+                "backup.interval",
+                &['*', '-', ':', ' ', ',', '.', '/', '~'],
+            )?;
+            if self.backup.keep_daily == 0
+                && self.backup.keep_weekly == 0
+                && self.backup.keep_monthly == 0
+            {
+                bail!(
+                    "backup keeps nothing: keep_daily, keep_weekly and keep_monthly are \
+                     all 0, so every backup would be pruned by the run that made it"
+                );
+            }
+            for path in &self.backup.exclude {
+                if !path.starts_with('/') && !path.starts_with('~') {
+                    bail!(
+                        "backup.exclude {path:?} is neither absolute nor rooted at ~, and \
+                         a relative exclude means whatever the unit's directory happens to be"
+                    );
+                }
+                validate_name(path, "backup.exclude", &['/', '.', '-', '_', '~', '*', ' '])?;
             }
         }
         Ok(())
@@ -1173,6 +1325,7 @@ pub(crate) mod tests {
             ("timezone, locale, hostname, desktop, trusted CAs", Declared("system")),
             ("the declared account", Declared("user")),
             ("local btrfs snapshots", Declared("snapshots")),
+            ("offsite copies of what snapshots keep", Declared("backup")),
             ("/etc files this image owns", Graded("etc")),
             ("a unit enabled with no unit file", Graded("units")),
             ("a flatpak override pointing at nothing", Graded("flatpak overrides")),
@@ -1423,6 +1576,101 @@ pub(crate) mod tests {
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("private key"), "{err}");
         assert!(err.contains("world-readable"), "the refusal says why: {err}");
+    }
+
+    /// The whole point of naming the credential is that the credential
+    /// is not in the file, and the way that gets undone is not by anyone
+    /// deciding to: it is by pasting a restic command line that already
+    /// worked. `sftp:user@host:/path` is ordinary and has to keep
+    /// passing, so what is refused is a colon inside the userinfo.
+    #[test]
+    fn a_repo_carrying_its_own_password_is_refused() {
+        let with_password = |repo: &str| {
+            let toml = format!(
+                "schema_version = 1\n[snapshots]\nenable = true\n\
+                 [backup]\nenable = true\nrepo = {repo:?}\n"
+            );
+            toml::from_str::<Config>(&toml).unwrap().validate()
+        };
+
+        for repo in
+            ["s3:https://KEY:SECRET@minio.example:9000/kuma", "sftp:user:hunter2@host:/srv/kuma"]
+        {
+            let err = with_password(repo).unwrap_err().to_string();
+            assert!(err.contains("password"), "{repo}: {err}");
+            assert!(err.contains("backup.secret"), "the refusal says where it goes: {err}");
+        }
+
+        // An `@` is not the tell. These are how people legitimately
+        // address a repository and every one has to survive.
+        for repo in [
+            "sftp:user@host:/srv/kuma",
+            "s3:https://minio.example:9000/kuma",
+            "rclone:start9:kuma",
+            "b2:kuma-backups",
+        ] {
+            with_password(repo).unwrap_or_else(|e| panic!("{repo} should validate: {e}"));
+        }
+    }
+
+    /// Reading from a live subvolume means restic sees files change
+    /// underneath it, so a backup has to name which snapshot it copied.
+    /// Refused at `kuma check`, where a person is looking, rather than
+    /// at 3am inside a unit nobody reads.
+    #[test]
+    fn a_backup_without_snapshots_is_refused() {
+        let no_snapshots: Config =
+            toml::from_str("schema_version = 1\n[backup]\nenable = true\nrepo = \"b2:kuma\"\n")
+                .unwrap();
+        let err = no_snapshots.validate().unwrap_err().to_string();
+        assert!(err.contains("snapshots.enable"), "{err}");
+
+        let nowhere: Config = toml::from_str(
+            "schema_version = 1\n[snapshots]\nenable = true\n[backup]\nenable = true\n",
+        )
+        .unwrap();
+        assert!(nowhere.validate().is_err(), "enable with no repo names nowhere to put it");
+
+        // And the whole section disabled is nobody's problem: a machine
+        // that never backs up must not fail a build over it.
+        let disabled: Config =
+            toml::from_str("schema_version = 1\n[backup]\nrepo = \"\"\n").unwrap();
+        disabled.validate().unwrap();
+    }
+
+    /// Same shape as the snapshots rule beside it, and the same reason:
+    /// a policy that prunes everything is busywork wearing a backup's
+    /// clothes. Three tiers rather than two, because restic's forget
+    /// takes daily/weekly/monthly.
+    #[test]
+    fn a_backup_retention_that_keeps_nothing_is_rejected() {
+        let head = "schema_version = 1\n[snapshots]\nenable = true\n\
+                    [backup]\nenable = true\nrepo = \"b2:kuma\"\n";
+        let keeps_nothing: Config =
+            toml::from_str(&format!("{head}keep_daily = 0\nkeep_weekly = 0\nkeep_monthly = 0\n"))
+                .unwrap();
+        assert!(keeps_nothing.validate().is_err());
+
+        let one_tier: Config =
+            toml::from_str(&format!("{head}keep_daily = 0\nkeep_weekly = 0\nkeep_monthly = 1\n"))
+                .unwrap();
+        one_tier.validate().unwrap();
+    }
+
+    /// An exclude is handed to restic, which resolves a relative path
+    /// against whatever directory the unit happens to be in. That is not
+    /// a thing anyone means, and it fails by quietly excluding nothing.
+    #[test]
+    fn a_relative_exclude_is_refused() {
+        let head = "schema_version = 1\n[snapshots]\nenable = true\n\
+                    [backup]\nenable = true\nrepo = \"b2:kuma\"\n";
+        let relative: Config = toml::from_str(&format!("{head}exclude = [\"Videos\"]\n")).unwrap();
+        assert!(relative.validate().is_err());
+
+        let rooted: Config =
+            toml::from_str(&format!("{head}exclude = [\"~/Videos\", \"/var/home/x/.cache\"]\n"))
+                .unwrap();
+        rooted.validate().unwrap();
     }
 
     /// A retention that keeps nothing would delete each snapshot on the
