@@ -697,13 +697,18 @@ restic backup "$target"{extra_paths} \
 # laptop this is for.
 restic forget --tag kuma \
     --keep-daily {keep_daily} --keep-weekly {keep_weekly} --keep-monthly {keep_monthly}
+# Before anything writes into it. The stamp below made the directory and
+# the prune stamp above it did not, so a machine where /var/lib/kuma did
+# not already exist would fail the unit after a backup that worked, which
+# is the most expensive place to discover an ordering.
+install -d -m 0755 /var/lib/kuma
+
 pruned=/var/lib/kuma/backup-pruned
 if [ ! -f "$pruned" ] || [ "$(( $(date -u +%s) - $(cat "$pruned" 2>/dev/null || echo 0) ))" -ge 604800 ]; then
     restic prune
     date -u +%s > "$pruned"
 fi
 
-install -d -m 0755 /var/lib/kuma
 # Epoch first because doctor parses it and this repo carries no date
 # library; the readable form beside it is for whoever cats the file.
 printf '%s %s\n' "$(date -u +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$stamp"
@@ -3893,6 +3898,13 @@ mod tests {
         );
         assert!(script.contains("restic prune"), "it still prunes, just not every run");
         assert!(script.contains("604800"), "weekly, measured from a stamp rather than a weekday");
+        // Both stamps live in /var/lib/kuma, so it has to exist before
+        // either is written rather than before only the second.
+        let made = script.find("install -d -m 0755 /var/lib/kuma").unwrap();
+        for writes in ["$pruned", "$stamp"] {
+            let at = script.rfind(&format!("> \"{writes}\"")).unwrap();
+            assert!(made < at, "{writes} is written before its directory exists");
+        }
         for placeholder in
             ["{target}", "{repo}", "{excludes}", "{keep_daily}", "{keep_weekly}", "{keep_monthly}"]
         {
