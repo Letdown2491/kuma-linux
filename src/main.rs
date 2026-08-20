@@ -605,12 +605,22 @@ fn check(config_path: &Path, json: bool) -> Result<()> {
                             "rpm": config.packages.rpm.len(),
                             "flatpak": config.packages.flatpak.len(),
                             "brew": config.packages.brew.len(),
+                            "overrides": config.overrides.len(),
                         },
                     }))?
                 );
             } else {
+                // Overrides are counted in apps rather than keys, and
+                // only when there are any: a permanent "0 overrides" on
+                // every check would be noise on the many declarations
+                // that never name one.
+                let permissions = match config.overrides.len() {
+                    0 => String::new(),
+                    1 => ", permissions for 1 app".to_string(),
+                    n => format!(", permissions for {n} apps"),
+                };
                 println!(
-                    "{shown} is a valid declaration: {} rpm, {} flatpak, {} brew.",
+                    "{shown} is a valid declaration: {} rpm, {} flatpak, {} brew{permissions}.",
                     config.packages.rpm.len(),
                     config.packages.flatpak.len(),
                     config.packages.brew.len()

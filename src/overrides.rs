@@ -8,7 +8,7 @@
 //! copies every other line through untouched. That is `73771ab`'s rule
 //! one level down: convergence takes back only what it gave.
 
-use crate::config::{AppOverride, Scope};
+use crate::config::{AppOverride, Overrides, Scope};
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -27,7 +27,7 @@ pub fn owned_id(group: &str, key: &str) -> String {
 
 /// Every key a declaration asks for, in the order the file writes them:
 /// group, key, value.
-pub fn declared(app: &AppOverride) -> Vec<(String, String, String)> {
+pub fn declared_keys(app: &AppOverride) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
     for (key, values) in app.context_lists() {
         if values.is_empty() {
@@ -61,7 +61,7 @@ pub fn declared(app: &AppOverride) -> Vec<(String, String, String)> {
 pub fn render(app: &AppOverride) -> String {
     let mut out = String::new();
     let mut current = "";
-    for (group, key, value) in declared(app) {
+    for (group, key, value) in declared_keys(app) {
         if group != current {
             if !out.is_empty() {
                 out.push('\n');
@@ -371,6 +371,117 @@ pub fn converge_store(scope: Scope, root: &Path, home: &Path) -> Result<Vec<(Str
     Ok(report)
 }
 
+/// One key that does not match the declaration, in whichever direction.
+#[derive(Debug, PartialEq)]
+pub struct Drift {
+    pub app: String,
+    pub group: String,
+    pub key: String,
+    /// "add" when the machine is missing what the declaration says,
+    /// "remove" when kuma set a key the declaration stopped naming.
+    pub change: &'static str,
+}
+
+impl Drift {
+    /// How it reads in a diff. `[Context]` is where most keys live and
+    /// naming it every time would bury the app id, so only the other
+    /// groups say which one they are.
+    pub fn item(&self) -> String {
+        if self.group == CONTEXT {
+            format!("{} {}", self.app, self.key)
+        } else {
+            format!("{} {}/{}", self.app, self.group, self.key)
+        }
+    }
+}
+
+fn live_keys(path: &Path) -> BTreeMap<(String, String), String> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    parse_declared(&text).into_iter().map(|(g, k, v)| ((g, k), v)).collect()
+}
+
+/// What `kuma diff` reports: the declaration against the two stores.
+///
+/// Read-only, like every other observer here. It answers the question
+/// the machine cannot answer for itself, which is why a permission that
+/// somebody toggled in Flatseal an hour ago shows up as a proposal
+/// rather than as a surprise at the next boot.
+pub fn drift(declared: &Overrides, root: &Path, home: &Path) -> Vec<Drift> {
+    let mut out = Vec::new();
+    for scope in [Scope::System, Scope::User] {
+        let store = store(scope, root, home);
+        let previous = read_state(&state_path(scope, root, home));
+
+        let mut still_declared: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+        for (app, over) in declared.iter().filter(|(_, o)| o.scope == scope) {
+            let live = live_keys(&store.join(app));
+            let mut ids = Vec::new();
+            for (group, key, value) in declared_keys(over) {
+                ids.push(owned_id(&group, &key));
+                if live.get(&(group.clone(), key.clone())) != Some(&value) {
+                    out.push(Drift { app: app.clone(), group, key, change: "add" });
+                }
+            }
+            still_declared.insert(app.as_str(), ids);
+        }
+
+        for (app, ids) in &previous {
+            let live = live_keys(&store.join(app));
+            let empty = Vec::new();
+            let kept = still_declared.get(app.as_str()).unwrap_or(&empty);
+            for id in ids {
+                if kept.contains(id) {
+                    continue;
+                }
+                let Some((group, key)) = id.split_once('\t') else { continue };
+                if live.contains_key(&(group.to_string(), key.to_string())) {
+                    out.push(Drift {
+                        app: app.clone(),
+                        group: group.to_string(),
+                        key: key.to_string(),
+                        change: "remove",
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether the image's baked overrides are behind the declaration.
+///
+/// The same trap `/usr/lib/kuma/flatpaks` has: the converger reads what
+/// the image baked, so an edit to the declaration reaches nothing until
+/// a rebuild, and the honest thing is to say so rather than let `sync`
+/// report success over a file it never read.
+pub fn image_stale(declared: &Overrides, root: &Path) -> bool {
+    for scope in [Scope::System, Scope::User] {
+        let dir = declared_dir(scope, root);
+        if !dir.is_dir() {
+            continue;
+        }
+        let mut baked: BTreeSet<String> = BTreeSet::new();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str() {
+                    baked.insert(name.to_string());
+                }
+            }
+        }
+        for (app, over) in declared.iter().filter(|(_, o)| o.scope == scope) {
+            baked.remove(app.as_str());
+            if std::fs::read_to_string(dir.join(app)).unwrap_or_default() != render(over) {
+                return true;
+            }
+        }
+        // baked for an app the declaration no longer names
+        if !baked.is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,7 +524,7 @@ mod tests {
     fn convergence_edits_its_own_key_and_no_other() {
         let live = "[Context]\nfilesystems=home;\nsockets=x11;\n";
         let a = app_of("filesystems = [\"host\"]\n");
-        let (out, changed, owned) = converge(live, &declared(&a), &[]);
+        let (out, changed, owned) = converge(live, &declared_keys(&a), &[]);
         assert_eq!(out, "[Context]\nfilesystems=host;\nsockets=x11;\n");
         assert_eq!(changed.set, vec![owned_id(CONTEXT, "filesystems")]);
         assert!(changed.removed.is_empty());
@@ -449,7 +560,7 @@ mod tests {
         let live =
             "# set by hand, 2026\n[Context]\nsockets=x11;\n\n[Some Future Group]\nkey=value\n";
         let a = app_of("devices = [\"dri\"]\n");
-        let (out, _, _) = converge(live, &declared(&a), &[]);
+        let (out, _, _) = converge(live, &declared_keys(&a), &[]);
         assert!(out.starts_with("# set by hand, 2026\n"), "{out}");
         assert!(out.contains("[Some Future Group]\nkey=value\n"), "{out}");
         assert!(out.contains("devices=dri;"), "{out}");
@@ -462,9 +573,9 @@ mod tests {
     #[test]
     fn a_second_pass_changes_nothing() {
         let a = app_of("filesystems = [\"home\"]\n");
-        let (once, first, owned) = converge("", &declared(&a), &[]);
+        let (once, first, owned) = converge("", &declared_keys(&a), &[]);
         assert!(!first.is_empty());
-        let (twice, second, _) = converge(&once, &declared(&a), &owned);
+        let (twice, second, _) = converge(&once, &declared_keys(&a), &owned);
         assert_eq!(once, twice);
         assert!(second.is_empty(), "second pass reported {second:?}");
     }
@@ -476,7 +587,7 @@ mod tests {
     fn a_hand_edit_to_a_declared_key_is_taken_back_and_reported() {
         let a = app_of("sockets = [\"wayland\"]\n");
         let owned = vec![owned_id(CONTEXT, "sockets")];
-        let (out, changed, _) = converge("[Context]\nsockets=x11;\n", &declared(&a), &owned);
+        let (out, changed, _) = converge("[Context]\nsockets=x11;\n", &declared_keys(&a), &owned);
         assert_eq!(out, "[Context]\nsockets=wayland;\n");
         assert_eq!(changed.set, owned);
     }
@@ -560,7 +671,84 @@ mod tests {
              [system-bus]\n\
              \"org.freedesktop.UPower\" = \"talk\"\n",
         );
-        assert_eq!(parse_declared(&render(&decl)), declared(&decl));
+        assert_eq!(parse_declared(&render(&decl)), declared_keys(&decl));
+    }
+
+    /// diff reports both directions, and the negative in the middle is
+    /// the one that matters: a key nobody declared and kuma never set is
+    /// not drift, it is somebody's machine, and reporting it would make
+    /// diff cry wolf on every override anyone ever wrote by hand.
+    #[test]
+    fn drift_reports_both_directions_and_leaves_strangers_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let home = root.join("home/mira");
+        let store_dir = store(Scope::System, root, &home);
+        std::fs::create_dir_all(&store_dir).unwrap();
+        // the machine has one key kuma set, and one it never touched
+        std::fs::write(
+            store_dir.join("org.example.App"),
+            "[Context]\nsockets=x11;\nfilesystems=home;\n",
+        )
+        .unwrap();
+        let state = state_path(Scope::System, root, &home);
+        std::fs::create_dir_all(state.parent().unwrap()).unwrap();
+        std::fs::write(&state, "org.example.App\tContext\tsockets\n").unwrap();
+
+        // declaring something else entirely: sockets is kuma's to take
+        // back, devices is missing, filesystems was never kuma's
+        let mut declared: Overrides = Default::default();
+        declared.insert("org.example.App".into(), app_of("devices = [\"dri\"]\n"));
+        let found = drift(&declared, root, &home);
+        let items: Vec<String> =
+            found.iter().map(|d| format!("{} {}", d.change, d.item())).collect();
+        assert_eq!(items, vec!["add org.example.App devices", "remove org.example.App sockets"]);
+        assert!(
+            !items.iter().any(|i| i.contains("filesystems")),
+            "diff claimed a key kuma never set: {items:?}"
+        );
+    }
+
+    /// A declaration that matches the machine is silent. Without this a
+    /// converged machine would report drift forever and the section
+    /// would teach people to ignore it.
+    #[test]
+    fn a_converged_store_shows_no_drift() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let home = root.join("home/mira");
+        let mut declared: Overrides = Default::default();
+        declared.insert("org.example.App".into(), app_of("sockets = [\"wayland\"]\n"));
+        let dir = declared_dir(Scope::System, root);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("org.example.App"), render(&declared["org.example.App"])).unwrap();
+        converge_store(Scope::System, root, &home).unwrap();
+        assert_eq!(drift(&declared, root, &home), vec![]);
+    }
+
+    /// The declaration being ahead of the image is the trap `kuma sync`
+    /// walks into: the converger reads what the image baked, so an edit
+    /// reaches nothing until a rebuild. diff is where that gets said.
+    #[test]
+    fn an_edit_the_image_has_not_baked_reads_as_stale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let dir = declared_dir(Scope::System, root);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut declared: Overrides = Default::default();
+        declared.insert("org.example.App".into(), app_of("sockets = [\"wayland\"]\n"));
+
+        // baked nothing yet
+        assert!(image_stale(&declared, root));
+        // baked exactly this
+        std::fs::write(dir.join("org.example.App"), render(&declared["org.example.App"])).unwrap();
+        assert!(!image_stale(&declared, root));
+        // declaration changed since the build
+        declared.insert("org.example.App".into(), app_of("sockets = [\"x11\"]\n"));
+        assert!(image_stale(&declared, root));
+        // an app dropped from the declaration but still baked
+        declared.clear();
+        assert!(image_stale(&declared, root));
     }
 
     /// Bus policies are written as flatpak spells them, and the parser

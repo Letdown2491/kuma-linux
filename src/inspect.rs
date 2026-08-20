@@ -344,6 +344,25 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
     }
     sections.push(DiffSection { name: "services", entries, skipped: None });
 
+    // Permissions are machine state the same way services are, and the
+    // store is shared with whoever else edits it, so a difference here
+    // is as likely to be a Flatseal toggle worth keeping as it is a
+    // drift worth erasing. Which is the point of reporting it at all.
+    let home = std::env::var("HOME").unwrap_or_default();
+    let entries = crate::overrides::drift(&config.overrides, Path::new("/"), Path::new(&home))
+        .iter()
+        .map(|d| DiffEntry {
+            change: d.change,
+            item: d.item(),
+            note: match d.change {
+                "add" => "declared, not applied (convergence sets it)".into(),
+                _ => "kuma set it, no longer declared (convergence removes it)".into(),
+            },
+        })
+        .collect();
+    sections.push(DiffSection { name: "overrides", entries, skipped: None });
+    stale_image |= crate::overrides::image_stale(&config.overrides, Path::new("/"));
+
     let drift = sections.iter().any(|s| !s.entries.is_empty());
     let converge_hint = sections
         .iter()
