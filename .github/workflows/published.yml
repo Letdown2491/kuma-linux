@@ -32,10 +32,12 @@ on:
         type: string
         default: "ghcr.io/letdown2491/kuma:niri"
       from_image:
-        description: "Older image the cross-version job installs first"
+        description: >-
+          Override the cross-version fixture. Empty derives the release
+          before this one from the registry.
         required: false
         type: string
-        default: "ghcr.io/letdown2491/kuma:niri-0.7.0"
+        default: ""
   workflow_dispatch:
     inputs:
       image:
@@ -43,9 +45,11 @@ on:
         required: false
         default: "ghcr.io/letdown2491/kuma:niri"
       from_image:
-        description: "Older image the cross-version job installs first"
+        description: >-
+          Override the cross-version fixture. Empty derives the release
+          before this one from the registry.
         required: false
-        default: "ghcr.io/letdown2491/kuma:niri-0.7.0"
+        default: ""
   # No schedule. There was a weekly one, on the reasoning that a published
   # tag sits still and could rot underneath. What it actually watched was
   # ghcr, sigstore and the runner image, and it re-tested the same
@@ -127,16 +131,63 @@ jobs:
   # newer to go. Not `kuma update`: that is the builder's verb, which
   # pulls a base and rebuilds, and kuma's own update_check says a machine
   # running a published image asks bootc instead.
+  #
+  # **The fixture is derived, not written down.** It used to be a
+  # hardcoded `:niri-0.7.0`, which was the right answer once and then
+  # aged six releases into testing a jump nobody makes, while the path
+  # almost every machine actually takes (the release before this one) was
+  # covered by nothing. A hardcoded newer tag would only move the rot:
+  # it goes stale the next time you tag, and it goes stale *quietly*,
+  # because the job keeps passing while answering a question about an
+  # older release than the one being published.
+  #
+  # So it asks the registry. Every pinned tag kuma has ever published is
+  # still there, which is why the rule about never deleting them matters:
+  # they are the only fixtures for this and they cannot be recreated.
+  #
+  # Oldest-to-current is deliberately NOT covered any more, and it was a
+  # different question: a file that did not exist when a machine was
+  # installed and can now only arrive through the /etc merge, which is
+  # the `policy.json` case. If that needs testing again, dispatch this
+  # with from_image set rather than adding a second job.
   cross-version:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
+
+      - name: the release before this one
+        id: fixture
+        run: |
+          set -euo pipefail
+          repo="ghcr.io/letdown2491/kuma"
+          if [ -n "${{ inputs.from_image }}" ]; then
+            echo "from=${{ inputs.from_image }}" >> "$GITHUB_OUTPUT"
+            echo "caller named the fixture: ${{ inputs.from_image }}"
+            exit 0
+          fi
+          command -v skopeo >/dev/null || sudo apt-get install -y -qq skopeo
+          # The version being published already has its pinned tag by the
+          # time this runs, so "previous" is the highest one that is not
+          # it. Excluded by name rather than by comparison: a rebuilt tag
+          # would otherwise pick itself.
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          previous=$(skopeo list-tags "docker://$repo" \
+            | jq -r '.Tags[] | select(startswith("niri-"))' \
+            | sed 's/^niri-//' \
+            | grep -vx "$version" \
+            | sort -V | tail -1)
+          # Loud, because a silent fallback here is the whole failure mode
+          # this derivation exists to avoid.
+          [ -n "$previous" ] || { echo "::error::no pinned niri-* tag older than $version"; exit 1; }
+          echo "upgrading from $previous to $version"
+          echo "from=$repo:niri-$previous" >> "$GITHUB_OUTPUT"
+
       - name: install an old version, upgrade it, and boot what it became
         uses: ./.github/actions/install-boot
         with:
           smoke_args: >-
-            --published ${{ inputs.from_image || 'ghcr.io/letdown2491/kuma:niri-0.7.0' }}
+            --published ${{ steps.fixture.outputs.from }}
             --upgrade-to ${{ inputs.image || 'ghcr.io/letdown2491/kuma:niri' }}
 
       - name: guest console
