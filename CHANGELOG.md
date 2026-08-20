@@ -32,6 +32,16 @@ as its release notes.
   store, applied by a `systemd --user` unit rather than by root reaching into
   a home. One app declares into one store.
 
+  **`kuma diff` and `kuma capture` see them**, which is what makes the
+  declaration owning permissions mean anything. diff reports both directions,
+  a declared key the machine lacks and a key kuma set that the declaration
+  stopped naming, and stays silent about keys kuma never set: those are
+  somebody's machine, not drift. capture offers the reverse, turning a
+  permission you toggled in Flatseal into a declaration entry, and offers it
+  only for apps the declaration already installs, because a machine
+  accumulates override files for software that left years ago. `kuma check`
+  counts them.
+
   **Applied at boot and by `kuma sync`, deliberately never on the daily
   timer.** An install arriving at a random hour is additive and idempotent; a
   permission reverting at a random hour changes what a running app can reach,

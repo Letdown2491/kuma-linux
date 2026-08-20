@@ -4,10 +4,11 @@
 //! re-serialize that would flatten the whole document.
 
 use crate::config::Config;
+use crate::overrides::Proposal;
 use crate::state::{action_json, print_actions, Action};
 use anyhow::{Context, Result};
 use std::path::Path;
-use toml_edit::{Array, DocumentMut, Item, Table, Value};
+use toml_edit::{value, Array, DocumentMut, Item, Table, Value};
 
 const LISTS: &[&str] = &["rpm", "flatpak", "brew"];
 
@@ -62,6 +63,52 @@ pub(crate) fn declare(path: &Path, items: &[(&str, &str)]) -> Result<()> {
         let arr = list_array_mut(&mut doc, list)?;
         if !contains(arr, name) {
             push_matching_style(arr, name);
+        }
+    }
+    store(path, &doc)
+}
+
+/// Write captured permissions into `[overrides]`.
+///
+/// A separate path from `declare` because an override is a table, not an
+/// entry in a list, and because the two are proposed together and must
+/// land together: one document, one validation, one write.
+pub(crate) fn declare_overrides(path: &Path, proposals: &[Proposal]) -> Result<()> {
+    let mut doc = load(path)?;
+    let overrides = doc.entry("overrides").or_insert(Item::Table(Table::new()));
+    let table = overrides.as_table_mut().context("[overrides] is not a table")?;
+    // Implicit so the file gets `[overrides."org.example.App"]` and no
+    // bare `[overrides]` header above it, which is how a person would
+    // have written it by hand.
+    table.set_implicit(true);
+    for proposal in proposals {
+        let entry = table.entry(&proposal.app).or_insert(Item::Table(Table::new()));
+        let app = entry
+            .as_table_mut()
+            .with_context(|| format!("overrides.{} is not a table", proposal.app))?;
+        if proposal.scope != crate::config::Scope::System {
+            app["scope"] = value(proposal.scope.as_str());
+        }
+        for key in &proposal.keys {
+            let (group, name, values) = crate::overrides::as_declaration(key);
+            let section = match group.as_str() {
+                crate::overrides::CONTEXT => {
+                    let mut arr = Array::new();
+                    for v in values {
+                        arr.push(v);
+                    }
+                    app[&name] = value(arr);
+                    continue;
+                }
+                crate::overrides::ENVIRONMENT => "environment",
+                crate::overrides::SESSION_BUS => "session-bus",
+                _ => "system-bus",
+            };
+            let sub = app.entry(section).or_insert(Item::Table(Table::new()));
+            let sub = sub
+                .as_table_mut()
+                .with_context(|| format!("overrides.{}.{section} is not a table", proposal.app))?;
+            sub[&name] = value(values.first().cloned().unwrap_or_default());
         }
     }
     store(path, &doc)
@@ -253,6 +300,56 @@ mod tests {
         assert!(out.contains("\n    \"org.gnome.Boxes\""), "multi-line style kept");
         assert!(out.contains("brew = [\"ripgrep\"]"), "missing list created");
         assert!(out.contains("# my system"));
+    }
+
+    /// Captured permissions have to land as a table a person would have
+    /// written by hand, because the next thing that happens to this file
+    /// is somebody reading it. No bare `[overrides]` header, `scope`
+    /// only when it is not the default, and the sections nested under
+    /// the app rather than flattened into it.
+    #[test]
+    fn captured_permissions_land_as_a_person_would_have_written_them() {
+        use crate::config::{Config, Scope};
+        use crate::overrides::Proposal;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(dir.path(), CONFIG);
+        let proposals = vec![
+            Proposal {
+                app: "org.mozilla.firefox".into(),
+                scope: Scope::System,
+                keys: vec![
+                    ("Context".into(), "filesystems".into(), "home;!xdg-config/kitty;".into()),
+                    ("Environment".into(), "MOZ_ENABLE_WAYLAND".into(), "1".into()),
+                ],
+            },
+            Proposal {
+                app: "org.gnome.Loupe".into(),
+                scope: Scope::User,
+                keys: vec![(
+                    "Session Bus Policy".into(),
+                    "org.freedesktop.Flatpak".into(),
+                    "talk".into(),
+                )],
+            },
+        ];
+        super::declare_overrides(&path, &proposals).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(out.contains("[overrides.\"org.mozilla.firefox\"]"), "{out}");
+        assert!(!out.contains("\n[overrides]\n"), "a bare [overrides] header: {out}");
+        assert!(
+            out.contains("filesystems = [\"home\", \"!xdg-config/kitty\"]"),
+            "a semicolon list must come back as an array: {out}"
+        );
+        assert!(out.contains("[overrides.\"org.mozilla.firefox\".environment]"), "{out}");
+        assert!(out.contains("MOZ_ENABLE_WAYLAND = \"1\""), "{out}");
+        // scope is written only where it is not the default
+        assert!(out.contains("scope = \"user\""), "{out}");
+        assert_eq!(out.matches("scope =").count(), 1, "system scope was spelled out: {out}");
+        // and the file it wrote is still a declaration kuma accepts
+        let config: Config = toml::from_str(&out).unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.overrides.len(), 2);
+        assert!(out.contains("# my system"), "the owner's comment survived");
     }
 
     /// Capture reads names off the machine, so the file is the last place

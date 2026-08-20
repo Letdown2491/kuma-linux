@@ -482,6 +482,97 @@ pub fn image_stale(declared: &Overrides, root: &Path) -> bool {
     false
 }
 
+/// An override this machine has and the declaration does not name.
+#[derive(Debug, PartialEq)]
+pub struct Proposal {
+    pub app: String,
+    pub scope: Scope,
+    pub keys: Vec<(String, String, String)>,
+}
+
+/// Whether a key can be written back into a declaration at all. A group
+/// flatpak grows later, or a `[Context]` key kuma has no field for, is
+/// still copied through by convergence; it just cannot be proposed,
+/// because there is nowhere in the schema to put it.
+fn representable(group: &str, key: &str) -> bool {
+    match group {
+        CONTEXT => AppOverride::default().context_lists().iter().any(|(name, _)| *name == key),
+        ENVIRONMENT | SESSION_BUS | SYSTEM_BUS => true,
+        _ => false,
+    }
+}
+
+/// What `kuma capture` offers: permissions this machine carries that the
+/// declaration does not name.
+///
+/// Scoped to apps the declaration already installs, which is Martin's
+/// call and the sweep's evidence agrees: a machine accumulates override
+/// files for apps that left years ago, and the user store on the machine
+/// this was written on holds five, three of them for software that is
+/// not installed. Proposing those would be proposing rubble. It also
+/// falls out for free that flatpak's `global` override file, which is
+/// not an app at all, is never mistaken for one.
+///
+/// An app whose two stores both hold undeclared keys is returned as
+/// ambiguous rather than guessed at: one app declares into one store,
+/// and picking for somebody is how a proposal stops being trustworthy.
+pub fn capturable(
+    installed_apps: &BTreeSet<&str>,
+    declared: &Overrides,
+    root: &Path,
+    home: &Path,
+) -> (Vec<Proposal>, Vec<String>) {
+    let mut proposals = Vec::new();
+    let mut ambiguous = Vec::new();
+    for app in installed_apps {
+        let mut per_scope: Vec<Proposal> = Vec::new();
+        for scope in [Scope::System, Scope::User] {
+            if declared.get(*app).is_some_and(|o| o.scope != scope) {
+                continue;
+            }
+            let owned: Vec<String> =
+                read_state(&state_path(scope, root, home)).remove(*app).unwrap_or_default();
+            let already: Vec<String> = declared
+                .get(*app)
+                .map(|o| declared_keys(o).iter().map(|(g, k, _)| owned_id(g, k)).collect())
+                .unwrap_or_default();
+            let mut keys: Vec<(String, String, String)> =
+                live_keys(&store(scope, root, home).join(app))
+                    .into_iter()
+                    .filter(|((g, k), _)| {
+                        let id = owned_id(g, k);
+                        representable(g, k) && !owned.contains(&id) && !already.contains(&id)
+                    })
+                    .map(|((g, k), v)| (g, k, v))
+                    .collect();
+            keys.sort();
+            if !keys.is_empty() {
+                per_scope.push(Proposal { app: app.to_string(), scope, keys });
+            }
+        }
+        match per_scope.len() {
+            0 => {}
+            1 => proposals.push(per_scope.remove(0)),
+            _ => ambiguous.push(app.to_string()),
+        }
+    }
+    (proposals, ambiguous)
+}
+
+/// A proposal as the declaration spells it: the value flatpak writes,
+/// turned back into what the schema takes. `[Context]` keys are
+/// semicolon-terminated lists there and arrays here; everything else is
+/// a single value.
+pub fn as_declaration(key: &(String, String, String)) -> (String, String, Vec<String>) {
+    let (group, name, value) = key;
+    if group == CONTEXT {
+        let items = value.split(';').filter(|p| !p.is_empty()).map(str::to_string).collect();
+        (group.clone(), name.clone(), items)
+    } else {
+        (group.clone(), name.clone(), vec![value.clone()])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -749,6 +840,62 @@ mod tests {
         // an app dropped from the declaration but still baked
         declared.clear();
         assert!(image_stale(&declared, root));
+    }
+
+    /// Capture offers permissions for apps the declaration installs, and
+    /// only the keys that are somebody's rather than kuma's. The two
+    /// negatives are the point: an override file for an app that left
+    /// years ago is rubble, and flatpak's `global` file is not an app at
+    /// all, so neither is ever proposed.
+    #[test]
+    fn capture_offers_only_declared_apps_and_only_keys_kuma_never_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let home = root.join("home/mira");
+        let store_dir = store(Scope::User, root, &home);
+        std::fs::create_dir_all(&store_dir).unwrap();
+        std::fs::write(
+            store_dir.join("org.example.Kept"),
+            "[Context]\nsockets=x11;\ndevices=dri;\n",
+        )
+        .unwrap();
+        std::fs::write(store_dir.join("org.example.Gone"), "[Context]\nsockets=x11;\n").unwrap();
+        std::fs::write(store_dir.join("global"), "[Context]\nfilesystems=host;\n").unwrap();
+        // kuma set `devices` itself, so it is not a proposal
+        let state = state_path(Scope::User, root, &home);
+        std::fs::create_dir_all(state.parent().unwrap()).unwrap();
+        std::fs::write(&state, "org.example.Kept\tContext\tdevices\n").unwrap();
+
+        let installed: BTreeSet<&str> = ["org.example.Kept"].into_iter().collect();
+        let (proposals, ambiguous) = capturable(&installed, &Default::default(), root, &home);
+        assert!(ambiguous.is_empty());
+        assert_eq!(proposals.len(), 1, "{proposals:?}");
+        assert_eq!(proposals[0].app, "org.example.Kept");
+        assert_eq!(proposals[0].scope, Scope::User);
+        assert_eq!(
+            proposals[0].keys,
+            vec![("Context".to_string(), "sockets".to_string(), "x11;".to_string())]
+        );
+    }
+
+    /// One app declares into one store, so an app carrying undeclared
+    /// keys in both is named rather than guessed at. Picking a store for
+    /// somebody is how a proposal stops being something you can trust
+    /// without reading the machine yourself.
+    #[test]
+    fn an_app_with_keys_in_both_stores_is_not_guessed_at() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let home = root.join("home/mira");
+        for scope in [Scope::System, Scope::User] {
+            let dir = store(scope, root, &home);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("org.example.Both"), "[Context]\nsockets=x11;\n").unwrap();
+        }
+        let installed: BTreeSet<&str> = ["org.example.Both"].into_iter().collect();
+        let (proposals, ambiguous) = capturable(&installed, &Default::default(), root, &home);
+        assert!(proposals.is_empty(), "{proposals:?}");
+        assert_eq!(ambiguous, vec!["org.example.Both"]);
     }
 
     /// Bus policies are written as flatpak spells them, and the parser
