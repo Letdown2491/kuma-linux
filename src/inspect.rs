@@ -1093,8 +1093,10 @@ const REDACTED: &str = "<redacted by kuma doctor --report>";
 /// `password_hash` is the only one the schema has today. The rest are
 /// named ahead of themselves: a report is pasted by somebody who will not
 /// read it first, so the list is the cheap half of the bargain and being
-/// wrong about it is the expensive half. `nsec` is here because the
-/// announce work has one on the roadmap.
+/// wrong about it is the expensive half. `nsec` stays on the list even
+/// though the work that would have declared one was dropped, for the same
+/// reason the others are on it: no declaration has to contain a key for
+/// redacting it to be free.
 const SECRET_KEYS: &[&str] = &["password_hash", "password", "nsec", "private_key", "secret"];
 
 /// The redaction itself. `None` means "could not be made safe", which the
