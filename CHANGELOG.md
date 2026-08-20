@@ -61,6 +61,21 @@ as its release notes.
   past, but a link into a `.wants` directory is a machine saying it will start
   something at every boot, and a missing target makes that sentence false.
 
+### Fixed
+
+- A declared `system.timezone` was owned by the image and watched by nobody.
+  kuma writes the timezone as `ln -sfn /usr/share/zoneinfo/<zone>
+  /etc/localtime`, and the scan that works out which /etc files an image owns
+  read only COPY destinations and shell redirects, so the single file that key
+  exists to produce fell outside every check kuma has.
+
+  It matters most on an installed machine, because Anaconda writes its own
+  `/etc/localtime` first, and ostree's merge keeps a local file over every
+  future image: a declared timezone would simply never take effect, with
+  nothing anywhere saying so. `kuma doctor` now grades it like any other file
+  the image owns, and `ln -s` is read as the third way a build writes into
+  /etc.
+
 ## v0.12.0 (2026-08-19)
 
 This release is about the difference between a thing being true and a thing

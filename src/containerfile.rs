@@ -1862,13 +1862,21 @@ end
 /// listed by hand, so a new write into /etc is covered the day it lands
 /// and can't be forgotten by whoever adds it.
 ///
-/// A build writes into /etc exactly two ways, and both are unambiguous:
-/// a COPY whose destination is under /etc, and a shell redirect (`>`,
-/// `>>`) into one. Reading an /etc file is not owning it, and the
-/// difference matters: the keyring assert greps /etc/pam.d/greetd and
-/// `niri validate` reads /etc/niri/config.kdl, but only one of those two
-/// files is kuma's to have an opinion about. Redirects separate them for
-/// free, since a read has none.
+/// A build writes into /etc three ways, all unambiguous: a COPY whose
+/// destination is under /etc, a shell redirect (`>`, `>>`) into one, and
+/// a symlink made there with `ln -s`. Reading an /etc file is not owning
+/// it, and the difference matters: the keyring assert greps
+/// /etc/pam.d/greetd and `niri validate` reads /etc/niri/config.kdl, but
+/// only one of those two files is kuma's to have an opinion about.
+/// Redirects separate them for free, since a read has none.
+///
+/// The third way is here because it was missing, and a declared
+/// `system.timezone` is what it cost: the timezone lands as
+/// `ln -sfn /usr/share/zoneinfo/<zone> /etc/localtime`, which is neither
+/// a COPY nor a redirect, so the one file the declaration explicitly
+/// claims was owned by the image and watched by nobody. On a machine
+/// installed by Anaconda, which writes its own /etc/localtime, that is
+/// precisely where the ostree merge makes a declared value never apply.
 pub fn etc_paths(config: &Config) -> Vec<String> {
     let mut paths = etc_writes(&generate(config));
     // Hostname is machine state: unpinned, the baked file only seeds the
@@ -1889,6 +1897,19 @@ fn etc_writes(containerfile: &str) -> Vec<String> {
         {
             if dest.starts_with("/etc/") {
                 paths.insert(dest);
+            }
+        }
+        // Split on the shell's separators so a line running several
+        // commands is read as several commands, and the destination of
+        // each `ln -s` is its own last word.
+        for segment in line.split("&&").flat_map(|part| part.split(';')) {
+            if !segment.contains("ln -s") {
+                continue;
+            }
+            if let Some(dest) = segment.split_whitespace().last() {
+                if dest.starts_with("/etc/") {
+                    paths.insert(dest);
+                }
             }
         }
         let mut rest = line;
@@ -4362,6 +4383,50 @@ mod tests {
         // destination or redirect is not this check's business
         assert!(!paths.iter().any(|p| p.contains("pam.d")));
         assert!(!paths.iter().any(|p| p.contains("dev/null")));
+
+        // The third way, which is how a declared timezone is written.
+        // The `test -e` guard in front of it is why the destination has
+        // to be the segment's last word rather than the line's.
+        let linked = etc_writes(
+            "RUN test -e /usr/share/zoneinfo/America/Denver && ln -sfn /usr/share/zoneinfo/America/Denver /etc/localtime\n\
+             RUN ln -sfn /usr/lib/systemd/system/foo.service /usr/lib/systemd/system/bar.service\n",
+        );
+        assert_eq!(linked, ["/etc/localtime"]);
+    }
+
+    /// The declaration claims a timezone, so doctor has to be able to
+    /// say whether the machine has it. It could not: the timezone is the
+    /// one thing kuma writes into /etc with `ln -s`, the ownership scan
+    /// read only COPY destinations and redirects, and so the single file
+    /// `system.timezone` exists to produce was watched by nobody.
+    ///
+    /// The install path is where that bites. Anaconda writes its own
+    /// /etc/localtime, so an installed machine has a local copy before
+    /// kuma's ever arrives, and ostree's merge keeps a local file over
+    /// every future image. A declared timezone would simply never take
+    /// effect, silently, which is the exact failure the /etc check
+    /// exists to end.
+    ///
+    /// What this pins is that the file is owned and therefore graded.
+    /// Whether the merge behaves as described is ostree's business and
+    /// needs a machine, not a test.
+    #[test]
+    fn a_declared_timezone_is_a_file_doctor_watches() {
+        let declared = config(
+            "schema_version = 1\n[system]\ndesktop = \"niri\"\n\
+             timezone = \"America/Denver\"\nlocale = \"en_US.UTF-8\"\n",
+        );
+        let paths = etc_paths(&declared);
+        assert!(paths.iter().any(|p| p == "/etc/localtime"), "{paths:?}");
+        // locale rides the redirect path and always was owned
+        assert!(paths.iter().any(|p| p == "/etc/locale.conf"), "{paths:?}");
+
+        // Undeclared, the image writes neither, so there is nothing to
+        // own and nothing to grade: timezone stays machine state.
+        let bare = config("schema_version = 1\n[system]\ndesktop = \"niri\"\n");
+        let paths = etc_paths(&bare);
+        assert!(!paths.iter().any(|p| p == "/etc/localtime"), "{paths:?}");
+        assert!(!paths.iter().any(|p| p == "/etc/locale.conf"), "{paths:?}");
     }
 
     /// Over the real generator, per desktop, because the value of this
