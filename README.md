@@ -48,6 +48,11 @@ enable = true   # hourly read-only btrfs snapshots of /var/home
 
 [overrides."org.mozilla.firefox"]
 sockets = ["wayland", "!x11"]   # what an app may touch; "!" takes it away
+
+[backup]
+enable = true
+repo = "s3:https://minio.example:9000/kuma"   # offsite, as restic spells it
+secret = "backup"   # names the credential; the value lives on the machine
 ```
 
 Three package lists, because the three behave differently. `rpm` is part of
@@ -285,9 +290,6 @@ In order:
 - **No custom partition layout.** `kuma install` writes the same three
   partitions on every disk. Anything else, including installing beside
   another system, still has to be done by something else.
-- **No offsite backup.** `[snapshots]` survives a mistake, not a dead
-  disk. Blocked on where a repository credential lives, since it cannot be
-  the declaration.
 - **No hibernate.** A swapfile's size and `resume_offset` are properties
   of the installed disk, so it needs a first-boot unit rather than an
   image that already knows the answer.

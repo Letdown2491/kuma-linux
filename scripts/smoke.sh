@@ -996,6 +996,11 @@ secret = "backup"
 interval = "daily"
 network_connections = true
 TOML
+    # Declared here because this stage installs rather than rebuilds, and
+    # a declared timezone reaching an installed machine is a claim 0.13
+    # started grading and nothing had ever executed. The zone is one
+    # nobody's runner is already in, so a pass cannot be a coincidence.
+    printf '\n[system]\ntimezone = "Pacific/Auckland"\n' >> "$out"
 }
 
 smoke_dead_disk() {
@@ -1147,6 +1152,14 @@ ENV
         sudoq "kuma doctor --json" | grep -q '"backup"' \
             || bad "doctor does not report on the backup"
         ok "doctor grades the backup"
+
+        # The claim 0.13 taught doctor to grade and nothing had ever
+        # run: a declared timezone produces exactly one file, by `ln
+        # -sfn`, which is neither a COPY nor a shell redirect and so
+        # fell outside every check until then.
+        guest "readlink -f /etc/localtime" | grep -q 'Pacific/Auckland' \
+            || bad "the declared timezone never reached the installed machine"
+        ok "a declared timezone reaches an installed machine"
     else
         guest "cat ~/Documents/marker.txt" | grep -q 'the thing that must survive' \
             || bad "the marker did not come back; console at $log"

@@ -91,6 +91,12 @@ policy rather than trusting that it is there.
 hourly when `[snapshots]` is enabled. Cheap, because btrfs shares the
 unchanged data rather than copying it.
 
+**Backup.** A copy of a snapshot in a restic repository somewhere else,
+made on a timer when `[backup]` is enabled. Snapshots survive a mistake;
+backups survive the disk. The declaration names the credential and does
+not hold it, so recovering a machine takes two things: the file, and the
+credential the file names.
+
 **Stage, staged.** A new deployment written to the disk and set to boot next
 time, without touching what is running. `kuma update --yes` stages; the
 reboot is yours to choose.

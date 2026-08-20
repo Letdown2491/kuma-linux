@@ -5,6 +5,100 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+## v0.14.0 (2026-08-20)
+
+A declaration could describe everything about a machine except the one
+thing a rebuild cannot produce. `[snapshots]` answered a mistake and could
+not answer the disk, because the copies were on it.
+
+This release sends them somewhere else, and then does the half that makes
+that a feature rather than a claim: puts them back.
+
+### Added
+
+- `[backup]` copies what `[snapshots]` keeps to a restic repository
+  somewhere else. Snapshots survive a mistake; they cannot survive the
+  disk, because they are on it.
+
+  **The credential is named in the declaration and held on the machine.**
+  The value lives at `/var/lib/kuma/secrets/<secret>.env`, 0600 root, put
+  there by hand. That is not a hole in the file: naming the credential is
+  what keeps the declaration complete, since that one exists and what it
+  is called are both declared, and only the value is elsewhere. The
+  consequence is about recovery rather than about the file, namely that
+  restoring a machine takes two things instead of one. A repository
+  address carrying its own password is refused rather than warned about,
+  because that does not happen by anyone deciding to put a secret in git,
+  it happens by pasting a restic command line that already worked.
+
+  It copies from a read-only snapshot rather than the live subvolume, so
+  files cannot change under it mid-run, which is why `enable` requires
+  `snapshots.enable` and says so at `kuma check` rather than at 3am.
+
+  Excludes are additive on top of a curated set that cannot be configured
+  away, because every entry in it is a tree the same declaration rebuilds.
+
+- `/etc/NetworkManager/system-connections` can ride along, and is **off by
+  default**. Those files are the one thing on a machine nothing else can
+  recreate: not the declaration, which calls them out of scope, not the
+  image, which ships the directory empty, and not home, since they live in
+  `/etc`. They are also a passphrase per network in the clear, so carrying
+  them offsite is a decision rather than a default. `kuma doctor` names
+  which way it is set on every run, because an omission you read on an
+  ordinary day is a choice and one you discover during a restore is not.
+
+- `kuma backup` reaches the copies: `--init` to seed, `--list` to ask the
+  repository, `--restore` to bring a path back, dry run first. Bare, it
+  reports without touching the network.
+
+  Seeding is a verb because the first copy is a whole home rather than a
+  day's difference, and a timer that starts sending that while somebody is
+  tethered is a tool that gets uninstalled.
+
+- `kuma install --restore <file>` puts a home directory back on a machine
+  that has just been installed, which is the half that makes a backup a
+  feature rather than a claim. One file carries the repository address and
+  its credentials, so a dead disk needs nothing else typed.
+
+  It is a first-boot unit rather than part of the install, and not by
+  preference: `/var/home` does not exist at install time, and
+  `kuma-home-subvol` turns it into a btrfs subvolume while it is still
+  empty. Restoring during the install would leave an ordinary directory
+  with files in it, which is the exact state that unit steps back from.
+
+- `kuma doctor` grades the backup, and grades the **stamp** rather than
+  the unit. The converger exits cleanly with no credential, no snapshot
+  or no repository, all three on purpose, so "last run succeeded" is true
+  of a machine that has never copied a byte. Only a run that copied
+  something stamps. How stale is too stale follows the declared interval,
+  so a monthly policy is not called unhealthy on day eight.
+
+### Changed
+
+- The job that installs and boots an image built from this tree moved from
+  `published.yml` to `ci.yml`, where it is called `install`. It was the
+  only check that could catch an install-time or first-boot regression,
+  and being in the published workflow meant it ran **after** a tag was
+  public. It tests the tree, so it runs when the tree changes. The six
+  steps every disk-booting job repeated are now one composite action.
+
+- `cross-version` derives its fixture from the registry instead of naming
+  `:niri-0.7.0`. That tag was right once and had aged six releases into
+  testing a jump nobody makes, while the upgrade almost every machine
+  performs was covered by nothing. A newer hardcoded tag would only move
+  the rot, and would go stale quietly.
+
+- CI gains `dead-disk`, which is 0.14's gate: install a machine, write
+  files, back them up, delete the disk, install again with `--restore`,
+  and read the files back. "A dead disk is recoverable" stops being a
+  sentence and becomes a command that exits 0 or 1.
+
+### Fixed
+
+- `[system.ca_certificates]` was documented nowhere but the changelog and
+  a commented example. `SECURITY.md` enumerates every trust root a
+  declaration opts into and did not name the most direct one on the list.
+
 ## v0.13.0 (2026-08-20)
 
 The declaration could name an app and not say what it was allowed to touch,
