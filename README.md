@@ -89,12 +89,18 @@ above are promises; everything around them can still move, and
 a bad image back, but try a declaration in `kuma vm` before a machine you
 depend on.
 
-## Install kuma
+## Getting a machine
 
-Kuma is one self-contained file. The wallpaper, the greeter configuration,
-and every desktop asset are compiled into it, and the published build needs
-nothing installed alongside it. That matters on the machines most likely to
-want kuma, which tend to have podman and no compiler.
+Two downloads, depending on what you have. Installer media, which becomes a
+machine:
+
+```console
+$ curl -LO https://github.com/Letdown2491/kuma-linux/releases/latest/download/kuma-x86_64.iso
+```
+
+Or the binary, for building images on a machine you already have. One
+self-contained file: the wallpaper, the greeter configuration and every
+desktop asset are compiled in, so it needs nothing installed beside it.
 
 ```console
 $ curl -LO https://github.com/Letdown2491/kuma-linux/releases/latest/download/kuma-x86_64-unknown-linux-musl
@@ -102,132 +108,51 @@ $ chmod +x kuma-x86_64-unknown-linux-musl
 $ sudo mv kuma-x86_64-unknown-linux-musl /usr/local/bin/kuma
 ```
 
-This is for the machine you build from. A machine already running a kuma
-image has kuma at `/usr/bin/kuma`, baked in by the build that made the image,
-and a copy in `/usr/local/bin` would shadow it.
+A machine already running a kuma image has kuma at `/usr/bin/kuma`, baked in
+by the build that made it, and a copy in `/usr/local/bin` would shadow it.
 
-Every release is signed, and each one carries the `cosign verify-blob`
-command that checks it came from this repository's release workflow.
-[`SECURITY.md`](SECURITY.md) has that command, what a declaration trusts, and
-where to report a vulnerability.
+Both are signed. [`SECURITY.md`](SECURITY.md) carries the `cosign verify-blob`
+command, what a declaration trusts, and where to report a vulnerability.
 
-Building `main` yourself needs a Rust toolchain at 1.85 or newer and a
-linker. Keep `--locked`: without it cargo ignores the committed `Cargo.lock`
-and resolves fresh, so you get versions nobody tested.
-
-```console
-$ cargo install --git https://github.com/Letdown2491/kuma-linux --locked
-```
-
-Cloning instead of installing also gets you the example declarations and the
-smoke tests:
-
-```console
-$ git clone https://github.com/Letdown2491/kuma-linux
-$ cd kuma-linux && cargo install --path .
-```
-
-## Quick start
-
-```console
-$ kuma init          # starter kuma.toml (on a kuma machine: its own declaration)
-$ vim kuma.toml      # declare your packages and services
-$ kuma build         # podman-builds localhost/kuma:latest
-$ kuma vm            # boot it in a throwaway VM before anything real
-$ kuma switch --yes  # on a bootc machine: take it at the next boot
-```
-
-Without `--yes`, `switch` only prints what it would do.
-
-[Getting started](docs/getting-started.md) walks the whole path instead:
-installing a machine from the published media, what the first boot does, then
-describing and building an image of your own, and how updates work once it is
-yours.
-
-**What needs what.** `init`, `check`, `generate`, and `build` need only
-podman. `switch`, `update`, `rollback`, and `doctor` need to be running on a
-bootc machine, and a kuma one already has kuma. `vm` and `iso` need KVM and
-sudo, except `iso --live`, which needs neither. `install` needs sudo and a
-disk you are willing to lose: it is the one command here that cannot be
-undone.
+**[Getting started →](docs/getting-started.md)** walks the whole path once,
+from media to a machine you declared. It assumes nothing is installed.
 
 ## Everyday use
 
-The file stays the interface. These read it or edit it for you:
+The loop is three commands. Edit the file, then:
 
 ```console
-$ kuma                                     # where this machine is, and its next moves
-$ kuma menu                                # the desktop menu: apps, settings, system, power
-$ kuma add --flatpak org.mozilla.firefox   # declare (--rpm / --brew too)
-$ kuma remove org.mozilla.firefox          # drop from whichever list declares it
-$ kuma capture                             # declare what this machine already runs
-$ kuma check                               # validate the declaration, build nothing
-$ kuma diff                                # drift: kuma.toml vs image vs machine
-$ kuma doctor                              # machine health: image age, convergence, /etc drift, encryption, snapshots, GPU
-$ kuma sync                                # converge, and update everything installed
-$ kuma snapshot                            # the btrfs snapshots this machine has taken
-$ kuma snapshot --restore ~/notes.md       # bring a path back (dry run; --yes writes)
-$ kuma update --check                      # what has moved in the repos, security first
-$ kuma update --yes                        # rebuild on the latest packages, stage it
-$ kuma rollback --yes                      # boot order back to the previous deployment
-$ kuma clean                               # reclaim dangling images, stale bases, build leftovers
+$ kuma check
+$ kuma build
+$ kuma switch
 ```
 
-Running bare `kuma` is always safe, and every command ends by naming what you
-can legally do next, so you can follow the output rather than memorize the
-verbs.
+`check` says whether the file is valid, `build` turns it into an image, and
+`switch` makes that image what boots next time. Nothing about the running
+system changes until you reboot, and the deployment you were on is still on
+the disk.
 
-`add`, `remove`, and `capture` preserve your comments and formatting.
-`check`, `diff`, `doctor`, and `update --check` change nothing. Everything
-speaks `--json`.
+Those are the ones you type. The rest of the surface:
 
-On a niri desktop `kuma menu` is bound to `Mod+D`, and it is the launcher:
-your applications, the settings kuma does not own (network, bluetooth, audio),
-the ones it does (the declaration, health, updates, rollback), and the power
-actions. It never writes the declaration. `kuma menu --list` prints the rows
-instead of drawing them, which is how to read it over ssh.
+| | |
+|---|---|
+| `kuma check` | is the file valid |
+| `kuma build` | turn it into an image |
+| `kuma switch` | boot that image next time |
+| `kuma update` | pull a newer base and rebuild |
+| `kuma rollback` | go back to the previous deployment |
+| `kuma sync` | converge the running machine now |
+| `kuma diff` | what the machine has that the file does not |
+| `kuma capture` | turn that drift into a proposal against the file |
+| `kuma add` / `kuma remove` | edit a package list without opening an editor |
+| `kuma doctor` | grade every promise the machine relies on |
+| `kuma snapshot` | reach the local snapshots |
+| `kuma backup` | reach the offsite copies |
+| `kuma clean` | reclaim what old builds left |
+| `kuma completions` | shell completions, e.g. `kuma completions fish \| source` |
 
-Three more exist for when you need them and never otherwise: `kuma passwd`
-hashes a password for `[user]`, `kuma schema` prints the JSON Schema for
-`kuma.toml`, and `kuma completions fish | source` wires up your shell.
-
-## Putting it on a machine
-
-Every release carries installer media, so a machine can be installed without
-building anything first:
-
-```console
-$ curl -LO https://github.com/Letdown2491/kuma-linux/releases/latest/download/kuma-x86_64.iso
-```
-
-That media installs `ghcr.io/letdown2491/kuma:niri`. The verbs below are for
-putting a declaration of your own onto hardware:
-
-```console
-$ kuma vm                 # boot the image in a disposable QEMU VM
-$ kuma iso --live         # bootable media: the image is its own live session
-$ kuma install            # write an image to a disk (destructive)
-```
-
-`iso --live` builds media that boots to a working desktop before anything is
-written to a disk, because the ISO's root filesystem *is* the image rather
-than an installer beside it. `kuma iso` without `--live` builds Anaconda
-media instead, which is about a gigabyte larger for the same system.
-
-`install` pulls the image rather than copying the media, so it installs the
-image the media was built from when that came from a registry, and
-`ghcr.io/letdown2491/kuma:niri` when it did not. Media built from a local
-`kuma build` is the second case, and says so before it installs anything.
-`--image` names another.
-
-It asks which disk, then whether to encrypt it, then for an account and a
-hostname, because a shared image cannot declare either: the image is shared
-and you are not. It writes those answers down, and the machine creates them
-on its first boot.
-
-It partitions the disk itself, so the plan it prints is the layout it will
-write. It is the one verb here that cannot be undone, so it dry-runs by
-default and refuses a disk with anything mounted on it.
+Every command ends by naming the legal next ones, so the surface is
+discoverable without this table. `kuma --help` lists all of it.
 
 ## How this differs
 

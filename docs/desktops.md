@@ -25,17 +25,12 @@ An image is built in layers, and they are not all curated by the same hand:
 
 ## The line between a desktop and your declaration
 
-A curated desktop holds the parts that have to be present for a session to
-function at all. Applications are not in it. A calculator, an office suite, a
-media player, or a store belongs in `packages.flatpak` in your declaration,
-even when it would be convenient to bake one in.
-
-The reason is reversibility rather than taste. A line in your declaration is a
-suggestion: delete it and the next convergence uninstalls it. A package in a
-desktop set is a decree, because there is no way to remove one (see
-[what you can change](#what-you-can-change) below). Being opinionated in an
-example declaration costs nothing. Being opinionated in the desktop set costs
-you a fork.
+A curated desktop holds session infrastructure; applications belong in
+`packages.flatpak`. The reason is reversibility rather than taste, and it is
+argued once in
+[why a desktop installs things you did not name](concepts.md#why-a-desktop-installs-things-you-did-not-name)
+rather than twice here. What that rule costs in practice is
+[what you can change](#what-you-can-change), below.
 
 ## niri
 
