@@ -2075,6 +2075,38 @@ fn branding() -> String {
 const BREW_SETUP_SCRIPT: &str = r#"#!/usr/bin/bash
 set -euo pipefail
 prefix=/home/linuxbrew/.linuxbrew
+
+# This runs as root inside a tree the line at the bottom hands to uid
+# 1000, so on the second boot every path here is one that uid can have
+# replaced. Both guards (the -x below and the unit's own
+# ConditionPathExists) live inside it too, which means that uid decides
+# whether root runs this again.
+#
+# The concrete move is to delete the prefix and leave a symlink in its
+# place: `mkdir -p` accepts an existing symlink-to-directory and `tar -C`
+# chdirs through it, so root would extract Homebrew's tree at a path
+# somebody else chose. That is a root-privileged write of fixed content
+# rather than code execution, and on a machine whose account is in wheel
+# (which every example declares) the attacker already has root, so no
+# boundary is crossed there. It matters for a declaration that keeps its
+# user out of wheel, and it is the one place kuma has root operating on
+# paths a non-root uid owns.
+#
+# So: refuse rather than repair. A prefix that exists and is not root's
+# is somebody's business, not this unit's, and saying so beats silently
+# extracting into it.
+for dir in /home/linuxbrew "$prefix" "$prefix/Homebrew" "$prefix/bin"; do
+    [ -e "$dir" ] || continue
+    if [ -L "$dir" ] || [ ! -d "$dir" ]; then
+        echo "kuma: $dir is not a directory; refusing to set up Homebrew here" >&2
+        exit 1
+    fi
+    if [ "$(stat -c %u "$dir")" != 0 ]; then
+        echo "kuma: $dir is not root-owned; refusing to write into it as root" >&2
+        exit 1
+    fi
+done
+
 if [ -x "$prefix/bin/brew" ]; then exit 0; fi
 mkdir -p "$prefix/Homebrew" "$prefix/bin"
 curl -fsSL https://github.com/Homebrew/brew/tarball/HEAD \
@@ -4225,6 +4257,44 @@ mod tests {
             service.contains(&format!("EnvironmentFile=-{dir}/named.env")),
             "the unit loads a credential from somewhere else entirely: {service}"
         );
+    }
+
+    /// Root extracting a tarball into a tree uid 1000 owns is the one
+    /// place kuma does that, and the guard deciding whether it runs
+    /// again lives inside the same tree.
+    #[test]
+    fn brew_setup_refuses_a_prefix_it_does_not_own() {
+        // The check must come before anything that writes, or it is
+        // decoration: mkdir -p follows a symlink and tar chdirs through
+        // it, so both have to be downstream of the refusal.
+        // Line starts, not substrings: the comment above the guard
+        // describes the attack and names these same commands, and the
+        // first version of this test matched the prose.
+        let guard = BREW_SETUP_SCRIPT.find("refusing to write into it").unwrap();
+        for writes in ["\nmkdir -p", "\n    | tar -xz", "\nln -sf"] {
+            let at = BREW_SETUP_SCRIPT
+                .find(writes)
+                .unwrap_or_else(|| panic!("the setup no longer runs {writes:?}"));
+            assert!(at > guard, "{writes:?} happens before the ownership check that protects it");
+        }
+        assert!(
+            BREW_SETUP_SCRIPT.contains("[ -L \"$dir\" ]"),
+            "a symlink in place of the prefix is the move this guards against"
+        );
+
+        let out = std::process::Command::new("bash")
+            .args(["-n", "/dev/stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                child.stdin.take().unwrap().write_all(BREW_SETUP_SCRIPT.as_bytes())?;
+                child.wait_with_output()
+            })
+            .expect("bash");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     }
 
     /// Every kuma unit an image enables has to be accounted for on live
