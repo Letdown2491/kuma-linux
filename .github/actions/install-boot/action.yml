@@ -41,10 +41,11 @@ runs:
     - shell: bash
       run: cargo build --locked
 
-    - uses: ./.github/actions/kvm
-      with:
-        sshpass: "true"
-
+    # The podman step runs BEFORE the kvm action, and the order is the
+    # whole point. kvm asserts podman is somewhere `kuma install` will
+    # look and `exit 1`s when it is not; this step is what makes that
+    # true. With it second, the repair could never run: the assertion it
+    # exists to satisfy had already failed the job.
     # `kuma install` refuses to touch a disk when a tool it needs is
     # absent, and it looks in fixed directories rather than $PATH, because
     # it runs under sudo and sudo's PATH is not the one asking. That is
@@ -61,6 +62,10 @@ runs:
         done
         sudo ln -s "$(command -v podman)" /usr/bin/podman
         echo "linked $(command -v podman) -> /usr/bin/podman"
+
+    - uses: ./.github/actions/kvm
+      with:
+        sshpass: "true"
 
     # --keep, because the stage below installs the tag this leaves behind.
     - name: build this tree's image

@@ -660,6 +660,27 @@ impl Config {
                     );
                 }
             }
+            // The repository address lands inside single quotes in a
+            // script that runs as root on a timer
+            // (`export RESTIC_REPOSITORY='{repo}'`), so a quote in it
+            // closes the string and whatever follows runs. Every other
+            // declaration value reaching generated shell goes through
+            // validate_name, and SECURITY.md states that as a rule with
+            // no exceptions. This was the exception.
+            //
+            // Nobody crosses a privilege boundary today: whoever writes
+            // the declaration already has root at build time through
+            // packages.rpm. It matters because declarations are meant to
+            // arrive from elsewhere later, and because a boundary with
+            // one hole in it is not a boundary.
+            //
+            // The alphabet is restic's own: a scheme, a host, a port, a
+            // path, and the `@` an sftp address needs.
+            validate_name(
+                &self.backup.repo,
+                "backup.repo",
+                &[':', '/', '.', '-', '_', '@', '+', '~'],
+            )?;
             // Reading from a live subvolume means restic sees files
             // change under it, so the answer is "which snapshot" rather
             // than "whatever /var/home looked like across ten minutes".
@@ -1621,6 +1642,34 @@ pub(crate) mod tests {
     /// The whole point of naming the credential is that the credential
     /// is not in the file, and the way that gets undone is not by anyone
     /// deciding to: it is by pasting a restic command line that already
+    /// The address lands in single quotes inside a root script, so a
+    /// quote in it closes the string. Every other value that reaches
+    /// generated shell is validated; this was the one that was not.
+    #[test]
+    fn a_repo_that_could_close_its_own_quoting_is_refused() {
+        let with = |repo: &str| {
+            let toml = format!(
+                "schema_version = 1\n[snapshots]\nenable = true\n\
+                 [backup]\nenable = true\nrepo = {repo:?}\n"
+            );
+            toml::from_str::<Config>(&toml).unwrap().validate()
+        };
+        for hostile in
+            ["b2:kuma'; touch /tmp/pwned; :'", "b2:kuma$(id)", "b2:kuma`id`", "--kuma", "b2:k uma"]
+        {
+            assert!(with(hostile).is_err(), "should be refused: {hostile:?}");
+        }
+        for real in [
+            "s3:https://minio.example:9000/kuma",
+            "sftp:user@host:/srv/kuma",
+            "rclone:start9:kuma",
+            "b2:kuma-backups",
+            "/mnt/usb/kuma",
+        ] {
+            with(real).unwrap_or_else(|e| panic!("{real} should validate: {e}"));
+        }
+    }
+
     /// worked. `sftp:user@host:/path` is ordinary and has to keep
     /// passing, so what is refused is a colon inside the userinfo.
     #[test]

@@ -1754,6 +1754,33 @@ fn check_backup(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     // string: doctor naming a path `kuma backup` does not would send
     // somebody to provision a file nothing ever reads.
     let secret = crate::backup::secret_path(&config);
+    // Existence is not the promise. SECURITY.md says "mode 0600, owned
+    // by root", and kuma prints the command that makes it so, but the
+    // operator creates this file by hand and a plain `>` redirect leaves
+    // it 0644. That is a repository password readable by every local
+    // account, permanently, on a machine reporting itself healthy. A
+    // promise a stranger relies on is one doctor has to grade.
+    if let Ok(meta) = std::fs::metadata(&secret) {
+        use std::os::unix::fs::MetadataExt;
+        let mode = meta.mode() & 0o777;
+        if mode & 0o077 != 0 || meta.uid() != 0 {
+            let fix = Action::new(
+                "restrict",
+                format!("sudo chown root:root {secret} && sudo chmod 600 {secret}"),
+                "make the credential unreadable to everyone but root",
+            );
+            report(
+                Grade::Fail,
+                "backup",
+                format!(
+                    "{secret} is mode {mode:04o} owned by uid {}; the repository password \
+                     is readable by other accounts on this machine",
+                    meta.uid()
+                ),
+                Some(fix),
+            );
+        }
+    }
     if !Path::new(&secret).exists() {
         let fix = Action::new(
             "provision",

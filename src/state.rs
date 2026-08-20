@@ -64,8 +64,8 @@ static CONFIG_FLAG: OnceLock<Option<String>> = OnceLock::new();
 /// writes ./kuma.toml, and switch/vm/sync/doctor/rollback never read one
 /// — so appending it there would claim an influence it doesn't have.
 const CONFIG_VERBS: &[&str] = &[
-    "add", "build", "capture", "check", "clean", "diff", "generate", "iso", "remove", "snapshot",
-    "update",
+    "add", "backup", "build", "capture", "check", "clean", "diff", "generate", "iso", "remove",
+    "snapshot", "update",
 ];
 
 /// Called once from main with the `--config` path, or None when discovery

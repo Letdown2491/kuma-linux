@@ -1187,9 +1187,25 @@ ENV
         ok "seeded, and the run stamped itself"
 
         # The whole point of the stamp: doctor has to be able to see it.
-        sudoq "kuma doctor --json" | grep -q '"backup"' \
-            || bad "doctor does not report on the backup"
-        ok "doctor grades the backup"
+        #
+        # Grading every backup check rather than grepping for the word,
+        # which is what this did and which could not fail: check_backup
+        # emits an unconditional "covers ..." line the moment
+        # backup.enable is true, and smoke.sh set that itself. The
+        # assertion proved only that this script wrote its own
+        # declaration. A missing stamp would have stayed green.
+        local grades
+        grades=$(sudoq "kuma doctor --json" \
+            | python3 -c 'import sys,json
+d=json.load(sys.stdin)
+print(" ".join(c["grade"] for c in d["checks"] if c["name"]=="backup") or "absent")' 2>/dev/null) \
+            || bad "cannot read doctor --json"
+        case "$grades" in
+            absent) bad "doctor reports no backup check at all" ;;
+            *fail*|*warn*) bad "doctor grades the backup $grades after a successful seed" ;;
+            "") bad "doctor reports no backup check at all" ;;
+        esac
+        ok "doctor grades every backup check ok ($grades)"
 
         # The claim 0.13 taught doctor to grade and nothing had ever
         # run: a declared timezone produces exactly one file, by `ln

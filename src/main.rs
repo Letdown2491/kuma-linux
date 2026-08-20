@@ -446,6 +446,13 @@ fn main() -> Result<()> {
             | Cmd::Add { .. }
             | Cmd::Capture { .. }
             | Cmd::Remove { .. }
+            // Install was in the list above and not in this one, so
+            // `json_mode` was false for the one verb that cannot be
+            // undone: progress and subprocess output stayed on stdout in
+            // the middle of the document, and a failed install emitted
+            // no JSON at all. Three comments in this file already
+            // described the behaviour this line is what provides.
+            | Cmd::Install { .. }
     );
     let json_mode = mutating && mutating_json;
     if json_mode {
@@ -609,7 +616,18 @@ fn run(
             let json = json || root_json;
             let path = read_config_path(config_path, explicit, !json);
             let config = Config::load(&path)?;
-            backup::backup(&config, init, list, restore.as_deref(), from.as_deref(), yes, json)
+            backup::backup(
+                &config,
+                &path,
+                backup::Request {
+                    init,
+                    list,
+                    restore: restore.as_deref(),
+                    from: from.as_deref(),
+                    yes,
+                    json,
+                },
+            )
         }
         Cmd::Menu { list } => menu::menu(config_path, list),
         Cmd::BootTitles => boot_titles(),
@@ -2521,12 +2539,22 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     // The script runs as root and reads this directory, and a tempdir is
     // 0700 for whoever created it.
     run_host(&["sudo", "chmod", "-R", "a+rX", path_str(dir.path())?])?;
-    // ...except the one file with a credential in it. That recursive
-    // chmod made the account's password hash readable by every local
-    // account for as long as the install ran, and root, which is what
-    // actually reads it, needs no permission at all. The passphrase was
-    // never here to begin with: it goes to the script on stdin.
-    run_host(&["sudo", "chmod", "600", path_str(&user_file)?])?;
+    // ...except the files with a credential in them, and it is a list
+    // rather than a line because it was a line and then a second
+    // credential arrived. That recursive chmod made the account's
+    // password hash readable by every local account for as long as the
+    // install ran; when `--restore` came along it did the same to the
+    // repository password, which decrypts every backup this person has,
+    // and only the hash was put back. Root, which is what actually reads
+    // these, needs no permission at all. The disk passphrase was never
+    // here: it goes to the script on stdin.
+    let mut credentials = vec![user_file.clone()];
+    if restore.is_some() {
+        credentials.push(dir.path().join("kuma-restore-secret"));
+    }
+    for credential in &credentials {
+        run_host(&["sudo", "chmod", "600", path_str(credential)?])?;
+    }
 
     // Read before, compared after. Installing to a file leaves a boot
     // entry in this machine's firmware naming a partition inside that
@@ -3210,6 +3238,53 @@ mod tests {
             }
         }
         assert!(checked > 15, "expected the docs to be full of kuma commands, found {checked}");
+    }
+
+    /// Every verb that speaks --json has to be in both lists or in
+    /// neither. Install was in one, which made `--json` a flag that
+    /// parsed and did nothing on the only verb that cannot be undone: a
+    /// failed install emitted no document at all, while docs/agents.md
+    /// promised exactly one.
+    #[test]
+    fn every_mutating_verb_that_takes_json_actually_enters_json_mode() {
+        use clap::CommandFactory;
+        // Read off the CLI rather than a hand-kept list, so a verb that
+        // gains --json later cannot be forgotten here.
+        let mutating_with_json = [
+            "build", "switch", "update", "rollback", "sync", "clean", "add", "capture", "remove",
+            "install",
+        ];
+        for verb in mutating_with_json {
+            let sub = Cli::command()
+                .get_subcommands()
+                .find(|s| s.get_name() == verb)
+                .unwrap_or_else(|| panic!("{verb} is not a verb any more; update this list"))
+                .clone();
+            assert!(
+                sub.get_arguments().any(|a| a.get_id() == "json"),
+                "{verb} is treated as a json-mode verb and does not take --json"
+            );
+        }
+        // The pairing itself: both lists live in `main`, so this asserts
+        // the source says so rather than re-deriving it.
+        let src = include_str!("main.rs");
+        let json_list = src.split("let mutating_json").nth(1).expect("mutating_json exists");
+        let json_list = json_list.split("let mutating =").next().unwrap();
+        let mutating = src.split("let mutating = matches!").nth(1).expect("mutating exists");
+        let mutating = mutating.split("let json_mode").next().unwrap();
+        for verb in [
+            "Install", "Build", "Switch", "Update", "Rollback", "Sync", "Clean", "Add", "Capture",
+            "Remove",
+        ] {
+            assert!(
+                json_list.contains(&format!("Cmd::{verb}")),
+                "{verb} is missing from mutating_json"
+            );
+            assert!(
+                mutating.contains(&format!("Cmd::{verb}")),
+                "{verb} takes --json and is missing from `mutating`, so the flag does nothing"
+            );
+        }
     }
 
     /// The installer's default image and the workflow that publishes it

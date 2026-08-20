@@ -115,25 +115,32 @@ fn ready(config: &Config) -> Result<(String, String)> {
     Ok((secret, config.backup.repo.clone()))
 }
 
-pub fn backup(
-    config: &Config,
-    init: bool,
-    list: bool,
-    restore: Option<&str>,
-    from: Option<&str>,
-    yes: bool,
-    json: bool,
-) -> Result<()> {
-    if init {
-        return seed(config);
+/// What was asked for, in one value.
+///
+/// Same shape as `install::Request` and for the same reason: threading
+/// the resolved declaration path through pushed this past the argument
+/// count clippy allows, and a pile of bools at a call site is where
+/// `yes` and `json` get swapped by somebody editing in a hurry.
+pub struct Request<'a> {
+    pub init: bool,
+    pub list: bool,
+    pub restore: Option<&'a str>,
+    pub from: Option<&'a str>,
+    pub yes: bool,
+    pub json: bool,
+}
+
+pub fn backup(config: &Config, config_path: &Path, ask: Request<'_>) -> Result<()> {
+    if ask.init {
+        return seed(config, ask.json);
     }
-    if let Some(path) = restore {
-        return restore_path(config, path, from, yes, json);
+    if let Some(path) = ask.restore {
+        return restore_path(config, path, ask.from, ask.yes, ask.json);
     }
-    if list {
-        return list_snapshots(config, json);
+    if ask.list {
+        return list_snapshots(config, ask.json);
     }
-    status(config, json)
+    status(config, config_path, ask.json)
 }
 
 /// Create the repository, then hand the first copy to the unit that
@@ -144,7 +151,7 @@ pub fn backup(
 /// mount that keeps restic incremental, and the stamp; a `--init` that
 /// copied files itself would be a second answer to all four, free to
 /// drift from the first.
-fn seed(config: &Config) -> Result<()> {
+fn seed(config: &Config, json: bool) -> Result<()> {
     let (secret, repo) = ready(config)?;
 
     // No "is there one yet" probe first, deliberately. Asking costs a
@@ -159,32 +166,59 @@ fn seed(config: &Config) -> Result<()> {
     // host_output keeps the last two lines of stderr and restic's last
     // two are its shutdown rather than its reason: an ordinary unseeded
     // repository read as unreachable and seeding refused itself.
-    println!("Creating a repository at {repo}");
+    // Prose on stdout would land in the middle of the document a caller
+    // asked for, and this is the verb that runs longest, so an agent
+    // driving it is exactly who notices. Same bargain the mutating verbs
+    // make: one document, or none of it.
+    let say = |line: &str| {
+        if !json {
+            println!("{line}");
+        }
+    };
+
+    say(&format!("Creating a repository at {repo}"));
     if let Err(e) = run_host(&restic_argv(&secret, &repo, &["init"])) {
         let said = format!("{e:#}").to_lowercase();
         if said.contains("already exists") || said.contains("already initialized") {
-            println!("{repo} already holds a repository; nothing to seed.");
-            println!(
-                "The timer copies the difference from here on. \
-                 `kuma backup --list` shows what is in it."
-            );
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "ok": true, "repo": repo, "seeded": false,
+                        "why": "the repository already exists",
+                    }))?
+                );
+            } else {
+                say(&format!("{repo} already holds a repository; nothing to seed."));
+                say("The timer copies the difference from here on. \
+                     `kuma backup --list` shows what is in it.");
+            }
             return Ok(());
         }
         return Err(e);
     }
-    println!();
-    println!("Now making the first copy. This is the whole of your data rather than");
-    println!("the difference since yesterday, so it takes as long as it takes.");
+    say("");
+    say("Now making the first copy. This is the whole of your data rather than");
+    say("the difference since yesterday, so it takes as long as it takes.");
     run_host(&["sudo", "systemctl", "start", "kuma-backup.service"])?;
-    println!();
-    println!("Done. `kuma doctor` grades how fresh it stays from here.");
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ok": true, "repo": repo, "seeded": true, "stamp": STAMP,
+            }))?
+        );
+    } else {
+        say("");
+        say("Done. `kuma doctor` grades how fresh it stays from here.");
+    }
     Ok(())
 }
 
 /// What this machine knows without asking the network, which is the
 /// same discipline doctor keeps: a status command that hangs on a train
 /// is one people stop running.
-fn status(config: &Config, json: bool) -> Result<()> {
+fn status(config: &Config, config_path: &Path, json: bool) -> Result<()> {
     let secret = secret_path(config);
     let provisioned = Path::new(&secret).exists();
     let stamp = std::fs::read_to_string(STAMP).ok();
@@ -192,9 +226,14 @@ fn status(config: &Config, json: bool) -> Result<()> {
 
     let mut actions: Vec<Action> = Vec::new();
     if !config.backup.enable {
+        // The declaration this command actually read, not a guess at
+        // where one usually lives: a hint naming a different file than
+        // the command that printed it sends somebody to edit the wrong
+        // machine's description. Every other EDITOR affordance in the
+        // tree resolves the path the same way.
         actions.push(Action::new(
             "edit",
-            "$EDITOR ~/.config/kuma/kuma.toml",
+            format!("$EDITOR {}", config_path.display()),
             "add [backup] with a repo and a secret name, then kuma build and kuma switch",
         ));
     } else if !provisioned {
@@ -364,7 +403,17 @@ fn restore_path(
         println!("{path} would be restored from {snapshot} (dry run)");
     }
 
-    run_host(&restic_argv(&secret, &repo, &args))?;
+    // A dry run is a question and has to answer: unbounded, an absent or
+    // unreachable repository makes it sit silent through restic's retry
+    // backoff, which is the same shape as the probe that was already
+    // fixed. Writing keeps no clock, because a restore of a home
+    // directory over a slow link takes as long as it takes.
+    let argv = if yes {
+        restic_argv(&secret, &repo, &args)
+    } else {
+        restic_argv_within(&secret, &repo, Some(60), &args)
+    };
+    run_host(&argv)?;
     if !yes && !json {
         println!();
         print_actions(&[Action::new(
@@ -416,6 +465,7 @@ mod tests {
             listing.iter().any(|a| a.contains("timeout 60 restic")),
             "listing an absent repository must not wait out the retry storm: {listing:?}"
         );
+        // And the writing paths keep no clock at all.
         let work = restic_argv("/s.env", "b2:kuma", &["backup", "/var/home"]);
         assert!(
             work.iter().all(|a| !a.contains("timeout")),
