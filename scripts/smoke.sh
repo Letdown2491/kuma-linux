@@ -1155,9 +1155,19 @@ ENV
             || bad "no snapshot was taken, so there is nothing to copy"
         ok "a snapshot exists to copy from"
 
-        sudoq "kuma backup --init" || bad "kuma backup --init failed"
-        guest "test -f /var/lib/kuma/backup-last" \
-            || bad "the backup left no stamp, so doctor would call it stale"
+        sudoq "kuma backup --init" || {
+            sudoq "journalctl -u kuma-backup.service -n 40 --no-pager" || true
+            bad "kuma backup --init failed"
+        }
+        # The converger exits 0 on three "not ready" states and says which
+        # in its own log, so a missing stamp is never a mystery unless the
+        # log is thrown away. It was, once, and cost a run.
+        if ! guest "test -f /var/lib/kuma/backup-last"; then
+            echo "   .. the unit exited cleanly and copied nothing. It said:"
+            sudoq "systemctl status kuma-backup.service --no-pager -l" 2>&1 | sed "s/^/      /"
+            sudoq "journalctl -u kuma-backup.service -n 40 --no-pager" 2>&1 | sed "s/^/      /"
+            bad "the backup left no stamp, so doctor would call it stale"
+        fi
         ok "seeded, and the run stamped itself"
 
         # The whole point of the stamp: doctor has to be able to see it.

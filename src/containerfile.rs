@@ -616,6 +616,7 @@ stamp=/var/lib/kuma/backup-last
 
 export RESTIC_REPOSITORY='{repo}'
 
+
 if [ -z "${RESTIC_PASSWORD:-}${RESTIC_PASSWORD_FILE:-}" ]; then
     echo "no credential loaded: the declaration names one and this machine has not been given it"
     exit 0
@@ -632,6 +633,20 @@ if [ -z "$newest" ]; then
     echo "no snapshot in $store yet; nothing to copy"
     exit 0
 fi
+
+# restic keeps a cache of the repository's index and metadata, and treats
+# being unable to open one as fatal rather than as a reason to go slower.
+# A systemd system service has no HOME and no XDG_CACHE_HOME, so without
+# this every run dies before it reaches the repository, saying "neither
+# $XDG_CACHE_HOME nor $HOME are defined" from somewhere that reads like a
+# network failure.
+#
+# /var/cache rather than a temporary directory, because the cache is why
+# a second backup is quick: discarding it nightly means re-fetching the
+# index to discover nothing changed. Below the guards above, because
+# those need no repository and this needs root.
+export RESTIC_CACHE_DIR=/var/cache/restic
+install -d -m 0700 /var/cache/restic
 
 # Bounded, because restic treats a missing bucket as a transient error
 # and retries it with exponential backoff. Asking "is there a repository"
@@ -797,6 +812,11 @@ rm -f "$request"
 set -a
 . "$secret"
 set +a
+
+# Same reason as the converger: a unit has no HOME, and restic will not
+# start without somewhere to cache.
+export RESTIC_CACHE_DIR=/var/cache/restic
+install -d -m 0700 /var/cache/restic
 
 echo "restoring /var/home from $RESTIC_REPOSITORY"
 restic restore latest --target / --include /var/home
@@ -3858,6 +3878,10 @@ mod tests {
         // with backoff, so an unbounded probe takes minutes to answer
         // "no" on every machine nobody has seeded, every night.
         assert!(script.contains("timeout 30 restic cat config"), "{script}");
+        // A unit has no HOME, and restic treats an unopenable cache as
+        // fatal, so without this every run dies before it reaches the
+        // repository with an error that reads like a network failure.
+        assert!(script.contains("export RESTIC_CACHE_DIR=/var/cache/restic"), "{script}");
         assert!(script.contains("cannot reach"), "unreachable reads differently from absent");
 
         // The stamp is what doctor grades, so it must only be written by

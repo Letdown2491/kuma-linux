@@ -64,8 +64,15 @@ fn restic_argv_within(
     seconds: Option<u32>,
     args: &[&str],
 ) -> Vec<String> {
+    // RESTIC_CACHE_DIR for the same reason the units set it: restic
+    // treats an unopenable cache as fatal, and neither a systemd service
+    // nor `sudo` can be relied on to leave a usable HOME behind. Naming
+    // it also means the verb and the timer share one cache rather than
+    // filling two.
     let open = format!(
-        "set -a; . \"$1\"; set +a; export RESTIC_REPOSITORY=\"$2\"; shift 2; exec {}restic \"$@\"",
+        "set -a; . \"$1\"; set +a; export RESTIC_REPOSITORY=\"$2\"; \
+         export RESTIC_CACHE_DIR=/var/cache/restic; install -d -m 0700 /var/cache/restic; \
+         shift 2; exec {}restic \"$@\"",
         seconds.map(|s| format!("timeout {s} ")).unwrap_or_default()
     );
     let mut argv: Vec<String> =
@@ -363,6 +370,10 @@ mod tests {
     fn the_credential_is_never_an_argument() {
         let argv = restic_argv("/var/lib/kuma/secrets/backup.env", "b2:kuma", &["snapshots"]);
         assert!(argv.iter().any(|a| a == "/var/lib/kuma/secrets/backup.env"));
+        assert!(
+            argv.iter().any(|a| a.contains("RESTIC_CACHE_DIR=/var/cache/restic")),
+            "restic dies without somewhere to cache, and sudo's HOME is not it: {argv:?}"
+        );
         assert!(
             argv.iter().all(|a| !a.contains("RESTIC_PASSWORD=")),
             "a value, not a path, would be readable by everybody: {argv:?}"
