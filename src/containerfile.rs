@@ -579,6 +579,152 @@ for snap in "${all[@]}"; do
 done
 "#;
 
+/// Copy the newest local snapshot to the declared repository.
+///
+/// **Why it mounts the snapshot over the live path.** restic 0.19.1 has
+/// no `--set-path` (checked against the package Fedora ships, not
+/// assumed), and its default `--group-by` is `host,paths`. A snapshot
+/// directory is named for the minute it was taken, so backing one up
+/// directly would hand restic a different source path every night: no
+/// parent snapshot would ever match, and every run would re-read every
+/// byte of a 93 GB home to discover it already had it. Content
+/// addressing means that costs no storage, only the whole disk read
+/// nightly, which is the kind of waste that gets a backup turned off.
+///
+/// Mounting the snapshot over `target` in this unit's own mount
+/// namespace fixes both halves at once. restic sees a stable path, so
+/// parents match and the run is incremental; and the path it records is
+/// the one the files actually live at, so a restore lands where it
+/// belongs rather than under some staging directory. `PrivateMounts=yes`
+/// keeps the bind inside the unit, so nothing on the running system sees
+/// its home replaced by a read-only copy for the duration.
+///
+/// **Three guards that exit 0 rather than failing**, because each is a
+/// machine that is not ready rather than a machine that is broken, and
+/// one declaration describes many machines: no credential loaded yet, no
+/// snapshot taken yet, and no repository at the far end. The last one is
+/// deliberate rather than helpful: seeding 93 GB is `kuma backup --init`,
+/// a thing somebody does on purpose while plugged in, not something a
+/// timer decides to start on a train. Freshness is what escalates a
+/// machine that stays in one of these states, which is why the stamp is
+/// only written by a run that actually copied something.
+const BACKUP_SCRIPT: &str = r#"#!/usr/bin/bash
+set -euo pipefail
+target='{target}'
+store="$target/.snapshots"
+stamp=/var/lib/kuma/backup-last
+
+export RESTIC_REPOSITORY='{repo}'
+
+if [ -z "${RESTIC_PASSWORD:-}${RESTIC_PASSWORD_FILE:-}" ]; then
+    echo "no credential loaded: the declaration names one and this machine has not been given it"
+    exit 0
+fi
+
+# `|| true` is load-bearing under `set -o pipefail`: with no snapshot
+# yet, grep exits 1, the assignment inherits it, and `set -e` would kill
+# the script one line above the guard written for exactly that case. The
+# guard would have been unreachable on every machine it was for. `head`
+# closing the pipe early can end `sort` the same way.
+newest=$(ls -1 "$store" 2>/dev/null \
+    | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}$' | sort -r | head -1 || true)
+if [ -z "$newest" ]; then
+    echo "no snapshot in $store yet; nothing to copy"
+    exit 0
+fi
+
+if ! restic cat config >/dev/null 2>&1; then
+    echo "no repository at $RESTIC_REPOSITORY yet; seed it once with 'kuma backup --init'"
+    exit 0
+fi
+
+# Read-only already, being a btrfs snapshot; the bind is for the path,
+# not for the permissions.
+mount --bind "$store/$newest" "$target"
+
+restic backup "$target" \
+    --tag kuma \
+    --skip-if-unchanged \
+    --exclude "$target/.snapshots" \
+{excludes}
+restic forget --tag kuma --prune \
+    --keep-daily {keep_daily} --keep-weekly {keep_weekly} --keep-monthly {keep_monthly}
+
+install -d -m 0755 /var/lib/kuma
+date -u +%Y-%m-%dT%H:%M:%SZ > "$stamp"
+"#;
+
+/// The curated excludes, which are additive rather than a default the
+/// declaration replaces.
+///
+/// Every one is a tree this same file already rebuilds, so storing it
+/// would be paying to keep a copy of something kuma can recreate from
+/// six lines. `/home` is a symlink to `var/home`, which puts Homebrew's
+/// entire prefix inside the snapshot target: `packages.brew` reconverges
+/// it, so a naive copy would ship the largest rebuildable tree on the
+/// machine offsite every night.
+const CURATED_EXCLUDES: &[&str] = &["/linuxbrew", "/*/.cache", "/*/.local/share/containers"];
+
+/// Restart because a timer that fires on resume finds the network still
+/// coming up, and `network-online.target` only orders boot. The start
+/// limit is what keeps that from becoming an infinite retry against a
+/// repository that is simply gone: six tries an hour, then stop and let
+/// doctor's freshness line be the thing that says so.
+fn backup_service(config: &Config) -> String {
+    format!(
+        "[Unit]\nDescription=Copy the newest snapshot to the declared repository\n\
+         Wants=network-online.target\nAfter=network-online.target\n\
+         After=kuma-snapshot.service\n\
+         StartLimitIntervalSec=1h\nStartLimitBurst=6\n\n\
+         [Service]\nType=oneshot\nExecStart=/usr/libexec/kuma-backup\n\
+         EnvironmentFile=-/var/lib/kuma/secrets/{secret}.env\n\
+         PrivateMounts=yes\n\
+         Restart=on-failure\nRestartSec=2min\nCPUWeight=25\nIOWeight=25\n\n\
+         [Install]\nWantedBy=multi-user.target\n",
+        secret = config.backup.secret,
+    )
+}
+
+fn backup_timer(interval: &str) -> String {
+    format!(
+        "[Unit]\nDescription=Scheduled offsite backup\n\n[Timer]\nOnCalendar={interval}\nPersistent=true\nRandomizedDelaySec=1h\n\n[Install]\nWantedBy=timers.target\n"
+    )
+}
+
+/// The script with this declaration's repository, retention and excludes
+/// baked in. Validation has already restricted every substitution to a
+/// conservative alphabet, and refused a repository with a password in it.
+///
+/// A declared `~/` means "in every home", which is the only reading that
+/// works when the target holds more than one.
+fn backup_script(config: &Config) -> String {
+    let target = &config.snapshots.target;
+    let mut excludes = String::new();
+    // `$target` rather than the substituted path, so the script has one
+    // definition of where it is looking and the line beside this one
+    // (`--exclude "$target/.snapshots"`) is spelled the same way.
+    for suffix in CURATED_EXCLUDES {
+        excludes.push_str(&format!("    --exclude \"$target{suffix}\" \\\n"));
+    }
+    for path in &config.backup.exclude {
+        let path = match path.strip_prefix("~/") {
+            Some(rest) => format!("$target/*/{rest}"),
+            None => path.clone(),
+        };
+        excludes.push_str(&format!("    --exclude \"{path}\" \\\n"));
+    }
+    // The last continuation has to go, or the blank line after it eats
+    // the next command.
+    let excludes = excludes.trim_end().trim_end_matches('\\').trim_end().to_string();
+    BACKUP_SCRIPT
+        .replace("{target}", target)
+        .replace("{repo}", &config.backup.repo)
+        .replace("{excludes}", &excludes)
+        .replace("{keep_daily}", &config.backup.keep_daily.to_string())
+        .replace("{keep_weekly}", &config.backup.keep_weekly.to_string())
+        .replace("{keep_monthly}", &config.backup.keep_monthly.to_string())
+}
+
 const SNAPSHOT_SERVICE: &str = r#"[Unit]
 Description=Snapshot the declared btrfs subvolume
 
@@ -2314,6 +2460,22 @@ pub fn generate(config: &Config) -> String {
         out.push_str("RUN systemctl enable kuma-snapshot.timer\n");
     }
 
+    // Inside the snapshots gate would read as tidier and would be wrong:
+    // validation already refuses backup.enable without snapshots.enable,
+    // so nesting it would hide that dependency behind an `if` instead of
+    // stating it where somebody reading the Containerfile can see it.
+    if config.backup.enable {
+        // restic is named for the same reason btrfs-progs is above: a
+        // timer that dies on a missing binary is a backup that silently
+        // is not one. Fedora packages it, so nothing is vendored.
+        out.push('\n');
+        out.push_str(&dnf_install("restic"));
+        out.push_str("COPY --chmod=755 kuma-backup /usr/libexec/kuma-backup\n");
+        out.push_str("COPY kuma-backup.service /usr/lib/systemd/system/kuma-backup.service\n");
+        out.push_str("COPY kuma-backup.timer /usr/lib/systemd/system/kuma-backup.timer\n");
+        out.push_str("RUN systemctl enable kuma-backup.timer\n");
+    }
+
     // Every image can adopt a kuma vm host timezone; no-op on hardware.
     out.push_str("\nCOPY --chmod=755 kuma-vm-timezone /usr/libexec/kuma-vm-timezone\n");
     out.push_str(
@@ -2581,6 +2743,11 @@ pub fn write_context(
             dir.join("kuma-snapshot.timer"),
             snapshot_timer(&config.snapshots.interval),
         )?;
+    }
+    if config.backup.enable {
+        std::fs::write(dir.join("kuma-backup"), backup_script(config))?;
+        std::fs::write(dir.join("kuma-backup.service"), backup_service(config))?;
+        std::fs::write(dir.join("kuma-backup.timer"), backup_timer(&config.backup.interval))?;
     }
     // Unconditional, like the Containerfile lines that copy them: the
     // converger has to be present in an image that declares no account,
@@ -3530,6 +3697,192 @@ mod tests {
         let timer = std::fs::read_to_string(dir.path().join("kuma-snapshot.timer")).unwrap();
         assert!(timer.contains("OnCalendar=daily"));
         assert!(timer.contains("Persistent=true"), "a laptop asleep at the hour still snapshots");
+    }
+
+    /// The declaration's policy has to survive into the script, and the
+    /// script has to be shell. The second half is not pedantry: every
+    /// substitution here lands inside a `--exclude` argument list built
+    /// by string concatenation, and a stray continuation would eat the
+    /// command on the next line, which bash reports at run time on a
+    /// machine nobody is watching.
+    #[test]
+    fn backup_script_carries_the_declared_policy() {
+        let declared = config(
+            "schema_version = 1\n[snapshots]\nenable = true\ntarget = \"/var/home\"\n\
+             [backup]\nenable = true\nrepo = \"s3:https://minio.example:9000/kuma\"\n\
+             keep_daily = 3\nkeep_weekly = 2\nkeep_monthly = 1\n\
+             exclude = [\"~/Videos\", \"/var/home/shared/scratch\"]\n",
+        );
+        let script = backup_script(&declared);
+
+        assert!(script.contains("RESTIC_REPOSITORY='s3:https://minio.example:9000/kuma'"));
+        assert!(script.contains("--keep-daily 3 --keep-weekly 2 --keep-monthly 1"));
+        for placeholder in
+            ["{target}", "{repo}", "{excludes}", "{keep_daily}", "{keep_weekly}", "{keep_monthly}"]
+        {
+            assert!(!script.contains(placeholder), "{placeholder} was never substituted");
+        }
+
+        // Curated first and always. These are trees this same file
+        // rebuilds, so keeping them offsite is paying to store what kuma
+        // can recreate.
+        for curated in ["$target/linuxbrew", "$target/*/.cache"] {
+            assert!(script.contains(&format!("--exclude \"{curated}\"")), "missing {curated}");
+        }
+        // A declared `~/` means every home, which is the only reading
+        // that works when the target holds more than one.
+        assert!(script.contains("--exclude \"$target/*/Videos\""), "{script}");
+        assert!(script.contains("--exclude \"/var/home/shared/scratch\""));
+        // The snapshot store is inside the target, and after the bind
+        // mount it is the snapshot's own copy of it.
+        assert!(script.contains("--exclude \"$target/.snapshots\""));
+
+        // The bind is the whole reason this is incremental: restic 0.19
+        // has no --set-path and groups by host+paths, so a source path
+        // named for the minute it was taken never matches a parent.
+        assert!(script.contains(r#"mount --bind "$store/$newest" "$target""#), "{script}");
+
+        // Three states that are "not ready yet" rather than "broken",
+        // each exiting clean so one declaration can describe machines at
+        // different stages of being set up.
+        assert!(script.contains("no credential loaded"));
+        assert!(script.contains("no snapshot in $store yet"));
+        assert!(script.contains("seed it once with 'kuma backup --init'"));
+
+        // The stamp is what doctor grades, so it must only be written by
+        // a run that copied something. Every early exit is above it.
+        let stamp_at = script.find("date -u").expect("the run stamps its success");
+        for guard in ["no credential loaded", "no snapshot in $store yet", "no repository at"] {
+            assert!(script.find(guard).unwrap() < stamp_at, "{guard} must precede the stamp");
+        }
+
+        let out = std::process::Command::new("bash")
+            .args(["-n", "/dev/stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                child.stdin.take().unwrap().write_all(script.as_bytes())?;
+                child.wait_with_output()
+            })
+            .expect("bash");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// The guards are only worth having if they are reachable, and the
+    /// first draft's were not: `newest=$(... | grep ...)` under
+    /// `set -o pipefail` exits non-zero when there is no snapshot, so
+    /// `set -e` killed the script one line above the message written for
+    /// that machine. Reading the rendered script found it; nothing else
+    /// would have until a real machine sat there failing quietly.
+    ///
+    /// So this runs the script rather than reading it, on a target with
+    /// no snapshots in it, and asserts it exits clean and says why.
+    #[test]
+    fn a_machine_with_nothing_to_copy_yet_exits_clean() {
+        let home = tempfile::tempdir().unwrap();
+        let target = home.path().display();
+        let declared = config(&format!(
+            "schema_version = 1\n[snapshots]\nenable = true\ntarget = \"{target}\"\n\
+             [backup]\nenable = true\nrepo = \"b2:kuma\"\n"
+        ));
+        let script = backup_script(&declared);
+
+        let run = |env: &[(&str, &str)]| {
+            let mut cmd = std::process::Command::new("bash");
+            cmd.args(["-s"])
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            for (k, v) in env {
+                cmd.env(k, v);
+            }
+            cmd.spawn()
+                .and_then(|mut child| {
+                    use std::io::Write;
+                    child.stdin.take().unwrap().write_all(script.as_bytes())?;
+                    child.wait_with_output()
+                })
+                .expect("bash")
+        };
+
+        // No credential: the machine is un-provisioned, not broken.
+        let out = run(&[]);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("no credential loaded"),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+
+        // Credential present, no snapshot taken yet. This is the one the
+        // pipefail bug made unreachable.
+        let out = run(&[("RESTIC_PASSWORD", "x")]);
+        assert!(
+            out.status.success(),
+            "an empty snapshot store must not fail the unit: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("no snapshot in"),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+
+        // Nothing may have been stamped: freshness must reflect a run
+        // that actually copied something.
+        assert!(!std::path::Path::new("/var/lib/kuma/backup-last-test").exists());
+    }
+
+    /// The unit has to name the secret the declaration named, tolerate
+    /// it being absent, and get its own mount namespace. Without the
+    /// last one the bind above would replace the running system's home
+    /// with a read-only snapshot for the length of the backup.
+    #[test]
+    fn the_backup_unit_reads_the_named_secret_and_mounts_privately() {
+        let dir = tempfile::tempdir().unwrap();
+        context(
+            "schema_version = 1\n[snapshots]\nenable = true\n\
+             [backup]\nenable = true\nrepo = \"b2:kuma\"\nsecret = \"start9\"\n\
+             interval = \"03:00\"\n",
+            dir.path(),
+        );
+        let service = std::fs::read_to_string(dir.path().join("kuma-backup.service")).unwrap();
+        assert!(
+            service.contains("EnvironmentFile=-/var/lib/kuma/secrets/start9.env"),
+            "the leading - is what lets an un-provisioned machine boot: {service}"
+        );
+        assert!(service.contains("PrivateMounts=yes"), "{service}");
+        assert!(service.contains("After=kuma-snapshot.service"), "copy after taking: {service}");
+        // A timer firing on resume finds the network still coming up,
+        // and network-online.target only orders boot.
+        assert!(service.contains("Restart=on-failure"));
+        assert!(service.contains("StartLimitBurst=6"), "retry, but not forever: {service}");
+
+        let timer = std::fs::read_to_string(dir.path().join("kuma-backup.timer")).unwrap();
+        assert!(timer.contains("OnCalendar=03:00"));
+        assert!(timer.contains("Persistent=true"), "a laptop asleep at the hour still backs up");
+    }
+
+    /// Declaring no backup must leave no trace of one, and declaring one
+    /// must layer the binary it needs. A timer that dies on a missing
+    /// restic is a backup that silently is not one.
+    #[test]
+    fn backup_is_absent_until_declared() {
+        let without = generate(&config("schema_version = 1\n[snapshots]\nenable = true\n"));
+        assert!(!without.contains("kuma-backup"));
+        assert!(!without.contains("restic"));
+
+        let with = generate(&config(
+            "schema_version = 1\n[snapshots]\nenable = true\n\
+             [backup]\nenable = true\nrepo = \"b2:kuma\"\n",
+        ));
+        assert!(with.contains("RUN systemctl enable kuma-backup.timer"));
+        assert!(with.contains("restic"), "the binary the unit calls has to be in the image");
     }
 
     /// A remote that serves a delta this machine refuses fails the same
