@@ -1901,8 +1901,15 @@ fn etc_writes(containerfile: &str) -> Vec<String> {
         }
         // Split on the shell's separators so a line running several
         // commands is read as several commands, and the destination of
-        // each `ln -s` is its own last word.
-        for segment in line.split("&&").flat_map(|part| part.split(';')) {
+        // each `ln -s` is its own last word. Asked of the whole line
+        // first, so the splitting only happens on the lines that could
+        // possibly answer yes.
+        for segment in line
+            .contains("ln -s")
+            .then(|| line.split("&&").flat_map(|part| part.split(';')))
+            .into_iter()
+            .flatten()
+        {
             if !segment.contains("ln -s") {
                 continue;
             }

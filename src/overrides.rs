@@ -388,16 +388,25 @@ pub struct Drift {
     pub change: &'static str,
 }
 
+/// How a key reads to a person. `[Context]` is where most keys live and
+/// naming it every time would bury what the line is about, so only the
+/// other groups say which one they are.
+///
+/// One function because two surfaces print these: `kuma diff` reports
+/// drift, `kuma capture` proposes, and a key that reads one way in one
+/// and another way in the other is two vocabularies for one thing.
+pub fn key_label(group: &str, key: &str) -> String {
+    if group == CONTEXT {
+        key.to_string()
+    } else {
+        format!("{group}/{key}")
+    }
+}
+
 impl Drift {
-    /// How it reads in a diff. `[Context]` is where most keys live and
-    /// naming it every time would bury the app id, so only the other
-    /// groups say which one they are.
+    /// How it reads in a diff: the app, then the key.
     pub fn item(&self) -> String {
-        if self.group == CONTEXT {
-            format!("{} {}", self.app, self.key)
-        } else {
-            format!("{} {}/{}", self.app, self.group, self.key)
-        }
+        format!("{} {}", self.app, key_label(&self.group, &self.key))
     }
 }
 
@@ -510,9 +519,19 @@ pub struct Proposal {
 /// still copied through by convergence; it just cannot be proposed,
 /// because there is nowhere in the schema to put it.
 fn representable(group: &str, key: &str) -> bool {
+    let spelled_with = |extra: &[char]| {
+        key.chars().any(|c| c.is_ascii_alphanumeric())
+            && key.chars().all(|c| c.is_ascii_alphanumeric() || extra.contains(&c))
+    };
     match group {
         CONTEXT => AppOverride::default().context_lists().iter().any(|(name, _)| *name == key),
-        ENVIRONMENT | SESSION_BUS | SYSTEM_BUS => true,
+        // The parser's own alphabets, asked here rather than discovered
+        // afterwards: a key kuma cannot spell in a declaration must not
+        // be proposed for one, or capture offers an edit the validating
+        // write then refuses, taking every other proposal down with it.
+        // Convergence still copies such a key through untouched.
+        ENVIRONMENT => spelled_with(&['_']),
+        SESSION_BUS | SYSTEM_BUS => spelled_with(&['.', '-', '_', '*']),
         _ => false,
     }
 }
@@ -677,6 +696,27 @@ mod tests {
         assert!(out.contains("[Some Future Group]\nkey=value\n"), "{out}");
         assert!(out.contains("devices=dri;"), "{out}");
         assert!(out.contains("sockets=x11;"), "{out}");
+    }
+
+    /// The state file has a writer and a reader and no format anywhere
+    /// else, so the only thing keeping them agreeing is that they were
+    /// written together. A key whose group holds a space ("Session Bus
+    /// Policy") is the shape that would break a naive separator.
+    #[test]
+    fn the_state_file_survives_a_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("state");
+        let mut owned: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        owned.insert(
+            "org.example.App".into(),
+            vec![
+                owned_id(CONTEXT, "filesystems"),
+                owned_id(SESSION_BUS, "org.freedesktop.Flatpak"),
+            ],
+        );
+        owned.insert("org.example.Other".into(), vec![owned_id(ENVIRONMENT, "GTK_THEME")]);
+        write_state(&path, &owned).unwrap();
+        assert_eq!(read_state(&path), owned);
     }
 
     /// A machine that declares no permissions ends up with no state
@@ -947,6 +987,33 @@ mod tests {
         assert_eq!(
             proposals[0].keys,
             vec![("Context".to_string(), "sockets".to_string(), "x11;".to_string())]
+        );
+    }
+
+    /// A key the declaration could not spell is not proposed for it.
+    /// Capture writes through the same validating path `kuma add` uses,
+    /// so a key with a space in its name would not land quietly: it
+    /// would fail the write and take every other proposal with it.
+    #[test]
+    fn a_key_the_declaration_cannot_spell_is_not_offered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let home = root.join("home/mira");
+        let store_dir = store(Scope::System, root, &home);
+        std::fs::create_dir_all(&store_dir).unwrap();
+        std::fs::write(
+            store_dir.join("org.example.App"),
+            "[Environment]\nGTK_THEME=Adwaita\nnot a var name=x\n\
+             [Some Future Group]\nwhatever=1\n",
+        )
+        .unwrap();
+        let installed: BTreeSet<&str> = ["org.example.App"].into_iter().collect();
+        let (proposals, _) = capturable(&installed, &Default::default(), root, &home);
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(
+            proposals[0].keys,
+            vec![("Environment".to_string(), "GTK_THEME".to_string(), "Adwaita".to_string())],
+            "only what the schema can hold"
         );
     }
 

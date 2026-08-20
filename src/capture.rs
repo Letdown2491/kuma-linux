@@ -206,17 +206,8 @@ fn print_proposal(selected: &[&Candidate]) {
 /// can decide about.
 fn print_override_proposal(proposals: &[crate::overrides::Proposal]) {
     for p in proposals {
-        let keys: Vec<String> = p
-            .keys
-            .iter()
-            .map(|(group, key, _)| {
-                if group == crate::overrides::CONTEXT {
-                    key.clone()
-                } else {
-                    format!("{group}/{key}")
-                }
-            })
-            .collect();
+        let keys: Vec<String> =
+            p.keys.iter().map(|(group, key, _)| crate::overrides::key_label(group, key)).collect();
         println!("  + {}  [overrides] {}  {}", p.app, p.scope.as_str(), keys.join(", "));
     }
 }
