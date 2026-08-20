@@ -72,7 +72,7 @@ pub fn render(app: &AppOverride) -> String {
                 ENVIRONMENT => ENVIRONMENT,
                 SESSION_BUS => SESSION_BUS,
                 SYSTEM_BUS => SYSTEM_BUS,
-                _ => unreachable!("declared() only emits kuma's four groups"),
+                _ => unreachable!("declared_keys() only emits kuma's four groups"),
             };
         }
         out.push_str(&format!("{key}={value}\n"));
@@ -276,7 +276,7 @@ pub fn state_path(scope: Scope, root: &Path, home: &Path) -> PathBuf {
 
 /// Read a baked file back into the keys it asks for. The baked file is
 /// the declaration at runtime, so this is the only reader that matters
-/// on a machine; `declared()` exists for the build that wrote it.
+/// on a machine; `declared_keys()` exists for the build that wrote it.
 pub fn parse_declared(text: &str) -> Vec<(String, String, String)> {
     let file = KeyFile::parse(text);
     let mut out = Vec::new();

@@ -19,11 +19,10 @@ const BREW_CELLAR: &str = "/home/linuxbrew/.linuxbrew/Cellar";
 const BREW_STATE: &str = "/home/linuxbrew/.linuxbrew/.kuma-brews";
 /// Written by the flatpak sync: the apps the declaration installed, which
 /// are the only system apps convergence considers its own to remove.
-const FLATPAK_STATE: &str = "/var/lib/kuma/flatpaks-installed";
+use crate::state::{BAKED_BREWS, BAKED_CONFIG, BAKED_FLATPAKS, FLATPAK_STATE};
 /// The declaration this image was built from, baked in at build time.
 /// Doctor reads it to learn what the machine was meant to do, which is a
 /// better question than what its unit files happen to say.
-const BAKED_CONFIG: &str = "/usr/lib/kuma/kuma.toml";
 /// The account a declaration asked for, baked in at build time.
 const BAKED_USER: &str = "/usr/lib/kuma/user";
 /// The account an installer asked for, written onto the target. A
@@ -271,7 +270,7 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
         }
         None => skipped = Some("flatpak unavailable, skipped".to_string()),
     }
-    stale_image |= image_list_stale("/usr/lib/kuma/flatpaks", &declared);
+    stale_image |= image_list_stale(BAKED_FLATPAKS, &declared);
     sections.push(DiffSection { name: "packages.flatpak", entries, skipped });
 
     let declared: BTreeSet<&str> = config.packages.brew.iter().map(String::as_str).collect();
@@ -298,7 +297,7 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
             None => skipped = Some("brew not bootstrapped yet; first boot installs it".to_string()),
         }
     }
-    stale_image |= image_list_stale("/usr/lib/kuma/brews", &declared);
+    stale_image |= image_list_stale(BAKED_BREWS, &declared);
     sections.push(DiffSection { name: "packages.brew", entries, skipped });
 
     // Ad-hoc installs are the non-doomed half of the same set:
@@ -1586,8 +1585,8 @@ fn convergence_targets(
 fn check_convergence(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     let targets = convergence_targets(
         user_sync_has_an_account(Path::new(BAKED_USER), Path::new(INSTALLED_USER)),
-        Path::new("/usr/lib/kuma/flatpaks").exists(),
-        Path::new("/usr/lib/kuma/brews").exists(),
+        Path::new(BAKED_FLATPAKS).exists(),
+        Path::new(BAKED_BREWS).exists(),
     );
     let names: Vec<&str> = targets.iter().map(|(unit, _, _)| *unit).collect();
     let facts = unit_facts(&names);
@@ -1633,7 +1632,7 @@ fn check_convergence(report: &mut impl FnMut(Grade, &str, String, Option<Action>
             report(Grade::Fail, name, detail, Some(fix));
         }
     }
-    if Path::new("/usr/lib/kuma/flatpaks").exists() {
+    if Path::new(BAKED_FLATPAKS).exists() {
         match host_output(&["flatpak", "remotes", "--system", "--columns=name"]) {
             Ok(out) if out.lines().any(|l| l.trim() == "flathub") => {
                 report(Grade::Ok, "flathub", "remote configured".into(), None)
@@ -1641,7 +1640,10 @@ fn check_convergence(report: &mut impl FnMut(Grade, &str, String, Option<Action>
             _ => {
                 let fix = Action::new(
                     "add-remote",
-                    "sudo flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo",
+                    format!(
+                        "sudo flatpak remote-add --if-not-exists flathub {}",
+                        crate::containerfile::FLATHUB_URL
+                    ),
                     "restore the remote",
                 );
                 report(
@@ -2079,7 +2081,7 @@ fn scan_etc(paths: &[String], image_root: &Path, live_root: &Path) -> EtcScan {
 /// check that cries wolf teaches you to ignore it.
 fn check_etc_drift(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     // The machine's own declaration says what its image owns.
-    let Ok(config) = Config::load(Path::new(crate::state::BAKED_CONFIG)) else {
+    let Ok(config) = Config::load(Path::new(BAKED_CONFIG)) else {
         return;
     };
     // "/usr" and "/" in production; parameterized so the states this

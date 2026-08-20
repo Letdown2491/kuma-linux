@@ -1745,13 +1745,13 @@ fn convergence_calls(units: &[&str]) -> Vec<(Vec<String>, bool)> {
 /// until each oneshot finishes, so success here means converged.
 fn sync(declared: Option<&Config>, json: bool) -> Result<()> {
     let mut units: Vec<&str> = Vec::new();
-    if Path::new("/usr/lib/kuma/flatpaks").exists() {
+    if Path::new(state::BAKED_FLATPAKS).exists() {
         units.push("kuma-flatpak-sync.service");
     }
-    if Path::new("/usr/lib/kuma/brews").exists() {
+    if Path::new(state::BAKED_BREWS).exists() {
         units.push("kuma-brew-sync.service");
     }
-    if Path::new("/usr/lib/kuma/overrides").exists() {
+    if Path::new(state::BAKED_OVERRIDES).exists() {
         units.push("kuma-flatpak-overrides.service");
     }
     if units.is_empty() {

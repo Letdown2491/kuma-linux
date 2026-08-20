@@ -1003,7 +1003,9 @@ flatpak update --system --assumeyes --noninteractive \
 flatpak uninstall --system --unused --assumeyes --noninteractive
 "#;
 
-const FLATHUB_URL: &str = "https://dl.flathub.org/repo/flathub.flatpakrepo";
+/// Doctor prints a `remote-add` for the same address, so a move here
+/// must not leave it sending people somewhere the image disagrees with.
+pub const FLATHUB_URL: &str = "https://dl.flathub.org/repo/flathub.flatpakrepo";
 
 /// `kuma vm` passes the host's timezone over qemu's fw_cfg channel
 /// (bootc-image-builder silently ignores [customizations.timezone] for
@@ -3030,19 +3032,51 @@ mod tests {
     /// without anybody remembering to cover it.
     #[test]
     fn every_copied_file_is_staged() {
-        for toml in ["schema_version = 1", "schema_version = 1\n[system]\ndesktop = \"niri\""] {
+        // EVERYTHING_ON is the point. Six features decide separately, in
+        // `generate` and again in `write_context`, whether they ship,
+        // and five of the six default to off: this test claimed to cover
+        // the next feature automatically while running only declarations
+        // that entered neither branch. A COPY added under a gate with no
+        // matching stage passed here and died at `podman build`.
+        for toml in [
+            "schema_version = 1",
+            "schema_version = 1\n[system]\ndesktop = \"niri\"",
+            EVERYTHING_ON,
+        ] {
             let dir = tempfile::tempdir().unwrap();
             context(toml, dir.path());
             let containerfile = std::fs::read_to_string(dir.path().join("Containerfile")).unwrap();
-            let sources = containerfile.lines().filter_map(|line| {
-                let rest = line.strip_prefix("COPY ")?;
-                // the source is the first word that is not a --flag
-                rest.split_whitespace().find(|word| !word.starts_with("--"))
-            });
-            for source in sources {
+            let sources: Vec<String> = containerfile
+                .lines()
+                .filter_map(|line| {
+                    let rest = line.strip_prefix("COPY ")?;
+                    // the source is the first word that is not a --flag
+                    rest.split_whitespace().find(|word| !word.starts_with("--")).map(String::from)
+                })
+                .collect();
+            for source in &sources {
                 assert!(
                     dir.path().join(source).exists(),
                     "the Containerfile copies {source}, which nothing stages"
+                );
+            }
+
+            // And the other direction, which was untested and is the
+            // silent one: a file staged and never copied is a unit that
+            // simply is not in the image, with nothing to say so.
+            for entry in std::fs::read_dir(dir.path()).unwrap().flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                // `kuma` is the binary the build copies by a path this
+                // parse does not see, Containerfile is the recipe
+                // itself, and `.stub-kuma` is this harness standing in
+                // for the 42 MB binary (dot-prefixed for exactly that
+                // reason, see `context`).
+                if name == "kuma" || name == "Containerfile" || name.starts_with('.') {
+                    continue;
+                }
+                assert!(
+                    sources.contains(&name),
+                    "{name} is staged into the build context and nothing copies it"
                 );
             }
         }
@@ -4095,10 +4129,47 @@ mod tests {
     /// this is what makes them one: doctor grading a stamp the converger
     /// does not write, or a unit loading a credential `kuma backup` does
     /// not name, are both silent failures that look like a healthy
+    /// A declaration with every optional feature turned on.
+    ///
+    /// Most of them default to off, so a fixture that leaves them there
+    /// exercises none of the branches that copy files into the image or
+    /// stage them into the build context. Two tests were checking those
+    /// branches against declarations that never entered them.
+    const EVERYTHING_ON: &str = "schema_version = 1\n\
+         [system]\ndesktop = \"niri\"\nbrew = true\nhostname = \"probe\"\n\
+         timezone = \"Pacific/Auckland\"\n\
+         [packages]\nflatpak = [\"org.mozilla.firefox\"]\nbrew = [\"ripgrep\"]\n\
+         [services]\nenable = [\"sshd.service\"]\n\
+         [snapshots]\nenable = true\n\
+         [backup]\nenable = true\nrepo = \"b2:kuma\"\nnetwork_connections = true\n\
+         [overrides.\"org.mozilla.firefox\"]\nsockets = [\"wayland\"]\n\
+         [user]\nname = \"probe\"\nssh_keys = [\"ssh-ed25519 AAAAC3Nz probe@example\"]\n";
+
     /// machine. This release has already produced that shape three
     /// times.
     #[test]
     fn the_shell_and_the_verb_agree_on_where_things_live() {
+        // The baked lists: written by a COPY here, read as a literal by
+        // the generated shell, and read again by four Rust callers that
+        // all treat absence as "nothing to do". A drift makes a machine
+        // that looks converged and is not.
+        use crate::state::{BAKED_BREWS, BAKED_FLATPAKS, BAKED_OVERRIDES, FLATPAK_STATE};
+        let niri = generate(&config(EVERYTHING_ON));
+        for (path, script) in
+            [(BAKED_FLATPAKS, FLATPAK_SYNC_SCRIPT), (BAKED_BREWS, BREW_SYNC_SCRIPT)]
+        {
+            assert!(
+                script.contains(&format!("declared={path}")),
+                "the converger reads a different path than the one Rust decides from: {path}"
+            );
+            assert!(niri.contains(&format!(" {path}\n")), "nothing copies {path} into the image");
+        }
+        assert!(
+            FLATPAK_SYNC_SCRIPT.contains(&format!("state={FLATPAK_STATE}")),
+            "the converger tracks authority somewhere doctor does not read"
+        );
+        assert!(niri.contains(BAKED_OVERRIDES), "nothing copies {BAKED_OVERRIDES} into the image");
+
         assert!(
             BACKUP_SCRIPT.contains(&format!("stamp={}", crate::backup::STAMP)),
             "the converger stamps somewhere doctor does not read"

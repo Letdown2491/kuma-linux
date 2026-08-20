@@ -32,6 +32,19 @@ pub const DEPLOYED_ID_FILE: &str = "/var/lib/kuma/deployed-image-id";
 /// probe falls back to it, and `kuma init` seeds from it.
 pub const BAKED_CONFIG: &str = "/usr/lib/kuma/kuma.toml";
 
+/// The lists the image bakes, which the convergers read on the machine
+/// and four other places decide things from.
+///
+/// One definition each, because every reader treats absence as "nothing
+/// to do": `baked_is_behind` answers false, `kuma sync` starts fewer
+/// units and reports nothing to converge, and doctor stops grading the
+/// converger entirely. A path that drifts here does not fail anywhere.
+/// It makes a machine that looks converged and is not, which is the
+/// failure this project has already shipped once.
+pub const BAKED_FLATPAKS: &str = "/usr/lib/kuma/flatpaks";
+pub const BAKED_BREWS: &str = "/usr/lib/kuma/brews";
+pub const BAKED_OVERRIDES: &str = "/usr/lib/kuma/overrides";
+
 pub struct Action {
     pub rel: &'static str,
     pub cmd: String,
@@ -336,7 +349,8 @@ fn observe_converging() -> Vec<&'static str> {
 
 /// What convergence installed, and therefore all it may remove. The same
 /// file `kuma diff` reads; the brew half has always had its equivalent.
-const FLATPAK_STATE: &str = "/var/lib/kuma/flatpaks-installed";
+/// Read by doctor too, so it is defined once and imported there.
+pub const FLATPAK_STATE: &str = "/var/lib/kuma/flatpaks-installed";
 
 fn observe_machine() -> MachineFact {
     if !Path::new("/run/ostree-booted").exists() {
@@ -358,7 +372,7 @@ fn observe_machine() -> MachineFact {
     // things it never installed, so a machine with an app from a store
     // read as drifted here while `kuma diff` correctly called it yours,
     // and the summary an agent reads first was the pessimistic one.
-    if let Ok(baked) = std::fs::read_to_string("/usr/lib/kuma/flatpaks") {
+    if let Ok(baked) = std::fs::read_to_string(BAKED_FLATPAKS) {
         if let Ok(installed) =
             host_output(&["flatpak", "list", "--system", "--app", "--columns=application"])
         {
@@ -373,7 +387,7 @@ fn observe_machine() -> MachineFact {
     // Installed brews are Cellar directory names — a filesystem read, not a
     // multi-second `brew list`. Only ever-declared formulae (the sync state
     // file) count as removals; ad-hoc installs are the owner's.
-    if let Ok(baked) = std::fs::read_to_string("/usr/lib/kuma/brews") {
+    if let Ok(baked) = std::fs::read_to_string(BAKED_BREWS) {
         if let Ok(cellar) = std::fs::read_dir("/home/linuxbrew/.linuxbrew/Cellar") {
             // tapped formulae ("owner/tap/tool") install under their last segment
             let short = |f: &str| f.rsplit('/').next().unwrap_or(f).to_string();
