@@ -444,6 +444,42 @@ into a home. One app declares into one store: flatpak merges the two with the
 user store winning per key, so an app declared in both would be a file where
 half your lines quietly lose to the other half.
 
+## What a declaration does not reproduce
+
+A machine that boots from this image carries state the file never mentions,
+and the honest thing is to name it rather than let you find out during a
+reinstall. Everything below survives an image update and is **deliberately**
+outside the declaration.
+
+**Your data.** `/var/home` is yours; a declaration rebuilds a system, not a
+home. `[snapshots]` covers a mistake, and nothing here covers a dead disk yet.
+
+**Machine identity.** SSH host keys, the machine ID, the disk layout in
+`fstab` and `crypttab`. These are what make this machine this machine, and
+copying them into a second one would be a bug rather than a feature.
+
+**Secrets.** Network connections live in `/etc/NetworkManager/system-connections`
+and hold the passphrase in the file. A declaration is written to be committed
+and is baked world-readable into an image, which is the same boundary that
+keeps `[user]`'s password hash out of `kuma capture`.
+
+**Per-app and per-desktop state.** dconf and GSettings, the portal permission
+store under `~/.local/share/flatpak/db` (the location and notification prompts
+you answered), device pairings, and units you enabled in your own
+`systemd --user` manager. `[services]` is system scope only.
+
+**Everything else in `/etc` that the image never shipped.** `kuma doctor`
+watches the files this image owns, and deliberately says nothing about the
+rest: a real machine carries dozens of legitimately local files, and a check
+that lists them all is one you learn to scroll past. The two exceptions are
+the shapes that are always wrong rather than merely undeclared, and doctor
+reports both: a flatpak override pointing at nothing, and a unit enabled with
+no unit file behind it.
+
+None of this is a to-do list. Some of it is a boundary that will not move
+(identity, secrets), and some of it is a decision that could (dconf, the
+portal store). What it is not is an oversight.
+
 ## Boot health and automatic rollback
 
 Every image bakes [greenboot](https://github.com/fedora-iot/greenboot-rs).

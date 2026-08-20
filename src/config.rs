@@ -1087,6 +1087,110 @@ pub(crate) mod tests {
         assert!(executed > 0, "nothing in the walkthrough is executed by anything");
     }
 
+    /// Everything on a kuma machine that outlives an image update, and
+    /// what kuma does about each kind of it.
+    ///
+    /// This is the sweep that opened 0.13, turned into something that
+    /// cannot rot. The finding it came from is that `/etc` alone carried
+    /// 81 files the image never shipped, from a unit enabled with no
+    /// unit file to a distribution's leftovers, and every one of them was
+    /// outside every surface kuma had. The answer was not to declare all
+    /// of it. It was to decide, per kind, whether kuma owns it, reports
+    /// it, or deliberately leaves it, and then to write the third one
+    /// down where a person can read it.
+    ///
+    /// **There is no fourth arm, and that is the test.** A kind of state
+    /// nobody classified is the bug this rung exists to end, so a new
+    /// section in the declaration fails here until it has a row, and a
+    /// row claiming the docs say something fails until they do.
+    #[test]
+    fn every_kind_of_persistent_state_is_classified() {
+        /// Where a kind of state is answered.
+        enum Owned {
+            /// The declaration owns it; names the section that does.
+            Declared(&'static str),
+            /// `kuma doctor` reports it; names the label it grades under.
+            Graded(&'static str),
+            /// Deliberately outside; names a phrase the docs must carry,
+            /// because "out of scope" is only honest when it is written
+            /// somewhere a person will find it.
+            OutOfScope(&'static str),
+        }
+        use Owned::*;
+        const STATE: &[(&str, Owned)] = &[
+            ("flatpak permission overrides", Declared("overrides")),
+            ("installed flatpaks", Declared("packages")),
+            ("brew formulae", Declared("packages")),
+            ("rpm packages", Declared("packages")),
+            ("system unit enablement", Declared("services")),
+            ("timezone, locale, hostname, desktop", Declared("system")),
+            ("the declared account", Declared("user")),
+            ("local btrfs snapshots", Declared("snapshots")),
+            ("/etc files this image owns", Graded("etc")),
+            ("a unit enabled with no unit file", Graded("units")),
+            ("a flatpak override pointing at nothing", Graded("flatpak overrides")),
+            ("/etc files the image never shipped", OutOfScope("never shipped")),
+            ("dconf and GSettings", OutOfScope("dconf")),
+            ("the portal permission store", OutOfScope("portal permission")),
+            ("units in a user's own manager", OutOfScope("systemd --user")),
+            ("network connections and their secrets", OutOfScope("NetworkManager")),
+            ("machine identity", OutOfScope("host keys")),
+            ("home directories", OutOfScope("/var/home")),
+            ("device pairings", OutOfScope("pairings")),
+        ];
+
+        let schema = serde_json::to_value(schemars::schema_for!(Config)).unwrap();
+        let properties = schema["properties"].as_object().expect("the schema has properties");
+        let doctor =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/inspect.rs"))
+                .unwrap();
+        // Only the section that exists to say what is out of scope
+        // counts. A word that happens to appear elsewhere on the page is
+        // not the docs telling anyone anything, and scoping the search
+        // is what stops this from passing on a coincidence.
+        let page =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/concepts.md"))
+                .unwrap();
+        const HEADING: &str = "## What a declaration does not reproduce";
+        let docs = page
+            .split_once(HEADING)
+            .map(|(_, rest)| rest.split("\n## ").next().unwrap_or(rest).to_string())
+            .unwrap_or_else(|| panic!("docs/concepts.md has no `{HEADING}` section"));
+
+        for (kind, owned) in STATE {
+            match owned {
+                Declared(section) => assert!(
+                    properties.contains_key(*section),
+                    "{kind} claims [{section}] declares it, and the schema has no such section"
+                ),
+                // The label as doctor writes it, quotes included, so a
+                // renamed check fails here rather than leaving a kind of
+                // state claiming a grade nobody emits.
+                Graded(label) => assert!(
+                    doctor.contains(&format!("\"{label}\"")),
+                    "{kind} claims doctor grades it as `{label}`, and no check reports under that name"
+                ),
+                OutOfScope(phrase) => assert!(
+                    docs.contains(*phrase),
+                    "{kind} is called out of scope, and the section that exists to say so \
+                     never mentions {phrase:?}"
+                ),
+            }
+        }
+
+        // The anti-rot half: a new section in the declaration is a new
+        // kind of state, and it does not get to arrive unclassified.
+        for section in properties.keys() {
+            if section == "schema_version" {
+                continue;
+            }
+            assert!(
+                STATE.iter().any(|(_, owned)| matches!(owned, Declared(s) if s == section)),
+                "[{section}] is in the schema and nothing here says what it covers"
+            );
+        }
+    }
+
     /// The release workflow pulls a tag's notes out of CHANGELOG.md and
     /// refuses to publish without them, which is what stops the file
     /// rotting. That check runs after the tag exists, and a tag is the one
