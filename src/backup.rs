@@ -182,10 +182,15 @@ fn status(config: &Config, json: bool) -> Result<()> {
             "add [backup] with a repo and a secret name, then kuma build and kuma switch",
         ));
     } else if !provisioned {
+        // The directory too: nothing on a machine creates it, so the
+        // shorter command fails everywhere this line is printed.
         actions.push(Action::new(
             "provision",
-            format!("sudo install -m 0600 /dev/null {secret}"),
-            "create the credential file the declaration names, then put the keys in it",
+            format!(
+                "sudo install -d -m 0700 /var/lib/kuma/secrets && \
+                 sudo install -m 0600 /dev/null {secret}"
+            ),
+            "make the credential the declaration names, then put the repository's keys in it",
         ));
     } else if last.is_none() {
         actions.push(Action::new(

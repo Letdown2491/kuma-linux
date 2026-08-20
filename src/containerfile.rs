@@ -670,7 +670,14 @@ probe=$(timeout 30 restic cat config 2>&1) || {
 
 # Read-only already, being a btrfs snapshot; the bind is for the path,
 # not for the permissions.
+# Undone on the way out, and that matters outside this unit rather than
+# inside it. Under PrivateMounts=yes the namespace dies with the service
+# and takes the bind with it; run by hand, which is the obvious thing to
+# try after "systemctl start kuma-snapshot.service" works, an untrapped
+# bind leaves the live /var/home replaced by a read-only snapshot until
+# the next reboot.
 mount --bind "$store/$newest" "$target"
+trap 'umount "$target" 2>/dev/null || true' EXIT
 
 restic backup "$target"{extra_paths} \
     --tag kuma \
@@ -787,12 +794,18 @@ fn backup_script(config: &Config) -> String {
 /// the same way it writes the account, and this runs once, after the
 /// subvolume exists and after the account it will own does.
 ///
-/// It removes the request before restoring rather than after. A restore
-/// interrupted halfway is resumable by hand and restic is incremental
-/// about it; a request that survives its own failure is a unit that
-/// re-runs on every boot forever, and a machine that spends its life
-/// pulling a home directory over the network is worse than one that
-/// tells you the restore stopped.
+/// **The request survives a failed restore, and is cleared only by one
+/// that worked.** The first version cleared it first, reasoning that a
+/// request outliving its own failure means a unit that re-runs forever.
+/// That was wrong twice over. There is no `Restart=` here, so the loop
+/// it guarded against cannot happen: what survival actually buys is one
+/// attempt per boot. And the failure it caused is the worse one, because
+/// a repository briefly unreachable at first boot would discard the
+/// restore permanently and bring the machine up empty, with the data
+/// still sitting safe somewhere nobody would think to look again.
+///
+/// A missing credential still clears it, because that is not a bad day,
+/// it is a request nothing can ever satisfy.
 const RESTORE_SCRIPT: &str = r#"#!/usr/bin/bash
 set -euo pipefail
 request=/var/lib/kuma/restore-request
@@ -805,10 +818,6 @@ if [ ! -r "$secret" ]; then
     exit 1
 fi
 
-# Before the work, not after. See the doc comment: a request that
-# outlives its own failure is a boot loop wearing a feature's clothes.
-rm -f "$request"
-
 set -a
 . "$secret"
 set +a
@@ -818,8 +827,24 @@ set +a
 export RESTIC_CACHE_DIR=/var/cache/restic
 install -d -m 0700 /var/cache/restic
 
+# Both paths the converger stores, not just home. Backing up the network
+# connections and then not restoring them defeats the only reason that
+# knob exists, and it defeats it silently: the machine comes up, the
+# files are all there, and the one thing nothing else can recreate is
+# missing. Naming a path the snapshot does not hold restores nothing and
+# is not an error, so this is safe when the knob was off.
+#
+# --tag kuma so a repository somebody also uses by hand cannot hand this
+# machine a snapshot kuma never made.
 echo "restoring /var/home from $RESTIC_REPOSITORY"
-restic restore latest --target / --include /var/home
+restic restore latest --tag kuma --target / \
+    --include /var/home \
+    --include /etc/NetworkManager/system-connections
+
+# Only now. Everything above can fail on a bad day (a repository that is
+# briefly unreachable, a link that drops), and a bad day must cost a
+# retry at the next boot rather than the data.
+rm -f "$request"
 echo "restore finished"
 "#;
 
@@ -3867,6 +3892,10 @@ mod tests {
         // has no --set-path and groups by host+paths, so a source path
         // named for the minute it was taken never matches a parent.
         assert!(script.contains(r#"mount --bind "$store/$newest" "$target""#), "{script}");
+        // Run by hand rather than by the unit, an untrapped bind leaves
+        // the live /var/home replaced by a read-only snapshot until the
+        // machine reboots.
+        assert!(script.contains(r##"trap 'umount "$target""##), "the bind is undone: {script}");
 
         // Three states that are "not ready yet" rather than "broken",
         // each exiting clean so one declaration can describe machines at
@@ -4045,12 +4074,35 @@ mod tests {
         // A home directory over a slow link outlasts any default.
         assert!(RESTORE_SERVICE.contains("TimeoutStartSec=infinity"));
 
-        // The request is cleared before the work, not after: one that
-        // survives its own failure is a machine that spends every boot
-        // pulling a home directory over the network.
-        let cleared = RESTORE_SCRIPT.find(r#"rm -f "$request""#).unwrap();
+        // Whatever the converger stores, this has to bring back. The
+        // network connections were the entire reason for a knob, and
+        // restoring only home would lose them silently: the machine
+        // comes up looking complete with the one unrecreatable thing
+        // missing.
+        assert!(
+            RESTORE_SCRIPT.contains("--include /var/home")
+                && RESTORE_SCRIPT.contains(&format!("--include {NETWORK_CONNECTIONS}")),
+            "the restore must cover both paths the backup stores: {RESTORE_SCRIPT}"
+        );
+        assert!(
+            RESTORE_SCRIPT.contains("--tag kuma"),
+            "a shared repository must not hand this machine a snapshot kuma never made"
+        );
+
+        // The request outlives a failed restore and is cleared only by
+        // one that worked. There is no Restart= here, so surviving buys
+        // one attempt per boot rather than a loop; clearing first would
+        // mean a repository unreachable for one minute at first boot
+        // discards the restore for good and the machine comes up empty.
         let restored = RESTORE_SCRIPT.find("restic restore").unwrap();
-        assert!(cleared < restored, "the request outlives a failed restore: {RESTORE_SCRIPT}");
+        let cleared = RESTORE_SCRIPT.rfind(r#"rm -f "$request""#).unwrap();
+        assert!(restored < cleared, "a bad day must cost a retry, not the data");
+        // Except the one request nothing can ever satisfy.
+        let no_secret = RESTORE_SCRIPT.find("is not there").unwrap();
+        assert!(
+            RESTORE_SCRIPT[..no_secret].matches("restic restore").count() == 0,
+            "a missing credential is cleared without attempting anything"
+        );
 
         let out = std::process::Command::new("bash")
             .args(["-n", "/dev/stdin"])

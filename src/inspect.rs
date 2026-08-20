@@ -1752,10 +1752,20 @@ fn check_backup(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     // the unit at whatever hour the timer fires.
     let secret = format!("/var/lib/kuma/secrets/{}.env", config.backup.secret);
     if !Path::new(&secret).exists() {
+        // Both halves, because no machine has the directory: the image
+        // does not ship it (bootc fills /var once, at install, so an
+        // image gaining [backup] later would not add it either) and
+        // nothing else creates it. `install -m 0600 <file>` alone fails
+        // with "No such file or directory" on every machine that reads
+        // this line, which is a remediation that reads like advice and
+        // behaves like a dead end.
         let fix = Action::new(
             "provision",
-            format!("sudo install -m 0600 /dev/null {secret}"),
-            "create the credential file the declaration names, then put the keys in it",
+            format!(
+                "sudo install -d -m 0700 /var/lib/kuma/secrets && \
+                 sudo install -m 0600 /dev/null {secret}"
+            ),
+            "make the credential the declaration names, then put the repository's keys in it",
         );
         report(
             Grade::Warn,
