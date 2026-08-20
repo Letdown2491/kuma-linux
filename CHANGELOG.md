@@ -6,7 +6,7 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
-## v0.14.0 (2026-08-20)
+## v0.14.0 (2026-08-21)
 
 A declaration describes a system; it never described your files. `[backup]`
 copies them somewhere else, and `kuma install --restore` puts a machine back.
