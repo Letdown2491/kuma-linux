@@ -32,6 +32,48 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Which run is this. Four jobs below gate on "a push or the daily cron,
+  # but not the weekly audit", and each used to re-type the schedule
+  # string. Changing the time in the `schedule:` block above would have
+  # left all four matching nothing: both crons would run only the cheap
+  # jobs, the daily boot heartbeat would stop, and the workflow would
+  # stay green, because a skipped job is a green job.
+  #
+  # A job rather than an `env:` value, because `env` is not available in
+  # a job-level `if:` and actionlint says so. The cost is one runner
+  # start ahead of the slow jobs; it does not gate `test`, which is what
+  # a pull request waits on.
+  when:
+    runs-on: ubuntu-latest
+    outputs:
+      daily: ${{ steps.q.outputs.daily }}
+    steps:
+      - id: q
+        env:
+          DAILY_CRON: "0 5 * * *"
+          WEEKLY_CRON: "0 6 * * 1"
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != schedule ]; then
+            echo "daily=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "${{ github.event.schedule }}" in
+            "$DAILY_CRON")  echo "daily=true"  >> "$GITHUB_OUTPUT" ;;
+            "$WEEKLY_CRON") echo "daily=false" >> "$GITHUB_OUTPUT" ;;
+            # Loud, because the alternative is the failure this job
+            # exists to prevent: an unrecognised schedule would answer
+            # "not daily", the slow jobs would skip, and the run would be
+            # green. Moving a cron in the block above without moving it
+            # here now reddens one cheap job instead of silently
+            # stopping the heartbeat.
+            *)
+              echo "::error::schedule '${{ github.event.schedule }}' matches neither" \
+                   "DAILY_CRON nor WEEKLY_CRON; the crons above and this job have drifted"
+              exit 1
+              ;;
+          esac
+
   # The gate that runs on every push. It covers everything checkable
   # without a machine to run on, including the cheap tier of the smoke
   # tests: every committed example parses, validates, and compiles to an
@@ -136,10 +178,11 @@ jobs:
   # install itself rather than a second build.
   boot:
     runs-on: ubuntu-latest
+    needs: when
     if: >-
       github.event_name != 'pull_request' &&
       !startsWith(github.ref, 'refs/tags/') &&
-      (github.event_name != 'schedule' || github.event.schedule == '0 5 * * *')
+      (github.event_name != 'schedule' || needs.when.outputs.daily == 'true')
     timeout-minutes: 60
     strategy:
       # One example failing says nothing about the others, and cancelling
@@ -198,10 +241,11 @@ jobs:
   # tree, so it runs when the tree changes.
   install:
     runs-on: ubuntu-latest
+    needs: when
     if: >-
       github.event_name != 'pull_request' &&
       !startsWith(github.ref, 'refs/tags/') &&
-      (github.event_name != 'schedule' || github.event.schedule == '0 5 * * *')
+      (github.event_name != 'schedule' || needs.when.outputs.daily == 'true')
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
@@ -237,10 +281,11 @@ jobs:
   # and if a restore does not work then nothing else here mattered.
   dead-disk:
     runs-on: ubuntu-latest
+    needs: when
     if: >-
       github.event_name != 'pull_request' &&
       !startsWith(github.ref, 'refs/tags/') &&
-      (github.event_name != 'schedule' || github.event.schedule == '0 5 * * *')
+      (github.event_name != 'schedule' || needs.when.outputs.daily == 'true')
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
@@ -282,10 +327,11 @@ jobs:
   # switched attaching on once this had gone green on a hosted runner.
   iso:
     runs-on: ubuntu-latest
+    needs: when
     if: >-
       github.event_name != 'pull_request' &&
       !startsWith(github.ref, 'refs/tags/') &&
-      (github.event_name != 'schedule' || github.event.schedule == '0 5 * * *')
+      (github.event_name != 'schedule' || needs.when.outputs.daily == 'true')
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7

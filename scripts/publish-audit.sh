@@ -40,6 +40,17 @@ decl="$mnt/usr/lib/kuma/kuma.toml"
 # passwordless probe can read it. That is a deliberate tradeoff for a
 # personal image and exactly why a published one must declare no account:
 # publishing the declaration publishes the password hash with it.
+# Every negative check below reports success when the thing it looks for
+# is simply absent, which is the right shape for "no secret here" and the
+# wrong shape for "I looked in the wrong place". These two paths exist in
+# every kuma image, so their absence means the layout moved or the mount
+# is empty, and every "ok" printed after that would be an image nobody
+# actually audited.
+for anchor in /usr/bin/kuma /usr/lib/kuma/kuma.toml; do
+    [ -e "$mnt$anchor" ] || bad "$anchor is missing" \
+        "this audit's other checks look for absences, so it cannot vouch for an image it cannot find"
+done
+
 if [ ! -f "$decl" ]; then
     bad "no baked declaration at /usr/lib/kuma/kuma.toml" "not a kuma image?"
 else

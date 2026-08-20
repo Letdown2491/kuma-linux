@@ -647,6 +647,19 @@ pub fn ask_account(
         None => bail!("no account name: pass --user, or run this on a terminal"),
     };
     crate::config::validate_name(&name, "user.name", &['.', '-', '_'])?;
+    // Same field and same file format as `user.groups` in a declaration,
+    // which is validated; this path was not. `--groups` lands in
+    // KUMA_GROUPS=' … ' inside /var/lib/kuma/user, which kuma-user-sync
+    // sources as root at first boot, so a quote in it breaks the quoting
+    // and runs there. Only whoever runs `sudo kuma install` supplies it,
+    // so nobody crosses a boundary; the asymmetry is the bug.
+    //
+    // Before the password prompt, with the name, because refusing an
+    // argument after making somebody type a password twice is a worse
+    // way to say the same thing.
+    for group in &groups {
+        crate::config::validate_name(group, "user.groups", &['.', '-', '_'])?;
+    }
 
     let password = if interactive {
         let first = rpassword::prompt_password(format!("Password for {name}: "))?;
@@ -894,6 +907,29 @@ tmpfs /tmp tmpfs rw 0 0
     }
 
     /// The other half of the same hazard, which no code can undo: the
+    /// `user.groups` goes through validate_name from a declaration and
+    /// did not from `--groups`, though both end up in the same
+    /// root-sourced file.
+    #[test]
+    fn groups_from_the_command_line_are_validated_like_declared_ones() {
+        let hostile = vec!["wheel'; touch /tmp/pwned; :'".to_string()];
+        // Matched rather than unwrap_err'd: Account holds a password
+        // hash and deliberately does not derive Debug, which is what
+        // unwrap_err would require.
+        match ask_account(Some("probe".into()), hostile, None) {
+            Err(e) => assert!(e.to_string().contains("user.groups"), "{e}"),
+            Ok(_) => panic!("a group that closes its own quoting was accepted"),
+        }
+
+        // Nothing about the fix may refuse the ordinary case, and the
+        // interview is not reachable from a test, so this only asserts
+        // the shape a real group name has to keep passing.
+        for good in ["wheel", "libvirt", "docker", "video", "kuma-users", "group.with.dots"] {
+            crate::config::validate_name(good, "user.groups", &['.', '-', '_'])
+                .unwrap_or_else(|e| panic!("{good} should validate: {e}"));
+        }
+    }
+
     /// A restore that cannot work is worth refusing while the old
     /// machine's disk is still the only copy of the data. At first boot
     /// the only person who could read the error has walked away.
