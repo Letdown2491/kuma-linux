@@ -1750,21 +1750,14 @@ fn check_backup(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     // has not been finished being set up. Naming it is what makes that
     // answerable at all: an unnamed credential could only fail inside
     // the unit at whatever hour the timer fires.
-    let secret = format!("/var/lib/kuma/secrets/{}.env", config.backup.secret);
+    // The verb's own answer rather than a second copy of the same format
+    // string: doctor naming a path `kuma backup` does not would send
+    // somebody to provision a file nothing ever reads.
+    let secret = crate::backup::secret_path(&config);
     if !Path::new(&secret).exists() {
-        // Both halves, because no machine has the directory: the image
-        // does not ship it (bootc fills /var once, at install, so an
-        // image gaining [backup] later would not add it either) and
-        // nothing else creates it. `install -m 0600 <file>` alone fails
-        // with "No such file or directory" on every machine that reads
-        // this line, which is a remediation that reads like advice and
-        // behaves like a dead end.
         let fix = Action::new(
             "provision",
-            format!(
-                "sudo install -d -m 0700 /var/lib/kuma/secrets && \
-                 sudo install -m 0600 /dev/null {secret}"
-            ),
+            crate::backup::provision_command(&secret),
             "make the credential the declaration names, then put the repository's keys in it",
         );
         report(
@@ -1813,7 +1806,7 @@ fn check_backup(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     // The stamp, which is the only surface that can tell a machine
     // copying nightly from one that has quietly stopped.
     let stamp =
-        std::fs::read_to_string("/var/lib/kuma/backup-last").ok().as_deref().and_then(backup_stamp);
+        std::fs::read_to_string(crate::backup::STAMP).ok().as_deref().and_then(backup_stamp);
     let stale_after = backup_stale_after_days(&config.backup.interval);
     match (stamp, now_epoch()) {
         (Some(then), Some(now)) => {

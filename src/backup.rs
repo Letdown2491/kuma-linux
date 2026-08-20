@@ -26,7 +26,23 @@ use std::path::Path;
 /// that a credential exists and what it is called, which is what makes
 /// this path computable and therefore checkable.
 pub fn secret_path(config: &Config) -> String {
-    format!("/var/lib/kuma/secrets/{}.env", config.backup.secret)
+    format!("{SECRETS_DIR}/{}.env", config.backup.secret)
+}
+
+/// Where a credential the declaration names lives, and the one command
+/// that makes one. Both are printed to people by two different surfaces
+/// (`kuma backup` and `kuma doctor`), so they are written once: an
+/// instruction that differs between the two places somebody meets it is
+/// worse than either version alone.
+pub const SECRETS_DIR: &str = "/var/lib/kuma/secrets";
+
+/// Both halves, because no machine has the directory. The image does not
+/// ship it, and bootc fills /var once at install, so an image that gains
+/// [backup] later would not add it either. `install -m 0600 <file>` on
+/// its own fails with "No such file or directory" everywhere this is
+/// printed.
+pub fn provision_command(secret: &str) -> String {
+    format!("sudo install -d -m 0700 {SECRETS_DIR} && sudo install -m 0600 /dev/null {secret}")
 }
 
 /// Written only by a run that copied something, which is what lets
@@ -182,14 +198,9 @@ fn status(config: &Config, json: bool) -> Result<()> {
             "add [backup] with a repo and a secret name, then kuma build and kuma switch",
         ));
     } else if !provisioned {
-        // The directory too: nothing on a machine creates it, so the
-        // shorter command fails everywhere this line is printed.
         actions.push(Action::new(
             "provision",
-            format!(
-                "sudo install -d -m 0700 /var/lib/kuma/secrets && \
-                 sudo install -m 0600 /dev/null {secret}"
-            ),
+            provision_command(&secret),
             "make the credential the declaration names, then put the repository's keys in it",
         ));
     } else if last.is_none() {

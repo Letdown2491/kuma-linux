@@ -684,8 +684,24 @@ restic backup "$target"{extra_paths} \
     --skip-if-unchanged \
     --exclude "$target/.snapshots" \
 {excludes}
-restic forget --tag kuma --prune \
+# Forget every run, prune weekly, and they are different costs. Forgetting
+# drops snapshot references and is nearly free. Pruning walks the index and
+# repacks pack files that expiry left mostly empty, which on a home
+# directory over somebody's uplink can move gigabytes, and restic's own
+# advice is to do it from time to time rather than after every backup.
+# Retention still takes effect immediately either way; only the reclaiming
+# waits.
+#
+# Timed off a stamp rather than a weekday, because a machine that is never
+# on for the chosen day would never prune at all, and that is exactly the
+# laptop this is for.
+restic forget --tag kuma \
     --keep-daily {keep_daily} --keep-weekly {keep_weekly} --keep-monthly {keep_monthly}
+pruned=/var/lib/kuma/backup-pruned
+if [ ! -f "$pruned" ] || [ "$(( $(date -u +%s) - $(cat "$pruned" 2>/dev/null || echo 0) ))" -ge 604800 ]; then
+    restic prune
+    date -u +%s > "$pruned"
+fi
 
 install -d -m 0755 /var/lib/kuma
 # Epoch first because doctor parses it and this repo carries no date
@@ -3868,6 +3884,15 @@ mod tests {
 
         assert!(script.contains("RESTIC_REPOSITORY='s3:https://minio.example:9000/kuma'"));
         assert!(script.contains("--keep-daily 3 --keep-weekly 2 --keep-monthly 1"));
+        // Forget is nearly free and prune repacks; doing both nightly
+        // moves gigabytes over somebody's uplink to reclaim what one
+        // expired snapshot left behind.
+        assert!(
+            !script.contains("forget --tag kuma --prune"),
+            "pruning belongs on its own schedule: {script}"
+        );
+        assert!(script.contains("restic prune"), "it still prunes, just not every run");
+        assert!(script.contains("604800"), "weekly, measured from a stamp rather than a weekday");
         for placeholder in
             ["{target}", "{repo}", "{excludes}", "{keep_daily}", "{keep_weekly}", "{keep_monthly}"]
         {
@@ -4050,6 +4075,34 @@ mod tests {
         assert!(
             on.contains(&format!(r#"restic backup "$target" {NETWORK_CONNECTIONS} \"#)),
             "a second source path, not an exclude: {on}"
+        );
+    }
+
+    /// The scripts are shell and the verb is Rust, so the paths they
+    /// share cannot be one constant. They can still be one answer, and
+    /// this is what makes them one: doctor grading a stamp the converger
+    /// does not write, or a unit loading a credential `kuma backup` does
+    /// not name, are both silent failures that look like a healthy
+    /// machine. This release has already produced that shape three
+    /// times.
+    #[test]
+    fn the_shell_and_the_verb_agree_on_where_things_live() {
+        assert!(
+            BACKUP_SCRIPT.contains(&format!("stamp={}", crate::backup::STAMP)),
+            "the converger stamps somewhere doctor does not read"
+        );
+        let dir = crate::backup::SECRETS_DIR;
+        assert!(
+            RESTORE_SCRIPT.contains(&format!("secret={dir}/restore.env")),
+            "the restore unit reads a credential the install does not write"
+        );
+        let service = backup_service(&config(
+            "schema_version = 1\n[snapshots]\nenable = true\n\
+             [backup]\nenable = true\nrepo = \"b2:kuma\"\nsecret = \"named\"\n",
+        ));
+        assert!(
+            service.contains(&format!("EnvironmentFile=-{dir}/named.env")),
+            "the unit loads a credential from somewhere else entirely: {service}"
         );
     }
 
