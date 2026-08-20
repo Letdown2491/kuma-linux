@@ -15,6 +15,7 @@ and [the glossary](glossary.md) defines the vocabulary.
 - [Why a file you edited by hand keeps winning](#why-a-file-you-edited-by-hand-keeps-winning)
 - [Permissions, and a file kuma does not own](#permissions-and-a-file-kuma-does-not-own)
 - [Backups, and the two things a restore needs](#backups-and-the-two-things-a-restore-needs)
+  - [Getting a machine back](#getting-a-machine-back)
 - [What your machine trusts](#what-your-machine-trusts)
 - [What a declaration does not reproduce](#what-a-declaration-does-not-reproduce)
 - [Boot health and automatic rollback](#boot-health-and-automatic-rollback)
@@ -516,6 +517,41 @@ with no credential, no snapshot or no repository, all three on purpose, so
 only a run that copied something writes the stamp, and `kuma doctor` grades
 the stamp rather than the unit. How stale is too stale follows the interval
 you declared, so a monthly policy is not called unhealthy on day eight.
+
+### Getting a machine back
+
+A backup nobody has restored is a claim. This is the other half, and it is the
+reason the feature exists rather than a footnote to it.
+
+Boot the installer media and point an install at the repository:
+
+```console
+$ sudo kuma install --disk /dev/nvme0n1 --restore recovery.env
+```
+
+`recovery.env` is one file holding the repository address and its credentials.
+It carries `RESTIC_REPOSITORY` as well as the keys, because the machine being
+restored has no declaration yet, so the address has to come from somewhere. Put
+it on the stick beside the ISO and a dead disk needs nothing else typed. An
+install refuses it before touching the disk if it could not open the
+repository, since the old machine may still be the only copy.
+
+**The install does not restore anything.** It writes the request and the
+credential onto the new machine, and the first boot does the work, after the
+unit that gives `/var/home` its own subvolume has run and after your account
+exists. That ordering is forced rather than chosen: `/var/home` does not exist
+at install time at all, and restoring into a plain directory is exactly the
+state that unit steps back from.
+
+If the repository cannot be reached on that first boot, the request stays and
+the next boot tries again. A bad day costs a retry, not the data.
+
+Two things follow that are worth knowing before you need them. The image you
+install has to have been built from a declaration with `[backup]`, since that
+is what carries restic and the restore unit; installing your own image is the
+normal case. And restoring needs **two** things, this file and the credential
+it names, which is the whole practical consequence of the declaration not
+holding secrets.
 
 ## What your machine trusts
 

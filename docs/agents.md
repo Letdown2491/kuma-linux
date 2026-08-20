@@ -27,9 +27,16 @@ The loop is: probe, execute one of the actions it named, probe again.
 - **Ask before doing.** `check --json` validates a declaration,
   `update --check --json` reports whether the base moved (or, for a composed
   base, every package that has and its advisory severity), `diff --json` reports
-  drift, and `snapshot --json` lists what this machine has kept. All four
-  change nothing, and `snapshot --restore --json` stays a dry run naming
-  what it would overwrite until `--yes`.
+  drift, `snapshot --json` lists what this machine has kept, and
+  `backup --json` reports the offsite repository, whether this machine has
+  the credential the declaration names, and when a copy last completed.
+  All five change nothing, and both `snapshot --restore --json` and
+  `backup --restore --json` stay dry runs naming what they would overwrite
+  until `--yes`.
+
+  `backup --json` answers without touching the network, deliberately, so an
+  agent polling machine health never blocks on a repository being reachable.
+  `backup --list` is the one that asks the far end.
 - **A Fedora release change is a separate field, not a big diff.** `update`
   and `update --check` carry `fedora_release` with `current`, `changed`,
   `from` and `to`. Read that rather than inferring a distro upgrade from the

@@ -197,6 +197,38 @@ examples declare no user for this reason.
 It's a deliberate choice for a kiosk or a VM, and it is not a good one for a
 laptop that leaves the house.
 
+### The one secret a declaration deliberately does not carry
+
+`[backup]` needs a credential for its repository, and `backup.secret` names it
+rather than holding it. The value lives at `/var/lib/kuma/secrets/<name>.env`,
+mode 0600, owned by root, put there by hand. A declaration is written to be
+committed and is baked world-readable into every image built from it, which is
+the same reasoning that keeps a password hash out of a published image, applied
+before the fact rather than after.
+
+A repository address carrying its own password (`s3:https://KEY:SECRET@host/…`)
+is **refused by `kuma check`**, not warned about. That does not happen because
+somebody decides to put a secret in git; it happens because a restic command
+line that already worked gets pasted in.
+
+**What the far end can see.** restic encrypts and authenticates client-side, so
+the repository holds ciphertext and the server storing it cannot read your
+files, whoever runs it. What it does see is the shape of the traffic: how much
+you store, how often, and when. Treat the repository password as protecting the
+data and nothing else as protecting the metadata.
+
+**`network_connections` moves wifi passphrases off the machine.** Those files
+hold a passphrase per network in the clear, so backing them up puts them in the
+repository, encrypted with everything else. That is why the key is off by
+default and why `kuma doctor` names which way it is set on every run: it should
+be a decision you made, not one made for you.
+
+**A restore carries the credential onto the target.** `kuma install --restore`
+writes it into `/var/lib/kuma/secrets/restore.env` on the new machine through
+an image layer, and that layer is built into a temporary subvolume the install
+deletes on the way out, the same handling the account's password hash already
+gets.
+
 ## Disk encryption
 
 `kuma install` asks whether to encrypt the disk, and encrypts nothing unless

@@ -1053,6 +1053,18 @@ pub(crate) mod tests {
         ),
         ("chmod +x kuma-x86_64-unknown-linux-musl", Proof::Unexecuted("plain shell, nothing of kuma's to prove")),
         ("sudo mv kuma-x86_64-unknown-linux-musl /usr/local/bin/kuma", Proof::Unexecuted("plain shell, nothing of kuma's to prove")),
+        // Both of these the dead-disk stage runs for real, which is the
+        // only place in the project where "a backup works" is a fact
+        // rather than a claim: it seeds a repository, destroys the disk,
+        // and installs a machine back out of it.
+        (
+            "sudo kuma backup --init",
+            Proof::Runs("scripts/smoke.sh", "sudoq \"kuma backup --init\""),
+        ),
+        (
+            "sudo kuma install --disk /dev/nvme0n1 --restore recovery.env",
+            Proof::Runs("scripts/smoke.sh", "restore_args=(--restore \"$restore\")"),
+        ),
         ("kuma check", Proof::Runs("scripts/smoke.sh", "\"$KUMA\" --config \"$file\" check")),
         ("kuma build", Proof::Runs("scripts/smoke.sh", "\"$KUMA\" --config \"$file\" build --tag")),
         ("kuma switch --yes", Proof::Unexecuted("mutates a deployment; nothing runs it, and it is how a built image is taken")),

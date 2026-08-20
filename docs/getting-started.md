@@ -268,6 +268,37 @@ Running bare `kuma` is always safe and always tells you where you are. Every
 command ends by naming what you can legally do next, so you can follow the
 prompts rather than remember the verbs.
 
+**Your files are the one thing this file cannot rebuild.** A declaration
+reproduces a system; it does not reproduce `/var/home`, and it never will,
+because that is your work rather than a description of a machine. Two keys
+cover the gap:
+
+```toml
+[snapshots]
+enable = true   # hourly read-only copies, on this disk
+
+[backup]
+enable = true                                  # copies somewhere else
+repo = "s3:https://minio.example:9000/kuma"
+secret = "backup"                              # names a credential; see below
+```
+
+Snapshots answer a mistake and cannot answer a dead disk, because they are on
+it. `[backup]` copies them offsite with restic, on a timer, reading from a
+snapshot so nothing changes mid-copy.
+
+The credential is named in the declaration and kept out of it. Put the
+repository's keys at `/var/lib/kuma/secrets/backup.env`, mode 0600, then make
+the first copy on purpose:
+
+```console
+$ sudo kuma backup --init
+```
+
+After that `kuma backup` reports without touching the network, and
+`kuma doctor` grades how fresh the copies stay, which matters because the way
+backups fail is silence rather than errors.
+
 **On a desktop, `Mod+D` opens kuma's menu.** Your applications are in it, so
 it is the launcher; so are the settings tools kuma does not own (network,
 bluetooth, audio), the ones it does (your declaration, health, updates,
@@ -311,6 +342,23 @@ or with `brew install`, and kuma leaves it alone. `kuma diff` shows what your
 machine has that your file does not mention, and `kuma capture` offers to
 write it into the declaration for you. Nothing is deleted for being
 undeclared.
+
+## Recovering a machine
+
+If the disk dies, boot the installer media and point an install at the
+repository instead of starting empty:
+
+```console
+$ sudo kuma install --disk /dev/nvme0n1 --restore recovery.env
+```
+
+That file holds the repository address and its credentials, so it is the one
+thing to keep somewhere other than the machine. The install writes the request
+onto the new disk and the first boot puts your home directory back.
+
+[How kuma behaves](concepts.md#getting-a-machine-back) explains why the restore
+happens at first boot rather than during the install, and what it does when the
+repository cannot be reached that day.
 
 ## Where to go next
 

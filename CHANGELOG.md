@@ -55,10 +55,14 @@ that a feature rather than a claim: puts them back.
   day's difference, and a timer that starts sending that while somebody is
   tethered is a tool that gets uninstalled.
 
-- `kuma install --restore <file>` puts a home directory back on a machine
-  that has just been installed, which is the half that makes a backup a
-  feature rather than a claim. One file carries the repository address and
+- `kuma install --restore <file>` puts a machine back, which is the half that
+  makes a backup a feature rather than a claim. It restores everything the
+  backup stored, home and the network connections both, so a restored machine
+  can reach the network it was on. One file carries the repository address and
   its credentials, so a dead disk needs nothing else typed.
+
+  If the repository cannot be reached on that first boot the request stays and
+  the next boot tries again: a bad day costs a retry rather than the data.
 
   It is a first-boot unit rather than part of the install, and not by
   preference: `/var/home` does not exist at install time, and
@@ -72,6 +76,11 @@ that a feature rather than a claim: puts them back.
   of a machine that has never copied a byte. Only a run that copied
   something stamps. How stale is too stale follows the declared interval,
   so a monthly policy is not called unhealthy on day eight.
+
+- Retention applies on every copy; the reclaiming happens weekly. Forgetting a
+  snapshot is nearly free, and pruning repacks what expiry left behind, which
+  over a home uplink moves gigabytes to reclaim what one expired snapshot
+  released.
 
 ### Changed
 

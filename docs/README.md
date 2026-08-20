@@ -9,8 +9,9 @@ install it. From there:
   use kuma.
 - **[How kuma behaves](concepts.md)** explains the reasoning: what a build
   pins, what happens to changes you make by hand, why a file you edited keeps
-  winning over the image, how a bad update rolls itself back, and what an
-  install decides that a declaration cannot. Read this when something
+  winning over the image, how a bad update rolls itself back, what a backup
+  needs that a declaration deliberately will not hold, and what an install
+  decides that a declaration cannot. Read this when something
   surprises you, or before trusting kuma with a machine.
 - **[What a desktop contains](desktops.md)** lists what `desktop = "niri"` or
   `"cosmic"` installs that you never named, and why the odd-looking members
