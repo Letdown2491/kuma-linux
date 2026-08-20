@@ -315,7 +315,12 @@ fn index_lists(index: &str, digest: &str) -> bool {
 }
 
 fn registry_manifest(reference: &str) -> Result<String> {
-    host_output(&["podman", "manifest", "inspect", reference]).with_context(|| {
+    // `podman manifest inspect` has a dial timeout and no request
+    // timeout, so a registry that accepts a connection and then stalls
+    // blocks `kuma update --check` indefinitely. It takes no timeout
+    // flag of its own, so the bound is the same one the backup probes
+    // use.
+    host_output(&["timeout", "60", "podman", "manifest", "inspect", reference]).with_context(|| {
         format!(
             "cannot ask the registry about {reference} (gone, offline, \
              or a single-architecture image, which podman can't inspect remotely)"

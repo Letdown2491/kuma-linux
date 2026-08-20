@@ -317,8 +317,14 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
     // updates), so the cure is systemctl, not a rebuild — name it when it
     // plainly applies.
     let mut entries = Vec::new();
+    // One call for every unit this declaration mentions, in both
+    // directions, rather than one spawn per line of [services].
+    let mentioned: Vec<&str> =
+        config.services.enable.iter().chain(&config.services.disable).map(String::as_str).collect();
+    let states = unit_states(&mentioned);
+    let state_of = |unit: &str| states.get(unit).cloned().unwrap_or_else(|| "not found".into());
     for svc in &config.services.enable {
-        let state = unit_state(svc);
+        let state = state_of(svc);
         if state != "enabled" && state != "alias" {
             let cure = if state == "disabled" {
                 format!("; `sudo systemctl enable {svc}` reconciles")
@@ -333,7 +339,7 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
         }
     }
     for svc in &config.services.disable {
-        if unit_state(svc) == "enabled" {
+        if state_of(svc) == "enabled" {
             entries.push(DiffEntry {
                 change: "mismatch",
                 item: svc.clone(),
@@ -511,7 +517,12 @@ pub(crate) fn baked_is_behind(config: &Config, root: &Path) -> bool {
 }
 
 /// Everything doctor asks about a unit, for every unit, in one systemctl
-/// call. Each spawn costs about 140ms and there were one or two per unit.
+/// call. There were one or two spawns per unit, and batching them was
+/// right for the reason below rather than for the number this comment
+/// used to give: it claimed 140ms a spawn, and a later measurement on
+/// this machine put it at 15-20ms for a five-unit, five-property query.
+/// The saving is real and small; the reason to do it is that one call
+/// cannot disagree with itself about which unit answered.
 ///
 /// Keyed by the unit rather than positional: `--value` is terser but
 /// separates its answers with blank lines, so lining them up with the
@@ -704,15 +715,32 @@ fn last_run_reason(invocation: &str) -> Option<String> {
     }
 }
 
-fn unit_state(unit: &str) -> String {
-    // is-enabled exits non-zero for disabled units but still names the
-    // state on stdout, so read stdout regardless of exit status.
-    let state = host_output_any(&["systemctl", "is-enabled", unit]).unwrap_or_default();
-    if state.is_empty() {
-        "not found".into()
-    } else {
-        state
+/// Every unit's enablement in one call.
+///
+/// `systemctl is-enabled` takes many units and answers one line each, in
+/// the order asked, so a declaration with a long `[services]` block cost
+/// one spawn per entry for no reason. is-enabled exits non-zero when any
+/// unit is disabled but still names every state on stdout, so the status
+/// is ignored and the lines are read regardless.
+///
+/// A unit systemd does not know produces a line too, so pairing by
+/// position holds; anything short of that is reported as not found
+/// rather than silently shifting every later answer up by one.
+fn unit_states(units: &[&str]) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    if units.is_empty() {
+        return out;
     }
+    let mut args = vec!["systemctl", "is-enabled"];
+    args.extend_from_slice(units);
+    let answered = host_output_any(&args).unwrap_or_default();
+    let mut lines = answered.lines();
+    for unit in units {
+        let state = lines.next().unwrap_or("").trim();
+        let state = if state.is_empty() { "not found" } else { state };
+        out.insert((*unit).to_string(), state.to_string());
+    }
+    out
 }
 
 enum Grade {
@@ -780,6 +808,10 @@ fn booted_kuma_machine() -> bool {
 }
 
 pub fn doctor(json: bool, as_report: bool) -> Result<()> {
+    // Started first and collected last. These two podman calls were
+    // ~60% of a doctor run and nothing else here waits on them, so they
+    // run alongside everything that follows instead of after it.
+    let leftovers = build_leftovers_probe();
     let mut findings: Vec<Finding> = Vec::new();
     let mut report = |grade: Grade, name: &str, detail: String, fix: Option<Action>| {
         findings.push(Finding { grade, name: name.to_string(), detail, fix });
@@ -906,7 +938,7 @@ pub fn doctor(json: bool, as_report: bool) -> Result<()> {
         check_signature_policy(&mut report);
     }
     check_gpu(&mut report);
-    check_build_leftovers(&mut report);
+    check_build_leftovers(leftovers, &mut report);
 
     match host_output(&["df", "-h", "--output=pcent,avail", "/sysroot"])
         .or_else(|_| host_output(&["df", "-h", "--output=pcent,avail", "/"]))
@@ -1374,15 +1406,26 @@ fn check_deployment(
         // read-only about the machine itself. When the deployment no
         // longer matches root storage's tag, the deployed ID is unknowable
         // here — drop the stamp so the probe skips the check.
+        //
+        // Only when it is actually wrong. This ran on every doctor,
+        // spawning sudo and sh to write back a value that was already
+        // there, which is two processes and a write of pure waste on the
+        // common path.
+        let stamp = std::fs::read_to_string(crate::state::DEPLOYED_ID_FILE).ok();
         let heal = if deployment_current {
-            format!(
-                "mkdir -p /var/lib/kuma && printf '%s\\n' {root_id} > {}",
-                crate::state::DEPLOYED_ID_FILE
-            )
+            let current = stamp.as_deref().map(str::trim);
+            (current != Some(root_id)).then(|| {
+                format!(
+                    "mkdir -p /var/lib/kuma && printf '%s\\n' {root_id} > {}",
+                    crate::state::DEPLOYED_ID_FILE
+                )
+            })
         } else {
-            format!("rm -f {}", crate::state::DEPLOYED_ID_FILE)
+            stamp.is_some().then(|| format!("rm -f {}", crate::state::DEPLOYED_ID_FILE))
         };
-        let _ = host_output(&["sudo", "sh", "-c", &heal]);
+        if let Some(heal) = heal {
+            let _ = host_output(&["sudo", "sh", "-c", &heal]);
+        }
     }
 }
 
@@ -2262,20 +2305,51 @@ fn check_boot_health(report: &mut impl FnMut(Grade, &str, String, Option<Action>
 /// (~3.5 GB each), and interrupted builds abandon buildah working
 /// containers that pin their layers while being invisible to
 /// `podman images` — one was once found holding 68 GB.
-fn check_build_leftovers(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
-    let dangling = host_output(&["podman", "images", "-f", "dangling=true", "-q"])
-        .map(|out| out.lines().filter(|l| !l.trim().is_empty()).count());
-    let abandoned = host_output_any(&[
-        "podman",
-        "ps",
-        "-a",
-        "--external",
-        "--format",
-        "{{.Names}} {{.Status}}",
-    ])
-    .map(|out| {
-        out.lines().filter(|l| l.contains("-working-container") && l.ends_with(" Storage")).count()
-    });
+/// The two podman questions this check needs, asked off the main thread.
+///
+/// Measured on a machine with 232 image records: `podman images -f
+/// dangling=true -q` takes 1.13 s and `podman ps -a --external` 40 ms,
+/// together roughly 60% of a `kuma doctor`. The cost is enumeration
+/// rather than filtering — `podman images -q` with any filter, or none,
+/// costs the same — so it grows with how much podman storage has piled
+/// up, which is exactly what this check exists to notice. It gets
+/// slowest on the machines that most need it.
+///
+/// Nothing else in doctor depends on these, so they run while the rest
+/// of the report is being gathered and are collected where they are
+/// needed. Deliberately not the sudo-bearing probes: a password prompt
+/// arriving from a background thread would interleave with the output.
+fn build_leftovers_probe() -> std::thread::JoinHandle<(Option<usize>, Option<usize>)> {
+    std::thread::spawn(|| {
+        let dangling = host_output(&["podman", "images", "-f", "dangling=true", "-q"])
+            .map(|out| out.lines().filter(|l| !l.trim().is_empty()).count())
+            .ok();
+        let abandoned = host_output_any(&[
+            "podman",
+            "ps",
+            "-a",
+            "--external",
+            "--format",
+            "{{.Names}} {{.Status}}",
+        ])
+        .map(|out| {
+            out.lines()
+                .filter(|l| l.contains("-working-container") && l.ends_with(" Storage"))
+                .count()
+        })
+        .ok();
+        (dangling, abandoned)
+    })
+}
+
+fn check_build_leftovers(
+    probe: std::thread::JoinHandle<(Option<usize>, Option<usize>)>,
+    report: &mut impl FnMut(Grade, &str, String, Option<Action>),
+) {
+    // A panicked probe is a thread that told us nothing, which is the
+    // same answer as podman being absent.
+    let (dangling, abandoned) = probe.join().unwrap_or((None, None));
+    let (dangling, abandoned) = (dangling.ok_or(()), abandoned.ok_or(()));
     match (dangling, abandoned) {
         (Err(_), Err(_)) => {} // no podman here — nothing to check
         (dangling, abandoned) => {

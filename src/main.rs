@@ -2294,8 +2294,19 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     // have worked.
     if yes && !local {
         note(&format!("Checking {image} is reachable..."));
-        if let Err(why) = host_output(&["skopeo", "inspect", "--raw", &format!("docker://{image}")])
-        {
+        // --command-timeout, because the comment above promises "half a
+        // second of skopeo" and an unbounded call delivers an indefinite
+        // stall instead. This runs on live media, at the moment a
+        // captive portal is most likely to be in the way, which is the
+        // exact failure the check was written to prevent, one layer down.
+        if let Err(why) = host_output(&[
+            "skopeo",
+            "inspect",
+            "--command-timeout",
+            "20s",
+            "--raw",
+            &format!("docker://{image}"),
+        ]) {
             if host_output_any(&["skopeo", "--version"]).is_ok() {
                 bail!(
                     "cannot reach {image}\n\n{why}\n\n\
@@ -2738,11 +2749,25 @@ fn sync_image_to_root(tag: &str, scratch: &Path) -> Result<String> {
         .unwrap_or_default();
     if local_id != root_id {
         note(&format!("Syncing {tag} into root podman storage (may take a minute)..."));
-        let archive = scratch.join("kuma-image.tar");
-        let archive_str = path_str(&archive)?;
-        run_host(&["podman", "save", "--format", "oci-archive", "-o", archive_str, tag])?;
-        run_host(&["sudo", "podman", "load", "-i", archive_str])?;
-        let _ = std::fs::remove_file(&archive);
+        // Piped rather than staged through a file, which `vm_apply`
+        // already does for the same job over ssh.
+        //
+        // Measured on a 1.55 GB image: `podman save` alone streams for
+        // 40 s, and `podman load` cannot start until it finishes, so the
+        // two passes were strictly sequential. The archive also landed
+        // in a tempdir, which is /tmp, which is tmpfs: 1.55 GB of RAM
+        // held for the duration. On live media that is the RAM overlay,
+        // the same ceiling the ISO work already had to get out from
+        // under once.
+        //
+        // `set -o pipefail` is load-bearing: without it a failed save is
+        // masked by a load that succeeded at reading nothing.
+        run_host(&[
+            "bash",
+            "-c",
+            &format!("set -o pipefail; podman save --format oci-archive {tag} | sudo podman load"),
+        ])?;
+        let _ = scratch;
     }
     Ok(local_id)
 }
