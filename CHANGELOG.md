@@ -49,6 +49,18 @@ as its release notes.
   indistinguishable from a bug. The rule fits in a sentence: declared
   permissions are restored when you boot, and the session in between is yours.
 
+- `kuma doctor` reports a unit that is enabled and has no unit file. Found by
+  reading a real machine: an enablement symlink in `default.target.wants`
+  pointed at a unit file that had been deleted, `systemctl is-enabled`
+  answered `not-found`, and every other surface said the machine was in sync.
+  Nothing fails, because a unit that was never found can never fail, which is
+  exactly why nothing reported it.
+
+  Narrow on purpose. `/etc` on a real machine carries dozens of legitimately
+  local files and a check that lists them all is one people learn to scroll
+  past, but a link into a `.wants` directory is a machine saying it will start
+  something at every boot, and a missing target makes that sentence false.
+
 ## v0.12.0 (2026-08-19)
 
 This release is about the difference between a thing being true and a thing

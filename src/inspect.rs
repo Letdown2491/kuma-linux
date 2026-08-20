@@ -852,6 +852,7 @@ pub fn doctor(json: bool, as_report: bool) -> Result<()> {
     } else if booted_kuma_machine() {
         check_convergence(&mut report);
         check_overrides(&override_roots(), &mut report);
+        check_enablements(Path::new(ETC_UNITS), &mut report);
         check_snapshots(&mut report);
         check_boot_health(&mut report);
         check_boot_titles(Path::new(crate::bootentries::ENTRIES), Path::new("/"), &mut report);
@@ -1423,9 +1424,10 @@ fn dangling_overrides(roots: &[PathBuf]) -> Vec<(PathBuf, PathBuf)> {
 /// /var across every image switch because nothing has ever looked at it.
 ///
 /// Graded warn rather than fail. flatpak tolerates it, the machine is
-/// not broken, and nothing kuma converges depends on it. It is still a
-/// lie about the machine, and the declaration cannot see it yet, so
-/// saying so is the whole of what kuma can honestly do here today.
+/// not broken, and nothing kuma converges depends on it. `[overrides]`
+/// cannot take it back either: a link pointing at nothing has no keys to
+/// read, so convergence has nothing to own and capture has nothing to
+/// propose. Saying so remains the whole of what kuma can honestly do.
 fn check_overrides(
     roots: &[PathBuf],
     report: &mut impl FnMut(Grade, &str, String, Option<Action>),
@@ -1442,6 +1444,72 @@ fn check_overrides(
             Grade::Warn,
             "flatpak overrides",
             format!("{name} points at {}, which does not exist", target.display()),
+            Some(fix),
+        );
+    }
+}
+
+/// Where systemd records that a unit was enabled: a symlink under
+/// `/etc/systemd/system` in the target's `.wants` or `.requires`
+/// directory, pointing at the unit file it should start.
+const ETC_UNITS: &str = "/etc/systemd/system";
+
+/// Enablement symlinks whose unit file is gone.
+///
+/// Deliberately narrow, for the reason `check_etc_drift` explains at
+/// length: `/etc` on a real machine carries dozens of legitimately local
+/// files, and a check that lists them all is a check people learn to
+/// scroll past. A link into a `.wants` directory is different in kind.
+/// It is not somebody's configuration, it is a machine saying it will
+/// start something at every boot, and when the target is missing that
+/// sentence is simply false.
+fn dangling_enablements(root: &Path) -> Vec<(PathBuf, String)> {
+    let mut found = Vec::new();
+    let Ok(targets) = std::fs::read_dir(root) else { return found };
+    for target in targets.flatten() {
+        let dir = target.path();
+        let name = target.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".wants") && !name.ends_with(".requires") {
+            continue;
+        }
+        let Ok(links) = std::fs::read_dir(&dir) else { continue };
+        for link in links.flatten() {
+            let path = link.path();
+            // Same pairing as dangling_overrides: is_symlink first so a
+            // file that vanishes mid-scan is not reported as wreckage.
+            if !path.is_symlink() || path.exists() {
+                continue;
+            }
+            let unit = link.file_name().to_string_lossy().to_string();
+            found.push((path, unit));
+        }
+    }
+    found.sort();
+    found
+}
+
+/// A unit enabled into a target that has no unit file behind it.
+///
+/// Found by reading a real machine: `default.target.wants/nostrd.service`
+/// pointed at a unit file that had been deleted, `systemctl is-enabled`
+/// answered `not-found`, and every other surface kuma has said the
+/// machine was in sync. Nothing fails, because a unit that was never
+/// found can never fail, which is exactly why nothing reported it.
+///
+/// Warn rather than fail, for the same reason as the override sibling:
+/// the machine boots and works. What it is not doing is the thing it
+/// says it does.
+fn check_enablements(root: &Path, report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
+    for (link, unit) in dangling_enablements(root) {
+        let fix = Action::new(
+            "remove-enablement",
+            format!("sudo rm {}", link.display()),
+            "drop an enablement for a unit that does not exist",
+        );
+        report(
+            Grade::Warn,
+            "units",
+            format!("{unit} is enabled but has no unit file; it has never started"),
             Some(fix),
         );
     }
@@ -2360,6 +2428,47 @@ mod tests {
     /// carries its own answer: a service is run again by a timer exactly
     /// when this list also carries that timer, so the two halves cannot
     /// disagree without saying so.
+    /// The shape found on a real machine: an enablement whose unit file
+    /// is gone. The negatives beside it are what keep the check narrow
+    /// enough to be worth reading: a working enablement, a plain file
+    /// somebody dropped in /etc/systemd/system, and a directory that is
+    /// not a target's wants at all.
+    #[test]
+    fn a_unit_enabled_with_no_unit_file_is_found_and_nothing_else_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let wants = root.join("default.target.wants");
+        std::fs::create_dir_all(&wants).unwrap();
+
+        // the real unit, enabled the ordinary way
+        let real = root.join("real.service");
+        std::fs::write(&real, "[Service]\n").unwrap();
+        std::os::unix::fs::symlink(&real, wants.join("real.service")).unwrap();
+        // the wreckage: enabled, then the unit file deleted
+        std::os::unix::fs::symlink(root.join("gone.service"), wants.join("gone.service")).unwrap();
+        // a unit file sitting in /etc that nothing enabled is not a finding
+        std::fs::write(root.join("idle.service"), "[Service]\n").unwrap();
+        // and a directory that is not an enablement directory is skipped
+        let other = root.join("some.service.d");
+        std::fs::create_dir_all(&other).unwrap();
+        std::os::unix::fs::symlink(root.join("also-gone"), other.join("10-x.conf")).unwrap();
+
+        let found = dangling_enablements(root);
+        assert_eq!(found.len(), 1, "only the dangling enablement is a finding: {found:?}");
+        assert_eq!(found[0].1, "gone.service");
+
+        let mut graded = Vec::new();
+        check_enablements(root, &mut |grade, name, detail, action| {
+            graded.push((grade, name.to_string(), detail, action));
+        });
+        assert_eq!(graded.len(), 1);
+        assert!(matches!(graded[0].0, Grade::Warn), "the machine boots; it just does not do this");
+        assert!(graded[0].2.contains("has never started"), "{:?}", graded[0].2);
+        assert!(graded[0].3.as_ref().unwrap().cmd.starts_with("sudo rm "));
+        // a machine with nothing enabled locally is silent
+        assert!(dangling_enablements(&root.join("nope")).is_empty());
+    }
+
     #[test]
     fn only_units_a_timer_runs_again_are_judged_on_their_age() {
         let all = convergence_targets(true, true, true);
