@@ -334,13 +334,18 @@ fn restore_path(
                 "dry_run": !yes,
             }))?
         );
-    } else if live {
+    } else if yes {
+        // Present tense for something about to happen. The dry run says
+        // "would" because it means it; saying "would" while writing is
+        // how somebody reads a finished restore as a preview.
         println!(
-            "{path} exists and would be replaced by the copy in {snapshot}{}",
-            if yes { "" } else { " (dry run)" }
+            "Restoring {path} from {snapshot}{}",
+            if live { ", replacing the copy that is there" } else { "" }
         );
+    } else if live {
+        println!("{path} exists and would be replaced by the copy in {snapshot} (dry run)");
     } else {
-        println!("{path} would be restored from {snapshot}{}", if yes { "" } else { " (dry run)" });
+        println!("{path} would be restored from {snapshot} (dry run)");
     }
 
     run_host(&restic_argv(&secret, &repo, &args))?;
