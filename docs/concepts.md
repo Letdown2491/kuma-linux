@@ -451,11 +451,9 @@ half your lines quietly lose to the other half.
 
 ## Backups, and the two things a restore needs
 
-`[snapshots]` answers a mistake. It cannot answer a disk, because the
-copies are on the disk.
-
-`[backup]` sends them somewhere else, to a restic repository named the way
-restic names one:
+`[snapshots]` answers a mistake. It cannot answer a disk, because the copies
+are on the disk. `[backup]` sends them somewhere else, to a restic repository
+spelled the way restic spells one:
 
 ```toml
 [snapshots]
@@ -467,82 +465,57 @@ repo = "s3:https://minio.example:9000/kuma"
 secret = "backup"
 ```
 
-**It copies from a snapshot, never from the live subvolume**, which is
-why enabling it requires enabling snapshots and why `kuma check` says so
-rather than letting you find out at 3am. A backup taken while files are
-being written is a backup of a moment that never existed.
+**It copies from a snapshot, never from the live subvolume**, which is why
+enabling it requires enabling snapshots, and why `kuma check` says so rather
+than letting you find out at 3am. A backup taken while files are being
+written is a backup of a moment that never existed.
 
-**The credential is named here and held on the machine.** The value lives
-at `/var/lib/kuma/secrets/<secret>.env`, mode 0600, put there by hand. A
-declaration is written to be committed and is baked world-readable into
-every image built from it, which is the wrong place for a secret, and the
-same boundary that keeps `password_hash` out of `kuma capture`.
+**The credential is named here and held on the machine**, at
+`/var/lib/kuma/secrets/<secret>.env`, mode 0600, put there by hand. A
+declaration is written to be committed and is baked world-readable into every
+image built from it, which is the wrong place for a secret and the same
+boundary that keeps `password_hash` out of `kuma capture`.
 
-That is not a hole in the file. Naming the credential is what keeps the
-declaration complete: that one exists, and what it is called, is
-declared, and only the value is elsewhere. The consequence is about
-recovery rather than about the file, and it is worth stating plainly:
-**restoring a machine needs two things**, this file and that credential.
+That is not a hole in the file. Naming the credential is what keeps it
+complete: that one exists and what it is called are both declared, and only
+the value is elsewhere. The consequence is about recovery, and worth stating
+plainly: **restoring a machine needs two things**, this file and that
+credential. A repository address carrying its own password is refused, since
+that arrives by pasting a restic command line that already worked rather than
+by anyone deciding to put a secret in git.
 
-A repository address carrying its own password is refused. That does not
-happen because somebody decides to put a secret in git, it happens
-because a restic command line that already worked gets pasted in.
+Excludes are additive on top of a curated set that cannot be configured away:
+`linuxbrew`, `~/.cache`, `~/.local/share/containers`. Every one is a tree this
+same declaration rebuilds.
 
-### What it leaves out, and the one you should decide about
-
-Excludes are additive on top of a curated set that is deliberately not
-configurable away: `linuxbrew`, `~/.cache`, and `~/.local/share/containers`.
-Every one is a tree this same declaration rebuilds, so storing it offsite
-is paying to keep a copy of something kuma can recreate.
-
-One thing outside home matters more than everything inside it, and it is
-off by default:
+One thing outside home matters more than anything inside it, and it is **off
+by default**:
 
 ```toml
 network_connections = true   # carries /etc/NetworkManager/system-connections
 ```
 
-Those files hold a passphrase per network, in the clear. Nothing else can
-recreate them: not this declaration, which calls them out of scope, not
-the image, which ships that directory empty, and not home, since they
-live in `/etc`. Restore without them and every network password gets
-retyped from memory.
+Those files hold a passphrase per network, in the clear, and nothing else can
+recreate them: not this declaration, which calls them out of scope, not the
+image, which ships that directory empty, and not home, since they live in
+`/etc`. Restore without them and every network password gets retyped. They are
+off by default because turning them on moves secrets off the machine, and that
+should be your decision rather than one made for you, so `kuma doctor` names
+which way it is set on every run.
 
-They are off by default because turning them on moves secrets off the
-machine, and that should be a decision rather than something done on your
-behalf. So that the default is a choice rather than a trap, `kuma doctor`
-names which way it is set on every run.
-
-### Seeding, and knowing it still works
-
-The first copy is your whole home rather than the difference since
-yesterday, so it is a command you run rather than something a timer starts
-while you are tethered on a train:
+The first copy is your whole home rather than a day's difference, so it is a
+command rather than something a timer starts while you are tethered:
 
 ```console
 $ sudo kuma backup --init
 ```
 
-Everything after that is the timer, and `kuma backup` reports without
-touching the network.
-
-**The failure this feature actually has is silence.** The unit exits
-cleanly on a machine with no credential, no snapshot, or no repository,
-all three on purpose, so "last run succeeded" is true of a machine that
-has never copied a byte. So the converger stamps only a run that copied
-something, and `kuma doctor` grades the stamp:
-
-```console
-ok    backup: covers /var/home; network connections NOT included, so a
-      restore needs those passwords retyped
-ok    backup: last completed backup today
-
-warn  backup: last completed backup was 9 days ago; the timer is active,
-      so something is failing quietly
-```
-
-How long is too long follows the interval you declared, so a monthly
-policy is not called unhealthy on day eight.
+**The failure this feature actually has is silence.** The unit exits cleanly
+with no credential, no snapshot or no repository, all three on purpose, so
+"last run succeeded" is true of a machine that has never copied a byte. So
+only a run that copied something writes the stamp, and `kuma doctor` grades
+the stamp rather than the unit. How stale is too stale follows the interval
+you declared, so a monthly policy is not called unhealthy on day eight.
 
 ## What your machine trusts
 
