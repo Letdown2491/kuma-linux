@@ -45,12 +45,56 @@ pub const STAMP: &str = "/var/lib/kuma/backup-last";
 /// re-parse. The secret arrives as a path rather than as a value, so it
 /// is never in argv, which `ps` shows to everybody on the machine.
 fn restic_argv(secret: &str, repo: &str, args: &[&str]) -> Vec<String> {
-    const OPEN: &str =
-        "set -a; . \"$1\"; set +a; export RESTIC_REPOSITORY=\"$2\"; shift 2; exec restic \"$@\"";
+    restic_argv_within(secret, repo, None, args)
+}
+
+/// The same door with a clock on it, for the one call that has to answer
+/// rather than succeed.
+///
+/// restic treats a missing bucket as a transient error and retries it
+/// with exponential backoff, so asking "is there a repository here" of a
+/// machine nobody has seeded takes minutes to answer "no". There is no
+/// flag for it: `--retry-lock` is about locks and
+/// `--stuck-request-timeout` defaults to five minutes. Only the probe
+/// gets a deadline; a backup or a restore is allowed to take as long as
+/// it takes.
+fn restic_argv_within(
+    secret: &str,
+    repo: &str,
+    seconds: Option<u32>,
+    args: &[&str],
+) -> Vec<String> {
+    let open = format!(
+        "set -a; . \"$1\"; set +a; export RESTIC_REPOSITORY=\"$2\"; shift 2; exec {}restic \"$@\"",
+        seconds.map(|s| format!("timeout {s} ")).unwrap_or_default()
+    );
     let mut argv: Vec<String> =
-        ["sudo", "sh", "-c", OPEN, "_", secret, repo].iter().map(|s| s.to_string()).collect();
+        ["sudo", "sh", "-c", &open, "_", secret, repo].iter().map(|s| s.to_string()).collect();
     argv.extend(args.iter().map(|a| a.to_string()));
     argv
+}
+
+/// What the far end turned out to be. Absent and unreachable are
+/// different sentences to a person and the same one to a timeout, so
+/// they are told apart by what restic said.
+enum Repo {
+    Present,
+    Absent,
+    Unreachable,
+}
+
+fn probe_repo(secret: &str, repo: &str) -> Repo {
+    match host_output(&restic_argv_within(secret, repo, Some(30), &["cat", "config"])) {
+        Ok(_) => Repo::Present,
+        Err(e) => {
+            let said = format!("{e:#}").to_lowercase();
+            if said.contains("does not exist") || said.contains("is there a repository") {
+                Repo::Absent
+            } else {
+                Repo::Unreachable
+            }
+        }
+    }
 }
 
 /// The two questions every subcommand here has to ask before it can do
@@ -71,13 +115,6 @@ fn ready(config: &Config) -> Result<(String, String)> {
         );
     }
     Ok((secret, config.backup.repo.clone()))
-}
-
-/// Whether the far end already holds a repository. Also the network
-/// check: everything else here assumes the repository can be reached,
-/// and this is the cheapest way to find out that it cannot.
-fn repo_exists(secret: &str, repo: &str) -> bool {
-    host_output(&restic_argv(secret, repo, &["cat", "config"])).is_ok()
 }
 
 pub fn backup(
@@ -111,10 +148,25 @@ pub fn backup(
 /// drift from the first.
 fn seed(config: &Config) -> Result<()> {
     let (secret, repo) = ready(config)?;
-    if repo_exists(&secret, &repo) {
-        println!("{repo} already holds a repository; nothing to seed.");
-        println!("The timer copies the difference from here on. `kuma backup --list` shows what is in it.");
-        return Ok(());
+    match probe_repo(&secret, &repo) {
+        Repo::Present => {
+            println!("{repo} already holds a repository; nothing to seed.");
+            println!(
+                "The timer copies the difference from here on. \
+                 `kuma backup --list` shows what is in it."
+            );
+            return Ok(());
+        }
+        // Said rather than guessed at: seeding an unreachable repository
+        // fails minutes later with restic's own retry storm in front of
+        // the reason, which is a worse way to learn the network is down.
+        Repo::Unreachable => {
+            bail!(
+                "cannot reach {repo} within 30s. Nothing has been changed. Check the \
+                 address and that this machine can get to it, then run this again."
+            );
+        }
+        Repo::Absent => {}
     }
     println!("Creating a repository at {repo}");
     run_host(&restic_argv(&secret, &repo, &["init"]))?;
@@ -331,6 +383,23 @@ mod tests {
         let with_space =
             restic_argv("/s.env", "b2:kuma", &["restore", "latest", "--include", "/var/home/a b"]);
         assert_eq!(with_space.last().unwrap(), "/var/home/a b");
+    }
+
+    /// Only the probe gets a clock. A backup or a restore is allowed to
+    /// take as long as it takes, and a deadline on those would kill a
+    /// first copy of a home directory over a slow link.
+    #[test]
+    fn only_the_question_has_a_deadline() {
+        let probe = restic_argv_within("/s.env", "b2:kuma", Some(30), &["cat", "config"]);
+        assert!(
+            probe.iter().any(|a| a.contains("timeout 30 restic")),
+            "the existence probe must not wait out restic's retry storm: {probe:?}"
+        );
+        let work = restic_argv("/s.env", "b2:kuma", &["backup", "/var/home"]);
+        assert!(
+            work.iter().all(|a| !a.contains("timeout")),
+            "a copy must not be killed by a clock: {work:?}"
+        );
     }
 
     /// A path outside the machine's own naming, or one that climbs, is

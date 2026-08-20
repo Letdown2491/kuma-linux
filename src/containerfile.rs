@@ -633,10 +633,25 @@ if [ -z "$newest" ]; then
     exit 0
 fi
 
-if ! restic cat config >/dev/null 2>&1; then
-    echo "no repository at $RESTIC_REPOSITORY yet; seed it once with 'kuma backup --init'"
+# Bounded, because restic treats a missing bucket as a transient error
+# and retries it with exponential backoff. Asking "is there a repository"
+# of a machine that has not been seeded therefore takes minutes to answer
+# "no", every night, and restic offers no flag to limit backend retries
+# (--retry-lock is about locks; --stuck-request-timeout defaults to 5m).
+#
+# The two failures are told apart by what restic said rather than by an
+# exit status, because a timeout looks identical either way. Both exit 0:
+# one is a machine nobody has seeded and the other is a machine that
+# cannot reach its repository right now, and neither is broken. Freshness
+# is what escalates a machine that stays in either state.
+probe=$(timeout 30 restic cat config 2>&1) || {
+    if printf '%s' "$probe" | grep -qiE 'does not exist|is there a repository'; then
+        echo "no repository at $RESTIC_REPOSITORY yet; seed it once with 'kuma backup --init'"
+    else
+        echo "cannot reach $RESTIC_REPOSITORY within 30s; nothing copied this run"
+    fi
     exit 0
-fi
+}
 
 # Read-only already, being a btrfs snapshot; the bind is for the path,
 # not for the permissions.
@@ -3839,6 +3854,11 @@ mod tests {
         assert!(script.contains("no credential loaded"));
         assert!(script.contains("no snapshot in $store yet"));
         assert!(script.contains("seed it once with 'kuma backup --init'"));
+        // Bounded, and it has to be. restic retries a missing bucket
+        // with backoff, so an unbounded probe takes minutes to answer
+        // "no" on every machine nobody has seeded, every night.
+        assert!(script.contains("timeout 30 restic cat config"), "{script}");
+        assert!(script.contains("cannot reach"), "unreachable reads differently from absent");
 
         // The stamp is what doctor grades, so it must only be written by
         // a run that copied something. Every early exit is above it.
