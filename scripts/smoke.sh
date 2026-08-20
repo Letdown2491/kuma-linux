@@ -1133,7 +1133,23 @@ dead_disk_run() {
         guest "mkdir -p ~/Documents && echo 'the thing that must survive' > ~/Documents/marker.txt" \
             || bad "cannot write the marker"
         guest "head -c 5000000 /dev/urandom > ~/Documents/bulk.bin" || bad "cannot write bulk"
-        ok "wrote the files a restore has to bring back"
+
+        # The one thing outside home that nothing else can recreate, and
+        # the one this stage did not used to check. A review found the
+        # restore asking only for /var/home while the backup stored this
+        # too, so the machine came back complete except for every network
+        # password, and this gate passed anyway. Staged through /tmp and
+        # installed, the same shape the credential above uses, because
+        # the quoting for writing into /etc over ssh as root is worse
+        # than a second command.
+        guest "printf '[wifi]\npsk=smoke-wifi-secret\n' > /tmp/smoke.nmconnection" \
+            || bad "cannot stage a network connection"
+        sudoq "install -d -m 0700 /etc/NetworkManager/system-connections" \
+            || bad "cannot make the connections directory"
+        sudoq "install -m 0600 /tmp/smoke.nmconnection \
+            /etc/NetworkManager/system-connections/smoke.nmconnection" \
+            || bad "cannot install the network connection"
+        ok "wrote the files a restore has to bring back, home and wifi"
 
         # The credential the declaration names. Provisioned by hand here
         # exactly as a person would, which is also what proves the
@@ -1189,6 +1205,14 @@ ENV
         guest "stat -c %U ~/Documents/marker.txt" | grep -qx "$user" \
             || bad "the restored file belongs to the wrong account"
         ok "the files came back, owned by the account that lost them"
+
+        # The whole reason network_connections is a knob. Everything
+        # else can be rebuilt from the declaration; this cannot be
+        # rebuilt from anything.
+        sudoq "cat /etc/NetworkManager/system-connections/smoke.nmconnection" \
+            | grep -q smoke-wifi-secret \
+            || bad "the network connection did not come back; a restore would cost every wifi password"
+        ok "the wifi password came back too"
 
         guest "test ! -f /var/lib/kuma/restore-request" \
             || bad "the restore request survived, so every boot would restore again"
