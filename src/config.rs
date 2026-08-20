@@ -475,7 +475,13 @@ impl Config {
             for (key, values) in over.context_lists() {
                 let field = format!("overrides.{app}.{key}");
                 for value in values {
-                    validate_name(value, &field, &['!', '/', '.', '-', '_', ':', '~'])?;
+                    // A space is in here because a path is: `home/My
+                    // Documents` is an ordinary directory and flatpak
+                    // takes it. Nothing here reaches a shell — the
+                    // converger is this binary, writing a keyfile — so
+                    // the only question a character has to answer is
+                    // whether flatpak can mean it.
+                    validate_name(value, &field, &['!', '/', '.', '-', '_', ':', '~', ' '])?;
                 }
             }
             for (name, value) in &over.environment {
@@ -560,6 +566,14 @@ pub(crate) fn validate_name(value: &str, field: &str, extra: &[char]) -> Result<
     // No real package, service, zone, or locale starts with one.
     if value.starts_with('-') {
         bail!("{field} entry {value:?} starts with '-': names cannot be options");
+    }
+    // Punctuation on its own is never a name, and two of these fields
+    // turn their value into a path component: `".."` passed every other
+    // rule here, validated clean, and then failed the build with an I/O
+    // error about a directory. Nothing legitimate anywhere in this file
+    // is spelled without a letter or a digit.
+    if !value.chars().any(|c| c.is_ascii_alphanumeric()) {
+        bail!("{field} entry {value:?} has no letter or digit in it, so it is not a name");
     }
     for ch in value.chars() {
         if !ch.is_ascii_alphanumeric() && !extra.contains(&ch) {
@@ -1359,6 +1373,30 @@ pub(crate) mod tests {
             // spelled like a fragment of a reverse-DNS id.
             let documented = documented_names.contains(field);
             assert!(documented, "examples/niri.toml never mentions `{field}`");
+        }
+    }
+
+    /// Two fields turn their value straight into a path component: an
+    /// override's app id and a CA anchor's name. `".."` satisfied every
+    /// other rule, validated clean, and then failed the build with an
+    /// I/O error about a directory rather than a message anyone could
+    /// act on. The rule is general because the reason is: nothing in
+    /// this file is legitimately spelled without a letter or a digit.
+    #[test]
+    fn a_name_made_only_of_punctuation_is_refused_before_it_becomes_a_path() {
+        let dots = "schema_version = 1\n[overrides.\"..\"]\nsockets = [\"wayland\"]\n";
+        let config: Config = toml::from_str(dots).unwrap();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("not a name"), "{err}");
+
+        let anchor = "schema_version = 1\n[system.ca_certificates]\n\
+                      \".\" = \"\"\"\n-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n\"\"\"\n";
+        let config: Config = toml::from_str(anchor).unwrap();
+        assert!(config.validate().is_err());
+
+        // and the ordinary shapes still pass, including the dotted ones
+        for good in ["org.mozilla.firefox", "my-root-ca", "America/Denver", "en_US.UTF-8"] {
+            validate_name(good, "probe", &['.', '-', '_', '/']).unwrap();
         }
     }
 

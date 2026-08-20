@@ -1558,8 +1558,14 @@ fn boot_titles() -> Result<()> {
 /// boot prints three uninteresting ones.
 fn flatpak_overrides(scope: config::Scope) -> Result<()> {
     // The user pass runs inside a systemd --user manager, which sets
-    // HOME; the system pass never reads it. Neither is a place to guess.
+    // HOME; the system pass never reads it. Neither is a place to guess:
+    // an empty HOME would make the store a relative path and write one
+    // person's permissions into whatever directory the command was run
+    // from.
     let home = std::env::var("HOME").unwrap_or_default();
+    if scope == config::Scope::User && home.is_empty() {
+        bail!("HOME is unset, so there is no user store to converge");
+    }
     let changed = overrides::converge_store(scope, Path::new("/"), Path::new(&home))
         .with_context(|| format!("converging {} flatpak overrides", scope.as_str()))?;
     for (app, what) in &changed {

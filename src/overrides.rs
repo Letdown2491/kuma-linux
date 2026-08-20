@@ -149,25 +149,22 @@ impl KeyFile {
         }
     }
 
-    /// True when nothing but whitespace and comments is left. flatpak
-    /// treats an empty override file and an absent one the same way, but
-    /// a file kuma emptied is litter, and litter is what this whole rung
-    /// is about.
-    fn is_empty(&self) -> bool {
-        !self.groups.iter().any(|g| g.lines.iter().any(|l| matches!(l, Line::Pair(_, _))))
-    }
-
     fn render(&self) -> String {
         let mut out = String::new();
         for group in &self.groups {
-            let has_pairs = group.lines.iter().any(|l| matches!(l, Line::Pair(_, _)));
-            // A group kuma emptied goes with its header; one that was
-            // always empty was somebody's choice and stays.
-            if !group.name.is_empty() && has_pairs {
+            // A group kuma emptied goes with its header. A group holding
+            // anything else does not, and a comment counts: somebody
+            // wrote it to explain their machine to themselves, and
+            // taking back the key beside it is no reason to delete it.
+            let keeps_something = group.lines.iter().any(|line| match line {
+                Line::Pair(_, _) => true,
+                Line::Raw(raw) => !raw.trim().is_empty(),
+            });
+            if !group.name.is_empty() {
+                if !keeps_something {
+                    continue;
+                }
                 out.push_str(&format!("[{}]\n", group.name));
-            }
-            if !group.name.is_empty() && !has_pairs {
-                continue;
             }
             for line in &group.lines {
                 match line {
@@ -239,7 +236,11 @@ pub fn converge(
         }
     }
 
-    let rendered = if file.is_empty() { String::new() } else { file.render() };
+    // Emptiness is decided by what comes out, not by counting keys: a
+    // file whose last key kuma took back is litter and goes, and one
+    // that still holds a comment is somebody's and stays.
+    let rendered = file.render();
+    let rendered = if rendered.trim().is_empty() { String::new() } else { rendered };
     (rendered, changed, now_owned)
 }
 
@@ -367,7 +368,12 @@ pub fn converge_store(scope: Scope, root: &Path, home: &Path) -> Result<Vec<(Str
             report.push((app, changed));
         }
     }
-    write_state(&state, &owned)?;
+    // Only when it moved. This runs on every boot of every machine, and
+    // a converger that rewrites its own state to say the same thing is a
+    // write, an mtime, and a lie about when anything last happened.
+    if owned != previous {
+        write_state(&state, &owned)?;
+    }
     Ok(report)
 }
 
@@ -533,14 +539,20 @@ pub fn capturable(
 ) -> (Vec<Proposal>, Vec<String>) {
     let mut proposals = Vec::new();
     let mut ambiguous = Vec::new();
+    // One read per scope, not one per app: the state file is small, but
+    // re-reading it inside the loop made the cost of asking scale with
+    // the declaration for no reason.
+    let state: Vec<BTreeMap<String, Vec<String>>> = [Scope::System, Scope::User]
+        .iter()
+        .map(|scope| read_state(&state_path(*scope, root, home)))
+        .collect();
     for app in installed_apps {
         let mut per_scope: Vec<Proposal> = Vec::new();
-        for scope in [Scope::System, Scope::User] {
+        for (at, scope) in [Scope::System, Scope::User].into_iter().enumerate() {
             if declared.get(*app).is_some_and(|o| o.scope != scope) {
                 continue;
             }
-            let owned: Vec<String> =
-                read_state(&state_path(scope, root, home)).remove(*app).unwrap_or_default();
+            let owned: &[String] = state[at].get(*app).map(Vec::as_slice).unwrap_or_default();
             let already: Vec<String> = declared
                 .get(*app)
                 .map(|o| declared_keys(o).iter().map(|(g, k, _)| owned_id(g, k)).collect())
@@ -665,6 +677,57 @@ mod tests {
         assert!(out.contains("[Some Future Group]\nkey=value\n"), "{out}");
         assert!(out.contains("devices=dri;"), "{out}");
         assert!(out.contains("sockets=x11;"), "{out}");
+    }
+
+    /// A machine that declares no permissions ends up with no state
+    /// file either. The converger runs on every boot of every machine,
+    /// and one that creates a file to record that it owns nothing is
+    /// litter of exactly the kind this rung went looking for.
+    #[test]
+    fn owning_nothing_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let home = root.join("home/mira");
+        std::fs::create_dir_all(declared_dir(Scope::System, root)).unwrap();
+        assert!(converge_store(Scope::System, root, &home).unwrap().is_empty());
+        assert!(
+            !state_path(Scope::System, root, &home).exists(),
+            "an empty state file was written"
+        );
+    }
+
+    /// A comment inside a group is somebody explaining their machine to
+    /// themselves, and taking back the key beside it is no reason to
+    /// delete it. The module's own promise is that everything kuma does
+    /// not understand survives; the first version kept comments only
+    /// when they sat above the first group header.
+    #[test]
+    fn a_comment_survives_the_key_it_sat_beside_being_taken_back() {
+        let live = "[Context]\n# turned this off deliberately\nfilesystems=host;\n";
+        let (out, changed, _) = converge(live, &[], &[owned_id(CONTEXT, "filesystems")]);
+        assert_eq!(changed.removed, vec![owned_id(CONTEXT, "filesystems")]);
+        assert!(out.contains("# turned this off deliberately"), "the note was eaten: {out:?}");
+        assert!(!out.contains("filesystems"), "{out:?}");
+    }
+
+    /// A file kuma has never written a key into is not kuma's to touch,
+    /// whatever is in it. This one passed the day it was written: an app
+    /// is visited only if the declaration names it or the state file
+    /// claims a key in it. It stays as the guard on that, because the
+    /// obvious future change here is to widen what the pass looks at.
+    #[test]
+    fn a_file_kuma_never_owned_is_not_deleted_for_having_no_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let home = root.join("home/mira");
+        let store_dir = store(Scope::System, root, &home);
+        std::fs::create_dir_all(&store_dir).unwrap();
+        let path = store_dir.join("org.example.Notes");
+        std::fs::write(&path, "[Context]\n# nothing here yet, on purpose\n").unwrap();
+
+        converge_store(Scope::System, root, &home).unwrap();
+        assert!(path.exists(), "a file kuma never touched was deleted");
+        assert!(std::fs::read_to_string(&path).unwrap().contains("on purpose"));
     }
 
     /// Converging twice with the same declaration must report nothing

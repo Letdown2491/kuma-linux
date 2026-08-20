@@ -870,6 +870,11 @@ pub fn doctor(json: bool, as_report: bool) -> Result<()> {
         check_convergence(&mut report);
         check_overrides(&override_roots(), &mut report);
         check_enablements(Path::new(ETC_UNITS), &mut report);
+        // The same shape one directory over: `systemctl --global enable`
+        // writes here, so an image can leave a broken one behind exactly
+        // like a system unit can. A person's own ~/.config/systemd/user is
+        // deliberately not read; that is theirs.
+        check_enablements(Path::new("/etc/systemd/user"), &mut report);
         check_snapshots(&mut report);
         check_boot_health(&mut report);
         check_boot_titles(Path::new(crate::bootentries::ENTRIES), Path::new("/"), &mut report);
@@ -1409,28 +1414,34 @@ fn override_roots() -> Vec<PathBuf> {
 /// Only symlinks are examined. A regular override file is somebody's
 /// settings, whatever wrote it, and none of kuma's business until the
 /// declaration learns to own these.
-fn dangling_overrides(roots: &[PathBuf]) -> Vec<(PathBuf, PathBuf)> {
+/// Symlinks in one directory whose target is not there.
+///
+/// exists() follows the link, so on its own it already skips every
+/// regular file and every symlink that resolves. The is_symlink() guard
+/// earns its line in the race the pair leaves open: a file deleted
+/// between the read_dir and the exists() would otherwise be reported as
+/// pointing at nothing, with nothing to name as its target.
+fn broken_links(dir: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
-    for root in roots {
-        let Ok(entries) = std::fs::read_dir(root) else { continue };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            // exists() follows the link, so on its own it already skips
-            // every regular file and every symlink that resolves. This
-            // guard earns its line in the race the pair leaves open: a
-            // file deleted between the read_dir and the exists() would
-            // otherwise be reported as an override pointing at nothing,
-            // with nothing to name as its target.
-            if !path.is_symlink() {
-                continue;
-            }
-            if path.exists() {
-                continue;
-            }
-            let target = std::fs::read_link(&path).unwrap_or_default();
-            found.push((path, target));
+    let Ok(entries) = std::fs::read_dir(dir) else { return found };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_symlink() && !path.exists() {
+            found.push(path);
         }
     }
+    found
+}
+
+fn dangling_overrides(roots: &[PathBuf]) -> Vec<(PathBuf, PathBuf)> {
+    let mut found: Vec<(PathBuf, PathBuf)> = roots
+        .iter()
+        .flat_map(|root| broken_links(root))
+        .map(|path| {
+            let target = std::fs::read_link(&path).unwrap_or_default();
+            (path, target)
+        })
+        .collect();
     found.sort();
     found
 }
@@ -1489,15 +1500,8 @@ fn dangling_enablements(root: &Path) -> Vec<(PathBuf, String)> {
         if !name.ends_with(".wants") && !name.ends_with(".requires") {
             continue;
         }
-        let Ok(links) = std::fs::read_dir(&dir) else { continue };
-        for link in links.flatten() {
-            let path = link.path();
-            // Same pairing as dangling_overrides: is_symlink first so a
-            // file that vanishes mid-scan is not reported as wreckage.
-            if !path.is_symlink() || path.exists() {
-                continue;
-            }
-            let unit = link.file_name().to_string_lossy().to_string();
+        for path in broken_links(&dir) {
+            let unit = path.file_name().unwrap_or_default().to_string_lossy().to_string();
             found.push((path, unit));
         }
     }
