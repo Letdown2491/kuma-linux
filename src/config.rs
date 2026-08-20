@@ -145,6 +145,27 @@ pub struct Backup {
     /// dropping them would mean paying to store what kuma can recreate.
     #[serde(default)]
     pub exclude: Vec<String>,
+    /// Carry `/etc/NetworkManager/system-connections` alongside home.
+    ///
+    /// **Off by default, which is a deliberate trade rather than an
+    /// oversight.** Those files are the one thing on the machine nothing
+    /// else can recreate: not this declaration, which calls them out of
+    /// scope, not the image, which ships the directory empty, and not
+    /// home, since they live in /etc. Restore without them and you retype
+    /// every network password from memory.
+    ///
+    /// They are also a per-network passphrase in the clear, so including
+    /// them puts those in the repository. restic encrypts client-side, so
+    /// the far end never sees them, but it is still a decision rather
+    /// than a default, and the conservative answer is the one that does
+    /// not move secrets off the machine on somebody's behalf.
+    ///
+    /// The cost of that default is that a working backup quietly omits
+    /// the only unrecoverable thing, so `kuma doctor` says which way this
+    /// is set. An omission you read on an ordinary day is a choice; one
+    /// you discover during a restore is a trap.
+    #[serde(default)]
+    pub network_connections: bool,
 }
 
 fn default_backup_secret() -> String {
@@ -174,6 +195,7 @@ impl Default for Backup {
             keep_weekly: default_backup_keep_weekly(),
             keep_monthly: default_backup_keep_monthly(),
             exclude: Vec::new(),
+            network_connections: false,
         }
     }
 }
@@ -1326,6 +1348,12 @@ pub(crate) mod tests {
             ("the declared account", Declared("user")),
             ("local btrfs snapshots", Declared("snapshots")),
             ("offsite copies of what snapshots keep", Declared("backup")),
+            // New with [backup], and a kind of its own: a secret the
+            // declaration names and deliberately does not hold, sitting
+            // in /var where it survives every rebuild. Graded rather
+            // than declared, because what can be checked is whether the
+            // machine has the thing its declaration asked for.
+            ("a credential the declaration names", Graded("backup")),
             ("/etc files this image owns", Graded("etc")),
             ("a unit enabled with no unit file", Graded("units")),
             ("a flatpak override pointing at nothing", Graded("flatpak overrides")),

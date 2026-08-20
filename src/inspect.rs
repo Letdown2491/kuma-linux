@@ -876,6 +876,7 @@ pub fn doctor(json: bool, as_report: bool) -> Result<()> {
         // deliberately not read; that is theirs.
         check_enablements(Path::new("/etc/systemd/user"), &mut report);
         check_snapshots(&mut report);
+        check_backup(&mut report);
         check_boot_health(&mut report);
         check_boot_titles(Path::new(crate::bootentries::ENTRIES), Path::new("/"), &mut report);
         check_encryption(&mut report);
@@ -1669,6 +1670,187 @@ fn subvolume_root(stat_output: &str) -> Option<bool> {
     stat_output.trim().parse::<u64>().ok().map(|inode| inode == 256)
 }
 
+/// How long a machine may go without a completed backup before that is
+/// worth saying out loud.
+///
+/// Two missed firings plus slack, never less than a week. A week cannot
+/// be reached by a laptop that was shut: the timer is `Persistent=true`,
+/// so a machine that was asleep at the appointed hour runs on the next
+/// wake. Reaching it means the loop has stopped turning, or the far end
+/// has been unreachable the whole time, or nobody ever provisioned the
+/// credential.
+///
+/// Derived from the declared interval rather than fixed, because a
+/// declaration that asks for monthly copies is not unhealthy on day
+/// eight. Only the words systemd's calendar spells as plain periods are
+/// recognised; anything more elaborate falls back to the floor, which
+/// errs toward asking rather than toward silence.
+fn backup_stale_after_days(interval: &str) -> u64 {
+    let period = match interval.trim() {
+        "weekly" => 7,
+        "monthly" => 31,
+        "quarterly" => 92,
+        "semiannually" => 183,
+        "yearly" | "annually" => 365,
+        // hourly, daily, and every explicit OnCalendar expression
+        // somebody writes by hand, which is almost always sub-daily.
+        _ => 1,
+    };
+    (period * 2).max(7)
+}
+
+/// Epoch seconds from the stamp the backup writes, which is the first
+/// field of a line whose second field is the same moment for people.
+///
+/// `None` for a file that is absent or unparseable, and the caller must
+/// treat those as "no backup has completed" rather than as an error:
+/// they are the same thing to whoever needs the data back.
+fn backup_stamp(text: &str) -> Option<i64> {
+    text.split_whitespace().next()?.parse().ok()
+}
+
+/// The check the whole feature is pointed at.
+///
+/// A backup fails quietly in more ways than a snapshot does. The unit
+/// exits 0 on a machine with no credential, no snapshot and no
+/// repository, all three deliberately, so "last run succeeded" is true
+/// of a machine that has never copied a byte. The timer being active is
+/// true of a machine whose repository has been unreachable for a month.
+/// Neither is answerable from `Result=`, which is why the converger
+/// stamps only on a run that actually copied something, and why this
+/// grades the stamp rather than the unit.
+///
+/// Deliberately offline and passwordless. Asking the repository would
+/// need the credential and the network, which turns a health check into
+/// a thing that hangs on a train and prompts for a secret to tell you
+/// how you are. The stamp answers the question that matters, which is
+/// whether this machine is still managing to send its data somewhere.
+fn check_backup(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
+    let Ok(config) = Config::load(Path::new(BAKED_CONFIG)) else {
+        // check_snapshots already named an unreadable baked declaration;
+        // saying it twice in one report is noise.
+        return;
+    };
+    if !config.backup.enable {
+        return;
+    }
+
+    // What it covers, on every run and before any grade. This is the
+    // whole reason `network_connections` defaults off rather than being
+    // absent: an omission you read on an ordinary day is a choice, and
+    // one you discover during a restore is a trap.
+    let carries = if config.backup.network_connections {
+        "network connections included"
+    } else {
+        "network connections NOT included, so a restore needs those passwords retyped"
+    };
+    report(Grade::Ok, "backup", format!("covers {}; {carries}", config.snapshots.target), None);
+
+    // The declaration names a credential; this machine either has it or
+    // has not been finished being set up. Naming it is what makes that
+    // answerable at all: an unnamed credential could only fail inside
+    // the unit at whatever hour the timer fires.
+    let secret = format!("/var/lib/kuma/secrets/{}.env", config.backup.secret);
+    if !Path::new(&secret).exists() {
+        let fix = Action::new(
+            "provision",
+            format!("sudo install -m 0600 /dev/null {secret}"),
+            "create the credential file the declaration names, then put the keys in it",
+        );
+        report(
+            Grade::Warn,
+            "backup",
+            format!("no credential at {secret}; nothing has been copied and nothing will be"),
+            Some(fix),
+        );
+        return;
+    }
+
+    let facts = unit_facts(&["kuma-backup.timer", "kuma-backup.service"]);
+    match facts.get("kuma-backup.timer") {
+        Some(fact) if fact.active == "active" => report(
+            Grade::Ok,
+            "backup",
+            format!("kuma-backup.timer active ({})", config.backup.interval),
+            None,
+        ),
+        Some(_) => {
+            let fix = Action::new(
+                "start",
+                "sudo systemctl start kuma-backup.timer",
+                "resume scheduled backups",
+            );
+            report(Grade::Fail, "backup", "kuma-backup.timer is not active".into(), Some(fix));
+        }
+        None => report(Grade::Warn, "backup", "kuma-backup.timer state unavailable".into(), None),
+    }
+
+    if let Some(fact) = facts.get("kuma-backup.service") {
+        if !fact.result.is_empty() && fact.result != "success" {
+            let detail = match last_run_reason(&fact.invocation) {
+                Some(reason) => format!("kuma-backup.service last run failed: {reason}"),
+                None => "kuma-backup.service last run failed".to_string(),
+            };
+            let fix = Action::new(
+                "logs",
+                "journalctl -u kuma-backup.service -n 50",
+                "read what the last backup said",
+            );
+            report(Grade::Fail, "backup", detail, Some(fix));
+        }
+    }
+
+    // The stamp, which is the only surface that can tell a machine
+    // copying nightly from one that has quietly stopped.
+    let stamp =
+        std::fs::read_to_string("/var/lib/kuma/backup-last").ok().as_deref().and_then(backup_stamp);
+    let stale_after = backup_stale_after_days(&config.backup.interval);
+    match (stamp, now_epoch()) {
+        (Some(then), Some(now)) => {
+            let days = whole_days_between(then, now);
+            if days >= stale_after {
+                let fix = Action::new(
+                    "logs",
+                    "journalctl -u kuma-backup.service -n 50",
+                    "find out what has been stopping it",
+                );
+                report(
+                    Grade::Warn,
+                    "backup",
+                    format!(
+                        "last completed backup was {days} days ago; \
+                         the timer is active, so something is failing quietly"
+                    ),
+                    Some(fix),
+                );
+            } else {
+                let when = match days {
+                    0 => "today".to_string(),
+                    1 => "yesterday".to_string(),
+                    n => format!("{n} days ago"),
+                };
+                report(Grade::Ok, "backup", format!("last completed backup {when}"), None);
+            }
+        }
+        (None, _) => {
+            let fix = Action::new(
+                "seed",
+                "sudo kuma backup --init",
+                "make the first copy, deliberately, while plugged in",
+            );
+            report(
+                Grade::Warn,
+                "backup",
+                "no backup has ever completed on this machine".into(),
+                Some(fix),
+            );
+        }
+        // No clock is not a backup problem, and grading one on it would
+        // be reporting on the RTC.
+        (Some(_), None) => {}
+    }
+}
+
 /// Snapshots fail quietly by design, and correctly so: the script
 /// degrades rather than erroring when the target isn't btrfs, and the
 /// timer is Persistent with a jittered delay, so nothing complains on a
@@ -2406,6 +2588,36 @@ mod tests {
 
     /// The quiet failure this check exists for: a converger whose last
     /// run succeeded, weeks ago, on a machine where nothing has
+    /// A declaration asking for monthly copies is not unhealthy on day
+    /// eight, and one asking for hourly copies is not healthy on day
+    /// six. The floor exists because the timer is Persistent: a week
+    /// cannot be reached by a laptop that was shut, only by a loop that
+    /// has stopped turning.
+    #[test]
+    fn how_stale_is_too_stale_follows_the_declared_interval() {
+        assert_eq!(backup_stale_after_days("daily"), 7, "the floor, not two days");
+        assert_eq!(backup_stale_after_days("hourly"), 7);
+        assert_eq!(backup_stale_after_days("weekly"), 14, "two missed firings");
+        assert_eq!(backup_stale_after_days("monthly"), 62);
+        // An expression somebody wrote by hand is almost always
+        // sub-daily, and erring toward asking beats erring toward
+        // silence on this particular question.
+        assert_eq!(backup_stale_after_days("*-*-* 03:00:00"), 7);
+    }
+
+    /// The stamp is two fields: epoch for this code, readable for
+    /// whoever cats the file. Anything unreadable has to mean "no backup
+    /// has completed", because to the person who needs their data back
+    /// those are the same thing.
+    #[test]
+    fn the_stamp_is_read_by_its_first_field() {
+        assert_eq!(backup_stamp("1787201660 2026-08-20T04:54:20Z\n"), Some(1_787_201_660));
+        assert_eq!(backup_stamp("1787201660\n"), Some(1_787_201_660));
+        for junk in ["", "\n", "not-a-number today", "2026-08-20T04:54:20Z"] {
+            assert_eq!(backup_stamp(junk), None, "unreadable must not read as fresh: {junk:?}");
+        }
+    }
+
     /// converged since. `Result=success` and an active timer are both
     /// true of that machine.
     #[test]

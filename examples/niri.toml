@@ -127,6 +127,14 @@ enable = true
 # keep_weekly = 4
 # keep_monthly = 6
 # exclude = ["~/Videos"]   # on top of the curated set, never instead of it
+#
+# Wifi passwords are the one thing nothing else can recreate: not this
+# file, which calls them out of scope, not the image, which ships that
+# directory empty, and not home, since they live in /etc. Off by default
+# because turning it on puts those passphrases in the repository, which
+# is a decision rather than a default. `kuma doctor` says which way it is
+# set, so an omission is something you read rather than discover.
+# network_connections = false
 
 # Certificate authorities to trust on top of the ones Fedora ships, keyed
 # by the name each one gets on disk. The certificate goes in this file

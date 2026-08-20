@@ -642,7 +642,7 @@ fi
 # not for the permissions.
 mount --bind "$store/$newest" "$target"
 
-restic backup "$target" \
+restic backup "$target"{extra_paths} \
     --tag kuma \
     --skip-if-unchanged \
     --exclude "$target/.snapshots" \
@@ -651,7 +651,9 @@ restic forget --tag kuma --prune \
     --keep-daily {keep_daily} --keep-weekly {keep_weekly} --keep-monthly {keep_monthly}
 
 install -d -m 0755 /var/lib/kuma
-date -u +%Y-%m-%dT%H:%M:%SZ > "$stamp"
+# Epoch first because doctor parses it and this repo carries no date
+# library; the readable form beside it is for whoever cats the file.
+printf '%s %s\n' "$(date -u +%s)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$stamp"
 "#;
 
 /// The curated excludes, which are additive rather than a default the
@@ -663,6 +665,11 @@ date -u +%Y-%m-%dT%H:%M:%SZ > "$stamp"
 /// entire prefix inside the snapshot target: `packages.brew` reconverges
 /// it, so a naive copy would ship the largest rebuildable tree on the
 /// machine offsite every night.
+/// The one unrecoverable thing that lives outside the snapshot target.
+/// Named here rather than spelled twice, since doctor reports on the
+/// same path.
+pub const NETWORK_CONNECTIONS: &str = "/etc/NetworkManager/system-connections";
+
 const CURATED_EXCLUDES: &[&str] = &["/linuxbrew", "/*/.cache", "/*/.local/share/containers"];
 
 /// Restart because a timer that fires on resume finds the network still
@@ -716,7 +723,17 @@ fn backup_script(config: &Config) -> String {
     // The last continuation has to go, or the blank line after it eats
     // the next command.
     let excludes = excludes.trim_end().trim_end_matches('\\').trim_end().to_string();
+    // A second source path, so the one unrecoverable thing outside home
+    // rides along when it is asked for. It changes restic's path group,
+    // so the first run after switching this on has no parent and rescans
+    // once; every run after that is incremental again.
+    let extra_paths = if config.backup.network_connections {
+        format!(" {NETWORK_CONNECTIONS}")
+    } else {
+        String::new()
+    };
     BACKUP_SCRIPT
+        .replace("{extra_paths}", &extra_paths)
         .replace("{target}", target)
         .replace("{repo}", &config.backup.repo)
         .replace("{excludes}", &excludes)
@@ -3866,6 +3883,27 @@ mod tests {
         let timer = std::fs::read_to_string(dir.path().join("kuma-backup.timer")).unwrap();
         assert!(timer.contains("OnCalendar=03:00"));
         assert!(timer.contains("Persistent=true"), "a laptop asleep at the hour still backs up");
+    }
+
+    /// The one unrecoverable thing outside home rides along only when
+    /// asked, and the default is that it does not. Doctor is what makes
+    /// that default honest rather than a trap, so this only asserts the
+    /// converger obeys the knob.
+    #[test]
+    fn network_connections_ride_along_only_when_asked() {
+        let head = "schema_version = 1\n[snapshots]\nenable = true\n\
+                    [backup]\nenable = true\nrepo = \"b2:kuma\"\n";
+        let off = backup_script(&config(head));
+        assert!(
+            !off.contains(NETWORK_CONNECTIONS),
+            "off by default, because those are passphrases in the clear"
+        );
+
+        let on = backup_script(&config(&format!("{head}network_connections = true\n")));
+        assert!(
+            on.contains(&format!(r#"restic backup "$target" {NETWORK_CONNECTIONS} \"#)),
+            "a second source path, not an exclude: {on}"
+        );
     }
 
     /// Declaring no backup must leave no trace of one, and declaring one
