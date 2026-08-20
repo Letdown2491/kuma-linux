@@ -1081,11 +1081,16 @@ dead_disk_install() {
 # Boot the disk, do one job over ssh, shut it down.
 dead_disk_run() {
     local dir=$1 raw=$2 log=$3 port=$4 user=$5 pass=$6 job=$7
-    local ovmf_code
-    ovmf_code=$(find_ovmf) || bad "no UEFI firmware"
-    cp /usr/share/OVMF/OVMF_VARS.fd "$dir/OVMF_VARS.fd" 2>/dev/null \
-        || cp /usr/share/edk2/ovmf/OVMF_VARS.fd "$dir/OVMF_VARS.fd" 2>/dev/null \
-        || bad "no OVMF vars template"
+    # find_ovmf prints "CODE VARS", and taking the whole line as the code
+    # path is how the first draft of this broke: qemu got one -drive
+    # argument naming two files. Split the same way smoke_published does,
+    # so there is one account of where firmware lives.
+    local ovmf ovmf_code ovmf_vars
+    ovmf=$(find_ovmf) \
+        || bad "no OVMF firmware; an installed disk is UEFI and will not boot on SeaBIOS"
+    ovmf_code=${ovmf%% *}
+    ovmf_vars=${ovmf##* }
+    cp "$ovmf_vars" "$dir/OVMF_VARS.fd" || bad "cannot stage the OVMF vars"
 
     qemu-system-x86_64 \
         -enable-kvm -cpu host -smp 4 -m 4096 \
