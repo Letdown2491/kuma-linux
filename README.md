@@ -218,8 +218,7 @@ In order:
 - **No hibernate.** A swapfile's size and `resume_offset` are properties
   of the installed disk, so it needs a first-boot unit rather than an
   image that already knows the answer.
-- **Only booted on AMD graphics.** Images carry Intel and NVIDIA firmware,
-  the i915, xe and nouveau drivers, and Intel's Mesa and Vulkan drivers, and
-  CI boots every build on a virtio GPU. None of that is a report from
-  somebody whose laptop has Intel graphics in it, because nobody has run one
-  yet.
+- **No proprietary NVIDIA driver.** Images carry `nvidia-gpu-firmware` and
+  nouveau, which is what an NVIDIA machine boots on. Kuma enables RPM Fusion
+  free, not nonfree, and builds no kernel modules, so declaring
+  `akmod-nvidia` fails the build rather than working.
