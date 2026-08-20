@@ -74,6 +74,20 @@ as its release notes.
   wrong, and a refusal names the way out, since a cache can be behind a
   genuinely new app.
 
+- `[system.ca_certificates]` declares the certificate authorities a machine
+  trusts on top of the ones Fedora ships, keyed by the name each one gets on
+  disk. The certificate goes in the declaration rather than beside it: a file
+  that points at a path somewhere else is not one file any more, and a CA
+  certificate is public by construction, which is what makes that safe here
+  and unsafe for anything in `[user]`.
+
+  A private key pasted in by mistake is refused rather than warned about,
+  because it would be baked world-readable into every image built from that
+  declaration and pushed to a registry. The anchors land under /etc by a COPY,
+  so `kuma doctor` watches them for free, and `update-ca-trust` runs in the
+  layer that adds them rather than leaving a trust store that only becomes
+  true at boot.
+
 ### Changed
 
 - `kuma sync` says which declaration it converged to. It starts the same

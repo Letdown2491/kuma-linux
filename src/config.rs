@@ -140,6 +140,15 @@ pub struct System {
     pub firmware: Option<Vec<String>>,
     #[serde(default)]
     pub desktop: Desktop,
+    /// Certificate authorities this machine trusts on top of the ones
+    /// Fedora ships, keyed by the name each one gets on disk.
+    ///
+    /// The certificate itself goes in the file, in PEM, because a
+    /// declaration that points at a path somewhere else is not one file
+    /// any more. A CA certificate is public by construction, which is
+    /// what makes that safe here and unsafe for anything in [user].
+    #[serde(default)]
+    pub ca_certificates: BTreeMap<String, String>,
     /// The login shell accounts made on this machine get, when nothing
     /// else says otherwise.
     ///
@@ -427,6 +436,30 @@ impl Config {
         }
         for svc in self.services.enable.iter().chain(&self.services.disable) {
             validate_name(svc, "services", &['.', '-', '_', '@'])?;
+        }
+        for (name, pem) in &self.system.ca_certificates {
+            // The name becomes a file name under the anchors directory.
+            validate_name(name, "system.ca_certificates", &['.', '-', '_'])?;
+            if !pem.contains("-----BEGIN CERTIFICATE-----")
+                || !pem.contains("-----END CERTIFICATE-----")
+            {
+                bail!(
+                    "system.ca_certificates {name:?} is not a PEM certificate \
+                     (expected a -----BEGIN CERTIFICATE----- block)"
+                );
+            }
+            // A private key here would be baked world-readable into every
+            // image built from this file and pushed to a registry. It is
+            // the same mistake password_hash guards against, one file
+            // format over, and the shape says so plainly enough to
+            // refuse rather than warn.
+            if pem.contains("PRIVATE KEY") {
+                bail!(
+                    "system.ca_certificates {name:?} contains a private key. \
+                     Anchors are public certificates; a key here would be baked \
+                     world-readable into every image built from this declaration"
+                );
+            }
         }
         for (app, over) in &self.overrides {
             validate_name(app, "overrides", &['.', '-', '_'])?;
@@ -1123,7 +1156,7 @@ pub(crate) mod tests {
             ("brew formulae", Declared("packages")),
             ("rpm packages", Declared("packages")),
             ("system unit enablement", Declared("services")),
-            ("timezone, locale, hostname, desktop", Declared("system")),
+            ("timezone, locale, hostname, desktop, trusted CAs", Declared("system")),
             ("the declared account", Declared("user")),
             ("local btrfs snapshots", Declared("snapshots")),
             ("/etc files this image owns", Graded("etc")),
@@ -1292,22 +1325,66 @@ pub(crate) mod tests {
         }
         assert!(fields.len() > 10, "schema walk found only {fields:?}");
 
+        let mut documented_names: std::collections::BTreeSet<String> = Default::default();
+        for line in example.lines() {
+            let line = line.trim_start().trim_start_matches('#').trim_start();
+            if let Some(header) = line.strip_prefix('[').and_then(|rest| rest.split(']').next()) {
+                for segment in header.split('.') {
+                    let name = segment.trim().trim_matches('"');
+                    if !name.is_empty() {
+                        documented_names.insert(name.to_string());
+                    }
+                }
+                continue;
+            }
+            if let Some((key, _)) = line.split_once('=') {
+                let key = key.trim().trim_matches('"');
+                if !key.is_empty() {
+                    documented_names.insert(key.to_string());
+                }
+            }
+        }
+
         for field in &fields {
-            // A key is documented by `<field> =`, a table by its `[field]`
-            // header. Either may be commented out.
+            // Every name the example spells anywhere: the key on the
+            // left of an `=`, and each segment of a table header, so a
+            // field nested two deep (`[system.ca_certificates]`) counts
+            // exactly like a top-level one. Commented lines count too:
+            // an optional field is documented by showing its shape, not
+            // by being switched on.
             //
-            // `[field.` counts too, because a table keyed by something
-            // the user chooses has no bare header to write: `overrides`
-            // is only ever spelled `[overrides."org.example.App"]`.
-            let documented = example.lines().any(|line| {
-                let line = line.trim_start().trim_start_matches('#').trim_start();
-                line.starts_with(&format!("{field} "))
-                    || line.starts_with(&format!("{field}="))
-                    || line.starts_with(&format!("[{field}]"))
-                    || line.starts_with(&format!("[{field}."))
-            });
+            // Quoted names inside a header split into segments as well,
+            // so `[overrides."org.example.App"]` contributes `org`,
+            // `example` and `App`. Harmless, because no schema field is
+            // spelled like a fragment of a reverse-DNS id.
+            let documented = documented_names.contains(field);
             assert!(documented, "examples/niri.toml never mentions `{field}`");
         }
+    }
+
+    /// An anchor is public by construction, which is the whole reason
+    /// this key can exist in a file that gets committed and baked
+    /// world-readable. A private key pasted here would be that reasoning
+    /// turned inside out, so the shape is checked rather than trusted.
+    #[test]
+    fn a_ca_anchor_must_be_a_certificate_and_never_a_key() {
+        let with = |body: &str| {
+            format!("schema_version = 1\n[system.ca_certificates]\nmine = \"\"\"\n{body}\"\"\"\n")
+        };
+        let cert = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+        let config: Config = toml::from_str(&with(cert)).unwrap();
+        config.validate().unwrap();
+
+        let config: Config = toml::from_str(&with("not a certificate at all\n")).unwrap();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("PEM certificate"), "{err}");
+
+        let key = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n\
+                   -----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n";
+        let config: Config = toml::from_str(&with(key)).unwrap();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("private key"), "{err}");
+        assert!(err.contains("world-readable"), "the refusal says why: {err}");
     }
 
     /// A retention that keeps nothing would delete each snapshot on the

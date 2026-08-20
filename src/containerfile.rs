@@ -2386,6 +2386,20 @@ pub fn generate(config: &Config) -> String {
         out.push_str(&format!("RUN echo 'LANG={locale}' > /etc/locale.conf\n"));
     }
 
+    // Anchors before branding only because everything after this point
+    // is cosmetic; what matters is that they land before anything that
+    // might need to trust them, and that update-ca-trust runs in the
+    // same layer that adds them rather than being left for a boot.
+    if !config.system.ca_certificates.is_empty() {
+        out.push('\n');
+        for name in config.system.ca_certificates.keys() {
+            out.push_str(&format!(
+                "COPY ca-{name}.crt /etc/pki/ca-trust/source/anchors/{name}.crt\n"
+            ));
+        }
+        out.push_str("RUN update-ca-trust\n");
+    }
+
     out.push_str(&branding());
 
     // The machine gets the kuma that built it. Everything else needed to
@@ -2548,6 +2562,10 @@ pub fn write_context(
             dir.join("kuma-flatpak-overrides-user.service"),
             FLATPAK_OVERRIDES_USER_SERVICE,
         )?;
+    }
+    // Outside the flatpak gate: trust has nothing to do with apps.
+    for (name, pem) in &config.system.ca_certificates {
+        std::fs::write(dir.join(format!("ca-{name}.crt")), pem)?;
     }
     if config.snapshots.enable {
         std::fs::write(dir.join("kuma-snapshot"), snapshot_script(config))?;
@@ -4392,6 +4410,44 @@ mod tests {
              RUN ln -sfn /usr/lib/systemd/system/foo.service /usr/lib/systemd/system/bar.service\n",
         );
         assert_eq!(linked, ["/etc/localtime"]);
+    }
+
+    /// A trusted CA is state that survives every rebuild and that
+    /// nothing could declare: the machine this was written on carries a
+    /// hand-added anchor for its own infrastructure, and a reinstall
+    /// would have lost it silently. Declaring it makes the image carry
+    /// it, and because the anchor lands under /etc by a COPY, doctor
+    /// watches it for free.
+    #[test]
+    fn a_declared_ca_anchor_is_baked_trusted_and_watched() {
+        let pem = "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJAKZ\n-----END CERTIFICATE-----\n";
+        let toml = format!(
+            "schema_version = 1\n[system.ca_certificates]\n\"my-root-ca\" = \"\"\"\n{pem}\"\"\"\n"
+        );
+        let declared = config(&toml);
+        let out = generate(&declared);
+        assert!(
+            out.contains("COPY ca-my-root-ca.crt /etc/pki/ca-trust/source/anchors/my-root-ca.crt"),
+            "{out}"
+        );
+        // extracted in the same layer that adds it: a trust store that
+        // needs a boot to become true is one that is false in the image
+        let copied = out.find("anchors/my-root-ca.crt").unwrap();
+        let extracted = out.find("RUN update-ca-trust").unwrap();
+        assert!(copied < extracted, "update-ca-trust runs before the anchor lands");
+
+        let dir = tempfile::tempdir().unwrap();
+        context(&toml, dir.path());
+        assert_eq!(std::fs::read_to_string(dir.path().join("ca-my-root-ca.crt")).unwrap(), pem);
+
+        // owned, therefore graded: no separate wiring needed
+        assert!(etc_paths(&declared)
+            .iter()
+            .any(|p| p == "/etc/pki/ca-trust/source/anchors/my-root-ca.crt"));
+
+        // and an image that declares none says nothing about trust
+        let bare = config("schema_version = 1\n");
+        assert!(!generate(&bare).contains("update-ca-trust"));
     }
 
     /// The declaration claims a timezone, so doctor has to be able to

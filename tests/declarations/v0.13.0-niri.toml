@@ -109,6 +109,18 @@ enable = true
 # keep_recent = 24       # the newest N, whatever their age
 # keep_daily = 7         # plus the newest from each of N further days
 
+# Certificate authorities to trust on top of the ones Fedora ships, keyed
+# by the name each one gets on disk. The certificate goes in this file
+# rather than beside it: a declaration that points at a path somewhere
+# else is not one file any more, and a CA certificate is public, which is
+# what makes that safe here and unsafe for anything in [user].
+# [system.ca_certificates]
+# "my-root-ca" = """
+# -----BEGIN CERTIFICATE-----
+# MIIBkTCB+wIJAKZ...
+# -----END CERTIFICATE-----
+# """
+
 # Flatpak permission overrides, declared per app and converged per key.
 # kuma sets the keys named here and copies every other line in the same
 # file through untouched, so Flatseal stays the editor people reach for
