@@ -655,6 +655,14 @@ fn check(config_path: &Path, json: bool) -> Result<()> {
     let shown = config_path.display().to_string();
     match Config::load(config_path) {
         Ok(config) => {
+            // A valid declaration is not the end of anything, and this
+            // said so only when it failed: the success branch printed a
+            // verdict and stopped, while the failure branch named the
+            // next move. `check` is one of the three commands the README
+            // tells everyone to type, and the JSON did not even carry
+            // the `actions` key, so a caller saw a different shape
+            // depending on the answer.
+            let next = [Action::new("build", "kuma build", "turn this declaration into an image")];
             if json {
                 println!(
                     "{}",
@@ -667,6 +675,7 @@ fn check(config_path: &Path, json: bool) -> Result<()> {
                             "brew": config.packages.brew.len(),
                             "overrides": config.overrides.len(),
                         },
+                        "actions": next.iter().map(action_json).collect::<Vec<_>>(),
                     }))?
                 );
             } else {
@@ -685,6 +694,7 @@ fn check(config_path: &Path, json: bool) -> Result<()> {
                     config.packages.flatpak.len(),
                     config.packages.brew.len()
                 );
+                print_actions(&next);
             }
             Ok(())
         }

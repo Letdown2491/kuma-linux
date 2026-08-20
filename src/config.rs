@@ -1388,7 +1388,7 @@ pub(crate) mod tests {
             // machine has the thing its declaration asked for.
             ("a credential the declaration names", Graded("backup")),
             ("/etc files this image owns", Graded("etc")),
-            ("a unit enabled with no unit file", Graded("units")),
+            ("a unit enabled with no unit file", Graded("enablement")),
             ("a flatpak override pointing at nothing", Graded("flatpak overrides")),
             ("/etc files the image never shipped", OutOfScope("never shipped")),
             ("dconf and GSettings", OutOfScope("dconf")),

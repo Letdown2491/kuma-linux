@@ -758,8 +758,17 @@ struct Finding {
     fix: Option<Action>,
 }
 
-/// Machine health, no config needed: the deployment, the convergence
-/// machinery, and the hardware basics a desktop lives on. Read-only.
+/// Machine health: the deployment, the convergence machinery, and the
+/// hardware basics a desktop lives on.
+///
+/// Two claims this used to make are no longer true and are corrected
+/// rather than deleted, because both were load-bearing when written.
+/// "No config needed" stopped holding when snapshots, backup and the
+/// /etc check began reading the baked declaration to know what the
+/// machine promised. "Read-only" stopped holding when the deployment
+/// check began healing the stamp bare `kuma` reads; that write is kuma's
+/// own metadata rather than machine state, and it is argued at its own
+/// site.
 /// A finding that has a cure carries it as an action — a diagnosis
 /// without its next command is a dead end.
 /// Does this fstab still have an active `/` entry, the one kuma-fstab-sync
@@ -920,11 +929,19 @@ pub fn doctor(json: bool, as_report: bool) -> Result<()> {
             None,
         );
     } else {
+        // The same machine state `kuma sync` and bare `kuma` both name an
+        // edge for, and doctor's own rule eight lines above the checks
+        // says a diagnosis without its next command is a dead end. This
+        // is also the machine most people run doctor on first.
         report(
             Grade::Warn,
             "kuma",
             "not running a kuma image; convergence checks skipped".into(),
-            None,
+            Some(Action::new(
+                "adopt",
+                "kuma build",
+                "build an image from a declaration, then `kuma switch` boots this machine into it",
+            )),
         );
     }
 
@@ -1570,9 +1587,13 @@ fn check_enablements(root: &Path, report: &mut impl FnMut(Grade, &str, String, O
             format!("sudo rm {}", link.display()),
             "drop an enablement for a unit that does not exist",
         );
+        // "enablement" rather than "units", which the failed-unit check
+        // already answers to. Two different questions under one name
+        // collide for anything keying on `doctor --json`, and every
+        // other check name in the report is unique.
         report(
             Grade::Warn,
-            "units",
+            "enablement",
             format!("{unit} is enabled but has no unit file; it has never started"),
             Some(fix),
         );
@@ -1960,6 +1981,13 @@ fn check_snapshots(report: &mut impl FnMut(Grade, &str, String, Option<Action>))
             Grade::Fail,
             "snapshots",
             format!("{target} is {fstype}, not btrfs; no snapshot can ever be taken"),
+            // No action, for the same reason as the sibling below, and
+            // said out loud here because it was not. The cure is an edit
+            // to the declaration ([snapshots].target, or enable = false)
+            // followed by a rebuild, and doctor reads the declaration the
+            // image baked rather than the one somebody edits, so it
+            // cannot name that file without guessing at a path that may
+            // not be on this machine at all.
             None,
         );
         return;

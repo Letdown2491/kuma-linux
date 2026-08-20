@@ -938,7 +938,9 @@ fi
 
 /// Convergence, not just installation: an app the declaration installed
 /// and no longer names is removed, so deleting a line in kuma.toml has
-/// the same authority as adding one.
+/// the same authority as adding one. That authority covers applications;
+/// the unused-runtime prune at the end is the one exception and says so
+/// where it is argued below.
 ///
 /// Authority is tracked explicitly, in a state file of what the
 /// declaration installed, exactly as the brew sync does — and for the
@@ -954,6 +956,17 @@ fi
 ///
 /// The uninstall tolerates failure because the state file can name an
 /// app the owner already removed by hand, which is not an error.
+///
+/// **The prune at the end reaches past the declaration, and this is the
+/// sentence saying so.** `flatpak uninstall --unused` removes any runtime
+/// no installed app needs, including one somebody installed on purpose.
+/// It is kept because a runtime nothing references is dead weight of the
+/// kind an image-based system exists to avoid, and because a runtime is
+/// infrastructure rather than a choice: reinstalling one is a download,
+/// not a decision. The brew converger makes the same trade one line from
+/// its own end and already admits it; this did not, while the docstring
+/// above claimed convergence takes back only what it gave. The claim is
+/// true of applications, which is what it was written about.
 ///
 /// Membership and currency are different questions, and only the first
 /// belongs to the declaration. Convergence decides what exists; the

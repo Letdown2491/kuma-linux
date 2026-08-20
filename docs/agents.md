@@ -1,8 +1,10 @@
 # For agents
 
 This is the interface for driving kuma from a program rather than by hand.
-Every command speaks `--json`, and every response names the legal next
-commands, so a caller can follow the output instead of encoding kuma's rules.
+Every command that reports or changes something speaks `--json`, and every
+response names the legal next commands, so a caller can follow the output
+instead of encoding kuma's rules. The exceptions are the verbs that produce a
+file or a stream rather than an answer, and they are listed below.
 
 The loop is: probe, execute one of the actions it named, probe again.
 
@@ -37,6 +39,11 @@ The loop is: probe, execute one of the actions it named, probe again.
   `backup --json` answers without touching the network, deliberately, so an
   agent polling machine health never blocks on a repository being reachable.
   `backup --list` is the one that asks the far end.
+- **What does not speak JSON, and why.** `init`, `generate`, `vm`, `iso`,
+  `menu`, `schema`, `passwd` and `completions` each produce a file, a stream,
+  or a picker rather than a report, so there is no document for them to emit
+  and no next command for them to name. `schema` already emits JSON, of a
+  different kind: the declaration's schema rather than a response.
 - **A Fedora release change is a separate field, not a big diff.** `update`
   and `update --check` carry `fedora_release` with `current`, `changed`,
   `from` and `to`. Read that rather than inferring a distro upgrade from the

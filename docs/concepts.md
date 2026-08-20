@@ -237,6 +237,12 @@ next convergence uninstalls it; a package in a desktop set has no opt-out, so
 putting one there is a decision you make on behalf of everyone.
 
 You can always add with `packages.rpm`. You cannot subtract from the set.
+
+One thing convergence removes that you did not declare: a Flatpak **runtime**
+that no installed application needs any more. Applications are never touched
+that way, only the shared platforms underneath them, and reinstalling one is a
+download rather than a decision. It is the one place convergence reaches past
+what it installed, and it is deliberate.
 [What a desktop contains](desktops.md) lists both arms, explains the
 non-obvious members, and says where that limit bites.
 
