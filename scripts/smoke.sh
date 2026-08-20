@@ -1000,7 +1000,14 @@ TOML
     # a declared timezone reaching an installed machine is a claim 0.13
     # started grading and nothing had ever executed. The zone is one
     # nobody's runner is already in, so a pass cannot be a coincidence.
-    printf '\n[system]\ntimezone = "Pacific/Auckland"\n' >> "$out"
+    #
+    # Inserted into the [system] the example already has rather than
+    # appended as a second one, which TOML refuses outright: a table can
+    # only be opened once.
+    sed -i '/^\[system\]$/a timezone = "Pacific/Auckland"' "$out" \
+        || bad "cannot declare a timezone in $out"
+    grep -q '^timezone = "Pacific/Auckland"$' "$out" \
+        || bad "$out has no [system] table to declare a timezone in"
 }
 
 smoke_dead_disk() {
