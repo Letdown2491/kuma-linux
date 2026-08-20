@@ -76,6 +76,11 @@ does is podman doing ordinary work, and it needs no root.
 **rpm.** A Fedora package. Kuma's `packages.rpm` list becomes part of the
 system image, so changing it means building a new image and rebooting.
 
+**Override.** A permission you granted or took away from a flatpak, stored
+in a file flatpak keeps and kuma shares. `[overrides]` declares them per app,
+and convergence sets only the keys you declared, so a permission you toggle in
+Flatseal survives unless your declaration says otherwise.
+
 **Signature.** Proof that an image was published by this project rather
 than by whoever else could reach the registry. Every image carries kuma's
 signing key and a policy requiring it, so an update whose signature does not

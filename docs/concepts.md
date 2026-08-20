@@ -389,6 +389,61 @@ edit worth keeping belongs in the image rather than in your declaration. That
 is how the display fix that motivated this check got resolved: the workaround
 stopped being a local edit and became something kuma bakes.
 
+## Permissions, and a file kuma does not own
+
+A flatpak's permissions are machine state that outlives every rebuild. They
+live in override files under `/var/lib/flatpak/overrides` and
+`~/.local/share/flatpak/overrides`, they survive image updates the way
+everything in `/var` does, and until they were declarable a machine could
+carry a permission nobody could find again.
+
+`[overrides]` declares them, per app:
+
+```toml
+[overrides."org.mozilla.firefox"]
+filesystems = ["home", "!xdg-config/kitty"]
+sockets = ["wayland"]
+environment = { MOZ_ENABLE_WAYLAND = "1" }
+```
+
+The shape is flatpak's own override file, so `flatpak override --show` reads
+back into it, and `!` in front of a permission takes it away.
+
+**kuma owns keys, not files.** Flatseal writes the same files, and so does
+anyone running `flatpak override` by hand, so convergence sets the keys you
+declared, removes the keys it set that you stopped declaring, and copies every
+other line through untouched. A key kuma never set is never kuma's to delete,
+even when it sits in the same file and contradicts what you declared.
+Declaring is how you win that argument; `kuma diff` is how you see you are
+having it.
+
+That makes Flatseal the editor and your declaration the record, and they meet
+at `kuma capture`:
+
+```console
+$ kuma capture
+Would declare in ~/.config/kuma/kuma.toml:
+  + org.chromium.Chromium  [overrides] user  filesystems
+```
+
+Capture offers permissions only for apps your declaration already installs. A
+machine accumulates override files for software that left years ago, and
+proposing those would be proposing rubble.
+
+**Permissions converge at boot and when you run `kuma sync`, and never on the
+daily timer that carries installs.** An app arriving at a random hour is
+harmless. A permission reverting at a random hour changes what a running
+program can reach, and a toggle that silently flips back tomorrow afternoon is
+indistinguishable from a bug. The rule is one sentence: declared permissions
+are restored when you boot, and the session in between is yours to experiment
+in.
+
+Flatpak keeps two stores and kuma writes both. `scope = "user"` writes the
+per-user one, applied by a `systemd --user` unit rather than by root reaching
+into a home. One app declares into one store: flatpak merges the two with the
+user store winning per key, so an app declared in both would be a file where
+half your lines quietly lose to the other half.
+
 ## Boot health and automatic rollback
 
 Every image bakes [greenboot](https://github.com/fedora-iot/greenboot-rs).
