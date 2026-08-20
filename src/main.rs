@@ -1,4 +1,5 @@
 mod apps;
+mod backup;
 mod bootentries;
 mod capture;
 mod compose;
@@ -346,6 +347,27 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// List the offsite backups, seed the first one, or restore a path from one
+    Backup {
+        /// Create the repository and make the first copy, deliberately
+        #[arg(long, conflicts_with_all = ["list", "restore"])]
+        init: bool,
+        /// Ask the repository what it is holding
+        #[arg(long)]
+        list: bool,
+        /// Restore this path (absolute, as it lives on the machine)
+        #[arg(long, value_name = "PATH")]
+        restore: Option<String>,
+        /// Take it from this backup rather than the newest one
+        #[arg(long, value_name = "ID", requires = "restore")]
+        from: Option<String>,
+        /// Actually write the restore (default is a dry run)
+        #[arg(long, requires = "restore")]
+        yes: bool,
+        /// Emit as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Print the JSON Schema for kuma.toml, generated from the parser's own types
     Schema,
     /// Hash a password for the [user] section (prompts; prints the line to paste)
@@ -574,6 +596,12 @@ fn run(
             let path = read_config_path(config_path, explicit, !json);
             let config = Config::load(&path)?;
             snapshot::snapshot(&config, &path, restore.as_deref(), from.as_deref(), yes, json)
+        }
+        Cmd::Backup { init, list, restore, from, yes, json } => {
+            let json = json || root_json;
+            let path = read_config_path(config_path, explicit, !json);
+            let config = Config::load(&path)?;
+            backup::backup(&config, init, list, restore.as_deref(), from.as_deref(), yes, json)
         }
         Cmd::Menu { list } => menu::menu(config_path, list),
         Cmd::BootTitles => boot_titles(),
