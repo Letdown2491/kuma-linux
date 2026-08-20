@@ -441,6 +441,46 @@ const DESKTOP_KARGS: &str = "kargs = [\"quiet\"]\n";
 /// app downloads at once while the user logs in for the first time: that
 /// storm once starved cosmic-panel into a session with no panel at all.
 /// Convergence is background work; the session it converges for is not.
+/// Permissions converge at boot and on an explicit `kuma sync`, and
+/// deliberately not on the daily timer that carries installs. An install
+/// arriving at a random hour is additive and idempotent; a permission
+/// reverting at a random hour changes what a running app can reach, and
+/// a Flatseal toggle silently flipping back the next afternoon is
+/// indistinguishable from a bug. Boot-only buys a rule that fits in a
+/// sentence: declared permissions are restored when you boot, and the
+/// session in between is yours to experiment in, with `kuma diff` to
+/// show the edit and `kuma capture` to keep it.
+///
+/// Ordered after the installer so an app that arrives this boot has its
+/// permissions before it is first launched.
+const FLATPAK_OVERRIDES_SERVICE: &str = "\
+[Unit]
+Description=Converge Flatpak permission overrides to the declaration
+After=kuma-flatpak-sync.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/kuma flatpak-overrides --scope system
+
+[Install]
+WantedBy=multi-user.target
+";
+
+/// The user store's half. It runs as the account that owns the files
+/// rather than as root reaching into a home, which is both rude and a
+/// race against a running Flatseal.
+const FLATPAK_OVERRIDES_USER_SERVICE: &str = "\
+[Unit]
+Description=Converge this account's Flatpak permission overrides
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/kuma flatpak-overrides --scope user
+
+[Install]
+WantedBy=default.target
+";
+
 const FLATPAK_SYNC_SERVICE: &str = r#"[Unit]
 Description=Converge Flatpak applications to the declared list
 Wants=network-online.target
@@ -2084,6 +2124,23 @@ pub fn generate(config: &Config) -> String {
             "COPY kuma-flatpak-sync.timer /usr/lib/systemd/system/kuma-flatpak-sync.timer\n",
         );
         out.push_str("RUN systemctl enable kuma-flatpak-sync.service kuma-flatpak-sync.timer\n");
+        // Overrides ride the same gate rather than their own. An
+        // emptied [overrides] table has keys to take back, and gating
+        // on "are any declared" would delete the converger in the same
+        // build that gives it its last job.
+        out.push_str("COPY overrides /usr/lib/kuma/overrides\n");
+        out.push_str(
+            "COPY kuma-flatpak-overrides.service /usr/lib/systemd/system/kuma-flatpak-overrides.service\n",
+        );
+        out.push_str(
+            "COPY kuma-flatpak-overrides-user.service /usr/lib/systemd/user/kuma-flatpak-overrides.service\n",
+        );
+        // --global enables it for every account that logs in, which is
+        // the only way a unit reaches a home directory without root
+        // writing into one.
+        out.push_str(
+            "RUN systemctl enable kuma-flatpak-overrides.service \\\n    && systemctl --global enable kuma-flatpak-overrides.service\n",
+        );
     }
 
     if config.system.brew || !config.packages.brew.is_empty() {
@@ -2456,6 +2513,20 @@ pub fn write_context(
         std::fs::write(dir.join("kuma-flatpak-sync"), FLATPAK_SYNC_SCRIPT)?;
         std::fs::write(dir.join("kuma-flatpak-sync.service"), FLATPAK_SYNC_SERVICE)?;
         std::fs::write(dir.join("kuma-flatpak-sync.timer"), FLATPAK_SYNC_TIMER)?;
+        for scope in [crate::config::Scope::System, crate::config::Scope::User] {
+            let scoped = dir.join("overrides").join(scope.as_str());
+            std::fs::create_dir_all(&scoped)?;
+            for (app, over) in &config.overrides {
+                if over.scope == scope {
+                    std::fs::write(scoped.join(app), crate::overrides::render(over))?;
+                }
+            }
+        }
+        std::fs::write(dir.join("kuma-flatpak-overrides.service"), FLATPAK_OVERRIDES_SERVICE)?;
+        std::fs::write(
+            dir.join("kuma-flatpak-overrides-user.service"),
+            FLATPAK_OVERRIDES_USER_SERVICE,
+        )?;
     }
     if config.snapshots.enable {
         std::fs::write(dir.join("kuma-snapshot"), snapshot_script(config))?;
@@ -3446,6 +3517,75 @@ mod tests {
             !FLATPAK_SYNC_SCRIPT.contains("install_declared --no-static-deltas\ninstall"),
             "the fallback runs only after the delta attempt failed"
         );
+    }
+
+    /// The declared file reaches the image under its scope, holding
+    /// kuma's keys and nothing else, and the two units that apply it are
+    /// both installed. The user unit needs `--global`, which is what
+    /// puts it in a home directory without root writing into one.
+    #[test]
+    fn overrides_bake_per_scope_and_enable_both_passes() {
+        let toml = "schema_version = 1\n\
+             [system]\ndesktop = \"niri\"\n\
+             [overrides.\"org.mozilla.firefox\"]\n\
+             sockets = [\"wayland\"]\n\
+             [overrides.\"org.gnome.Loupe\"]\n\
+             scope = \"user\"\n\
+             filesystems = [\"xdg-pictures:ro\"]\n";
+        let out = generate(&config(toml));
+        assert!(out.contains("COPY overrides /usr/lib/kuma/overrides"));
+        assert!(out.contains(
+            "COPY kuma-flatpak-overrides-user.service /usr/lib/systemd/user/kuma-flatpak-overrides.service"
+        ));
+        assert!(out.contains("systemctl --global enable kuma-flatpak-overrides.service"));
+
+        let dir = tempfile::tempdir().unwrap();
+        context(toml, dir.path());
+        let system = dir.path().join("overrides/system/org.mozilla.firefox");
+        let user = dir.path().join("overrides/user/org.gnome.Loupe");
+        assert_eq!(std::fs::read_to_string(&system).unwrap(), "[Context]\nsockets=wayland;\n");
+        assert_eq!(
+            std::fs::read_to_string(&user).unwrap(),
+            "[Context]\nfilesystems=xdg-pictures:ro;\n"
+        );
+        // scope decides the directory, and nothing lands in both
+        assert!(!dir.path().join("overrides/user/org.mozilla.firefox").exists());
+        assert!(!dir.path().join("overrides/system/org.gnome.Loupe").exists());
+    }
+
+    /// An image with no overrides declared still ships the converger,
+    /// because the declaration that just dropped its last override is
+    /// exactly the one with keys to take back. Gating on "any declared"
+    /// would delete the converger in the same build that gives it its
+    /// last job.
+    #[test]
+    fn the_override_converger_ships_even_with_nothing_declared() {
+        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
+        assert!(out.contains("systemctl enable kuma-flatpak-overrides.service"));
+        let dir = tempfile::tempdir().unwrap();
+        context("schema_version = 1\n[system]\ndesktop = \"niri\"\n", dir.path());
+        assert!(dir.path().join("overrides/system").is_dir());
+        assert!(dir.path().join("kuma-flatpak-overrides.service").exists());
+    }
+
+    /// Permissions are not on the daily timer, on purpose: an install
+    /// arriving at a random hour is harmless, a permission reverting at
+    /// a random hour is a Flatseal toggle flipping back tomorrow
+    /// afternoon for no reason a person can see.
+    #[test]
+    fn overrides_converge_at_boot_and_never_on_the_timer() {
+        assert!(FLATPAK_OVERRIDES_SERVICE.contains("WantedBy=multi-user.target"));
+        assert!(FLATPAK_OVERRIDES_SERVICE.contains("After=kuma-flatpak-sync.service"));
+        assert!(
+            !FLATPAK_OVERRIDES_SERVICE.contains("OnCalendar")
+                && !FLATPAK_SYNC_TIMER.contains("overrides"),
+            "nothing may put permission convergence on a clock"
+        );
+        assert!(FLATPAK_OVERRIDES_USER_SERVICE.contains("WantedBy=default.target"));
+        for unit in [FLATPAK_OVERRIDES_SERVICE, FLATPAK_OVERRIDES_USER_SERVICE] {
+            assert!(unit.contains("Type=oneshot"));
+            assert!(unit.contains("/usr/bin/kuma flatpak-overrides --scope"));
+        }
     }
 
     #[test]

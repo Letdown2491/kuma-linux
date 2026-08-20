@@ -5,6 +5,40 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+### Added
+
+- `[overrides]` declares Flatpak permissions, per app and per scope. The
+  declaration could always name an app; it could not say what that app is
+  allowed to touch, so every permission on the machine was undeclared state
+  that survived every rebuild and that nothing could see.
+
+  **Convergence is per key, not per file.** kuma sets the keys you declare,
+  removes the keys it set that you stopped declaring, and copies every other
+  line through untouched, so Flatseal stays the editor people reach for and
+  this file stays the record. The two meet at `kuma capture`. A key kuma never
+  set is never kuma's to delete, even when it sits in the same group and
+  contradicts what was just declared.
+
+  The shape is Flatpak's own override file rather than `flatpak override`'s
+  flag strings, which is a consequence of the above and not a preference: from
+  a flag string kuma cannot tell which file key a `--nofilesystem` lands in
+  without reimplementing flatpak's parser, and not knowing the key means the
+  only safe convergence is replacing the whole file, which is exactly the
+  authority per-key ownership refuses to take. `flatpak override --show`
+  round-trips into it.
+
+  Both stores are covered. System scope is the default because that is where
+  kuma installs the apps it declares; `scope = "user"` writes the per-user
+  store, applied by a `systemd --user` unit rather than by root reaching into
+  a home. One app declares into one store.
+
+  **Applied at boot and by `kuma sync`, deliberately never on the daily
+  timer.** An install arriving at a random hour is additive and idempotent; a
+  permission reverting at a random hour changes what a running app can reach,
+  and a toggle that silently flips back tomorrow afternoon is
+  indistinguishable from a bug. The rule fits in a sentence: declared
+  permissions are restored when you boot, and the session in between is yours.
+
 ## v0.12.0 (2026-08-19)
 
 This release is about the difference between a thing being true and a thing

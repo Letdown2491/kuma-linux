@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 pub const CURRENT_SCHEMA: u32 = 1;
@@ -21,6 +22,12 @@ pub struct Config {
     pub services: Services,
     #[serde(default)]
     pub snapshots: Snapshots,
+    /// Flatpak permission overrides, declared per app and converged per
+    /// key. Everything else in the same file stays whoever's it was,
+    /// which is what lets Flatseal and kuma both write one app without
+    /// deleting each other's lines.
+    #[serde(default)]
+    pub overrides: Overrides,
 }
 
 /// Local btrfs snapshots of the machine state a declaration cannot
@@ -219,6 +226,117 @@ pub struct Services {
     pub disable: Vec<String>,
 }
 
+/// Flatpak permission overrides, keyed by application ID.
+pub type Overrides = BTreeMap<String, AppOverride>;
+
+/// Which override store a declaration writes into. Flatpak keeps two,
+/// and they are not alternatives: the system store covers every account
+/// on the machine, the user store covers one and is the only one
+/// Flatseal can write. System is the default because it is where kuma
+/// installs the apps it declares.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, Default, JsonSchema, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum Scope {
+    #[default]
+    System,
+    User,
+}
+
+impl Scope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Scope::System => "system",
+            Scope::User => "user",
+        }
+    }
+}
+
+/// What a bus name may do. Spelled as flatpak spells it, because these
+/// values are written into the override file verbatim.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum BusPolicy {
+    None,
+    See,
+    Talk,
+    Own,
+}
+
+impl BusPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BusPolicy::None => "none",
+            BusPolicy::See => "see",
+            BusPolicy::Talk => "talk",
+            BusPolicy::Own => "own",
+        }
+    }
+}
+
+/// One application's declared overrides.
+///
+/// The shape is the override file's own, not `flatpak override`'s flag
+/// strings: the six `[Context]` list keys, then the three sections that
+/// hold name/value pairs. That is deliberate. From a flag string kuma
+/// cannot tell which file key a `--nofilesystem` lands in without
+/// reimplementing flatpak's parser, and not knowing the key means the
+/// only safe convergence is to replace the whole file, which is exactly
+/// the authority this feature refuses to take.
+#[derive(Debug, Deserialize, Default, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub struct AppOverride {
+    /// Which store this app's overrides are written into.
+    #[serde(default)]
+    pub scope: Scope,
+    /// Paths, as flatpak spells them: `home`, `xdg-download:ro`,
+    /// `~/src`, and `!` in front of any of them to take it away.
+    #[serde(default)]
+    pub filesystems: Vec<String>,
+    #[serde(default)]
+    pub sockets: Vec<String>,
+    #[serde(default)]
+    pub devices: Vec<String>,
+    #[serde(default)]
+    pub shared: Vec<String>,
+    #[serde(default)]
+    pub features: Vec<String>,
+    #[serde(default)]
+    pub persistent: Vec<String>,
+    /// Environment variables the app is launched with.
+    #[serde(default)]
+    pub environment: BTreeMap<String, String>,
+    /// Session bus names, each mapped to none, see, talk, or own.
+    #[serde(default)]
+    pub session_bus: BTreeMap<String, BusPolicy>,
+    #[serde(default)]
+    pub system_bus: BTreeMap<String, BusPolicy>,
+}
+
+impl AppOverride {
+    /// The `[Context]` lists, paired with the key each one is written
+    /// as. One place decides the key names, so the parser, the file
+    /// writer and the converger cannot disagree about them.
+    pub fn context_lists(&self) -> [(&'static str, &Vec<String>); 6] {
+        [
+            ("filesystems", &self.filesystems),
+            ("sockets", &self.sockets),
+            ("devices", &self.devices),
+            ("shared", &self.shared),
+            ("features", &self.features),
+            ("persistent", &self.persistent),
+        ]
+    }
+
+    /// An app that declares nothing. Worth naming because it reads as a
+    /// declaration and converges to nothing at all.
+    pub fn is_empty(&self) -> bool {
+        self.context_lists().iter().all(|(_, v)| v.is_empty())
+            && self.environment.is_empty()
+            && self.session_bus.is_empty()
+            && self.system_bus.is_empty()
+    }
+}
+
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path).with_context(|| {
@@ -309,6 +427,38 @@ impl Config {
         }
         for svc in self.services.enable.iter().chain(&self.services.disable) {
             validate_name(svc, "services", &['.', '-', '_', '@'])?;
+        }
+        for (app, over) in &self.overrides {
+            validate_name(app, "overrides", &['.', '-', '_'])?;
+            if over.is_empty() {
+                bail!(
+                    "overrides.{app:?} declares no permissions; an empty table converges \
+                     nothing and reads like it does, so say what you mean or drop it"
+                );
+            }
+            // A permission token's alphabet is wider than a package
+            // name's: `!` takes a permission away, `:ro` and `:create`
+            // qualify a path, and a path is spelled with `/` and `~`.
+            for (key, values) in over.context_lists() {
+                let field = format!("overrides.{app}.{key}");
+                for value in values {
+                    validate_name(value, &field, &['!', '/', '.', '-', '_', ':', '~'])?;
+                }
+            }
+            for (name, value) in &over.environment {
+                let field = format!("overrides.{app}.environment");
+                validate_name(name, &field, &['_'])?;
+                // The value is written as a keyfile line, so anything
+                // that could start a second line has to be refused here
+                // rather than silently truncating the file on the machine.
+                if value.contains('\n') || value.contains('\r') {
+                    bail!("{field} value for {name:?} contains a newline");
+                }
+            }
+            for (bus, _) in over.session_bus.iter().chain(&over.system_bus) {
+                // `*` because flatpak takes `org.example.*` as a subtree.
+                validate_name(bus, &format!("overrides.{app}.bus"), &['.', '-', '_', '*'])?;
+            }
         }
         if self.snapshots.enable {
             let target = &self.snapshots.target;
@@ -729,10 +879,17 @@ pub(crate) mod tests {
             })
         }
         /// Verbs deliberately absent from the prose.
-        const UNDOCUMENTED: &[(&str, &str)] = &[(
-            "boot-titles",
-            "hidden; kuma-boot-titles.service runs it and nothing asks a person to",
-        )];
+        const UNDOCUMENTED: &[(&str, &str)] = &[
+            (
+                "boot-titles",
+                "hidden; kuma-boot-titles.service runs it and nothing asks a person to",
+            ),
+            (
+                "flatpak-overrides",
+                "hidden; two units and `kuma sync` run it, and the feature it converges \
+                 is documented as [overrides] rather than as a command",
+            ),
+        ];
         let docs: String = [
             "README.md",
             "docs/getting-started.md",
@@ -1034,11 +1191,16 @@ pub(crate) mod tests {
         for field in &fields {
             // A key is documented by `<field> =`, a table by its `[field]`
             // header. Either may be commented out.
+            //
+            // `[field.` counts too, because a table keyed by something
+            // the user chooses has no bare header to write: `overrides`
+            // is only ever spelled `[overrides."org.example.App"]`.
             let documented = example.lines().any(|line| {
                 let line = line.trim_start().trim_start_matches('#').trim_start();
                 line.starts_with(&format!("{field} "))
                     || line.starts_with(&format!("{field}="))
                     || line.starts_with(&format!("[{field}]"))
+                    || line.starts_with(&format!("[{field}."))
             });
             assert!(documented, "examples/niri.toml never mentions `{field}`");
         }

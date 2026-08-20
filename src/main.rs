@@ -11,6 +11,7 @@ mod install;
 mod liveiso;
 mod lock;
 mod menu;
+mod overrides;
 mod partition;
 mod snapshot;
 mod state;
@@ -363,6 +364,18 @@ enum Cmd {
     /// against a directory tree instead of asserted about a heredoc.
     #[command(hide = true)]
     BootTitles,
+    /// Converge one store's Flatpak permission overrides to the declaration
+    ///
+    /// Hidden for the same reason as boot-titles: two units run it,
+    /// nothing asks a person to. A verb rather than a shell script
+    /// because the merge is per key inside a file kuma does not own, and
+    /// that is worth testing against a directory tree.
+    #[command(hide = true)]
+    FlatpakOverrides {
+        /// Which store to converge
+        #[arg(long, value_enum)]
+        scope: config::Scope,
+    },
 }
 
 fn main() -> Result<()> {
@@ -558,6 +571,7 @@ fn run(
         }
         Cmd::Menu { list } => menu::menu(config_path, list),
         Cmd::BootTitles => boot_titles(),
+        Cmd::FlatpakOverrides { scope } => flatpak_overrides(scope),
         Cmd::Schema => schema(),
         Cmd::Passwd => passwd(),
         Cmd::Completions { shell } => {
@@ -1520,6 +1534,29 @@ fn boot_titles() -> Result<()> {
     Ok(())
 }
 
+/// Run by `kuma-flatpak-overrides.service` at boot, by its user-scope
+/// twin at login, and by `kuma sync` on demand.
+///
+/// Silent when it changed nothing, like every other converger that runs
+/// on every boot: the interesting line is the one nobody sees if each
+/// boot prints three uninteresting ones.
+fn flatpak_overrides(scope: config::Scope) -> Result<()> {
+    // The user pass runs inside a systemd --user manager, which sets
+    // HOME; the system pass never reads it. Neither is a place to guess.
+    let home = std::env::var("HOME").unwrap_or_default();
+    let changed = overrides::converge_store(scope, Path::new("/"), Path::new(&home))
+        .with_context(|| format!("converging {} flatpak overrides", scope.as_str()))?;
+    for (app, what) in &changed {
+        for id in &what.set {
+            println!("{app}: set {}", id.replace('\t', " "));
+        }
+        for id in &what.removed {
+            println!("{app}: removed {}", id.replace('\t', " "));
+        }
+    }
+    Ok(())
+}
+
 /// The update's undo. bootc keeps the previous deployment around exactly
 /// for this; the command is thin on purpose — verify there IS a rollback
 /// target (so the failure is kuma-flavored, not bootc's), name what the
@@ -1638,6 +1675,9 @@ fn sync(json: bool) -> Result<()> {
     if Path::new("/usr/lib/kuma/brews").exists() {
         units.push("kuma-brew-sync.service");
     }
+    if Path::new("/usr/lib/kuma/overrides").exists() {
+        units.push("kuma-flatpak-overrides.service");
+    }
     if units.is_empty() {
         // Three different truths hide behind "nothing to start" — name the
         // one that holds here, with its next move.
@@ -1665,6 +1705,17 @@ fn sync(json: bool) -> Result<()> {
             let _ = run_host(&args);
         }
     }
+    // The user store's converger cannot be started with sudo: it runs in
+    // the caller's own systemd manager, which is the entire reason it is
+    // a second unit rather than a second ExecStart. Best effort, because
+    // a machine converging from a console with no session has no user
+    // manager to talk to, and that is not a failed sync.
+    let mut converged: Vec<String> = units.iter().map(|u| u.to_string()).collect();
+    if Path::new("/usr/lib/systemd/user/kuma-flatpak-overrides.service").exists()
+        && run_host(&["systemctl", "--user", "start", "kuma-flatpak-overrides.service"]).is_ok()
+    {
+        converged.push("kuma-flatpak-overrides.service (user)".to_string());
+    }
     // The machine now matches its baked declaration, so the honest next
     // move is to confirm it: `kuma diff` should report no drift. Every
     // other mutating verb ends at an affordance; sync was the one that
@@ -1676,12 +1727,12 @@ fn sync(json: bool) -> Result<()> {
             "{}",
             serde_json::json!({
                 "ok": true,
-                "converged": units,
+                "converged": converged,
                 "actions": [action_json(&verify)],
             })
         );
     } else {
-        println!("Converged: {}", units.join(", "));
+        println!("Converged: {}", converged.join(", "));
         print_actions(&[verify]);
     }
     Ok(())
