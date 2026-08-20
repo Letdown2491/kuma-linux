@@ -487,11 +487,28 @@ fn owned_set(text: &str) -> BTreeSet<String> {
 
 /// The baked copy at /usr/lib/kuma/<list> is what convergence follows;
 /// absent (not a kuma image, list never declared) means nothing to lag.
-fn image_list_stale(path: &str, declared: &BTreeSet<&str>) -> bool {
+pub(crate) fn image_list_stale(path: &str, declared: &BTreeSet<&str>) -> bool {
     match std::fs::read_to_string(path) {
         Ok(text) => to_set(&text) != *declared,
         Err(_) => false,
     }
+}
+
+/// Whether what this image baked is behind the declaration in hand.
+///
+/// Only the lists a converger reads, because that is the question being
+/// asked: `kuma sync` starts convergers, convergers read
+/// `/usr/lib/kuma`, and an edit that has not been baked cannot reach
+/// them however many times you run it. rpm is out of scope here for the
+/// opposite reason to usual: it never converges at all, so a stale rpm
+/// list is a rebuild you have not done rather than a sync that lied.
+pub(crate) fn baked_is_behind(config: &Config, root: &Path) -> bool {
+    let flatpak: BTreeSet<&str> = config.packages.flatpak.iter().map(String::as_str).collect();
+    let brew: BTreeSet<&str> = config.packages.brew.iter().map(String::as_str).collect();
+    let list = |name: &str| root.join("usr/lib/kuma").join(name).to_string_lossy().to_string();
+    image_list_stale(&list("flatpaks"), &flatpak)
+        || image_list_stale(&list("brews"), &brew)
+        || crate::overrides::image_stale(&config.overrides, root)
 }
 
 /// Everything doctor asks about a unit, for every unit, in one systemctl
@@ -2789,6 +2806,45 @@ mod tests {
         m.brew_installed = None;
         m.brew_leaves = set(&["ripgrep"]);
         assert!(candidates(&config, &m).is_empty());
+    }
+
+    /// The trap `kuma sync` used to walk into: it starts convergers,
+    /// convergers read what the image baked, and an edit that has not
+    /// been built cannot reach them however often sync runs. Reported
+    /// per list, because being ahead in any one of them is enough.
+    #[test]
+    fn a_declaration_ahead_of_the_image_is_visible_before_converging() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("usr/lib/kuma")).unwrap();
+        std::fs::write(root.join("usr/lib/kuma/flatpaks"), "org.mozilla.firefox\n").unwrap();
+        std::fs::write(root.join("usr/lib/kuma/brews"), "ripgrep\n").unwrap();
+
+        let matching = config(
+            "schema_version = 1\n[packages]\n\
+             flatpak = [\"org.mozilla.firefox\"]\nbrew = [\"ripgrep\"]\n",
+        );
+        assert!(!baked_is_behind(&matching, root), "a built declaration is not behind");
+
+        let edited = config(
+            "schema_version = 1\n[packages]\n\
+             flatpak = [\"org.mozilla.firefox\", \"org.gnome.Loupe\"]\nbrew = [\"ripgrep\"]\n",
+        );
+        assert!(baked_is_behind(&edited, root), "an unbuilt flatpak edit is behind");
+
+        let brewed = config(
+            "schema_version = 1\n[packages]\n\
+             flatpak = [\"org.mozilla.firefox\"]\nbrew = [\"ripgrep\", \"jq\"]\n",
+        );
+        assert!(baked_is_behind(&brewed, root), "an unbuilt brew edit is behind");
+
+        // permissions count too: they converge from the image the same way
+        let permitted = config(
+            "schema_version = 1\n[packages]\n\
+             flatpak = [\"org.mozilla.firefox\"]\nbrew = [\"ripgrep\"]\n\
+             [overrides.\"org.mozilla.firefox\"]\nsockets = [\"wayland\"]\n",
+        );
+        assert!(baked_is_behind(&permitted, root), "an unbuilt permission edit is behind");
     }
 
     /// The four states an image-owned /etc file can be in. "Not shipped"

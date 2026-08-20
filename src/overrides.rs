@@ -455,9 +455,18 @@ pub fn drift(declared: &Overrides, root: &Path, home: &Path) -> Vec<Drift> {
 /// a rebuild, and the honest thing is to say so rather than let `sync`
 /// report success over a file it never read.
 pub fn image_stale(declared: &Overrides, root: &Path) -> bool {
+    // An image with no overrides directory at all is either not a kuma
+    // image, in which case this question is not being asked of it, or it
+    // predates the feature. The second one is stale exactly when the
+    // declaration names a permission: nothing on that machine will ever
+    // apply it, however many times a converger runs.
+    let kuma_image = root.join("usr/lib/kuma").is_dir();
     for scope in [Scope::System, Scope::User] {
         let dir = declared_dir(scope, root);
         if !dir.is_dir() {
+            if kuma_image && declared.values().any(|o| o.scope == scope) {
+                return true;
+            }
             continue;
         }
         let mut baked: BTreeSet<String> = BTreeSet::new();

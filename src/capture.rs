@@ -171,7 +171,7 @@ pub fn capture(
     println!();
     print_actions(&actions);
     if converge_note.is_some() {
-        println!("\nFlatpak and brew changes converge on the machine at boot and daily.");
+        edit::print_converge_note();
     }
     Ok(())
 }

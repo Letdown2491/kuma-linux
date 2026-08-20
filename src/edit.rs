@@ -6,13 +6,16 @@
 use crate::config::Config;
 use crate::overrides::Proposal;
 use crate::state::{action_json, print_actions, Action};
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::path::Path;
 use toml_edit::{value, Array, DocumentMut, Item, Table, Value};
 
 const LISTS: &[&str] = &["rpm", "flatpak", "brew"];
 
 pub fn add(path: &Path, list: &str, names: &[String], json: bool) -> Result<()> {
+    if list == "flatpak" {
+        refuse_unknown_flatpaks(names)?;
+    }
     let mut doc = load(path)?;
     let arr = list_array_mut(&mut doc, list)?;
     let mut added: Vec<&str> = Vec::new();
@@ -209,6 +212,60 @@ fn push_matching_style(arr: &mut Array, name: &str) {
     }
 }
 
+/// Flathub's app list as this machine already has it.
+///
+/// `--cached` is the whole design: it reads appstream data flatpak
+/// already downloaded and never touches the network, so declaring a
+/// package cannot hang on a captive portal or fail on a plane. When
+/// there is no cache to read (flatpak absent, remote never added, a
+/// machine that is not this one) it returns None, and None means the
+/// check does not run rather than that the name is wrong.
+fn flathub_apps() -> Option<Vec<String>> {
+    let out = crate::host::host_output(&[
+        "flatpak",
+        "remote-ls",
+        "--system",
+        "--cached",
+        "--app",
+        "--columns=application",
+        "flathub",
+    ])
+    .ok()?;
+    let apps: Vec<String> =
+        out.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect();
+    (!apps.is_empty()).then_some(apps)
+}
+
+/// A Flathub id nothing knows is worse than a no-op. The converger
+/// installs the whole declared list in one `flatpak install`, so one
+/// name that does not resolve fails the unit, and the apps that would
+/// have installed do not, on this boot and every boot after it. That is
+/// a typo taking down convergence for everything else, which is why
+/// `[services]` has checked unit names at build time since it existed
+/// and this list checked nothing at all.
+fn refuse_unknown_flatpaks(names: &[String]) -> Result<()> {
+    // None is "could not ask", never "nothing is known": an empty answer
+    // would refuse every name on a machine with no cache.
+    let Some(known) = flathub_apps() else { return Ok(()) };
+    refuse_names_not_in(names, &known)
+}
+
+fn refuse_names_not_in(names: &[String], known: &[String]) -> Result<()> {
+    for name in names {
+        if known.iter().any(|app| app == name) {
+            continue;
+        }
+        bail!(
+            "{name} is not an app Flathub lists.\n\
+             A name Flathub does not know fails the converger on every boot, and takes \
+             the apps beside it down with it, so it is refused here rather than at 3am.\n\
+             If it is new, this machine's cached list may be behind: \
+             `flatpak update --appstream` refreshes it."
+        );
+    }
+    Ok(())
+}
+
 /// Every list lives in the image (flatpak and brew declarations are baked
 /// at /usr/lib/kuma), so the apply path is always a rebuild; the flatpak
 /// and brew installs then converge on the machine after the switch. Where
@@ -224,16 +281,31 @@ pub(crate) fn apply_edges(rpm: bool) -> (Vec<Action>, Option<&'static str>) {
     } else {
         actions.push(Action::new("vm", "kuma vm", "boot the result in a QEMU VM"));
     }
-    let converge_note =
-        (!rpm).then_some("flatpak and brew changes converge on the machine at boot and daily");
+    // Not "converges at boot and daily", which read as an alternative to
+    // the two edges above it and sent people to `kuma sync` instead: the
+    // convergers read what the image baked, so an edit that has not been
+    // built cannot reach them however often they run.
+    let converge_note = (!rpm).then_some(CONVERGE_NOTE);
     (actions, converge_note)
+}
+
+/// What an edit to a converged list actually does, said once so `add`,
+/// `remove` and `capture` cannot drift apart about it.
+pub(crate) const CONVERGE_NOTE: &str = "this edit takes effect when a build of it boots; \
+     `kuma sync` before then converges to the image's declaration, not this one";
+
+pub(crate) fn print_converge_note() {
+    println!(
+        "\nFlatpak, brew and permission changes take effect when a build of this edit boots. \
+         Running `kuma sync` before then converges to the image's declaration, not this one."
+    );
 }
 
 fn print_apply_hint(actions: &[Action], converge_note: Option<&str>) {
     println!();
     print_actions(actions);
     if converge_note.is_some() {
-        println!("\nFlatpak and brew changes converge on the machine at boot and daily.");
+        print_converge_note();
     }
 }
 
@@ -258,6 +330,23 @@ mod tests {
         assert!(out.contains("# my system"));
         assert!(out.contains("# tools"));
         assert!(out.contains("rpm = [\"fish\", \"htop\"]"));
+    }
+
+    /// A typo in a Flathub id is not a no-op: the converger installs the
+    /// whole declared list in one command, so one name that does not
+    /// resolve fails the unit and the apps beside it never install, on
+    /// this boot and every boot after. Refusing it at the keyboard is
+    /// the same bargain `[services]` has always had with unit names.
+    #[test]
+    fn a_flathub_id_nothing_knows_is_refused() {
+        let known = vec!["org.mozilla.firefox".to_string(), "org.gnome.Loupe".to_string()];
+        assert!(super::refuse_names_not_in(&["org.mozilla.firefox".into()], &known).is_ok());
+        let err = super::refuse_names_not_in(&["org.mozilla.firefixx".into()], &known).unwrap_err();
+        let said = err.to_string();
+        assert!(said.contains("org.mozilla.firefixx"), "{said}");
+        // and it names the way out, because a cache can be behind a
+        // genuinely new app and a refusal with no next move is a wall
+        assert!(said.contains("flatpak update --appstream"), "{said}");
     }
 
     #[test]

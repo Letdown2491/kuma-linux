@@ -61,6 +61,33 @@ as its release notes.
   past, but a link into a `.wants` directory is a machine saying it will start
   something at every boot, and a missing target makes that sentence false.
 
+- `kuma add --flatpak` refuses an id Flathub does not list. The converger
+  installs the whole declared list in one command, so a name that does not
+  resolve fails the unit and the apps beside it never install, on that boot
+  and every boot after: a typo taking down convergence for everything else.
+  `[services]` has checked unit names at build time since it existed and this
+  list checked nothing at all.
+
+  Checked against flatpak's own cached appstream data, never the network, so
+  declaring a package cannot hang on a captive portal or fail on a plane. No
+  cache to read means the check does not run rather than that the name is
+  wrong, and a refusal names the way out, since a cache can be behind a
+  genuinely new app.
+
+### Changed
+
+- `kuma sync` says which declaration it converged to. It starts the same
+  convergers boot does, those read what the image baked, and an edit that has
+  not been built cannot reach them however often sync runs. It reported
+  "Converged" anyway and then offered `kuma diff` to "confirm the machine now
+  matches its declaration", which was an instruction to go watch it fail.
+
+- `kuma add`, `kuma remove` and `kuma capture` no longer end with "flatpak and
+  brew changes converge on the machine at boot and daily". That sentence sat
+  under the `kuma build` and `kuma switch` edges and read as the alternative to
+  them, when what converges at boot and daily is the previous list, forever,
+  until a build of the edit boots. They now say that instead.
+
 ### Fixed
 
 - A declared `system.timezone` was owned by the image and watched by nobody.

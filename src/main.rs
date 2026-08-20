@@ -523,7 +523,13 @@ fn run(
             }
         }
         Cmd::Rollback { yes, json: _ } => rollback(yes, json),
-        Cmd::Sync { json: _ } => sync(json),
+        Cmd::Sync { json: _ } => {
+            // Resolved the same way diff resolves it: sync converges to
+            // what the image baked, so whether the file being edited is
+            // ahead of that is part of the answer, not a footnote.
+            let path = read_config_path(config_path, explicit, false);
+            sync(Config::load(&path).ok().as_ref(), json)
+        }
         Cmd::Clean { json: _ } => {
             // Quiet fallback: which composed bases are live is decided by
             // the declaration, and a machine with only a baked one still
@@ -1677,7 +1683,7 @@ fn convergence_calls(units: &[&str]) -> Vec<(Vec<String>, bool)> {
 /// On-demand convergence: start the same units boot and the daily timer
 /// run, so there stays exactly one convergence path. systemctl blocks
 /// until each oneshot finishes, so success here means converged.
-fn sync(json: bool) -> Result<()> {
+fn sync(declared: Option<&Config>, json: bool) -> Result<()> {
     let mut units: Vec<&str> = Vec::new();
     if Path::new("/usr/lib/kuma/flatpaks").exists() {
         units.push("kuma-flatpak-sync.service");
@@ -1726,24 +1732,49 @@ fn sync(json: bool) -> Result<()> {
     {
         converged.push("kuma-flatpak-overrides.service (user)".to_string());
     }
-    // The machine now matches its baked declaration, so the honest next
-    // move is to confirm it: `kuma diff` should report no drift. Every
-    // other mutating verb ends at an affordance; sync was the one that
-    // dead-ended, in the human output and in the promised JSON shape both.
-    let verify =
-        Action::new("diff", "kuma diff", "confirm the machine now matches its declaration");
+    // What sync converges to is the declaration the *image* baked, and
+    // for a long time it said "Converged" and then sent you to `kuma
+    // diff` to confirm a match it could not produce: edit the
+    // declaration, run sync, and it starts convergers that read
+    // /usr/lib/kuma and never heard of the edit. Saying which
+    // declaration was applied is the whole fix.
+    let behind = declared.is_some_and(|c| crate::inspect::baked_is_behind(c, Path::new("/")));
+    let mut actions = Vec::new();
+    if behind {
+        actions.push(Action::new(
+            "build",
+            "kuma build",
+            "bake the edits this image does not have yet",
+        ));
+    }
+    actions.push(Action::new(
+        "diff",
+        "kuma diff",
+        if behind {
+            "see what is still ahead of this image"
+        } else {
+            "confirm the machine now matches its declaration"
+        },
+    ));
     if json {
         println!(
             "{}",
             serde_json::json!({
                 "ok": true,
                 "converged": converged,
-                "actions": [action_json(&verify)],
+                "baked_declaration_behind": behind,
+                "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
             })
         );
     } else {
         println!("Converged: {}", converged.join(", "));
-        print_actions(&[verify]);
+        if behind {
+            println!(
+                "\nConverged to the declaration this image baked, which is behind yours: \
+                 the edits it does not have cannot reach a converger until a build of them boots."
+            );
+        }
+        print_actions(&actions);
     }
     Ok(())
 }
