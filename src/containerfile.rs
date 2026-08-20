@@ -2043,7 +2043,7 @@ RUN . /usr/lib/os-release \
         -e "s|^PRETTY_NAME=.*|PRETTY_NAME=\"Kuma @KUMAVERSION@${CODENAME:+ ($CODENAME)}\"|" \
         -e "s|^VERSION=.*|VERSION=\"@KUMAVERSION@${CODENAME:+ ($CODENAME)}\"|" \
         -e 's|^ID=.*|ID=kuma|' \
-        -e 's|^DEFAULT_HOSTNAME=.*|DEFAULT_HOSTNAME="kuma"|' \
+        -e 's|^DEFAULT_HOSTNAME=.*|DEFAULT_HOSTNAME="{default_hostname}"|' \
         -e 's|^ANSI_COLOR=.*|ANSI_COLOR="0;38;2;126;224;168"|' \
         /usr/lib/os-release \
     && if [ -n "$CODENAME" ]; then sed -i \
@@ -2058,7 +2058,9 @@ RUN . /usr/lib/os-release \
 /// `format!` because the block is dense with `${...}` the shell needs and
 /// `format!` would demand every brace be doubled.
 fn branding() -> String {
-    BRANDING.replace("@KUMAVERSION@", env!("CARGO_PKG_VERSION"))
+    BRANDING
+        .replace("@KUMAVERSION@", env!("CARGO_PKG_VERSION"))
+        .replace("{default_hostname}", crate::install::DEFAULT_HOSTNAME)
 }
 
 /// Homebrew lives in /home/linuxbrew — machine-local mutable state, so it
@@ -2843,7 +2845,10 @@ pub fn write_context(
     std::fs::copy(kuma_binary, dir.join("kuma"))
         .with_context(|| format!("staging {} into the build context", kuma_binary.display()))?;
     std::fs::write(dir.join("Containerfile"), generate(config))?;
-    let hostname = config.system.hostname.as_deref().unwrap_or("kuma");
+    // The same default `kuma install` falls back to, whose own doc
+    // comment claims it "matches what every kuma image bakes" — an
+    // invariant that was asserted and not shared.
+    let hostname = config.system.hostname.as_deref().unwrap_or(crate::install::DEFAULT_HOSTNAME);
     std::fs::write(dir.join("hostname"), format!("{hostname}\n"))?;
     std::fs::write(dir.join("kuma-vm-timezone"), VM_TZ_SCRIPT)?;
     std::fs::write(dir.join("kuma-vm-timezone.service"), VM_TZ_SERVICE)?;

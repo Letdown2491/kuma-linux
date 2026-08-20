@@ -280,6 +280,9 @@ pub fn ask_hostname(given: Option<String>) -> Result<String> {
 /// Matches what every kuma image bakes, so accepting the default changes
 /// nothing rather than writing a file that says what was already true.
 pub const DEFAULT_HOSTNAME: &str = "kuma";
+// Read by containerfile.rs for both the os-release DEFAULT_HOSTNAME and
+// the /etc/hostname fallback, so the invariant this comment used to only
+// assert is now the same string in every place that depends on it.
 
 /// Reasons not to write to this disk, in the order a person would want
 /// to hear them.

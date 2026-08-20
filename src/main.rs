@@ -790,7 +790,11 @@ const STARTER: &str = r#"# Kuma system definition
 schema_version = 1
 
 [system]
-base = "quay.io/fedora/fedora-bootc:44"
+# Unset, and that is the default worth having: kuma composes its own base
+# from Fedora's repositories, which is what every published image is
+# built on. Naming a base here is the escape hatch, and a first
+# declaration should not take it before anybody knows there is a choice.
+# base = "quay.io/fedora/fedora-bootc:44"
 # A desktop is a curated set kuma maintains: "niri" or "cosmic".
 # desktop = "niri"
 # Pin an IANA timezone across all machines built from this file. Usually
@@ -3320,6 +3324,21 @@ mod tests {
                 "{verb} takes --json and is missing from `mutating`, so the flag does nothing"
             );
         }
+    }
+
+    /// What `kuma init` writes is the first declaration anybody has, and
+    /// nothing parsed it. It also pinned a base, which opts a newcomer
+    /// out of the composed base every published image is built on,
+    /// before they know that is a choice.
+    #[test]
+    fn the_starter_declaration_parses_and_composes_its_own_base() {
+        let config: crate::config::Config =
+            toml::from_str(STARTER).expect("the starter declaration parses");
+        config.validate().expect("the starter declaration validates");
+        assert!(
+            config.system.base.is_none(),
+            "the first declaration a stranger gets should compose a base, not name one"
+        );
     }
 
     /// The installer's default image and the workflow that publishes it
