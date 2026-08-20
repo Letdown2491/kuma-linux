@@ -42,6 +42,11 @@ The loop is: probe, execute one of the actions it named, probe again.
   not the same as a release that did not change, and is also what a
   machine with no base image in local storage reports, since a check does
   not download one to answer.
+- **A sync that cannot help says so.** `sync --json` carries
+  `baked_declaration_behind`. Convergers read the declaration the image
+  baked, so when that is behind the file in hand, converging applies the
+  image's lists rather than the edit, however many times it runs. True there
+  means the next action is `build`, not another `sync`.
 - **Reporting a broken machine.** `doctor --report` is `doctor --json` plus
   `kuma.version`, a `machine` object (`pretty_name`, `version_id`,
   `booted_image`, `booted_digest`, `staged`, `rollback`, `live_media`), and

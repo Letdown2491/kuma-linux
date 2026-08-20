@@ -45,6 +45,9 @@ enable = ["tailscaled.service"]
 
 [snapshots]
 enable = true   # hourly read-only btrfs snapshots of /var/home
+
+[overrides."org.mozilla.firefox"]
+sockets = ["wayland", "!x11"]   # what an app may touch; "!" takes it away
 ```
 
 Three package lists, because the three behave differently. `rpm` is part of
@@ -288,8 +291,6 @@ In order:
 - **No hibernate.** A swapfile's size and `resume_offset` are properties
   of the installed disk, so it needs a first-boot unit rather than an
   image that already knows the answer.
-- **No flatpak permission overrides.** They survive image updates and are
-  the one part of the app layer a declaration cannot see or restore.
 - **Only booted on AMD graphics.** Images carry Intel and NVIDIA firmware,
   the i915, xe and nouveau drivers, and Intel's Mesa and Vulkan drivers, and
   CI boots every build on a virtio GPU. None of that is a report from

@@ -5,6 +5,17 @@
 Entries land with the change they describe; the next tag takes this section
 as its release notes.
 
+## v0.13.0 (2026-08-20)
+
+The declaration could name an app and not say what it was allowed to touch,
+and that was the largest of a family: state that survives every rebuild, that
+the file cannot express, and that nothing on the machine will tell you about.
+This release closes the biggest one, draws the line around the rest, and makes
+the line a test rather than an intention.
+
+It also stopped `kuma sync` from reporting success over a declaration it had
+never read, which is the bug that started the sweep.
+
 ### Added
 
 - `[overrides]` declares Flatpak permissions, per app and per scope. The
