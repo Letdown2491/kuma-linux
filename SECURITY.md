@@ -59,6 +59,14 @@ into each:
   into the image.
 - **`services.enable`** starts units that are already in the image. It cannot
   introduce one.
+- **`system.ca_certificates`** is trust in a certificate authority, and it is
+  the most direct entry on this list: a certificate named there is trusted for
+  every TLS connection the machine makes, by every program that reads the
+  system trust store. It is copied to `/etc/pki/ca-trust/source/anchors/` and
+  `update-ca-trust` runs in the same build layer. `kuma check` rejects a value
+  that is not a PEM certificate, and rejects one containing a private key
+  outright rather than warning, because a key there would be baked
+  world-readable into every image built from that declaration.
 
 Names in these lists are validated before they reach dnf, flatpak, systemctl,
 or brew: no leading dashes, so a name can't become a flag, and no shell

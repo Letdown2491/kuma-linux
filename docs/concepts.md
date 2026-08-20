@@ -8,10 +8,14 @@ and [the glossary](glossary.md) defines the vocabulary.
 - [What happens to changes you make by hand](#what-happens-to-changes-you-make-by-hand)
 - [Where the base system comes from](#where-the-base-system-comes-from)
 - [What every image carries](#what-every-image-carries)
+- [The menu](#the-menu)
 - [Why a desktop installs things you did not name](#why-a-desktop-installs-things-you-did-not-name)
 - [What a build records: kuma.lock](#what-a-build-records-kumalock)
 - [What updates itself, and what waits for you](#what-updates-itself-and-what-waits-for-you)
 - [Why a file you edited by hand keeps winning](#why-a-file-you-edited-by-hand-keeps-winning)
+- [Permissions, and a file kuma does not own](#permissions-and-a-file-kuma-does-not-own)
+- [What your machine trusts](#what-your-machine-trusts)
+- [What a declaration does not reproduce](#what-a-declaration-does-not-reproduce)
 - [Boot health and automatic rollback](#boot-health-and-automatic-rollback)
 - [What an install decides that a declaration cannot](#what-an-install-decides-that-a-declaration-cannot)
 
@@ -443,6 +447,49 @@ per-user one, applied by a `systemd --user` unit rather than by root reaching
 into a home. One app declares into one store: flatpak merges the two with the
 user store winning per key, so an app declared in both would be a file where
 half your lines quietly lose to the other half.
+
+## What your machine trusts
+
+Every TLS connection the machine makes is checked against a set of certificate
+authorities, and that set is state of an awkward kind. You add to it by
+dropping a file in a directory and running a command, it survives every
+rebuild because it lives in `/etc`, and afterwards nothing on the machine
+says why it is there. A machine could trust something its declaration could
+not say.
+
+`[system.ca_certificates]` says it, keyed by the name each anchor gets on
+disk:
+
+```toml
+[system.ca_certificates]
+"my-root-ca" = """
+-----BEGIN CERTIFICATE-----
+MIIBkTCB+wIJAKZ...
+-----END CERTIFICATE-----
+"""
+```
+
+**The certificate goes in the file rather than beside it.** A declaration that
+points at a path somewhere else is not one file any more: carry it to a second
+machine and the anchor is missing, with nothing to say so.
+
+Inlining is safe here for a reason that does not generalise, and the boundary
+is worth stating exactly. **A CA certificate is public by construction.** A
+private key is not, so one pasted into this table is refused rather than
+warned about: it would otherwise be baked world-readable into every image
+built from the file and pushed to a registry. That is `[user]`'s
+password-hash boundary, one file format over. A value that is not a
+certificate at all is refused by `kuma check` for the ordinary reason.
+
+The anchor is copied to `/etc/pki/ca-trust/source/anchors/` and
+`update-ca-trust` runs in the same build layer that adds it, rather than being
+left for a boot to remember. Landing under `/etc` also puts it inside the
+`etc` check above, so a local edit that ever shadows it is reported rather
+than silently winning.
+
+Adding a trust root is the most consequential thing this file can do in one
+line, which is why it is named again in `SECURITY.md` alongside the other
+roots a declaration opts into.
 
 ## What a declaration does not reproduce
 
