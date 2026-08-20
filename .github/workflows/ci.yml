@@ -221,6 +221,44 @@ jobs:
           path: vm-smoke/published/console.log
           if-no-files-found: warn
 
+  # 0.14's gate, and the only job here that answers a question about
+  # data rather than about a machine.
+  #
+  # "A dead disk is recoverable" cannot be met by any amount of testing
+  # that a backup ran. It is met by destroying a disk and getting the
+  # files back, which is what this does: install a machine, write files
+  # in it, back them up, delete the disk, install again with --restore,
+  # and read the files. MinIO on the runner stands in for the far end,
+  # because the half under test is kuma's. Whether somebody's own server
+  # is reachable is a question about their network.
+  #
+  # Slow and worth it. It is the only check that exercises the path
+  # nobody takes twice: you install once, and a stranger installs once,
+  # and if a restore does not work then nothing else here mattered.
+  dead-disk:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name != 'pull_request' &&
+      !startsWith(github.ref, 'refs/tags/') &&
+      (github.event_name != 'schedule' || github.event.schedule == '0 5 * * *')
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - name: install, back up, destroy, restore, boot
+        uses: ./.github/actions/install-boot
+        with:
+          smoke_args: --dead-disk
+
+      - name: guest console
+        if: failure()
+        run: tail -200 vm-smoke/dead-disk/console.log || true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: console-dead-disk
+          path: vm-smoke/dead-disk/console.log
+          if-no-files-found: warn
+
   # The artifact a stranger downloads, and the only one that was built by
   # hand on one laptop until now. Every other job here asks whether the
   # tree works; this asks whether the thing on the download page works,

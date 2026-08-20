@@ -79,6 +79,7 @@ INSTALL=0
 # tag is already pushed means a release with no installer.
 ISO_MAX_BYTES=${ISO_MAX_BYTES:-1900000000}
 PUBLISHED=""
+DEAD_DISK=0
 UPGRADE_TO=""
 ENCRYPTED=0
 KEEP=0
@@ -90,6 +91,7 @@ while [ $# -gt 0 ]; do
         --iso) ISO=1 ;;
         --install) INSTALL=1 ;;
         --published) PUBLISHED=${2:?--published needs an image reference}; shift ;;
+        --dead-disk) DEAD_DISK=1 ;;
         --upgrade-to) UPGRADE_TO=${2:?--upgrade-to needs an image reference}; shift ;;
         --encrypted) ENCRYPTED=1 ;;
         --keep) KEEP=1 ;;
@@ -935,6 +937,237 @@ smoke_published() {
     [ $KEEP -eq 1 ] || sudo rm -rf "$dir"
 }
 
+# --- stage: dead disk --------------------------------------------------
+# The gate 0.14 turns on: a dead disk is recoverable, proven by a command
+# rather than by somebody remembering they once restored something.
+#
+# Install a machine, put files in it, back it up, destroy the disk, and
+# install again with --restore. The files either come back or they do
+# not, and nothing about that needs a person to interpret it.
+#
+# MinIO stands in for the far end. The point under test is kuma's half:
+# whether the declaration carries a backup, whether the converger copies
+# a snapshot, and whether a fresh install can put a home directory back
+# on its first boot. A real repository somewhere else answers a question
+# about somebody's network, not about this code.
+#
+# The guest reaches the runner at 10.0.2.2, which is what qemu's user
+# networking calls the host, so nothing here needs a bridge or root.
+MINIO_PORT=19000
+MINIO_KEY=kumasmoke
+MINIO_SECRET=kumasmokesecret
+RESTIC_PASS=smoke-restic-password
+
+start_minio() {
+    podman rm -f kuma-smoke-minio >/dev/null 2>&1 || true
+    podman run -d --name kuma-smoke-minio \
+        -p "127.0.0.1:$MINIO_PORT:9000" \
+        -e "MINIO_ROOT_USER=$MINIO_KEY" \
+        -e "MINIO_ROOT_PASSWORD=$MINIO_SECRET" \
+        quay.io/minio/minio server /data >/dev/null \
+        || bad "cannot start the MinIO the backup copies into"
+    # The bucket is restic's to create on init; this only waits for the
+    # server to answer at all.
+    local waited=0
+    until curl -sf "http://127.0.0.1:$MINIO_PORT/minio/health/live" >/dev/null 2>&1; do
+        sleep 1
+        waited=$((waited + 1))
+        [ $waited -lt 60 ] || bad "MinIO never came up on $MINIO_PORT"
+    done
+    ok "MinIO is up on $MINIO_PORT"
+}
+
+stop_minio() {
+    podman rm -f kuma-smoke-minio >/dev/null 2>&1 || true
+}
+
+# A declaration that backs up, derived from the committed one rather than
+# written here, so this stage cannot drift into testing a machine nobody
+# ships.
+dead_disk_declaration() {
+    local out=$1
+    cat examples/niri.toml > "$out"
+    cat >> "$out" <<TOML
+
+[backup]
+enable = true
+repo = "s3:http://10.0.2.2:$MINIO_PORT/kuma"
+secret = "backup"
+interval = "daily"
+network_connections = true
+TOML
+}
+
+smoke_dead_disk() {
+    local name=$1 port=$2
+    local dir="vm-smoke/$name"
+    local raw="$dir/disk.raw"
+    local log="$dir/console.log"
+    local user="smoketest"
+    local pass="smoke-account-password"
+    local decl="$dir/backup.toml"
+    local tag="localhost/kuma-smoke-backup:latest"
+    local secret="$dir/restore.env"
+
+    mkdir -p "$dir"
+    start_minio
+    trap 'stop_minio' EXIT
+
+    dead_disk_declaration "$decl"
+    echo "   .. building an image that declares a backup"
+    "$KUMA" build --config "$decl" --tag "$tag" >/dev/null \
+        || bad "the declaration that backs up does not build"
+    ok "built $tag"
+
+    # The one file a restore needs, and the same file the machine itself
+    # is given. It names the repository because a machine being restored
+    # has no declaration yet.
+    cat > "$secret" <<ENV
+RESTIC_REPOSITORY=s3:http://10.0.2.2:$MINIO_PORT/kuma
+RESTIC_PASSWORD=$RESTIC_PASS
+AWS_ACCESS_KEY_ID=$MINIO_KEY
+AWS_SECRET_ACCESS_KEY=$MINIO_SECRET
+ENV
+
+    dead_disk_install "$tag" "$dir" "$raw" "$user" "$pass" "" || return 1
+    dead_disk_run "$dir" "$raw" "$log" "$port" "$user" "$pass" seed || return 1
+
+    # The disk is gone. Not wiped, gone: a machine that no longer exists
+    # is the case the whole feature is for, and truncating one that still
+    # has a partition table would leave the test easier than reality.
+    rm -f "$raw"
+    ok "the disk is gone"
+
+    dead_disk_install "$tag" "$dir" "$raw" "$user" "$pass" "$secret" || return 1
+    dead_disk_run "$dir" "$raw" "$log" "$port" "$user" "$pass" verify || return 1
+
+    stop_minio
+    trap - EXIT
+    [ $KEEP -eq 1 ] || sudo rm -rf "$dir"
+}
+
+dead_disk_install() {
+    local tag=$1 dir=$2 raw=$3 user=$4 pass=$5 restore=$6
+    local restore_args=()
+    [ -n "$restore" ] && restore_args=(--restore "$restore")
+    truncate -s 24G "$raw"
+    echo "   .. installing${restore:+ with --restore} (needs sudo; the slow part)"
+    printf '%s\n' "$pass" \
+        | "$KUMA" install --disk "$raw" --image "$tag" \
+            --update-from ghcr.io/example/kuma:niri \
+            "${restore_args[@]}" \
+            --user "$user" --hostname smoketest --yes >/dev/null \
+        || bad "installing${restore:+ with --restore} failed"
+    ok "installed${restore:+ with --restore}"
+
+    # Same serial console the published stage adds, and for the same
+    # reason: without it a machine that never boots produces no evidence.
+    local kloop kboot
+    kloop=$(sudo losetup -fP --show "$raw") || bad "cannot attach $raw"
+    kboot="$dir/bootmnt"
+    mkdir -p "$kboot"
+    if sudo mount "${kloop}p2" "$kboot" 2>/dev/null; then
+        sudo sed -i 's/^options .*/& console=ttyS0/' "$kboot"/loader/entries/*.conf 2>/dev/null || true
+        sudo umount "$kboot"
+    fi
+    sudo losetup -d "$kloop" || true
+}
+
+# Boot the disk, do one job over ssh, shut it down.
+dead_disk_run() {
+    local dir=$1 raw=$2 log=$3 port=$4 user=$5 pass=$6 job=$7
+    local ovmf_code
+    ovmf_code=$(find_ovmf) || bad "no UEFI firmware"
+    cp /usr/share/OVMF/OVMF_VARS.fd "$dir/OVMF_VARS.fd" 2>/dev/null \
+        || cp /usr/share/edk2/ovmf/OVMF_VARS.fd "$dir/OVMF_VARS.fd" 2>/dev/null \
+        || bad "no OVMF vars template"
+
+    qemu-system-x86_64 \
+        -enable-kvm -cpu host -smp 4 -m 4096 \
+        -machine q35 \
+        -drive "if=pflash,format=raw,readonly=on,file=$ovmf_code" \
+        -drive "if=pflash,format=raw,file=$dir/OVMF_VARS.fd" \
+        -drive "file=$raw,if=virtio,format=raw" \
+        -device "$QEMU_VGA" -display "$QEMU_DISPLAY" \
+        -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$port-:22" \
+        -serial "file:$log" &
+    local qemu=$!
+    # shellcheck disable=SC2064
+    trap "kill $qemu 2>/dev/null || true; stop_minio" EXIT
+
+    local ssh_opts=(-p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+                    -o ConnectTimeout=5 -o LogLevel=ERROR
+                    -o PubkeyAuthentication=no -o PreferredAuthentications=password
+                    "$user@127.0.0.1")
+    guest() { sshpass -p "$pass" ssh "${ssh_opts[@]}" "$@" 2>/dev/null; }
+    sudoq() { guest "sudo -S -p '' $1" <<<"$pass"; }
+
+    echo "   .. waiting for ssh on $port"
+    local deadline=$((SECONDS + 600))
+    until guest true; do
+        [ $SECONDS -lt $deadline ] || bad "no ssh within 600s ($job); console at $log"
+        kill -0 $qemu 2>/dev/null || bad "qemu exited before ssh ($job); console at $log"
+        sleep 5
+    done
+    ok "ssh is up ($job)"
+
+    if [ "$job" = seed ]; then
+        # Files a person would miss, in the place the declaration covers.
+        guest "mkdir -p ~/Documents && echo 'the thing that must survive' > ~/Documents/marker.txt" \
+            || bad "cannot write the marker"
+        guest "head -c 5000000 /dev/urandom > ~/Documents/bulk.bin" || bad "cannot write bulk"
+        ok "wrote the files a restore has to bring back"
+
+        # The credential the declaration names. Provisioned by hand here
+        # exactly as a person would, which is also what proves the
+        # doctor grade for its absence was reachable a moment ago.
+        sudoq "install -d -m 0700 /var/lib/kuma/secrets" || bad "cannot make the secrets directory"
+        guest "cat > /tmp/backup.env" <<ENV || bad "cannot stage the credential"
+RESTIC_PASSWORD=$RESTIC_PASS
+AWS_ACCESS_KEY_ID=$MINIO_KEY
+AWS_SECRET_ACCESS_KEY=$MINIO_SECRET
+ENV
+        sudoq "install -m 0600 /tmp/backup.env /var/lib/kuma/secrets/backup.env" \
+            || bad "cannot install the credential"
+        ok "credential provisioned"
+
+        # A backup copies a snapshot, so there has to be one. The timer
+        # would take it within the hour; this stage has minutes.
+        sudoq "systemctl start kuma-snapshot.service" || bad "snapshot service failed"
+        guest "ls /var/home/.snapshots | head -1" | grep -q . \
+            || bad "no snapshot was taken, so there is nothing to copy"
+        ok "a snapshot exists to copy from"
+
+        sudoq "kuma backup --init" || bad "kuma backup --init failed"
+        guest "test -f /var/lib/kuma/backup-last" \
+            || bad "the backup left no stamp, so doctor would call it stale"
+        ok "seeded, and the run stamped itself"
+
+        # The whole point of the stamp: doctor has to be able to see it.
+        sudoq "kuma doctor --json" | grep -q '"backup"' \
+            || bad "doctor does not report on the backup"
+        ok "doctor grades the backup"
+    else
+        guest "cat ~/Documents/marker.txt" | grep -q 'the thing that must survive' \
+            || bad "the marker did not come back; console at $log"
+        guest "test -s ~/Documents/bulk.bin" || bad "the bulk file did not come back"
+        guest "stat -c %U ~/Documents/marker.txt" | grep -qx "$user" \
+            || bad "the restored file belongs to the wrong account"
+        ok "the files came back, owned by the account that lost them"
+
+        guest "test ! -f /var/lib/kuma/restore-request" \
+            || bad "the restore request survived, so every boot would restore again"
+        ok "the request was cleared"
+    fi
+
+    sudoq "systemctl poweroff" >/dev/null 2>&1 || true
+    local waited=0
+    while kill -0 $qemu 2>/dev/null && [ $waited -lt 60 ]; do sleep 1; waited=$((waited + 1)); done
+    kill $qemu 2>/dev/null || true
+    wait $qemu 2>/dev/null || true
+    trap - EXIT
+}
+
 # --- stage: iso --------------------------------------------------------
 # The artifact a stranger downloads, and until now the only one built by
 # hand on one laptop. Three questions, in the order they can go wrong:
@@ -1310,6 +1543,16 @@ port=2300
 # The published stage answers a question about the registry, not about
 # the examples, so it runs on its own and returns rather than joining the
 # loop below. Nothing here builds an image.
+if [ $DEAD_DISK -eq 1 ]; then
+    note "dead disk: install, back up, destroy, restore, boot"
+    if (smoke_dead_disk dead-disk "$port"); then
+        ok "a dead disk is recoverable"
+    else
+        stop_minio
+        exit 1
+    fi
+fi
+
 if [ -n "$PUBLISHED" ]; then
     note "published: $PUBLISHED"
     if (smoke_published "$PUBLISHED" published "$port"); then
