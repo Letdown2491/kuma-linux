@@ -439,7 +439,7 @@ smoke_install() {
     # machine has a resume offset pointing at a file nothing ever
     # activates, so it can never write an image to hibernate from.
     local fstab
-    fstab=$(sudo find "$mnt/ostree/deploy" -maxdepth 6 -path '*/etc/fstab' -print -quit)
+    fstab=$(sudo find "$mnt/ostree/deploy" -maxdepth 5 -path '*/deploy/*/etc/fstab' -print -quit)
     [ -n "$fstab" ] || bad "no /etc/fstab on the installed root"
     sudo grep -q '/var/swap/swapfile none swap' "$fstab" \
         || bad "nothing in fstab activates the swapfile"

@@ -441,14 +441,46 @@ pub fn install_script(plan: &[Partition], encrypt: bool, swap_mib: Option<u64>) 
     // because $fs_uuid has to expand, and nothing else in those two
     // lines is shell.
     //
-    // The mount point is not created here. /var on an ostree machine is
-    // not $mnt/var but a directory inside the deployment, so a mkdir
-    // here would make the wrong thing; systemd creates a mount unit's
-    // directory when it starts it.
+    // **`$mnt/etc` is not that file**, and writing to it was this
+    // feature's first real bug: the install failed at
+    // `/run/kuma-target/etc/fstab: No such file or directory` after the
+    // image had already been deployed. `$mnt` is the root subvolume, and
+    // an ostree deployment keeps its merged /etc inside the deployment
+    // directory, under a checksum nothing here can predict. So it is
+    // found rather than named. smoke.sh had already written that warning
+    // down for its own assertions, in as many words, which is why the
+    // comment is here in the code that has to obey it.
+    //
+    // A glob rather than `find`, and the reason is the preflight. This
+    // step runs after bootc has deployed the image, so a tool missing
+    // here fails at the last moment of a long install with the disk
+    // already committed, which is the exact failure the tool list exists
+    // to prevent. Adding findutils to that list would mean either
+    // demanding it of installs that will never make a swapfile, or a
+    // third conditional list. The shell can already do this.
+    //
+    // Fatal when it is missing rather than skipped, even this late in an
+    // install. The alternative is a machine that boots with a resume
+    // karg pointing at a swapfile nothing ever activates, which is
+    // precisely the half-working state doctor grades as broken. Better
+    // to stop while somebody is still watching.
+    //
+    // The mount point is not created here either. /var on an ostree
+    // machine is not $mnt/var, for the same reason, and systemd creates
+    // a mount unit's directory when it starts it.
     let swap_fstab = match swap_mib {
         Some(_) => format!(
             "# What makes the swapfile swap once the installed machine is up.\n\
-             cat >> \"$mnt/etc/fstab\" <<FSTAB\n{}FSTAB\n\n",
+             etc_fstab=\"\"\n\
+             for candidate in \"$mnt\"/ostree/deploy/*/deploy/*/etc/fstab; do\n    \
+             [ -f \"$candidate\" ] && etc_fstab=$candidate && break\n\
+             done\n\
+             if [ -z \"$etc_fstab\" ]; then\n    \
+             echo \"kuma: the deployment has no /etc/fstab to add the swapfile to;\" >&2\n    \
+             echo \"kuma: it would never be activated, so this install stops here.\" >&2\n    \
+             exit 1\n\
+             fi\n\
+             cat >> \"$etc_fstab\" <<FSTAB\n{}FSTAB\n\n",
             crate::hibernate::fstab_lines("$fs_uuid")
         ),
         None => String::new(),
@@ -837,6 +869,30 @@ mod tests {
         for absent in ["sgdisk", "partprobe", "parted", "cgdisk"] {
             assert!(!script.contains(absent), "{absent} is not on a kuma machine");
         }
+        // The swapfile path adds no tool to the list, and that is a
+        // property worth pinning rather than a coincidence. Its one new
+        // step runs *after* bootc has deployed the image, so a tool
+        // missing there would fail at the last moment of a long install
+        // with the disk already committed. A shell glob cannot.
+        //
+        // Asked of the commands rather than of the text. "find" appears
+        // in five prose comments in this script and inside `findmnt`,
+        // which is declared, so a substring check answers a different
+        // question and fails on the right script.
+        let swap =
+            install_script(&plan(40 * 1024 * 1024 * 1024, false).unwrap(), false, Some(4096));
+        let called: Vec<&str> = swap
+            .lines()
+            .map(str::trim_start)
+            .filter(|line| !line.starts_with('#'))
+            .flat_map(|line| line.split(|c: char| c.is_whitespace() || "|;&(){}<>".contains(c)))
+            .collect();
+        for absent in ["find", "mkswap", "chattr", "fallocate"] {
+            assert!(
+                !called.contains(&absent),
+                "{absent} is called but not declared in the preflight"
+            );
+        }
     }
 
     /// The script destroys everything it touches, so what it contains is
@@ -1052,6 +1108,32 @@ mod tests {
         assert!(!script.contains(INSTALL_MAPPER));
         // The substitutions leave no blank line where a block was.
         assert!(!script.contains("\n\n\n"));
+    }
+
+    /// The bug this feature shipped with, kept as a test because the
+    /// wrong answer looks right: `$mnt` is the root subvolume, and an
+    /// ostree deployment's merged /etc is not in it. Writing to
+    /// `$mnt/etc/fstab` failed the install at
+    /// `/run/kuma-target/etc/fstab: No such file or directory`, after
+    /// the image had been deployed and the disk was already committed.
+    #[test]
+    fn the_swap_fstab_is_found_in_the_deployment_and_never_at_the_root() {
+        let script =
+            install_script(&plan(40 * 1024 * 1024 * 1024, false).unwrap(), false, Some(4096));
+        assert!(
+            !script.contains("$mnt/etc/fstab"),
+            "the root subvolume has no /etc; an ostree deployment keeps it under a checksum"
+        );
+        assert!(
+            script.contains("\"$mnt\"/ostree/deploy/*/deploy/*/etc/fstab"),
+            "it looks where deployments actually are"
+        );
+        // Fatal rather than skipped: a resume karg pointing at a
+        // swapfile nothing activates is the state doctor calls broken.
+        assert!(script.contains("this install stops here"));
+        // And nothing of the sort appears when no swapfile was asked for.
+        let plain = install_script(&plan(40 * 1024 * 1024 * 1024, false).unwrap(), false, None);
+        assert!(!plain.contains("etc_fstab"), "no swapfile, no fstab surgery");
     }
 
     /// Both scripts have to be shell before they are anything else. A
