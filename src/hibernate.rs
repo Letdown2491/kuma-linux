@@ -517,7 +517,16 @@ pub fn enable_script() -> String {
          # to define and a hand-written copy of it is a thing that works\n\
          # until the path gains a character.\n\
          systemctl daemon-reload\n\
-         systemctl start \"$(systemd-escape -p --suffix=mount {MOUNT})\"\n\
+         systemctl start \"$(systemd-escape -p --suffix=mount {MOUNT})\"\n\n\
+         # The label systemd-sleep needs, applied once the file is\n\
+         # reachable at the path the policy names. Without it the machine\n\
+         # gets a correct swapfile it can never hibernate into, and the\n\
+         # failure appears only when somebody tries: systemd-sleep is\n\
+         # denied read on anything that is not swapfile_t. The image\n\
+         # carries the rule that makes this path a swapfile; restorecon\n\
+         # is what applies it. Tolerated when absent, because a machine\n\
+         # without SELinux has nothing to label.\n\
+         restorecon -F {FILE} 2>/dev/null || true\n\
          systemctl start \"$(systemd-escape -p --suffix=swap {FILE})\"\n\n\
          # Last line, and the only thing on stdout: the caller reads it.\n\
          echo \"$swap_offset\"\n",
@@ -618,6 +627,31 @@ pub fn active_lockdown(text: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The SELinux type out of a full context, `swapfile_t` out of
+/// `system_u:object_r:swapfile_t:s0`.
+///
+/// None where the machine has no SELinux and `stat` prints `?`, which is
+/// not a fault and not something to grade.
+pub fn selinux_type(context: &str) -> Option<String> {
+    let context = context.trim();
+    if context.is_empty() || context == "?" {
+        return None;
+    }
+    context.split(':').nth(2).map(str::to_string)
+}
+
+/// The type a swapfile has to have, and the reason this is checked at
+/// all.
+///
+/// `systemd-sleep` can read a `swapfile_t` file and cannot read the
+/// `var_t` one that the policy's own default produces for a file under
+/// `/var`. A machine with the wrong label has a correct swapfile,
+/// correct kernel arguments, active swap, and fails at the moment it is
+/// asked to hibernate with `Failed to find location to hibernate to:
+/// Permission denied`. Measured on a real machine; every other part of
+/// this check passed on the machine that could not do it.
+pub const SWAPFILE_TYPE: &str = "swapfile_t";
+
 /// Whether `/proc/swaps` has the swapfile active.
 ///
 /// By the path it was mounted at, which is how swapon reports a file.
@@ -652,6 +686,9 @@ pub struct Status {
     /// Which lockdown mode is active, when the machine says. Carried
     /// only to explain the answer above, never to decide it.
     pub lockdown: Option<String>,
+    /// The swapfile's SELinux type, when the machine has SELinux. None
+    /// where there is nothing to ask.
+    pub selinux_type: Option<String>,
 }
 
 /// Ask this machine everything the verdict needs.
@@ -684,6 +721,10 @@ pub fn probe() -> Status {
         .flatten()
         .and_then(|out| out.trim().parse::<u64>().ok())
         .map(|bytes| bytes / (1024 * 1024));
+    let selinux = present
+        .then(|| host_output(&["sudo", "stat", "-c", "%C", FILE]).ok())
+        .flatten()
+        .and_then(|out| selinux_type(&out));
     let power_state = std::fs::read_to_string("/sys/power/state").unwrap_or_default();
     let lockdown = std::fs::read_to_string("/sys/kernel/security/lockdown").ok();
     Status {
@@ -695,6 +736,7 @@ pub fn probe() -> Status {
         ram_mib: ram_mib(&meminfo),
         kernel_allows: kernel_allows_hibernation(&power_state),
         lockdown: lockdown.as_deref().and_then(active_lockdown),
+        selinux_type: selinux,
     }
 }
 
@@ -760,6 +802,17 @@ pub fn verdict(status: &Status) -> Verdict {
                 return Verdict::Broken(format!(
                     "{FILE} is not active swap, so there is nowhere to write a hibernate image"
                 ));
+            }
+            // Before the kernel's own refusal below, because this is the
+            // half kuma can fix and that one is a firmware setting.
+            if let Some(kind) = &status.selinux_type {
+                if kind != SWAPFILE_TYPE {
+                    return Verdict::Broken(format!(
+                        "{FILE} is labelled {kind}, and systemd-sleep can only read \
+                         {SWAPFILE_TYPE}: hibernating fails with Permission denied, however \
+                         correct everything else is"
+                    ));
+                }
             }
             // Last, and only once everything kuma owns is right, so that
             // "refused" means "your setup is correct and the kernel
@@ -896,6 +949,7 @@ mod tests {
             ram_mib: Some(16 * 1024),
             kernel_allows: true,
             lockdown: Some("none".into()),
+            selinux_type: Some(SWAPFILE_TYPE.into()),
         };
         match verdict(&status) {
             Verdict::Broken(why) => {
@@ -921,6 +975,7 @@ mod tests {
             ram_mib: Some(16 * 1024),
             kernel_allows: true,
             lockdown: Some("none".into()),
+            selinux_type: Some(SWAPFILE_TYPE.into()),
         };
         assert!(matches!(verdict(&ready), Verdict::Ready(_)));
 
@@ -936,6 +991,7 @@ mod tests {
             ram_mib: None,
             kernel_allows: true,
             lockdown: None,
+            selinux_type: None,
         };
         assert!(matches!(verdict(&no_karg), Verdict::Broken(_)));
 
@@ -955,6 +1011,7 @@ mod tests {
             ram_mib: None,
             kernel_allows: true,
             lockdown: None,
+            selinux_type: None,
         };
         assert!(matches!(verdict(&inactive), Verdict::Broken(_)));
     }
@@ -988,6 +1045,7 @@ mod tests {
             ram_mib: Some(16 * 1024),
             kernel_allows: false,
             lockdown: Some("integrity".into()),
+            selinux_type: Some(SWAPFILE_TYPE.into()),
         };
         match verdict(&perfect) {
             Verdict::Refused(why) => {
@@ -1002,6 +1060,46 @@ mod tests {
         let warning = lockdown_warning(false, Some("integrity")).expect("it warns");
         assert!(warning.contains("Secure Boot"), "{warning}");
         assert!(lockdown_warning(true, Some("none")).is_none(), "a normal kernel is silent");
+    }
+
+    /// The bug that four runs of the gate were spent reaching, kept as a
+    /// test because every other check passed on the machine that had it.
+    /// The swapfile was there, active, the right size, the offset
+    /// matched the kernel argument, the kernel offered hibernation, and
+    /// the machine could not hibernate: systemd-sleep is denied `read`
+    /// on a file that is not swapfile_t.
+    #[test]
+    fn a_swapfile_the_sleep_code_cannot_read_is_broken_however_right_the_rest_is() {
+        assert_eq!(selinux_type("system_u:object_r:swapfile_t:s0").as_deref(), Some("swapfile_t"));
+        assert_eq!(selinux_type("unconfined_u:object_r:var_t:s0").as_deref(), Some("var_t"));
+        // A machine with no SELinux prints `?`, which is not a fault.
+        assert_eq!(selinux_type("?"), None);
+        assert_eq!(selinux_type("  "), None);
+
+        let mislabelled = Status {
+            resume: Some("UUID=abc".into()),
+            resume_offset: Some(4096),
+            file_offset: Some(4096),
+            file_mib: Some(16 * 1024),
+            active: true,
+            ram_mib: Some(16 * 1024),
+            kernel_allows: true,
+            lockdown: Some("none".into()),
+            // What the policy's own default gives a file under /var, and
+            // therefore what a plain restorecon produces.
+            selinux_type: Some("var_t".into()),
+        };
+        match verdict(&mislabelled) {
+            Verdict::Broken(why) => {
+                assert!(why.contains("var_t") && why.contains("swapfile_t"), "{why}");
+                assert!(why.contains("Permission denied"), "it names the failure: {why}");
+            }
+            other => panic!("a mislabelled swapfile must be broken, got {other:?}"),
+        }
+
+        // Unlabelled machines are not graded on a label they cannot have.
+        let no_selinux = Status { selinux_type: None, ..mislabelled };
+        assert!(matches!(verdict(&no_selinux), Verdict::Ready(_)));
     }
 
     /// The command line is parsed rather than pattern-matched, because
@@ -1041,6 +1139,19 @@ mod tests {
         assert!(script.contains("--uuid clear"));
         assert!(script.contains("map-swapfile -r"), "-r is the page offset the kernel wants");
         assert!(script.contains("chmod 600"), "a copy of memory is not world-readable");
+    }
+
+    /// Turning it on has to label the file, or it makes a swapfile the
+    /// sleep code cannot read. The order matters as much as the call:
+    /// the label is applied at the path the policy names, which only
+    /// exists once the subvolume is mounted.
+    #[test]
+    fn enabling_labels_the_swapfile_after_it_is_mounted_where_the_policy_names_it() {
+        let script = enable_script();
+        let mount = script.find("--suffix=mount").expect("it mounts the subvolume");
+        let label = script.find("restorecon").expect("it labels the file");
+        assert!(mount < label, "the label goes on at /var/swap, not in the temporary mount");
+        assert!(script.contains(&format!("restorecon -F {FILE}")));
     }
 
     /// Both fstab lines name the same two constants the doctor check

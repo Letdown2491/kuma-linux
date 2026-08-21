@@ -45,6 +45,13 @@ differently. Why it changed belongs in the commit that made it.
   Secure Boot off in firmware; otherwise `kuma hibernate --off --yes` takes the
   space back.
 
+- **The swapfile is labelled for SELinux.** `systemd-sleep` can only read a
+  file typed `swapfile_t`, and the policy's own default for a file under `/var`
+  is `var_t`, which it cannot read. A machine with the wrong label has a
+  correct swapfile, correct kernel arguments and active swap, and fails at the
+  moment you ask it to hibernate. Kuma images now declare that path a swapfile
+  and relabel it at boot, and `kuma doctor` grades the label.
+
 ### Known limits
 
 - **Hibernate does not work under Secure Boot**, and that is the kernel's

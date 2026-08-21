@@ -1406,6 +1406,69 @@ rm -f "$new"
 /// the middle of early boot, where a cycle does not produce a failed unit,
 /// it produces a machine that does not boot. That is a bad trade against a
 /// failure whose entire consequence is a red line in `systemctl --failed`.
+/// What the policy has to be told, or a swapfile is unusable for the one
+/// thing it was made for.
+///
+/// Measured on a real machine rather than reasoned about. A swapfile at
+/// `/var/swap/swapfile` gets `var_t` from the policy's own default, and
+/// `systemd-sleep` cannot read a `var_t` file:
+///
+/// ```text
+/// avc: denied { read } for comm="systemd-sleep" name="swapfile"
+///      scontext=systemd_sleep_t tcontext=var_t tclass=file
+/// systemd-sleep: Failed to find location to hibernate to: Permission denied
+/// ```
+///
+/// `systemd-logind` is denied the same way, which is why `CanHibernate`
+/// answers "Access denied" on such a machine rather than yes or no. The
+/// machine has a correct swapfile, correct kernel arguments, and cannot
+/// hibernate.
+///
+/// So `restorecon` alone is not the fix: run against the stock policy it
+/// produces exactly the `var_t` that fails. The path has to be declared
+/// a swapfile first, which is what this does, and then `restorecon`
+/// gives `swapfile_t` and hibernation works. Written as policy rather
+/// than as a `chcon` somewhere because a rule survives a full relabel
+/// and a hand-applied label does not.
+const SWAP_FCONTEXT: &str = "\
+# Added by kuma. Without this line the policy's default for a file at
+# this path is var_t, and systemd-sleep cannot read a var_t file, so the
+# machine gets a swapfile it can never hibernate into.
+/var/swap/swapfile\t--\tsystem_u:object_r:swapfile_t:s0
+";
+
+/// Applying the rule above on the machine that has the file.
+///
+/// A unit rather than something the installer does, because the
+/// installer cannot. It writes the swapfile from whatever host is
+/// running it, and setting an SELinux label means writing a
+/// `security.selinux` xattr, which a host with SELinux disabled cannot
+/// do at all: CI installs from an Ubuntu runner. The label therefore has
+/// to be applied by the machine, where the policy lives.
+///
+/// `restorecon` rather than a tmpfiles `z` line, which was tried first
+/// and cannot do it: tmpfiles runs in a domain with no `relabelto` for
+/// `swapfile_t` and fails with `Unable to fix SELinux security context
+/// of /var/swap/swapfile: Operation not permitted`.
+///
+/// Conditioned on both the file and SELinux, so it is silently skipped
+/// on the machines that have no swapfile, which is most of them.
+const SWAP_LABEL_SERVICE: &str = r#"[Unit]
+Description=Give the hibernate swapfile the SELinux label systemd-sleep needs
+Documentation=man:restorecon(8)
+ConditionSecurity=selinux
+ConditionPathExists=/var/swap/swapfile
+After=var-swap.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/restorecon -F /var/swap/swapfile
+
+[Install]
+WantedBy=multi-user.target
+"#;
+
 const FSTAB_SYNC_SERVICE: &str = r#"[Unit]
 Description=Converge Anaconda's fstab root line for a composefs root
 ConditionPathExists=/run/ostree-booted
@@ -2643,13 +2706,17 @@ pub fn generate(config: &Config) -> String {
     out.push_str(
         "COPY kuma-boot-health-sync.service /usr/lib/systemd/system/kuma-boot-health-sync.service\n",
     );
+    out.push_str(
+        "COPY kuma-swap-fcontext /etc/selinux/targeted/contexts/files/file_contexts.local\n",
+    );
+    out.push_str("COPY kuma-swap-label.service /usr/lib/systemd/system/kuma-swap-label.service\n");
     out.push_str("COPY --chmod=755 kuma-fstab-sync /usr/libexec/kuma-fstab-sync\n");
     out.push_str("COPY kuma-fstab-sync.service /usr/lib/systemd/system/kuma-fstab-sync.service\n");
     out.push_str(
         "COPY kuma-boot-titles.service /usr/lib/systemd/system/kuma-boot-titles.service\n",
     );
     out.push_str(
-        "RUN systemctl enable greenboot-healthcheck.service greenboot-set-rollback-trigger.service greenboot-success.target kuma-boot-health-sync.service kuma-fstab-sync.service kuma-boot-titles.service\n",
+        "RUN systemctl enable greenboot-healthcheck.service greenboot-set-rollback-trigger.service greenboot-success.target kuma-boot-health-sync.service kuma-fstab-sync.service kuma-boot-titles.service kuma-swap-label.service\n",
     );
 
     // What the machine will and will not accept from a registry. On every
@@ -2886,6 +2953,8 @@ pub fn write_context(
     std::fs::write(dir.join("kuma-vm-timezone.service"), VM_TZ_SERVICE)?;
     std::fs::write(dir.join("kuma-boot-health-sync"), BOOT_HEALTH_SYNC_SCRIPT)?;
     std::fs::write(dir.join("kuma-boot-health-sync.service"), BOOT_HEALTH_SYNC_SERVICE)?;
+    std::fs::write(dir.join("kuma-swap-fcontext"), SWAP_FCONTEXT)?;
+    std::fs::write(dir.join("kuma-swap-label.service"), SWAP_LABEL_SERVICE)?;
     std::fs::write(dir.join("kuma-fstab-sync"), FSTAB_SYNC_SCRIPT)?;
     std::fs::write(dir.join("kuma-fstab-sync.service"), FSTAB_SYNC_SERVICE)?;
     std::fs::write(dir.join("kuma-boot-titles.service"), BOOT_TITLES_SERVICE)?;
