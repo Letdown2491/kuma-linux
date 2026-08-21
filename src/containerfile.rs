@@ -1451,8 +1451,26 @@ const SWAP_FCONTEXT: &str = "\
 /// `swapfile_t` and fails with `Unable to fix SELinux security context
 /// of /var/swap/swapfile: Operation not permitted`.
 ///
+/// **Recursive, from the mount point, and that is the whole of a bug this
+/// shipped with.** The first version relabelled the file alone. That
+/// worked, and the machine still could not hibernate, because the
+/// subvolume's own root inode carries no label at all when the installer
+/// makes it, and `systemd-sleep` has to *search* the directory before it
+/// can read anything inside:
+///
+/// ```text
+/// avc: denied { search } for comm="systemd-sleep" name="swap"
+///      scontext=systemd_sleep_t tcontext=unlabeled_t tclass=dir
+/// ```
+///
+/// So there are two labels to fix, not one: `var_t` on the directory,
+/// which is the policy's default and only needs applying, and
+/// `swapfile_t` on the file, which needs the rule above first.
+///
 /// Conditioned on both the file and SELinux, so it is silently skipped
-/// on the machines that have no swapfile, which is most of them.
+/// on the machines that have no swapfile, which is most of them. The
+/// condition names the file rather than the directory on purpose: an
+/// empty `/var/swap` is not a machine that wanted to hibernate.
 const SWAP_LABEL_SERVICE: &str = r#"[Unit]
 Description=Give the hibernate swapfile the SELinux label systemd-sleep needs
 Documentation=man:restorecon(8)
@@ -1463,7 +1481,7 @@ After=var-swap.mount
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/sbin/restorecon -F /var/swap/swapfile
+ExecStart=/usr/sbin/restorecon -RF /var/swap
 
 [Install]
 WantedBy=multi-user.target

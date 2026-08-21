@@ -524,9 +524,12 @@ pub fn enable_script() -> String {
          # failure appears only when somebody tries: systemd-sleep is\n\
          # denied read on anything that is not swapfile_t. The image\n\
          # carries the rule that makes this path a swapfile; restorecon\n\
-         # is what applies it. Tolerated when absent, because a machine\n\
-         # without SELinux has nothing to label.\n\
-         restorecon -F {FILE} 2>/dev/null || true\n\
+         # is what applies it. Recursive from the mount point because\n\
+         # there are two labels to fix: the subvolume's own root inode\n\
+         # has none at all, and systemd-sleep must search the directory\n\
+         # before it can read the file inside it. Tolerated when absent,\n\
+         # because a machine without SELinux has nothing to label.\n\
+         restorecon -RF {MOUNT} 2>/dev/null || true\n\
          systemctl start \"$(systemd-escape -p --suffix=swap {FILE})\"\n\n\
          # Last line, and the only thing on stdout: the caller reads it.\n\
          echo \"$swap_offset\"\n",
@@ -689,6 +692,12 @@ pub struct Status {
     /// The swapfile's SELinux type, when the machine has SELinux. None
     /// where there is nothing to ask.
     pub selinux_type: Option<String>,
+    /// The type on the directory the swapfile sits in. A separate
+    /// question from the file's, and one that a correct file hides:
+    /// `systemd-sleep` has to search the directory before it can read
+    /// anything inside it, so a labelled file in an unlabelled directory
+    /// fails exactly as a mislabelled file does.
+    pub mount_selinux_type: Option<String>,
 }
 
 /// Ask this machine everything the verdict needs.
@@ -725,6 +734,10 @@ pub fn probe() -> Status {
         .then(|| host_output(&["sudo", "stat", "-c", "%C", FILE]).ok())
         .flatten()
         .and_then(|out| selinux_type(&out));
+    let mount_selinux = present
+        .then(|| host_output(&["sudo", "stat", "-c", "%C", MOUNT]).ok())
+        .flatten()
+        .and_then(|out| selinux_type(&out));
     let power_state = std::fs::read_to_string("/sys/power/state").unwrap_or_default();
     let lockdown = std::fs::read_to_string("/sys/kernel/security/lockdown").ok();
     Status {
@@ -737,6 +750,7 @@ pub fn probe() -> Status {
         kernel_allows: kernel_allows_hibernation(&power_state),
         lockdown: lockdown.as_deref().and_then(active_lockdown),
         selinux_type: selinux,
+        mount_selinux_type: mount_selinux,
     }
 }
 
@@ -812,6 +826,26 @@ pub fn verdict(status: &Status) -> Verdict {
                          {SWAPFILE_TYPE}: hibernating fails with Permission denied, however \
                          correct everything else is"
                     ));
+                }
+                // The directory is a second question, and a correct file
+                // hides it: systemd-sleep has to search {MOUNT} before it
+                // can read what is inside. A machine with the file right
+                // and the directory unlabelled graded ok here and could
+                // not hibernate, which is what this arm exists for.
+                match &status.mount_selinux_type {
+                    Some(dir) if dir == "unlabeled_t" => {
+                        return Verdict::Broken(format!(
+                            "{MOUNT} is labelled {dir}, so systemd-sleep cannot search it to \
+                             reach the swapfile, even though the swapfile itself is right"
+                        ))
+                    }
+                    None => {
+                        return Verdict::Broken(format!(
+                            "{MOUNT} has no SELinux label at all, so systemd-sleep cannot \
+                             search it to reach the swapfile"
+                        ))
+                    }
+                    _ => {}
                 }
             }
             // Last, and only once everything kuma owns is right, so that
@@ -950,6 +984,7 @@ mod tests {
             kernel_allows: true,
             lockdown: Some("none".into()),
             selinux_type: Some(SWAPFILE_TYPE.into()),
+            mount_selinux_type: Some("var_t".into()),
         };
         match verdict(&status) {
             Verdict::Broken(why) => {
@@ -976,6 +1011,7 @@ mod tests {
             kernel_allows: true,
             lockdown: Some("none".into()),
             selinux_type: Some(SWAPFILE_TYPE.into()),
+            mount_selinux_type: Some("var_t".into()),
         };
         assert!(matches!(verdict(&ready), Verdict::Ready(_)));
 
@@ -992,6 +1028,7 @@ mod tests {
             kernel_allows: true,
             lockdown: None,
             selinux_type: None,
+            mount_selinux_type: None,
         };
         assert!(matches!(verdict(&no_karg), Verdict::Broken(_)));
 
@@ -1012,6 +1049,7 @@ mod tests {
             kernel_allows: true,
             lockdown: None,
             selinux_type: None,
+            mount_selinux_type: None,
         };
         assert!(matches!(verdict(&inactive), Verdict::Broken(_)));
     }
@@ -1046,6 +1084,7 @@ mod tests {
             kernel_allows: false,
             lockdown: Some("integrity".into()),
             selinux_type: Some(SWAPFILE_TYPE.into()),
+            mount_selinux_type: Some("var_t".into()),
         };
         match verdict(&perfect) {
             Verdict::Refused(why) => {
@@ -1088,6 +1127,7 @@ mod tests {
             // What the policy's own default gives a file under /var, and
             // therefore what a plain restorecon produces.
             selinux_type: Some("var_t".into()),
+            mount_selinux_type: Some("var_t".into()),
         };
         match verdict(&mislabelled) {
             Verdict::Broken(why) => {
@@ -1098,8 +1138,38 @@ mod tests {
         }
 
         // Unlabelled machines are not graded on a label they cannot have.
-        let no_selinux = Status { selinux_type: None, ..mislabelled };
+        let no_selinux = Status { selinux_type: None, mount_selinux_type: None, ..mislabelled };
         assert!(matches!(verdict(&no_selinux), Verdict::Ready(_)));
+    }
+
+    /// The second half of the same bug, and the half that shipped: the
+    /// file was labelled correctly and the directory it sits in was not
+    /// labelled at all, so systemd-sleep could not search its way to the
+    /// file. Doctor graded that machine `ok` and it could not hibernate.
+    #[test]
+    fn a_correct_swapfile_in_an_unlabelled_directory_is_still_broken() {
+        // A closure rather than one value reused, because Status owns
+        // Strings and the three shapes below each need their own.
+        let with_dir = |dir: Option<&str>| Status {
+            resume: Some("UUID=abc".into()),
+            resume_offset: Some(4096),
+            file_offset: Some(4096),
+            file_mib: Some(16 * 1024),
+            active: true,
+            ram_mib: Some(16 * 1024),
+            kernel_allows: true,
+            lockdown: Some("none".into()),
+            selinux_type: Some(SWAPFILE_TYPE.into()),
+            mount_selinux_type: dir.map(str::to_string),
+        };
+        // No label at all, which is what the installer leaves behind.
+        match verdict(&with_dir(None)) {
+            Verdict::Broken(why) => assert!(why.contains(MOUNT) && why.contains("search"), "{why}"),
+            other => panic!("an unlabelled directory must be broken, got {other:?}"),
+        }
+        assert!(matches!(verdict(&with_dir(Some("unlabeled_t"))), Verdict::Broken(_)));
+        // And the working shape stays working.
+        assert!(matches!(verdict(&with_dir(Some("var_t"))), Verdict::Ready(_)));
     }
 
     /// The command line is parsed rather than pattern-matched, because
@@ -1151,7 +1221,10 @@ mod tests {
         let mount = script.find("--suffix=mount").expect("it mounts the subvolume");
         let label = script.find("restorecon").expect("it labels the file");
         assert!(mount < label, "the label goes on at /var/swap, not in the temporary mount");
-        assert!(script.contains(&format!("restorecon -F {FILE}")));
+        assert!(
+            script.contains(&format!("restorecon -RF {MOUNT}")),
+            "recursive from the mount point: the directory needs a label too"
+        );
     }
 
     /// Both fstab lines name the same two constants the doctor check

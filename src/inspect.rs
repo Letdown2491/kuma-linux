@@ -2494,7 +2494,7 @@ fn check_hibernate(report: &mut impl FnMut(Grade, &str, String, Option<Action>))
             Some(Action::new(
                 "repair",
                 "kuma hibernate --yes",
-                "put the swapfile and the kernel arguments back in step",
+                "relabel the swapfile and put the kernel arguments back in step",
             )),
         ),
     }

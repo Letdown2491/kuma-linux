@@ -2430,6 +2430,15 @@ fn hibernate_cmd(size: Option<String>, off: bool, yes: bool, json: bool) -> Resu
             bail!("the swapfile was made but its offset came back as {printed:?}");
         }
     }
+    // Both paths, because both can find the labels wrong. The create
+    // path's script does this too and doing it twice is free; the repair
+    // path has no script at all, and without this the fix doctor
+    // prescribes for a mislabelled swapfile would not fix it.
+    //
+    // Recursive from the mount point: there are two labels, and the
+    // directory's is the one a correct file hides.
+    let _ = host_output(&["sudo", "restorecon", "-RF", hibernate::MOUNT]);
+
     // Re-read rather than reuse: on the repair path the offset came from
     // a probe, and on the create path it came from a script, and this is
     // the number a wrong value silently destroys a session with. Asking
