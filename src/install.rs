@@ -30,8 +30,18 @@
 //! answer here that cannot be revised without reinstalling, which is why
 //! it is asked before anything is written rather than defaulted either
 //! way.
+//!
+//! A swapfile is asked for on the same grounds and one of them is
+//! weaker: the size is a property of this machine's memory, which no
+//! image can know, but unlike encryption it *can* be added afterwards.
+//! `kuma hibernate` is that verb. It is offered here anyway because the
+//! installer is the only place that can make the file before anything
+//! else is on the disk, and because a machine that is asked once at
+//! install is a machine nobody has to remember to go back to.
 
 use anyhow::{bail, Context, Result};
+
+use crate::hibernate;
 
 /// What was asked for, before any of it is checked.
 ///
@@ -58,6 +68,11 @@ pub struct Request {
     /// way to answer the question early rather than the only way to
     /// answer it at all.
     pub encrypt: bool,
+    /// The swapfile size as it was typed, or None for "ask on a
+    /// terminal, and take no for an answer anywhere else". Carried
+    /// unparsed so that a bad size is reported by the one place that
+    /// knows how to explain it, rather than by clap.
+    pub swap: Option<String>,
     /// A file naming the repository and its credentials, written onto
     /// the target so its first boot puts the home directory back.
     pub restore: Option<std::path::PathBuf>,
@@ -589,6 +604,108 @@ pub fn ask_encrypt(flagged: bool) -> Result<bool> {
             "y" | "yes" => return Ok(true),
             "" | "n" | "no" => return Ok(false),
             _ => eprintln!("Answer y or n."),
+        }
+    }
+}
+
+/// Whether this machine gets a swapfile, and how big.
+///
+/// Two questions rather than one, in the shape `ask_encrypt` already
+/// uses: a yes or no that defaults to no, and only a yes earns the
+/// second. A single "size, or none" prompt would make everybody answer a
+/// question about gibibytes in order to decline a feature.
+///
+/// Off when nobody is there to ask, for the same reason encryption is: a
+/// pipe driving an install gets what it asked for on the command line
+/// and nothing it did not.
+///
+/// The size is re-asked rather than fatal when it does not fit. Every
+/// other answer in this interview is typed once and cannot be wrong in a
+/// way the installer can see; this one can be too big for the disk, and
+/// the disk is standing right there to be measured against. Failing the
+/// whole install over a number somebody can retype would mean answering
+/// the account and hostname questions again for nothing.
+pub fn ask_swap(
+    flagged: Option<&str>,
+    ram_mib: Option<u64>,
+    default_mib: Option<u64>,
+    spare_mib: u64,
+) -> Result<Option<u64>> {
+    use std::io::{IsTerminal, Write};
+    if let Some(text) = flagged {
+        let asked = hibernate::parse_size(text)?;
+        if let Some(mib) = asked {
+            // A flag is not a conversation: this one cannot be re-asked,
+            // so it fails here, before the disk is touched.
+            if let Some(why) = hibernate::objections(mib, spare_mib, hibernate::SPARE_AT_INSTALL)
+                .into_iter()
+                .next()
+            {
+                bail!("{why}");
+            }
+        }
+        return Ok(asked);
+    }
+    if !std::io::stdin().is_terminal() {
+        return Ok(None);
+    }
+    // A default only counts as one if it fits. On a disk with no room to
+    // spare, offering the size of memory would be offering a number the
+    // next line refuses.
+    let default_mib = default_mib.filter(|mib| *mib <= spare_mib);
+    loop {
+        // stderr, like every other prompt here: stdout is where
+        // `--json --yes` promises exactly one document.
+        eprint!("\nCreate a swapfile so this machine can hibernate? [y/N] ");
+        std::io::stderr().flush()?;
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            return Ok(None);
+        }
+        match line.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => break,
+            "" | "n" | "no" => return Ok(None),
+            _ => eprintln!("Answer y or n."),
+        }
+    }
+    loop {
+        let memory = match ram_mib {
+            Some(mib) => format!(", this machine has {} of memory", hibernate::size_text(mib)),
+            None => String::new(),
+        };
+        match default_mib {
+            Some(mib) => {
+                eprint!("Size? [{}{memory}] ", hibernate::size_text(mib))
+            }
+            None => eprint!("Size?{} ", if memory.is_empty() { "" } else { &memory[2..] }),
+        }
+        std::io::stderr().flush()?;
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            return Ok(default_mib);
+        }
+        let answer = line.trim();
+        if answer.is_empty() {
+            match default_mib {
+                Some(mib) => return Ok(Some(mib)),
+                None => {
+                    eprintln!("No default here; type a size like 16G, or none.");
+                    continue;
+                }
+            }
+        }
+        let parsed = match hibernate::parse_size(answer) {
+            Ok(parsed) => parsed,
+            Err(why) => {
+                eprintln!("{why}");
+                continue;
+            }
+        };
+        let Some(mib) = parsed else { return Ok(None) };
+        match hibernate::objections(mib, spare_mib, hibernate::SPARE_AT_INSTALL).into_iter().next()
+        {
+            Some(why) => eprintln!("{why}"),
+            None => return Ok(Some(mib)),
         }
     }
 }

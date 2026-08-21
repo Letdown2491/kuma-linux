@@ -6,6 +6,7 @@
 //! from the truth it alone (having root) can see.
 
 use crate::config::Config;
+use crate::hibernate;
 use crate::host::{host_output, host_output_any};
 use crate::snapshot;
 use crate::state::{action_json, print_actions, Action};
@@ -920,6 +921,7 @@ pub fn doctor(json: bool, as_report: bool) -> Result<()> {
         check_boot_health(&mut report);
         check_boot_titles(Path::new(crate::bootentries::ENTRIES), Path::new("/"), &mut report);
         check_encryption(&mut report);
+        check_hibernate(&mut report);
         check_etc_drift(&mut report);
     } else if Path::new("/usr/lib/kuma").is_dir() {
         report(
@@ -2440,8 +2442,48 @@ fn root_encrypted(findmnt_source: &str, lsblk_types: &str) -> Option<bool> {
 /// subvolume in brackets. Shared with the caller, which needs the same
 /// answer to ask lsblk about it, and had its own copy of this until the
 /// two could have disagreed.
-fn root_device(findmnt_source: &str) -> &str {
+pub fn root_device(findmnt_source: &str) -> &str {
     findmnt_source.trim().split('[').next().unwrap_or_default().trim()
+}
+
+/// Whether this machine can really come back from a hibernate.
+///
+/// Silent on a machine that never asked for one, like the checks that
+/// grade a declared feature only where it is declared: a machine with no
+/// swapfile suspends fine and promises nothing, and a permanent line
+/// saying so would be doctor listing features rather than grading them.
+///
+/// Loud everywhere else, because every way this breaks is quiet. The
+/// worst of them is an offset that no longer matches the file: the
+/// machine writes memory to disk, powers off, boots fresh, and the only
+/// evidence is a session that is gone. Nothing else on a running system
+/// compares those two numbers, which is the whole reason this check is
+/// worth its two `sudo` calls.
+fn check_hibernate(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
+    match hibernate::verdict(&hibernate::probe()) {
+        hibernate::Verdict::NotSet => {}
+        hibernate::Verdict::Ready(detail) => report(Grade::Ok, "hibernate", detail, None),
+        hibernate::Verdict::Short(detail) => report(
+            Grade::Warn,
+            "hibernate",
+            detail,
+            Some(Action::new(
+                "resize",
+                "kuma hibernate --off --yes, then kuma hibernate --size <bigger> --yes",
+                "a swapfile cannot be grown in place: its offset would move",
+            )),
+        ),
+        hibernate::Verdict::Broken(detail) => report(
+            Grade::Fail,
+            "hibernate",
+            detail,
+            Some(Action::new(
+                "repair",
+                "kuma hibernate --yes",
+                "put the swapfile and the kernel arguments back in step",
+            )),
+        ),
+    }
 }
 
 fn check_encryption(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {

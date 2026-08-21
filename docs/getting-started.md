@@ -55,10 +55,10 @@ Then:
 $ kuma install
 ```
 
-It lists the disks it found and asks which one to use, then asks four
-questions: whether to encrypt the disk, a passphrase if you say yes, an
-account name and password, and a hostname. It prints the partition layout it
-will write before it writes anything.
+It lists the disks it found and asks which one to use, then asks: whether to
+encrypt the disk, a passphrase if you say yes, whether to create a swapfile so
+the machine can hibernate, an account name and password, and a hostname. It
+prints the partition layout it will write before it writes anything.
 
 **Which image you get.** This media installs
 `ghcr.io/letdown2491/kuma:niri`, the desktop image this project publishes, and
@@ -73,6 +73,13 @@ Encryption is asked here because it cannot be added later without installing
 again. Say yes and the machine asks for that passphrase at every boot, before
 anything else runs. Nothing keeps a copy of it, so a lost passphrase is a lost
 disk.
+
+Hibernate is off unless you ask for it. Say yes and kuma makes a swapfile the
+size of memory on the root filesystem and sets the kernel arguments that resume
+from it. On a disk you chose not to encrypt, hibernating writes the contents of
+memory to that disk in the clear; the installer says so before it writes. You
+can add or remove a swapfile later with `kuma hibernate`, so this is the one
+question here you are not stuck with.
 
 This is the one command in kuma that cannot be undone. There is no staged
 change to discard and no rollback slot. It refuses a disk with anything
@@ -267,6 +274,26 @@ $ kuma rollback --yes   # go back to the deployment you were on before
 Running bare `kuma` is always safe and always tells you where you are. Every
 command ends by naming what you can legally do next, so you can follow the
 prompts rather than remember the verbs.
+
+**Hibernate, if you did not ask for it at install.** A machine hibernates into
+a swapfile, and needs the kernel told where that file physically sits on the
+disk. `kuma hibernate` does both:
+
+```console
+$ kuma hibernate              # what it would make, and where
+$ kuma hibernate --yes        # make it; takes effect on the next boot
+$ kuma hibernate --off --yes  # take it away again
+```
+
+It defaults to the size of memory, which is the most a machine can ever have to
+save. The file is never resized in place: growing it would move it, and the
+kernel would then resume from the wrong place on the disk. To change the size,
+turn it off and on again.
+
+`kuma doctor` grades the result, and grades the part that fails silently: if
+the file and the kernel arguments ever disagree, a hibernated machine boots
+fresh and the session is gone. Running `kuma hibernate --yes` on a machine that
+already has a swapfile repairs exactly that, leaving the file alone.
 
 **Your files are the one thing this file cannot rebuild.** A declaration
 reproduces a system; it does not reproduce `/var/home`, and it never will,

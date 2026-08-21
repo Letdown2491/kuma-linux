@@ -308,7 +308,7 @@ smoke_install() {
     printf '%s\n%s\n' "$pass" "$pass" \
         | "$KUMA" install --disk "$raw" --image "$tag" \
             --update-from ghcr.io/example/kuma:niri \
-            --user "$user" --encrypt --yes >/dev/null \
+            --user "$user" --encrypt --swap 1G --yes >/dev/null \
         || bad "install failed"
     ok "installed"
 
@@ -342,6 +342,15 @@ smoke_install() {
     sudo grep -rq "rd.luks.uuid=luks-$luks_uuid" "$mnt/loader/entries" \
         || bad "no boot entry unlocks luks-$luks_uuid"
     ok "the bootloader unlocks the container that is there"
+
+    # Read here, checked below. The resume pair is only meaningful next to
+    # the file it points at, and that file is inside the container this
+    # has not opened yet.
+    local resume_karg offset_karg
+    resume_karg=$(sudo grep -rho 'resume=UUID=[^ ]*' "$mnt/loader/entries" | head -1)
+    offset_karg=$(sudo grep -rho 'resume_offset=[0-9]*' "$mnt/loader/entries" | head -1)
+    [ -n "$resume_karg" ] || bad "--swap was asked for and no boot entry names a resume device"
+    [ -n "$offset_karg" ] || bad "--swap was asked for and no boot entry names a resume offset"
     sudo umount "$mnt"
 
     # And the answers the installer was given, inside the container.
@@ -366,6 +375,18 @@ smoke_install() {
     host_file=$(sudo find "$mnt/ostree/deploy" -maxdepth 5 -path '*/var/lib/kuma/hostname' -print -quit)
     [ -n "$host_file" ] || bad "no /var/lib/kuma/hostname for first boot to apply"
     ok "the hostname to apply is written beside it"
+
+    # The two fstab lines that make the swapfile swap. Without them the
+    # machine has a resume offset pointing at a file nothing ever
+    # activates, so it can never write an image to hibernate from.
+    local fstab
+    fstab=$(sudo find "$mnt/ostree/deploy" -maxdepth 6 -path '*/etc/fstab' -print -quit)
+    [ -n "$fstab" ] || bad "no /etc/fstab on the installed root"
+    sudo grep -q '/var/swap/swapfile none swap' "$fstab" \
+        || bad "nothing in fstab activates the swapfile"
+    sudo grep -q '/var/swap btrfs subvol=swap' "$fstab" \
+        || bad "nothing in fstab mounts the subvolume the swapfile is on"
+    ok "the installed fstab mounts and activates the swapfile"
 
     # No /var/home assertion here on purpose: the image ships none, and
     # tmpfiles creates it at first boot. Whether it is a subvolume is a
@@ -392,6 +413,33 @@ smoke_install() {
     fi
 
     sudo umount -R "$mnt"
+
+    # The assertion this whole feature turns on, made against a disk kuma
+    # has just written rather than against its intent.
+    #
+    # A resume_offset that does not describe the swapfile is the one
+    # failure here that is silent in both directions: the machine
+    # hibernates successfully, powers off, boots fresh, and the session is
+    # gone with nothing logged. So the number in the boot entry is
+    # compared against the number btrfs reports for the file itself, which
+    # is the same question `kuma doctor` asks on a running machine.
+    #
+    # The swapfile is at the filesystem top level, beside the root
+    # subvolume rather than inside it, because bootc requires the root it
+    # installs onto to be empty.
+    sudo mount -o subvolid=5 "/dev/mapper/$mapper" "$mnt" || bad "cannot mount the top level"
+    [ -f "$mnt/swap/swapfile" ] || bad "--swap was asked for and there is no swapfile"
+    local fs_uuid actual
+    fs_uuid=$(sudo blkid -s UUID -o value "/dev/mapper/$mapper")
+    [ "$resume_karg" = "resume=UUID=$fs_uuid" ] \
+        || bad "the boot entry says $resume_karg, but the filesystem is UUID=$fs_uuid"
+    actual=$(sudo btrfs inspect-internal map-swapfile -r "$mnt/swap/swapfile") \
+        || bad "the kernel would refuse the swapfile kuma made"
+    [ "$offset_karg" = "resume_offset=$actual" ] \
+        || bad "the boot entry says $offset_karg, but the swapfile starts at page $actual"
+    ok "the resume offset in the boot entry is the offset the swapfile has"
+    sudo umount "$mnt"
+
     sudo cryptsetup close "$mapper"
     sudo losetup -d "$loop"
     trap - EXIT

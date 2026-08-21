@@ -1104,6 +1104,25 @@ pub(crate) mod tests {
         ("kuma update --check", Proof::Runs("scripts/smoke.sh", "update --check")),
         ("kuma update --yes", Proof::Unexecuted("builds and stages a deployment; nothing runs it")),
         ("kuma rollback --yes", Proof::Unexecuted("mutates the boot order; nothing runs it")),
+        // The installer's half of hibernate is proven for real: the
+        // install stage asks for a swapfile and then compares the offset
+        // in the boot entry against the offset btrfs reports for the file
+        // it points at, which is the one disagreement that loses a
+        // session without logging anything. The verb's half is not: it
+        // needs a booted machine to run against and a reboot to prove,
+        // and neither of those is what smoke_install has.
+        (
+            "kuma hibernate",
+            Proof::Unexecuted("the dry run needs a booted kuma machine; smoke_install writes a disk without booting it"),
+        ),
+        (
+            "kuma hibernate --yes",
+            Proof::Unexecuted("makes a swapfile and stages kernel arguments on a live machine; the installer path that writes the same file and the same arguments is covered by smoke_install"),
+        ),
+        (
+            "kuma hibernate --off --yes",
+            Proof::Unexecuted("nothing runs it; it undoes a state no stage reaches"),
+        ),
     ];
 
     /// Every verb is named somewhere a person reads.

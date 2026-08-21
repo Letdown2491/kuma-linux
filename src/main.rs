@@ -6,6 +6,7 @@ mod compose;
 mod config;
 mod containerfile;
 mod edit;
+mod hibernate;
 mod host;
 mod inspect;
 mod install;
@@ -193,6 +194,12 @@ enum Cmd {
         /// password, never from a flag.
         #[arg(long)]
         encrypt: bool,
+        /// Create a swapfile of this size so the machine can hibernate,
+        /// e.g. 16G. Asked for on a terminal when this is left off; no
+        /// swapfile when it is left off and nobody is there to ask.
+        /// `--swap none` declines without being asked.
+        #[arg(long, value_name = "SIZE")]
+        swap: Option<String>,
         /// Put this machine's home directory back from an offsite backup
         /// on its first boot. Takes a file setting RESTIC_REPOSITORY and
         /// the repository's credentials: the machine has no declaration
@@ -374,6 +381,27 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Set this machine up to hibernate: a swapfile, and the kernel
+    /// arguments that resume from it
+    ///
+    /// The installer asks the same question. This is for a machine that
+    /// is already running, and for repairing one whose swapfile and
+    /// kernel arguments have fallen out of step.
+    Hibernate {
+        /// Size of the swapfile, e.g. 16G. Defaults to the size of this
+        /// machine's memory, which is the most it can ever have to save.
+        #[arg(long, value_name = "SIZE", conflicts_with = "off")]
+        size: Option<String>,
+        /// Take it away again: swap off, the file deleted, the kernel
+        /// arguments removed
+        #[arg(long)]
+        off: bool,
+        /// Do it. Without this, print what would happen and change nothing.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Print the JSON Schema for kuma.toml, generated from the parser's own types
     Schema,
     /// Hash a password for the [user] section (prompts; prints the line to paste)
@@ -432,6 +460,7 @@ fn main() -> Result<()> {
             | Cmd::Add { json, .. }
             | Cmd::Capture { json, .. }
             | Cmd::Remove { json, .. }
+            | Cmd::Hibernate { json, .. }
             | Cmd::Install { json, .. } => *json,
             _ => false,
         };
@@ -446,6 +475,7 @@ fn main() -> Result<()> {
             | Cmd::Add { .. }
             | Cmd::Capture { .. }
             | Cmd::Remove { .. }
+            | Cmd::Hibernate { .. }
             // Install was in the list above and not in this one, so
             // `json_mode` was false for the one verb that cannot be
             // undone: progress and subprocess output stayed on stdout in
@@ -509,6 +539,7 @@ fn run(
             hostname,
             shell,
             encrypt,
+            swap,
             restore,
             yes,
             json,
@@ -538,6 +569,7 @@ fn run(
                 hostname,
                 shell,
                 encrypt,
+                swap,
                 restore,
                 yes,
                 json,
@@ -632,6 +664,7 @@ fn run(
         Cmd::Menu { list } => menu::menu(config_path, list),
         Cmd::BootTitles => boot_titles(),
         Cmd::FlatpakOverrides { scope } => flatpak_overrides(scope),
+        Cmd::Hibernate { size, off, yes, json: _ } => hibernate_cmd(size, off, yes, json),
         Cmd::Schema => schema(),
         Cmd::Passwd => passwd(),
         Cmd::Completions { shell } => {
@@ -2148,6 +2181,11 @@ struct PlanView<'a> {
     local: bool,
     updates: &'a str,
     encrypt: bool,
+    /// The swapfile, if one was asked for, and what is worth saying
+    /// about it. Carried as the rendered lines rather than a size,
+    /// because what the plan has to show is the size *and* the hazard,
+    /// and the hazard depends on encryption rather than on the number.
+    swap: Option<(u64, Vec<String>)>,
     layout: &'a [partition::Partition],
     disk_mib: u64,
 }
@@ -2188,6 +2226,327 @@ fn print_install_plan(view: &PlanView) {
             part.purpose
         );
     }
+    // Under the layout because that is what it comes out of: the
+    // swapfile is not a partition, it is a file on the root one, and
+    // showing it as a fourth row would say the disk has a shape it does
+    // not have.
+    if let Some((mib, warnings)) = &view.swap {
+        println!("  swap     {} swapfile on the root, for hibernate", hibernate::size_text(*mib));
+        for warning in warnings {
+            println!("           {warning}");
+        }
+    }
+}
+
+/// Set hibernate up on a machine that is already running, or take it
+/// away again.
+///
+/// The installer asks the same question at the one moment it is cheapest
+/// to answer, before anything is on the disk. This verb exists because
+/// that moment passes: a machine installed before this shipped, or by
+/// somebody who said no, would otherwise have reinstalling as its only
+/// route to hibernate, and reinstalling is not a fix for a feature.
+///
+/// It is also the repair. A swapfile whose offset no longer matches the
+/// kernel arguments is the failure this whole feature has to avoid, and
+/// running this on a machine that already has a usable file changes only
+/// the arguments: the file is left exactly where it is, because moving
+/// it is what created the problem.
+fn hibernate_cmd(size: Option<String>, off: bool, yes: bool, json: bool) -> Result<()> {
+    let status = hibernate::probe();
+    // /sysroot on a booted ostree deployment, / anywhere else, and the
+    // mapper rather than the partition when the disk is encrypted: the
+    // swapfile lives on the filesystem, which is inside the container.
+    let source = host_output(&["findmnt", "-no", "SOURCE", "/sysroot"])
+        .or_else(|_| host_output(&["findmnt", "-no", "SOURCE", "/"]))
+        .unwrap_or_default();
+    let device = inspect::root_device(&source).to_string();
+    if device.is_empty() {
+        bail!("cannot tell which device holds the root filesystem, so there is nowhere to put a swapfile");
+    }
+    let cmdline = std::fs::read_to_string("/proc/cmdline").unwrap_or_default();
+
+    if off {
+        return hibernate_off(&device, &cmdline, &status, yes, json);
+    }
+
+    // A file that is already there is never remade. Growing a swapfile
+    // means allocating a different one, which moves the offset, and an
+    // offset that moved is the one failure mode worth all of this. So
+    // the size is only asked about when there is nothing there.
+    let existing = status.file_offset;
+    if existing.is_none() && std::path::Path::new(hibernate::FILE).exists() {
+        bail!(
+            "{} exists but the kernel would refuse it as swap.\n\n\
+             Take it away with `kuma hibernate --off --yes` and make a new one; \n\
+             kuma will not reuse a file it cannot vouch for.",
+            hibernate::FILE
+        );
+    }
+
+    // What the disk can spare, minus the room an update needs to stage a
+    // whole second deployment before it discards the old one.
+    let free_mib = host_output(&["findmnt", "-nbo", "AVAIL", "--target", "/var"])
+        .ok()
+        .and_then(|out| out.trim().parse::<u64>().ok())
+        .map(|bytes| bytes / (1024 * 1024))
+        .unwrap_or(0);
+    let spare_mib = free_mib.saturating_sub(hibernate::RESERVE_MIB);
+
+    let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+    let size_mib = match (existing, &size) {
+        // Repairing: the size is whatever the file already is, and a
+        // --size naming something else would be describing a file this
+        // verb has just refused to remake.
+        (Some(_), Some(_)) => bail!(
+            "there is already a {} swapfile; --size would not resize it.\n\n\
+             `kuma hibernate --yes` puts the kernel arguments back in step with it, and\n\
+             `kuma hibernate --off --yes` takes it away so a different size can be made.",
+            hibernate::size_text(status.file_mib.unwrap_or(0))
+        ),
+        (Some(_), None) => status.file_mib.unwrap_or(0),
+        (None, Some(text)) => {
+            let Some(mib) = hibernate::parse_size(text)? else {
+                bail!("--size none asks for no swapfile, which is what this machine already has")
+            };
+            if let Some(why) =
+                hibernate::objections(mib, spare_mib, hibernate::SPARE_ON_DISK).into_iter().next()
+            {
+                bail!("{why}");
+            }
+            mib
+        }
+        (None, None) => {
+            let mib = hibernate::default_size_mib(&meminfo)
+                .context("cannot read this machine's memory, so pass --size")?;
+            if let Some(why) =
+                hibernate::objections(mib, spare_mib, hibernate::SPARE_ON_DISK).into_iter().next()
+            {
+                bail!("{why}\n\nPass --size with something smaller if that is a trade you want.");
+            }
+            mib
+        }
+    };
+    let repairing = existing.is_some();
+    let warnings = if repairing {
+        Vec::new()
+    } else {
+        // Encryption is read the same way doctor reads it, from the
+        // device the filesystem is actually on.
+        let types = host_output(&["lsblk", "-no", "TYPE", &device]).unwrap_or_default();
+        let encrypted = types.split_whitespace().any(|kind| kind == "crypt");
+        hibernate::warnings(size_mib, hibernate::ram_mib(&meminfo), encrypted)
+    };
+
+    if !yes {
+        let action = Action::new(
+            "apply",
+            match &size {
+                Some(text) => format!("kuma hibernate --size {text} --yes"),
+                None => "kuma hibernate --yes".to_string(),
+            },
+            if repairing {
+                "set the kernel arguments to match the swapfile that is there"
+            } else {
+                "make the swapfile and set the kernel arguments (takes effect on reboot)"
+            },
+        );
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": true, "dry_run": true, "repairing": repairing,
+                    "swap_mib": size_mib, "device": device,
+                    "warnings": warnings,
+                    "actions": [action_json(&action)],
+                })
+            );
+            return Ok(());
+        }
+        if repairing {
+            println!(
+                "There is already a {} swapfile at {}.\n",
+                hibernate::size_text(size_mib),
+                hibernate::FILE
+            );
+            println!("Would leave the file exactly where it is and set:\n");
+        } else {
+            println!("Would make a {} swapfile:\n", hibernate::size_text(size_mib));
+            println!("  {:<28} on its own btrfs subvolume, never snapshotted", hibernate::FILE);
+            println!("  {:<28} mounts it at boot, below zram", "/etc/fstab");
+            println!();
+            println!("and set:\n");
+        }
+        for karg in hibernate::kargs("<the root filesystem's UUID>", "<the file's offset>") {
+            println!("  {karg}");
+        }
+        for warning in &warnings {
+            println!("\n  {warning}");
+        }
+        println!("\nNothing has been changed.");
+        print_actions(&[action]);
+        return Ok(());
+    }
+
+    if !repairing {
+        note(&format!("Making a {} swapfile...", hibernate::size_text(size_mib)));
+        let dir = tempfile::tempdir().context("cannot create a working directory")?;
+        let script = dir.path().join("enable");
+        std::fs::write(&script, hibernate::enable_script())?;
+        run_host(&["sudo", "chmod", "a+rX", path_str(dir.path())?])?;
+        let out = host_output(&[
+            "sudo",
+            "bash",
+            path_str(&script)?,
+            &device,
+            &size_mib.to_string(),
+            "/etc/fstab",
+        ])
+        .context("cannot create the swapfile")?;
+        // The script prints the offset on its last line and nothing else
+        // on stdout, so this is the offset the kernel has to be told.
+        let printed = out.lines().next_back().unwrap_or_default().trim().to_string();
+        if printed.parse::<u64>().is_err() {
+            bail!("the swapfile was made but its offset came back as {printed:?}");
+        }
+    }
+    // Re-read rather than reuse: on the repair path the offset came from
+    // a probe, and on the create path it came from a script, and this is
+    // the number a wrong value silently destroys a session with. Asking
+    // the file once more, the same way doctor will, costs a second.
+    let after = hibernate::probe();
+    let offset = after
+        .file_offset
+        .context("the swapfile is there but will not report an offset; it is not usable as swap")?;
+    let fs_uuid = host_output(&["findmnt", "-no", "UUID", "--target", "/var"])
+        .context("cannot read the root filesystem's UUID")?
+        .trim()
+        .to_string();
+
+    note("Setting the kernel arguments...");
+    let args = hibernate::karg_arguments(&cmdline, &fs_uuid, &offset.to_string());
+    let mut argv = vec!["sudo".to_string(), "rpm-ostree".to_string()];
+    argv.extend(args);
+    run_host(&argv).context(
+        "cannot set the resume kernel arguments (rpm-ostree is what edits them on an ostree machine)",
+    )?;
+
+    let reboot = reboot_action();
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true, "enabled": true, "repairing": repairing,
+                "swap_mib": size_mib, "resume_offset": offset, "resume": format!("UUID={fs_uuid}"),
+                "warnings": warnings,
+                "actions": [action_json(&reboot)],
+            })
+        );
+        return Ok(());
+    }
+    println!("\nDone. resume=UUID={fs_uuid} resume_offset={offset}");
+    for warning in &warnings {
+        println!("\n  {warning}");
+    }
+    println!(
+        "\nThe kernel arguments take effect on the next boot; until then this\n\
+         machine has the swapfile but cannot resume from it."
+    );
+    print_actions(&[reboot]);
+    Ok(())
+}
+
+/// Take hibernate away again.
+///
+/// Its own function because it is the reverse of the one above and
+/// shares nothing with it but the device: everything here is a removal,
+/// and the ordering that matters is the opposite one.
+fn hibernate_off(
+    device: &str,
+    cmdline: &str,
+    status: &hibernate::Status,
+    yes: bool,
+    json: bool,
+) -> Result<()> {
+    let fstab = std::fs::read_to_string("/etc/fstab").unwrap_or_default();
+    let stripped = hibernate::strip_fstab(&fstab);
+    let kargs = hibernate::karg_removal(cmdline);
+    let file = std::path::Path::new(hibernate::FILE).exists();
+    if !file && stripped == fstab && kargs.is_empty() {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({ "ok": true, "changed": false, "reason": "nothing set up" })
+            );
+        } else {
+            println!("This machine has no kuma swapfile, no fstab entry for one, and no");
+            println!("resume kernel arguments. There is nothing to take away.");
+        }
+        return Ok(());
+    }
+    if !yes {
+        let action = Action::new("apply", "kuma hibernate --off --yes", "take it away");
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": true, "dry_run": true, "swapfile": file,
+                    "fstab_lines": stripped != fstab, "kargs": !kargs.is_empty(),
+                    "actions": [action_json(&action)],
+                })
+            );
+            return Ok(());
+        }
+        println!("Would take hibernate away from this machine:\n");
+        if file {
+            println!(
+                "  swap off, {} deleted ({})",
+                hibernate::FILE,
+                hibernate::size_text(status.file_mib.unwrap_or(0))
+            );
+        }
+        if stripped != fstab {
+            println!("  the two lines kuma added to /etc/fstab removed");
+        }
+        if !kargs.is_empty() {
+            println!("  resume= and resume_offset= removed from the kernel arguments");
+        }
+        println!("\nNothing has been changed.");
+        print_actions(&[action]);
+        return Ok(());
+    }
+    let dir = tempfile::tempdir().context("cannot create a working directory")?;
+    let script = dir.path().join("disable");
+    std::fs::write(&script, hibernate::disable_script())?;
+    // The stripped fstab is handed over as a file rather than generated
+    // in shell, so that what gets written is exactly what `strip_fstab`
+    // produced and is covered by its tests.
+    let new_fstab = dir.path().join("fstab");
+    std::fs::write(&new_fstab, &stripped)?;
+    run_host(&["sudo", "chmod", "-R", "a+rX", path_str(dir.path())?])?;
+    note("Turning swap off and removing the swapfile...");
+    run_host(&["sudo", "bash", path_str(&script)?, device, "/etc/fstab", path_str(&new_fstab)?])
+        .context("cannot remove the swapfile")?;
+    if !kargs.is_empty() {
+        note("Removing the kernel arguments...");
+        let mut argv = vec!["sudo".to_string(), "rpm-ostree".to_string()];
+        argv.extend(kargs);
+        run_host(&argv).context("cannot remove the resume kernel arguments")?;
+    }
+    let reboot = reboot_action();
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true, "changed": true, "enabled": false,
+                "actions": [action_json(&reboot)],
+            })
+        );
+        return Ok(());
+    }
+    println!("\nDone. This machine no longer has a swapfile to hibernate into.");
+    print_actions(&[reboot]);
+    Ok(())
 }
 
 /// Install kuma onto a disk. See `install` for why the account is the
@@ -2208,6 +2567,7 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         hostname,
         shell,
         encrypt: encrypt_flag,
+        swap: swap_flag,
         restore,
         yes,
         json,
@@ -2372,6 +2732,58 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     let layout = partition::plan(disk_bytes, encrypt)
         .with_context(|| format!("cannot install to {}", disk.display()))?;
 
+    // After the layout, because what a swapfile can take is what the
+    // layout has left over, and after the encryption question, because
+    // the answer decides whether hibernating writes memory to this disk
+    // in the clear and that is the thing worth saying before it happens.
+    //
+    // Memory is read from the machine running the installer, which on
+    // live media is the machine being installed. Installing to a *file*
+    // is a different case: the disk image is for some other machine, and
+    // this one's memory is a fact about the wrong computer, so it does
+    // not get to propose a number.
+    let meminfo = (!to_file)
+        .then(|| std::fs::read_to_string("/proc/meminfo").ok())
+        .flatten()
+        .unwrap_or_default();
+    let ram_mib = hibernate::ram_mib(&meminfo);
+    let spare_mib = partition::spare_mib(disk_mib);
+    // The flag is parsed on every run, dry or not, so that `--swap 16`
+    // is refused while it still costs nothing. Asked only under --yes,
+    // like encryption: a dry run changes nothing and has no business
+    // prompting.
+    let swap_mib = if yes {
+        install::ask_swap(
+            swap_flag.as_deref(),
+            ram_mib,
+            hibernate::default_size_mib(&meminfo),
+            spare_mib,
+        )?
+    } else {
+        match swap_flag.as_deref() {
+            Some(text) => {
+                let asked = hibernate::parse_size(text)?;
+                // The dry run has to tell the truth. Without this it
+                // prints a layout for a swapfile that does not fit and
+                // then hands over a `--yes` command that refuses it,
+                // which is the same failure `confirm` exists to avoid:
+                // an affordance that does not work is worse than none.
+                if let Some(mib) = asked {
+                    if let Some(why) =
+                        hibernate::objections(mib, spare_mib, hibernate::SPARE_AT_INSTALL)
+                            .into_iter()
+                            .next()
+                    {
+                        bail!("{why}");
+                    }
+                }
+                asked
+            }
+            None => None,
+        }
+    };
+    let swap_view = swap_mib.map(|mib| (mib, hibernate::warnings(mib, ram_mib, encrypt)));
+
     // The dry run is a resource like every other read: state, facts, and
     // the one legal move out of it. An agent that follows affordances
     // will be handed `kuma install` on live media once there is an image
@@ -2402,6 +2814,12 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         if encrypt_flag {
             flags.push_str(" --encrypt");
         }
+        // Same rule as --encrypt: carried only when it was given, since
+        // putting it in the printed command would answer a question on
+        // somebody's behalf, and `--yes` asks it anyway.
+        if let Some(swap) = &swap_flag {
+            flags.push_str(&format!(" --swap {swap}"));
+        }
         format!("kuma install {flags} --yes")
     };
     if json && !yes {
@@ -2410,6 +2828,16 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
             confirm.clone(),
             "ask for an account and hostname, then write it",
         );
+        // Built before the document rather than inside it: json! takes
+        // values, not blocks, and the list is conditional twice over.
+        let mut asks = Vec::new();
+        if encrypt {
+            asks.push("disk passphrase");
+        }
+        if swap_flag.is_none() {
+            asks.push("whether to create a swapfile for hibernate");
+        }
+        asks.extend(["account name", "password", "hostname"]);
         println!(
             "{}",
             serde_json::json!({
@@ -2419,11 +2847,11 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
                 // be asked: an agent is not a terminal, so the flag is the
                 // whole of the answer it can give.
                 "encrypted": encrypt,
-                "asks": if encrypt {
-                    vec!["disk passphrase", "account name", "password", "hostname"]
-                } else {
-                    vec!["account name", "password", "hostname"]
-                },
+                // The size a --swap would make, not one a person would
+                // be asked for: an agent is not a terminal, so the flag
+                // is the whole of the answer it can give.
+                "swap_mib": swap_mib,
+                "asks": asks,
                 // The one decision here that cannot be revised later, so
                 // an agent reading this resource can see it before
                 // agreeing to it rather than only in the prose plan.
@@ -2447,6 +2875,7 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
             local,
             updates,
             encrypt,
+            swap: swap_view.clone(),
             layout: &layout,
             disk_mib,
         });
@@ -2466,6 +2895,11 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
             println!("                                 off unless you say so, and not a");
             println!("                                 thing that can be added afterwards");
             println!("                                 without installing again");
+        }
+        if swap_flag.is_none() {
+            println!("  whether to hibernate           a swapfile the size of memory, on the");
+            println!("                                 root; off unless you say so, and it can");
+            println!("                                 be added later with kuma hibernate");
         }
         println!("  an account name and password   created on the first boot of the");
         println!("                                 installed machine, since a published");
@@ -2559,7 +2993,7 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         sync_image_to_root(image, scratch.path())?;
     }
     let script = dir.path().join("install");
-    std::fs::write(&script, partition::install_script(&layout, encrypt))?;
+    std::fs::write(&script, partition::install_script(&layout, encrypt, swap_mib))?;
 
     // The script runs as root and reads this directory, and a tempdir is
     // 0700 for whoever created it.
