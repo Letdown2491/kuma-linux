@@ -44,6 +44,12 @@
 # kernel's own boot_id, which is generated at boot and lives in the
 # memory a real resume restores, plus a marker left in tmpfs.
 #
+# It also asks a resumed machine to power off. A guest resets instead,
+# every time, because it hibernates under one firmware instance and
+# resumes under another; hardware asked the same question on 2026-08-21
+# went off and stayed off. So that check warns and the summary repeats
+# it, rather than failing a run over a difference the harness invents.
+#
 # --secure-boot adds a SECOND boot of the same disk, on firmware with
 # Microsoft's keys enrolled. It is not a second attempt at hibernating: a
 # kernel locked down under Secure Boot refuses hibernation outright, so
@@ -174,8 +180,19 @@ case "$PUBLISHED" in
 esac
 
 PASS=(); FAIL=()
+# Warnings outlive the stage that raised one. Every stage runs inside a
+# subshell, so a variable would never come back, and a line printed two
+# thousand lines before the summary is a line nobody reads. The summary
+# reads this file instead, and refuses to say "all good" over it.
+WARNLOG=${TMPDIR:-/tmp}/kuma-smoke-warnings.$$
+: >"$WARNLOG"
 note() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 ok()   { printf '   ok   %s\n' "$*"; }
+# Neither a pass nor a failure: something this harness measured, that
+# hardware has measured differently. Use it only where the hardware
+# result is written down and dated; anything else is a FAIL wearing a
+# quieter word.
+warn() { printf '   warn %s\n' "$*"; printf '%s\n' "$*" >>"$WARNLOG"; }
 # exit, not return. Each example's stages run inside `if ( ... )`, and
 # bash disables `set -e` for the whole dynamic extent of a command whose
 # exit status is being tested, so a `|| bad` that only returned printed
@@ -1336,10 +1353,21 @@ smoke_published() {
     # through sysrq, which puts it in the shutdown path rather than in
     # the kernel's.
     #
-    # Recorded rather than fatal on the spot, because one real bug
-    # blocking the whole rest of the gate is how the Secure Boot half went
-    # nine runs without executing. The run still fails; it fails after
-    # everything else has had its turn.
+    # WARNS RATHER THAN FAILS, and here is the measurement that decides
+    # it. On 2026-08-21 a physical machine hibernated, resumed, and was
+    # asked for `systemctl poweroff` on that same resumed boot: it went
+    # off and stayed off. A guest cannot reproduce that, because it
+    # hibernates under one firmware instance and resumes under another,
+    # which no machine with a case does. So this check grades an artifact
+    # of the harness, and failing the gate on it would mean the gate can
+    # never go green over a product that works.
+    #
+    # It is still asked, still captures the dying boot's journal, and
+    # still surfaces in the summary, because the day it stops happening
+    # is worth knowing and so is the day it starts happening on hardware.
+    # What it no longer does is decide the run. The cold-boot retry below
+    # stays fatal: a machine that will not power off from a cold boot is
+    # not this artifact, it is a broken image.
     local resumed_poweroff=""
     if [ $SECURE_BOOT -eq 1 ]; then
         echo "   .. powering off to boot the same disk under Secure Boot"
@@ -1440,11 +1468,14 @@ smoke_published() {
     fi
 
     if [ -n "$resumed_poweroff" ]; then
-        bad "the resumed machine reset instead of powering off. systemd runs an \
-ordinary shutdown and the machine dies partway through it; the console cannot \
-show that, because fbcon takes ttyS0 on a desktop image. The dying boot's own \
-journal is at $dir/poweroff-reset.log. The same disk cold-booted powers off \
-correctly, so this is about having resumed."
+        warn "the resumed guest reset instead of powering off (known QEMU artifact; hardware powers off, 2026-08-21)"
+        echo "        systemd runs an ordinary shutdown and the machine dies partway"
+        echo "        through it; the console cannot show that, because fbcon takes"
+        echo "        ttyS0 on a desktop image. The dying boot's own journal is at"
+        echo "        $dir/poweroff-reset.log. The same disk cold-booted powers off"
+        echo "        correctly, and so does real hardware after a real resume, so"
+        echo "        this belongs to hibernating under one OVMF instance and"
+        echo "        resuming under another."
     fi
 
     # --- the cross-version half ----------------------------------------
@@ -2395,6 +2426,8 @@ done
 
 note "summary"
 [ ${#PASS[@]} -gt 0 ] && printf '   pass: %s\n' "${PASS[*]}"
+while IFS= read -r warning; do printf '   warn: %s\n' "$warning"; done <"$WARNLOG"
+rm -f "$WARNLOG"
 if [ ${#FAIL[@]} -gt 0 ]; then
     printf '   FAIL: %s\n' "${FAIL[*]}"
     exit 1
