@@ -1031,15 +1031,40 @@ smoke_published() {
             "doctor grades hibernate '$hib_grade' on a machine installed with --swap"
         ok "doctor grades hibernate ok before the machine is asked to do it"
 
-        # logind's own answer, and the place a Secure Boot problem would
-        # surface. A kernel locked down against writing to memory refuses
-        # hibernation outright, and it refuses here rather than failing
-        # later, so the message names the cause it most likely has.
-        local can
-        can=$(guest "busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager CanHibernate 2>/dev/null | tr -d 's\" '" || true)
-        [ "$can" = yes ] || bad \
-            "logind says CanHibernate=${can:-nothing} on a machine with an active swapfile and a resume karg"
-        ok "logind says this machine can hibernate"
+        # Whether the kernel will do it at all, asked of the file that
+        # decides: /sys/power/state lists `disk` only when
+        # hibernation_available() says so. A file rather than a service,
+        # so it cannot be unavailable for reasons of its own, and it is
+        # the same file doctor reads.
+        local offers
+        offers=$(guest "cat /sys/power/state 2>&1" || true)
+        grep -qw disk <<<"$offers" \
+            || bad "the kernel does not offer hibernation (/sys/power/state: ${offers:-unreadable})"
+        ok "the kernel offers hibernation: $offers"
+
+        # logind adds the question the file cannot answer, which is
+        # whether there is enough swap to hold an image.
+        #
+        # Three outcomes, not two, and the middle one is why. The first
+        # version discarded this query's stderr and mangled its output,
+        # so when it returned nothing the run stopped with
+        # `CanHibernate=nothing` and no way to tell an absent busctl from
+        # a refusing logind. It also parsed `s "yes"` with
+        # `tr -d 's" '`, which deletes the s in "yes" and yields `ye`, so
+        # the success case could never have passed either. Now the raw
+        # reply is kept and shown, and a query that will not answer is
+        # reported rather than fatal: this run exists to prove a resume,
+        # and a diagnostic that cannot speak is not a reason to stop
+        # before the thing being tested. A definite refusal still is.
+        local can_raw can
+        can_raw=$(guest "busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager CanHibernate 2>&1" || true)
+        can=$(printf '%s' "$can_raw" | cut -s -d'"' -f2)
+        case "$can" in
+            yes) ok "logind says this machine can hibernate" ;;
+            "")  echo "   .. logind gave no answer to CanHibernate (raw: ${can_raw:-no output at all})." >&2
+                 echo "   .. going on, because the kernel offers hibernation and the swapfile is active." >&2 ;;
+            *)   bad "logind says CanHibernate=$can on a machine with an active swapfile and a resume karg (raw: $can_raw)" ;;
+        esac
 
         # The marker, and it is two markers for two different claims.
         #
@@ -1153,21 +1178,23 @@ smoke_published() {
         # is exactly !security_locked_down(LOCKDOWN_HIBERNATION). It is
         # also the file doctor reads, so this compares kuma against its
         # own source rather than against a guess.
-        local offers can grade detail
-        offers=$(guest "cat /sys/power/state" || true)
-        can=$(guest "busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager CanHibernate 2>/dev/null | tr -d 's\" '" || true)
+        local sb_offers can_raw can grade detail
+        sb_offers=$(guest "cat /sys/power/state 2>&1" || true)
+        can_raw=$(guest "busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager CanHibernate 2>&1" || true)
+        can=$(printf '%s' "$can_raw" | cut -s -d'"' -f2)
         grade=$(doctor_grade hibernate)
         detail=$(doctor_detail hibernate)
+        echo "   .. /sys/power/state: ${sb_offers:-unreadable}; logind: ${can_raw:-no answer}"
 
-        if grep -qw disk <<<"$offers"; then
+        if grep -qw disk <<<"$sb_offers"; then
             [ "$can" = yes ] || bad \
-                "the kernel offers hibernation ($offers) but logind says CanHibernate=${can:-nothing}"
+                "the kernel offers hibernation ($sb_offers) but logind says CanHibernate=${can:-nothing}"
             [ "$grade" = ok ] || bad \
                 "this kernel hibernates under Secure Boot and doctor grades it '$grade': $detail"
             ok "this kernel hibernates under Secure Boot, and doctor agrees"
         else
             [ "$can" != yes ] || bad \
-                "logind offers hibernation while the kernel does not list disk ($offers)"
+                "logind offers hibernation while the kernel does not list disk ($sb_offers)"
             [ "$grade" != ok ] || bad \
                 "doctor grades hibernate ok on a machine whose kernel refuses it (lockdown: ${lockdown:-unknown}); this is the promise kuma must not make"
             [ "$grade" = warn ] || bad \
