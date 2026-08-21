@@ -148,6 +148,7 @@ Those are the ones you type. The rest of the surface:
 | `kuma doctor` | grade every promise the machine relies on |
 | `kuma snapshot` | reach the local snapshots |
 | `kuma backup` | reach the offsite copies |
+| `kuma hibernate` | make a swapfile and the kernel arguments to resume from it |
 | `kuma clean` | reclaim what old builds left |
 | `kuma completions` | shell completions, e.g. `kuma completions fish \| source` |
 
@@ -215,9 +216,6 @@ In order:
 - **No custom partition layout.** `kuma install` writes the same three
   partitions on every disk. Anything else, including installing beside
   another system, still has to be done by something else.
-- **No hibernate.** A swapfile's size and `resume_offset` are properties
-  of the installed disk, so it needs a first-boot unit rather than an
-  image that already knows the answer.
 - **No proprietary NVIDIA driver.** Images carry `nvidia-gpu-firmware` and
   nouveau, which is what an NVIDIA machine boots on. Kuma enables RPM Fusion
   free, not nonfree, and builds no kernel modules, so declaring

@@ -6,6 +6,46 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+### Added
+
+- **Kuma machines can hibernate.** Every machine's swap was zram, which is
+  memory, so there was never anywhere to write a hibernate image. Kuma can now
+  make a swapfile on the root disk and set the `resume=` and `resume_offset=`
+  kernel arguments that resume from it.
+
+- **`kuma install` asks**, after the encryption question, and creates the file
+  before it pulls the image. Off unless you say yes. `--swap 16G` answers early
+  and `--swap none` declines without being asked. On a disk you chose not to
+  encrypt, the install plan says that hibernating writes the contents of memory
+  to it in the clear.
+
+- **`kuma hibernate`** does the same on a machine that is already running, so
+  this needs no reinstall. It defaults to the size of memory, prints what it
+  would do, and changes nothing without `--yes`. `--off --yes` removes the
+  swapfile, its fstab lines and the kernel arguments. The kernel arguments take
+  effect on the next boot.
+
+  The file is never resized in place: growing it would move it on the disk, and
+  the kernel would then resume from the wrong place. Change the size by turning
+  it off and on again.
+
+- **`kuma doctor` grades it**, and grades the part that fails silently. If the
+  swapfile and the kernel arguments disagree, a hibernated machine boots fresh
+  and the session is gone with nothing logged. Doctor compares the two and says
+  so. Running `kuma hibernate --yes` on a machine that already has a usable
+  swapfile repairs exactly that, leaving the file where it is. Machines with no
+  swapfile are not graded, because they promise nothing.
+
+### Known limits
+
+- **No machine has yet hibernated and resumed under test.** The installer's
+  arithmetic is checked in CI, which installs with a swapfile and compares the
+  offset in the boot entry against the offset btrfs reports for the file it
+  points at. A full suspend-to-disk and resume cycle is not covered yet.
+- **Secure Boot is unmeasured.** Kernel lockdown can refuse hibernation, and
+  kuma ships shim, so Secure Boot machines are in scope. Whether hibernate
+  works on one has not been tested either way.
+
 ## v0.14.0 (2026-08-20)
 
 A declaration describes a system; it never described your files. `[backup]`

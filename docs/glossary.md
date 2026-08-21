@@ -51,6 +51,13 @@ into your home directory rather than into the system. Kuma's
 system. If it fails three times, the bootloader falls back to the previous
 deployment on its own.
 
+**Hibernate.** Writing memory to disk and powering off, so the machine comes
+back where it was. It needs a swapfile, which kuma can make at install or with
+`kuma hibernate`, and it needs the kernel told where that file sits on the
+disk. Distinct from suspend, which keeps memory powered and needs none of
+this. Not the same as **zram**, which is swap inside memory and therefore
+cannot hold a copy of it.
+
 **Installer media.** The USB stick a machine boots to be installed. Kuma's is
 live: its root filesystem is the desktop image itself, so what you look at
 before installing is what you get, and nothing is written until you say so.

@@ -707,6 +707,17 @@ the shape of the disk. Whether it holds a LUKS container is asked at install
 and cannot be revised afterwards without installing again, which is why it is
 asked before the plan is printed rather than defaulted either way.
 
+A swapfile is machine state for a sharper reason than the rest of it.
+Hibernating writes memory to a file and the kernel has to be told where that
+file physically sits on the disk, as a block offset. That number describes one
+file on one disk. It is not a property a declaration could carry, because two
+machines built from the same file would need different values, and a machine
+that got the wrong one would hibernate, power off, and boot fresh with the
+session gone. So the size is asked at install, like encryption, and
+`kuma hibernate` asks it on a machine that is already running. `kuma doctor`
+compares the number the kernel was given against the number the file actually
+has, because that is the only way this breaks quietly.
+
 A first boot then spends minutes on the rest of it. The account is made, the
 hostname applied, and the declared flatpaks and brews downloaded, which for a
 full desktop is about a gigabyte and takes a few minutes on an ordinary

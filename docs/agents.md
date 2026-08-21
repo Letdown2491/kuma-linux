@@ -32,9 +32,10 @@ The loop is: probe, execute one of the actions it named, probe again.
   drift, `snapshot --json` lists what this machine has kept, and
   `backup --json` reports the offsite repository, whether this machine has
   the credential the declaration names, and when a copy last completed.
-  All five change nothing, and both `snapshot --restore --json` and
-  `backup --restore --json` stay dry runs naming what they would overwrite
-  until `--yes`.
+  `hibernate --json` reports what a swapfile would cost and where it would go.
+  All six change nothing, and `snapshot --restore --json`,
+  `backup --restore --json` and `hibernate --off --json` stay dry runs naming
+  what they would overwrite or remove until `--yes`.
 
   `backup --json` answers without touching the network, deliberately, so an
   agent polling machine health never blocks on a repository being reachable.
