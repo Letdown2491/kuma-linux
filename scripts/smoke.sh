@@ -1326,11 +1326,15 @@ smoke_published() {
     # Whether a resumed machine can be switched off is its own question,
     # and run 10 is why it is asked separately from getting to the Secure
     # Boot half. That run resumed, proved the resume, and then reset
-    # instead of powering off: no shutdown output at all, straight from
-    # userspace to firmware, then a cold boot that sat at a login prompt
-    # while qemu stayed alive. Booting the same disk cold and asking it
-    # the same way powers off in ten seconds and ends with `reboot: Power
-    # down`, so this belongs to having resumed and not to the image.
+    # instead of powering off, leaving a cold boot sitting at a login
+    # prompt while qemu stayed alive. What it does NOT do is skip the
+    # shutdown: the guest's journal shows systemd stopping units
+    # normally and the machine dying about 180ms in. Booting the same
+    # disk cold and asking it the same way powers off in ten seconds and
+    # ends with `reboot: Power down`, so this belongs to having resumed
+    # and not to the image. A resumed machine also powers off correctly
+    # through sysrq, which puts it in the shutdown path rather than in
+    # the kernel's.
     #
     # Recorded rather than fatal on the spot, because one real bug
     # blocking the whole rest of the gate is how the Secure Boot half went
@@ -1359,6 +1363,17 @@ smoke_published() {
                 sleep 5
                 back=$((back + 5))
             done
+            # The dying boot's own account, taken while it is still the
+            # previous boot. The console cannot carry this and never
+            # could: `fbcon: Taking over console` moves systemd's output
+            # off ttyS0 on a desktop image, which is why run 10 read as
+            # "no shutdown output at all" and why that reading was wrong.
+            # The journal shows systemd running an ordinary shutdown and
+            # the machine dying about 180ms into it, with nothing logged
+            # at error level.
+            gsudo "journalctl -b -1 --no-pager -o short-monotonic" \
+                >"$dir/poweroff-reset.log" 2>/dev/null || true
+
             gsudo "systemd-run --no-block systemctl poweroff" >/dev/null 2>&1 || true
             off=0
             while kill -0 "$qemu" 2>/dev/null && [ $off -lt 180 ]; do
@@ -1425,9 +1440,11 @@ smoke_published() {
     fi
 
     if [ -n "$resumed_poweroff" ]; then
-        bad "the resumed machine reset instead of powering off: no shutdown output, \
-straight to firmware, then a cold boot. The same disk cold-booted powers off \
-correctly, so this is about having resumed. Console at $log"
+        bad "the resumed machine reset instead of powering off. systemd runs an \
+ordinary shutdown and the machine dies partway through it; the console cannot \
+show that, because fbcon takes ttyS0 on a desktop image. The dying boot's own \
+journal is at $dir/poweroff-reset.log. The same disk cold-booted powers off \
+correctly, so this is about having resumed."
     fi
 
     # --- the cross-version half ----------------------------------------
