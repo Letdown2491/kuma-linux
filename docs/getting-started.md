@@ -298,10 +298,17 @@ still refuse. `kuma install` and `kuma hibernate` say so before you spend the
 disk, and `kuma doctor` warns rather than calling the machine ready. Turning
 Secure Boot off in firmware is the only way to have both.
 
-`kuma doctor` grades the result, and grades the part that fails silently: if
-the file and the kernel arguments ever disagree, a hibernated machine boots
-fresh and the session is gone. Running `kuma hibernate --yes` on a machine that
-already has a swapfile repairs exactly that, leaving the file alone.
+`kuma doctor` grades the result, and grades the parts that fail silently: a
+swapfile and kernel arguments that disagree, which makes a hibernated machine
+boot fresh with the session gone, and SELinux labels that stop the sleep code
+reading the file at all. Running `kuma hibernate --yes` on a machine that
+already has a swapfile repairs both, leaving the file where it is.
+
+Hibernate from the desktop rather than over ssh. `systemctl hibernate` asks
+logind, which gates it on polkit, and polkit wants an active session; an ssh
+login is not one, so it is refused with `Access denied` before the kernel is
+ever asked. That is not kuma, and `kuma doctor` will still tell you the machine
+is ready.
 
 **Your files are the one thing this file cannot rebuild.** A declaration
 reproduces a system; it does not reproduce `/var/home`, and it never will,

@@ -102,7 +102,9 @@ failure someone had to diagnose:
   actually resolve. `avahi` alone announces without resolving.
 - **`zram-generator-defaults`** carries the config that activates zram. The
   base ships the generator without it, so the desktop would have zero swap and
-  the OOM killer would take windows under memory pressure.
+  the OOM killer would take windows under memory pressure. It is swap *in
+  memory*, so it cannot hold a copy of memory: hibernating needs a file on a
+  disk, which is what `kuma hibernate` makes.
 - **`glibc-langpack-en`** provides real locale data. The base ships
   `glibc-minimal-langpack`, so `en_US.UTF-8` fails to resolve and waybar's
   clock disables itself.

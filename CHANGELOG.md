@@ -49,8 +49,10 @@ differently. Why it changed belongs in the commit that made it.
   file typed `swapfile_t`, and the policy's own default for a file under `/var`
   is `var_t`, which it cannot read. A machine with the wrong label has a
   correct swapfile, correct kernel arguments and active swap, and fails at the
-  moment you ask it to hibernate. Kuma images now declare that path a swapfile
-  and relabel it at boot, and `kuma doctor` grades the label.
+  moment you ask it to hibernate. There are two labels to get right, not one:
+  the file, and the directory `systemd-sleep` has to search to reach it. Kuma
+  images declare that path a swapfile and relabel both at boot, and
+  `kuma doctor` grades both.
 
 ### Known limits
 
@@ -58,13 +60,16 @@ differently. Why it changed belongs in the commit that made it.
   decision rather than kuma's. See above: everything kuma sets up is correct and
   the kernel still refuses. Turning Secure Boot off in firmware is the only way
   to have both.
-- **Tested in a virtual machine, not on a laptop lid.** CI installs a machine
-  with a swapfile, hibernates it, confirms it powered off, boots it again, and
-  checks the kernel's own `boot_id` to prove it resumed rather than started
-  fresh. It then boots the same disk on firmware with Microsoft's keys enrolled
-  to check that kuma reports the refusal rather than claiming readiness. What
-  none of that covers is your hardware: lid-close behaviour, firmware that
-  mishandles S4, and drivers that do not survive a suspend all vary by machine.
+- **Tested in a virtual machine, not on a laptop lid.** A VM installed with a
+  kuma swapfile hibernates and comes back: same kernel `boot_id`, memory
+  restored, uptime continuing. What that cannot cover is your hardware.
+  Lid-close behaviour, firmware that mishandles S4, and drivers that do not
+  survive a suspend all vary by machine, and none of them are things kuma can
+  test for you.
+- **Hibernating over ssh is refused**, and not by kuma. `systemctl hibernate`
+  asks logind, which gates it on polkit, whose policy wants an active session;
+  an ssh login is not one and there is no agent to answer the prompt. Hibernate
+  from the desktop, where your session is active.
 
 ## v0.14.0 (2026-08-20)
 
