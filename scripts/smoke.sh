@@ -632,6 +632,13 @@ smoke_published() {
     mkdir -p "$dir"
     rm -f "$raw"
     truncate -s 24G "$raw"
+    # Once per run, not once per boot. The chardev appends now, which is
+    # what lets the boot that hibernates and the boot that resumes be read
+    # side by side; the cost is that a failed run leaves its directory
+    # behind and the next run's log opens with the previous run's tail.
+    # Run 10's log began with three firmware banners and a GPT UUID that
+    # belonged to a disk that no longer existed.
+    : >"$log"
 
     # --update-from only when the machine is meant to move somewhere else
     # later. It is the flag that says "install this, but track that", and
@@ -1315,6 +1322,21 @@ smoke_published() {
     # it refuses, this asserts doctor warns and names the reason. What is
     # pinned is that kuma agrees with the kernel, not what the kernel
     # says.
+    #
+    # Whether a resumed machine can be switched off is its own question,
+    # and run 10 is why it is asked separately from getting to the Secure
+    # Boot half. That run resumed, proved the resume, and then reset
+    # instead of powering off: no shutdown output at all, straight from
+    # userspace to firmware, then a cold boot that sat at a login prompt
+    # while qemu stayed alive. Booting the same disk cold and asking it
+    # the same way powers off in ten seconds and ends with `reboot: Power
+    # down`, so this belongs to having resumed and not to the image.
+    #
+    # Recorded rather than fatal on the spot, because one real bug
+    # blocking the whole rest of the gate is how the Secure Boot half went
+    # nine runs without executing. The run still fails; it fails after
+    # everything else has had its turn.
+    local resumed_poweroff=""
     if [ $SECURE_BOOT -eq 1 ]; then
         echo "   .. powering off to boot the same disk under Secure Boot"
         gsudo "systemd-run --no-block systemctl poweroff" >/dev/null 2>&1 || true
@@ -1323,7 +1345,32 @@ smoke_published() {
             sleep 5
             off=$((off + 5))
         done
-        kill -0 "$qemu" 2>/dev/null && bad "it would not power off; console at $log"
+        if kill -0 "$qemu" 2>/dev/null; then
+            resumed_poweroff=reset
+            echo "   .. it did not go off; waiting for the boot it reset into" >&2
+            # Ride the boot it reset into rather than killing qemu: a cold
+            # boot on this disk powers off correctly, so this reaches
+            # Secure Boot from a cleanly stopped machine instead of from
+            # whatever a SIGKILL leaves on the filesystem.
+            local back=0
+            until guest true; do
+                [ $back -lt 300 ] \
+                    || bad "it neither powered off nor came back; console at $log"
+                sleep 5
+                back=$((back + 5))
+            done
+            gsudo "systemd-run --no-block systemctl poweroff" >/dev/null 2>&1 || true
+            off=0
+            while kill -0 "$qemu" 2>/dev/null && [ $off -lt 180 ]; do
+                sleep 5
+                off=$((off + 5))
+            done
+            kill -0 "$qemu" 2>/dev/null \
+                && bad "it would not power off from a cold boot either; console at $log"
+            echo "   .. off, from the boot it reset into"
+        else
+            ok "the resumed machine powered off rather than resetting"
+        fi
 
         boot_vm secure
         await_healthy_boot "$qemu" "$log" \
@@ -1375,6 +1422,12 @@ smoke_published() {
                 "doctor warns without naming lockdown, so nobody can act on it: $detail"
             ok "the kernel refuses hibernation under Secure Boot, and doctor says so instead of claiming ready"
         fi
+    fi
+
+    if [ -n "$resumed_poweroff" ]; then
+        bad "the resumed machine reset instead of powering off: no shutdown output, \
+straight to firmware, then a cold boot. The same disk cold-booted powers off \
+correctly, so this is about having resumed. Console at $log"
     fi
 
     # --- the cross-version half ----------------------------------------
