@@ -143,6 +143,36 @@ stale=$(find src Cargo.toml Cargo.lock -newer "$KUMA" -print -quit 2>/dev/null |
     exit 2
 }
 
+# And the same question about the image, which is the half that guard did
+# not cover and which cost a run of the slowest stage here.
+#
+# `--published localhost/...` installs a tag built from this tree by an
+# earlier invocation, and nothing made that tag when the tree changed. A
+# fix that lives in the image rather than in the binary — a unit, a
+# policy rule, the kuma that gets baked in — is then absent from the
+# machine under test, and every assertion runs against a system that
+# predates the thing being tested. That is exactly the shape the binary
+# guard above exists to refuse, so it is refused the same way.
+#
+# Only for a localhost tag. An image from a registry was not built from
+# this tree and cannot be stale against it, which is the whole point of
+# the published stage.
+case "$PUBLISHED" in
+    localhost/*)
+        built=$(podman image inspect --format '{{.Created.Format "2006-01-02T15:04:05Z07:00"}}' \
+                "$PUBLISHED" 2>/dev/null || true)
+        if [ -n "$built" ]; then
+            newer=$(find src Cargo.toml Cargo.lock -newermt "$built" -print -quit 2>/dev/null || true)
+            [ -z "$newer" ] || {
+                echo "$PUBLISHED was built at $built, before $newer changed." >&2
+                echo "It would install a machine that predates what you are testing." >&2
+                echo "Rebuild it first:  ./scripts/smoke.sh --keep <example>" >&2
+                exit 2
+            }
+        fi
+        ;;
+esac
+
 PASS=(); FAIL=()
 note() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 ok()   { printf '   ok   %s\n' "$*"; }
