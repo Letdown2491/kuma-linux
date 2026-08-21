@@ -15,6 +15,7 @@ mod lock;
 mod menu;
 mod overrides;
 mod partition;
+mod seam;
 mod snapshot;
 mod state;
 mod updates;
@@ -268,6 +269,17 @@ enum Cmd {
         /// Report what was reclaimed as JSON (progress moves to stderr)
         #[arg(long)]
         json: bool,
+    },
+    /// Open kuma.toml in your editor ($EDITOR, else nano/vim/vi)
+    // Not an editor kuma wrote: it resolves which declaration this
+    // machine is actually using and hands that path to the person's own
+    // editor. The resolution is the whole value — a local ./kuma.toml
+    // outranks ~/.config/kuma/kuma.toml, and editing the wrong one of
+    // those and wondering why nothing changed is the trap this closes.
+    Edit {
+        /// Print the path instead of opening it
+        #[arg(long)]
+        print: bool,
     },
     /// Declare packages in kuma.toml (pick the list: --rpm, --flatpak, --brew)
     // The list is required and exclusive, expressed to clap rather than
@@ -626,6 +638,9 @@ fn run(
             capture::capture(config_path, &config, &names, yes, json)
         }
         Cmd::Remove { names, json: _ } => edit::remove(config_path, &names, json),
+        // announce=false: the path is the output when --print, and the
+        // editor takes the terminal when it isn't.
+        Cmd::Edit { print } => edit::open(&read_config_path(config_path, explicit, false), print),
         Cmd::Diff { json } => {
             let json = json || root_json;
             // announce=false in JSON mode: stdout must stay pure JSON

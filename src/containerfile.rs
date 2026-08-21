@@ -1,4 +1,5 @@
 use crate::config::{Config, Desktop};
+use crate::seam;
 use anyhow::{Context, Result};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -54,6 +55,8 @@ const NIRI_PACKAGES: &[&str] = &[
     // name, which is not something to leave to somebody else's
     // dependency graph.
     "adwaita-icon-theme",
+    // desktop-file-validate: the build checks the entries it generates
+    "desktop-file-utils",
     // nmtui: what `kuma menu` offers for wifi, in preference to the
     // graphical editor below, because a terminal program inherits the
     // terminal's theme instead of arriving as a window from another
@@ -170,6 +173,13 @@ const COSMIC_PACKAGES: &[&str] = &[
     "udisks2",
     "default-fonts-core-emoji",
     "google-noto-sans-cjk-vf-fonts",
+    // the seam's dependencies, named rather than assumed: kuma's desktop
+    // entries draw Adwaita's symbolic icons and the build validates them
+    // with desktop-file-validate. Both ride in today on cosmic-session's
+    // closure, and a seam that silently loses its icons because an
+    // unrelated package stopped depending on a theme is not a seam
+    "adwaita-icon-theme",
+    "desktop-file-utils",
 ];
 
 /// COSMIC's packaged dock pins the Firefox flatpak and cosmic-store —
@@ -1736,6 +1746,57 @@ fn autostart_off(name: &str) -> String {
     format!("[Desktop Entry]\nType=Application\nName={name}\nHidden=true\n")
 }
 
+/// Runs a kuma verb in a terminal window, for the desktop entries in
+/// [`crate::seam`].
+///
+/// **`Terminal=true` is the obvious way and does not work here.** It
+/// hands the job to whatever the launcher believes a terminal is, which
+/// differs per launcher, is configured separately in several, and is
+/// nothing at all in some. kuma knows which terminal it put in the
+/// image, so it opens that one, and the entries stay identical on niri
+/// and COSMIC because the difference lives here instead of in them.
+///
+/// The window is held open after the verb exits. A terminal launched as
+/// `kitty -e <command>` closes the instant the command returns; every
+/// one of these prints something worth reading, and the ones that ask
+/// for a password are exactly the ones whose window would otherwise
+/// vanish as the password is finished.
+pub(crate) const KUMA_LAUNCH: &str = r#"#!/usr/bin/bash
+set -euo pipefail
+
+if [ "$#" -eq 0 ]; then
+    printf 'usage: kuma-launch <verb> [args...]\n' >&2
+    exit 2
+fi
+
+# Not a fallback chain into xterm: an image either has the terminal its
+# desktop set installed or it has no graphical session to launch from.
+terminal=
+for candidate in kitty cosmic-term; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+        terminal=$candidate
+        break
+    fi
+done
+if [ -z "$terminal" ]; then
+    printf 'kuma-launch: this image ships no terminal to run `kuma %s` in\n' "$1" >&2
+    exit 1
+fi
+
+# The verb and its arguments are passed to the held script as arguments
+# rather than pasted into it. Assembling a command line into a string is
+# how an argument with a space in it becomes two arguments, and nothing
+# here has to be a string.
+exec "$terminal" -e /usr/bin/bash -c '
+"$@"
+status=$?
+printf "\n"
+[ "$status" -eq 0 ] || printf "exited %s\n" "$status"
+printf "[kuma] press enter to close "
+read -r _
+' kuma-launch kuma "$@"
+"#;
+
 /// Volume/brightness OSD: wob draws an overlay bar from levels written
 /// to a FIFO (swayosd would be nicer but is COPR-only). kuma-osd is
 /// bound to the media keys in place of niri's stock wpctl binds — it
@@ -2719,6 +2780,35 @@ pub fn generate(config: &Config) -> String {
         out.push_str(
             "COPY --chmod=755 kuma-greeter-check /usr/lib/greenboot/check/required.d/50-kuma-greeter.sh\n",
         );
+
+        // kuma's own verbs, in whatever launcher the session shipped.
+        // On both desktops, deliberately: the seam is the thing being
+        // tested, and it is only a seam if it is not niri's.
+        out.push_str("COPY --chmod=755 kuma-launch /usr/libexec/kuma-launch\n");
+        for entry in seam::ENTRIES {
+            out.push_str(&format!("COPY {}.desktop {}\n", entry.id, seam::path(entry)));
+        }
+        // The build validates what it generated rather than leaving it
+        // to the smoke stage. A malformed entry does not fail anything
+        // at runtime: it is silently skipped, so the verb simply is not
+        // in the launcher and nothing anywhere says why.
+        out.push_str(&format!(
+            "RUN desktop-file-validate {}\n",
+            seam::ENTRIES.iter().map(seam::path).collect::<Vec<String>>().join(" ")
+        ));
+        // And that what the entries name is in the image.
+        // desktop-file-validate reads the syntax of the `Exec` line and
+        // never whether the program on it exists, which is the half that
+        // breaks when a package moves. The icon is checked for the same
+        // reason and by file: an entry whose icon does not resolve draws
+        // a blank square, which is not an error anywhere.
+        //
+        // `/usr/bin/kuma` is deliberately not checked here — it is copied
+        // much later in the file and proved runnable there, and a guard
+        // before its COPY proves nothing.
+        out.push_str(
+            "RUN test -x /usr/libexec/kuma-launch \\\n    && test -f /usr/share/icons/Adwaita/symbolic/legacy/text-editor-symbolic.svg\n",
+        );
     }
     out.push_str("COPY --chmod=755 kuma-boot-health-sync /usr/libexec/kuma-boot-health-sync\n");
     out.push_str(
@@ -2987,6 +3077,10 @@ pub fn write_context(
         std::fs::write(dir.join("fastfetch-logo.txt"), FASTFETCH_LOGO)?;
         std::fs::write(dir.join("kuma-wallpaper.jpg"), WALLPAPER)?;
         std::fs::write(dir.join("kuma-greeter-check"), GREETER_CHECK)?;
+        std::fs::write(dir.join("kuma-launch"), KUMA_LAUNCH)?;
+        for entry in seam::ENTRIES {
+            std::fs::write(dir.join(format!("{}.desktop", entry.id)), seam::render(entry))?;
+        }
     }
     if config.system.desktop == Desktop::Cosmic {
         std::fs::write(dir.join("cosmic-favorites"), COSMIC_FAVORITES)?;
@@ -3712,6 +3806,139 @@ mod tests {
         context("schema_version = 1\n[system]\ndesktop = \"cosmic\"\n", dir.path());
         let script = std::fs::read_to_string(dir.path().join("kuma-greeter-check")).unwrap();
         assert!(script.starts_with("#!/usr/bin/bash"));
+    }
+
+    /// `kuma-launch` is valid bash. Every script kuma embeds has shipped
+    /// unchecked at least once, and CI only shellchecks `scripts/`.
+    #[test]
+    fn kuma_launch_parses_as_shell() {
+        use std::io::Write;
+        let mut child = std::process::Command::new("bash")
+            .args(["-n", "/dev/stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(KUMA_LAUNCH.as_bytes()).unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// The verb reaches the terminal as separate arguments.
+    ///
+    /// This is the whole reason the held script takes `"$@"` instead of a
+    /// command pasted into a string: `kuma snapshot restore /home/a b`
+    /// assembled by concatenation is a different command than the one
+    /// asked for, and the failure is silent for every path without a
+    /// space in it. A fake terminal that prints its own argv is the only
+    /// way to see the boundaries.
+    #[test]
+    fn kuma_launch_passes_the_verb_as_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        // A fake kitty that prints each argument on its own line, so the
+        // boundaries between them are visible in the output.
+        std::fs::write(
+            bin.join("kitty"),
+            "#!/usr/bin/bash
+for a in \"$@\"; do printf '%s\\n' \"$a\"; done
+",
+        )
+        .unwrap();
+        let launch = dir.path().join("kuma-launch");
+        std::fs::write(&launch, KUMA_LAUNCH).unwrap();
+        for path in [bin.join("kitty"), launch.clone()] {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let out = std::process::Command::new(&launch)
+            .args(["snapshot", "restore", "/home/a b"])
+            .env("PATH", bin.to_str().unwrap())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let lines: Vec<&str> = std::str::from_utf8(&out.stdout).unwrap().lines().collect();
+        assert_eq!(&lines[..3], ["-e", "/usr/bin/bash", "-c"], "{lines:?}");
+        // The held script is one argument spanning several printed lines;
+        // $0 and the command follow it, and it is their boundaries this
+        // test is about.
+        assert_eq!(
+            &lines[lines.len() - 5..],
+            ["kuma-launch", "kuma", "snapshot", "restore", "/home/a b"],
+            "{lines:?}"
+        );
+    }
+
+    /// No terminal in the image is an error that says so, not a launcher
+    /// entry that does nothing when clicked.
+    #[test]
+    fn kuma_launch_says_when_there_is_no_terminal() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("bin");
+        std::fs::create_dir(&empty).unwrap();
+        let launch = dir.path().join("kuma-launch");
+        std::fs::write(&launch, KUMA_LAUNCH).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&launch, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let out = std::process::Command::new(&launch)
+            .arg("doctor")
+            .env("PATH", empty.to_str().unwrap())
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("no terminal"),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Called with nothing, it says how to call it rather than opening a
+    /// terminal that runs a bare `kuma`.
+    #[test]
+    fn kuma_launch_refuses_an_empty_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let launch = dir.path().join("kuma-launch");
+        std::fs::write(&launch, KUMA_LAUNCH).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&launch, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let out = std::process::Command::new(&launch).output().unwrap();
+        assert_eq!(out.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("usage:"));
+    }
+
+    /// The entries and the wrapper reach both desktops, which is the seam
+    /// being tested rather than asserted: `kuma menu` was niri-only
+    /// because fuzzel was, and a replacement that inherits that is not a
+    /// replacement.
+    #[test]
+    fn the_seam_is_on_every_desktop() {
+        for desktop in ["niri", "cosmic"] {
+            let out = generate(&config(&format!(
+                "schema_version = 1\n[system]\ndesktop = \"{desktop}\""
+            )));
+            assert!(
+                out.contains("COPY --chmod=755 kuma-launch /usr/libexec/kuma-launch"),
+                "{desktop} has no wrapper"
+            );
+            for entry in seam::ENTRIES {
+                assert!(
+                    out.contains(&format!("COPY {}.desktop {}", entry.id, seam::path(entry))),
+                    "{desktop} is missing {}",
+                    entry.id
+                );
+            }
+            assert!(out.contains("RUN desktop-file-validate "), "{desktop} does not validate");
+        }
+    }
+
+    /// And not on a machine with no desktop, which has no launcher to put
+    /// them in.
+    #[test]
+    fn the_seam_is_absent_without_a_desktop() {
+        let out = generate(&config("schema_version = 1"));
+        assert!(!out.contains("kuma-launch"), "a headless image has no launcher");
     }
 
     /// A greeter that starts, dies, and is restarted is not a greeter.

@@ -227,6 +227,35 @@ the terminal tool where there is one, the graphical tool where there is not,
 and no row at all where there is neither. Nothing it runs to draw itself needs
 root, so opening it never asks for a password.
 
+## kuma in your launcher
+
+Every desktop kuma builds puts kuma's own verbs in whatever launcher the
+session shipped. Type `kuma` into it and eight entries come back: edit the
+declaration, show drift, review proposals, system health, check for updates,
+rebuild, roll back, snapshots.
+
+They are ordinary `.desktop` files in `/usr/share/applications`, so the
+launcher that finds your applications finds these the same way, with no plugin
+to install and nothing to configure. That is the point: a desktop entry is the
+one integration every desktop already has, so these are on the COSMIC desktop
+as well as the niri one, and a desktop kuma has not built yet would get them
+too.
+
+Each opens a terminal window, runs the verb and leaves the window open
+afterwards, because several of them ask for a password and all of them print
+something worth reading. Press enter to close it.
+
+`Edit Declaration` runs `kuma edit`, which opens the declaration **this machine
+is actually using** in `$EDITOR`, falling back to nano, vim or vi. Which file
+that is depends on where you run it from: a `kuma.toml` in the current
+directory outranks `~/.config/kuma/kuma.toml`. `kuma edit --print` says which
+one it resolved without opening anything.
+
+No entry writes your declaration without asking. That is the same line drawn in
+[what happens to changes you make by hand](#what-happens-to-changes-you-make-by-hand):
+`Review proposals` runs `kuma capture`, which prints the proposal and waits, and
+`Rebuild` writes an image rather than the file.
+
 ## Why a desktop installs things you did not name
 
 Choosing a desktop installs packages you did not name. That set is session

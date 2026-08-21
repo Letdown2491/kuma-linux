@@ -12,6 +12,63 @@ use toml_edit::{value, Array, DocumentMut, Item, Table, Value};
 
 const LISTS: &[&str] = &["rpm", "flatpak", "brew"];
 
+/// `kuma edit`: hand the resolved declaration to the person's own editor.
+///
+/// kuma does not write here and does not read the result. What it
+/// contributes is the path, which is the part that is easy to get wrong:
+/// a `./kuma.toml` in the current directory outranks
+/// `~/.config/kuma/kuma.toml`, so "I edited kuma.toml and nothing
+/// changed" has two files behind it and no error message.
+///
+/// The editor replaces this process rather than being waited on. A
+/// desktop entry runs this in a terminal window through `kuma-launch`,
+/// and an editor that is a child of a child gets its signals and its
+/// terminal resizes through two hops that neither of them handle.
+pub fn open(path: &Path, print: bool) -> Result<()> {
+    if print {
+        println!("{}", path.display());
+        return Ok(());
+    }
+    if !path.exists() {
+        bail!("no declaration at {}; `kuma init` writes one", path.display());
+    }
+    let editor = editor();
+    let error = exec_editor(&editor, path);
+    // exec only returns on failure.
+    Err(error).with_context(|| format!("could not run {editor}"))
+}
+
+/// $EDITOR is the person's answer and outranks any default. The
+/// fallbacks are ordered by what a kuma image actually has: the base
+/// composes ncurses and Fedora's minimal core carries vi, while nano is
+/// only ever present because somebody declared it.
+fn editor() -> String {
+    std::env::var("EDITOR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| ["nano", "vim", "vi"].iter().find(|e| on_path(e)).map(|e| (*e).to_string()))
+        .unwrap_or_else(|| "vi".to_string())
+}
+
+fn exec_editor(editor: &str, path: &Path) -> std::io::Error {
+    use std::os::unix::process::CommandExt;
+    std::process::Command::new(editor).arg(path).exec()
+}
+
+/// A program somebody can actually run. `is_file` alone would pick an
+/// editor that is on PATH and not executable, which is a fallback that
+/// resolves and then fails.
+fn on_path(program: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| {
+        std::fs::metadata(dir.join(program))
+            .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    })
+}
+
 pub fn add(path: &Path, list: &str, names: &[String], json: bool) -> Result<()> {
     if list == "flatpak" {
         refuse_unknown_flatpaks(names)?;

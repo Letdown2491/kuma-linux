@@ -6,6 +6,24 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+### Added
+
+- **kuma's own verbs are in your launcher.** Eight entries: edit the
+  declaration, show drift, review proposals, system health, check for updates,
+  rebuild, roll back, snapshots. Type `kuma` into whatever launcher the session
+  shipped and they come back. They are ordinary `.desktop` files, so there is
+  no plugin to install and nothing to configure, and they are on the COSMIC
+  desktop as well as the niri one.
+
+  Each opens a terminal window and holds it open after the verb exits, so
+  output you were meant to read is still there. Press enter to close it.
+
+- **`kuma edit`** opens the declaration this machine is actually using, in
+  `$EDITOR` and otherwise nano, vim or vi. `kuma edit --print` prints the path
+  it resolved without opening anything, which is the answer to "which kuma.toml
+  am I editing" when a `./kuma.toml` in the current directory is outranking
+  `~/.config/kuma/kuma.toml`.
+
 ## v0.15.0 (2026-08-21)
 
 Swap was always zram, which is memory, so a kuma machine could sleep but never
