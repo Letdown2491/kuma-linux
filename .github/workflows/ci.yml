@@ -91,8 +91,18 @@ jobs:
       - run: cargo test --locked --all-targets
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo build --locked --release
+      # Pinned to an image rather than the runner's shellcheck, because
+      # the runner's version is whatever the Ubuntu image ships that week
+      # and it silently decides what this gate means. That is not
+      # hypothetical: 0.15 was written against 0.11.0 locally, which
+      # reports these files clean, while the runner had a version that
+      # still emits SC2015 and fails the step. "shellcheck clean locally"
+      # has to be the same sentence as "shellcheck clean in CI", and the
+      # only way to say it once is to name the version.
       - name: shellcheck
-        run: shellcheck scripts/smoke.sh
+        run: |
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt \
+            koalaman/shellcheck:v0.11.0 scripts/smoke.sh
 
       # A workflow can be valid YAML and still be nonsense to Actions,
       # which only says so by refusing to run any job at all. That is a
@@ -214,7 +224,7 @@ jobs:
       - name: guest console
         if: failure()
         run: tail -200 "vm-smoke/${{ matrix.example }}/console.log" || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: console-${{ matrix.example }}
@@ -258,7 +268,7 @@ jobs:
       - name: guest console
         if: failure()
         run: tail -200 vm-smoke/published/console.log || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: console-install
@@ -305,7 +315,7 @@ jobs:
       - name: guest console
         if: failure()
         run: tail -200 vm-smoke/published/console.log || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: console-hibernate
@@ -344,7 +354,7 @@ jobs:
       - name: guest console
         if: failure()
         run: tail -200 vm-smoke/dead-disk/console.log || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: console-dead-disk
@@ -410,7 +420,7 @@ jobs:
         if: failure()
         run: tail -100 vm-smoke/niri-iso/console.log || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: iso-console
@@ -424,7 +434,7 @@ jobs:
       # distribution channel. Compression is off: the ISO is already a
       # solid zstd stream and re-compressing 1.8 GB buys nothing but
       # minutes.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: kuma-live-iso
           path: vm-smoke/niri-iso/KUMA.iso

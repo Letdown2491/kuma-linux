@@ -291,7 +291,7 @@ find_ovmf_secboot() {
                 "/usr/share/edk2-ovmf/x64/OVMF_CODE.secboot.fd /usr/share/edk2-ovmf/x64/OVMF_VARS.secboot.fd"; do
         code=${pair%% *}
         vars=${pair##* }
-        [ -f "$code" ] && [ -f "$vars" ] || continue
+        if [ ! -f "$code" ] || [ ! -f "$vars" ]; then continue; fi
         printf '%s %s\n' "$code" "$vars"
         return 0
     done
@@ -1143,8 +1143,9 @@ smoke_published() {
         local zram_pri file_pri
         zram_pri=$(awk '$1 ~ /zram/ { print $NF }' <<<"$swaps")
         file_pri=$(awk '$1 == "/var/swap/swapfile" { print $NF }' <<<"$swaps")
-        [ -n "$zram_pri" ] && [ -n "$file_pri" ] \
-            || bad "cannot read swap priorities from: $swaps"
+        if [ -z "$zram_pri" ] || [ -z "$file_pri" ]; then
+            bad "cannot read swap priorities from: $swaps"
+        fi
         [ "$file_pri" -lt "$zram_pri" ] \
             || bad "the swapfile has priority $file_pri against zram's $zram_pri, so paging would hit the disk first"
         ok "both swap areas are active, and the file ($file_pri) sits below zram ($zram_pri)"

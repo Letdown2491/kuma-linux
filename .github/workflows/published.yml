@@ -75,7 +75,7 @@ jobs:
       - name: guest console
         if: failure()
         run: tail -200 vm-smoke/published/console.log || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: console-published
@@ -112,7 +112,7 @@ jobs:
           tail -200 vm-smoke/published/console.log || true
           echo "=== what the unlocker saw ==="
           cat vm-smoke/published/unlock.log || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: console-encrypted
@@ -193,7 +193,7 @@ jobs:
       - name: guest console
         if: failure()
         run: tail -200 vm-smoke/published/console.log || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: console-cross-version
