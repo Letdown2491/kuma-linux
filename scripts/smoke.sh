@@ -1128,13 +1128,24 @@ smoke_published() {
         # reported rather than fatal: this run exists to prove a resume,
         # and a diagnostic that cannot speak is not a reason to stop
         # before the thing being tested. A definite refusal still is.
+        # logind answers with one of four words and only two of them are
+        # refusals. `yes` is allowed; `challenge` means available but
+        # needing authentication, which over ssh it always does, because
+        # polkit wants an active session and this is not one. `no` is
+        # not permitted and `na` is not available at all, which is what a
+        # kernel with hibernation locked down reports.
+        #
+        # Reading `challenge` as a failure cost a run: it is the word a
+        # correctly configured machine gives here, and the one observed
+        # immediately before a successful hibernate. It is also moot for
+        # this stage, which starts the unit directly rather than asking
+        # logind, precisely to get out from under that authentication.
         local can_raw can
         can_raw=$(guest "busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager CanHibernate 2>&1" || true)
         can=$(printf '%s' "$can_raw" | cut -s -d'"' -f2)
         case "$can" in
-            yes) ok "logind says this machine can hibernate" ;;
+            yes|challenge) ok "logind says this machine can hibernate ($can)" ;;
             "")  echo "   .. logind gave no answer to CanHibernate (raw: ${can_raw:-no output at all})." >&2
-                 echo "   .. expected over ssh: polkit gates this on an active session, and there is none." >&2
                  echo "   .. going on, because the kernel offers hibernation and the swapfile is active." >&2 ;;
             *)   bad "logind says CanHibernate=$can on a machine with an active swapfile and a resume karg (raw: $can_raw)" ;;
         esac
@@ -1288,14 +1299,18 @@ smoke_published() {
         echo "   .. /sys/power/state: ${sb_offers:-unreadable}; logind: ${can_raw:-no answer}"
 
         if grep -qw disk <<<"$sb_offers"; then
-            [ "$can" = yes ] || bad \
-                "the kernel offers hibernation ($sb_offers) but logind says CanHibernate=${can:-nothing}"
+            case "$can" in
+                yes|challenge) ;;
+                *) bad "the kernel offers hibernation ($sb_offers) but logind says CanHibernate=${can:-nothing}" ;;
+            esac
             [ "$grade" = ok ] || bad \
                 "this kernel hibernates under Secure Boot and doctor grades it '$grade': $detail"
             ok "this kernel hibernates under Secure Boot, and doctor agrees"
         else
-            [ "$can" != yes ] || bad \
-                "logind offers hibernation while the kernel does not list disk ($sb_offers)"
+            case "$can" in
+                yes|challenge)
+                    bad "logind offers hibernation ($can) while the kernel does not list disk ($sb_offers)" ;;
+            esac
             [ "$grade" != ok ] || bad \
                 "doctor grades hibernate ok on a machine whose kernel refuses it (lockdown: ${lockdown:-unknown}); this is the promise kuma must not make"
             [ "$grade" = warn ] || bad \
