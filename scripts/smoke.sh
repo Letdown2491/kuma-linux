@@ -1157,9 +1157,13 @@ smoke_published() {
         # machine that merely rebooted well. The file in /run is tmpfs,
         # which a cold boot starts empty, so its presence says userspace
         # memory came back too and not only the kernel's.
-        local before_boot_id before_uptime
+        local before_boot_id before_uptime resume_pages
         before_boot_id=$(guest cat /proc/sys/kernel/random/boot_id)
         before_uptime=$(guest "cut -d' ' -f1 /proc/uptime")
+        # Where the kernel will look on the way back, asked of the kernel
+        # rather than of the boot entry, so the check below compares the
+        # disk against what is actually loaded.
+        resume_pages=$(guest "cat /sys/power/resume_offset")
         [ -n "$before_boot_id" ] || bad "could not read the boot_id before hibernating"
         gsudo "touch /run/kuma-resumed" >/dev/null 2>&1 || true
         guest "test -f /run/kuma-resumed" \
@@ -1210,7 +1214,37 @@ smoke_published() {
         done
         kill -0 "$qemu" 2>/dev/null \
             && bad "still running 300s after systemctl hibernate; console at $log"
-        ok "the machine wrote its image and powered off after ${waited}s"
+        ok "the machine powered off after ${waited}s"
+
+        # Powering off is not the same as writing an image, and until
+        # this check existed the difference was invisible. "It booted
+        # fresh" is the identical observation whether nothing was written
+        # or something was written somewhere the resume cannot find, and
+        # those are different bugs in different halves of the system. One
+        # of them cost an evening of booting the abandoned disk by hand
+        # to guess between them.
+        #
+        # The swap header sits in the last ten bytes of the first page of
+        # the swap area: `SWAPSPACE2` for ordinary swap, `S1SUSPEND` once
+        # it holds a hibernation image. Read straight out of the disk
+        # image while nothing has it open, at the offset the kernel was
+        # told to resume from.
+        if [ -n "$resume_pages" ]; then
+            local part_start byte sig
+            part_start=$(sudo sfdisk -J "$raw" 2>/dev/null \
+                | python3 -c 'import sys,json; print(json.load(sys.stdin)["partitiontable"]["partitions"][2]["start"])' \
+                2>/dev/null || true)
+            if [ -n "$part_start" ]; then
+                byte=$(( part_start * 512 + resume_pages * 4096 + 4086 ))
+                sig=$(sudo dd if="$raw" bs=1 skip="$byte" count=10 status=none 2>/dev/null || true)
+                case "$sig" in
+                    S1SUSPEND)
+                        ok "a hibernation image is on the disk where resume_offset points" ;;
+                    *)
+                        bad "no hibernation image at resume_offset ($resume_pages pages into the root partition): the swap header there reads '${sig:-nothing}'. The machine powered off without leaving one where the kernel will look for it." ;;
+                esac
+            fi
+        fi
 
         echo "   .. starting it again"
         boot_vm plain
