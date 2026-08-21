@@ -6,6 +6,12 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+## v0.15.0 (2026-08-21)
+
+Swap was always zram, which is memory, so a kuma machine could sleep but never
+hibernate. It can now put a swapfile on the disk, point the kernel at it, and
+say plainly when the machine will refuse.
+
 ### Added
 
 - **Kuma machines can hibernate.** Every machine's swap was zram, which is
@@ -60,12 +66,13 @@ differently. Why it changed belongs in the commit that made it.
   decision rather than kuma's. See above: everything kuma sets up is correct and
   the kernel still refuses. Turning Secure Boot off in firmware is the only way
   to have both.
-- **Tested in a virtual machine, not on a laptop lid.** A VM installed with a
-  kuma swapfile hibernates and comes back: same kernel `boot_id`, memory
-  restored, uptime continuing. What that cannot cover is your hardware.
-  Lid-close behaviour, firmware that mishandles S4, and drivers that do not
-  survive a suspend all vary by machine, and none of them are things kuma can
-  test for you.
+- **Proven in a virtual machine, not on your hardware.** A gate installs a
+  machine, hibernates it, boots it again and asks three questions the answer to
+  "did it come up" cannot answer: the kernel's own `boot_id`, a marker in
+  tmpfs, and whether uptime continued. All three say the same session came
+  back. What that cannot cover is your machine. Lid-close behaviour, firmware
+  that mishandles S4, and drivers that do not survive a suspend vary by
+  hardware, and none of them are things kuma can test for you.
 - **Hibernating over ssh is refused**, and not by kuma. `systemctl hibernate`
   asks logind, which gates it on polkit, whose policy wants an active session;
   an ssh login is not one and there is no agent to answer the prompt. Hibernate
