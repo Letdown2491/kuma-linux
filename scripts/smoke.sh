@@ -193,6 +193,17 @@ ok()   { printf '   ok   %s\n' "$*"; }
 # result is written down and dated; anything else is a FAIL wearing a
 # quieter word.
 warn() { printf '   warn %s\n' "$*"; printf '%s\n' "$*" >>"$WARNLOG"; }
+# Read back by EVERY summary, and there are three: the example sweep, the
+# published stage and the dead-disk stage each end in their own block and
+# exit before reaching the next. The first version of this only printed in
+# the sweep's summary -- and the published stage is the one that actually
+# raises warnings, so run 14 finished "all good" over a warning with the
+# readback sitting in a branch it never reached.
+show_warnings() {
+    [ -s "$WARNLOG" ] || { rm -f "$WARNLOG"; return 0; }
+    while IFS= read -r warning; do printf '   warn: %s\n' "$warning"; done <"$WARNLOG"
+    rm -f "$WARNLOG"
+}
 # exit, not return. Each example's stages run inside `if ( ... )`, and
 # bash disables `set -e` for the whole dynamic extent of a command whose
 # exit status is being tested, so a `|| bad` that only returned printed
@@ -2395,11 +2406,13 @@ if [ $DEAD_DISK -eq 1 ]; then
     note "dead disk: install, back up, destroy, restore, boot"
     if (smoke_dead_disk dead-disk "$port"); then
         note "summary"
+        show_warnings
         printf '\n   a dead disk is recoverable\n'
         exit 0
     fi
     stop_minio
     note "summary"
+    show_warnings
     printf '\n   FAIL: a dead disk is NOT recoverable\n'
     exit 1
 fi
@@ -2413,6 +2426,7 @@ if [ -n "$PUBLISHED" ]; then
     fi
     note "summary"
     [ ${#PASS[@]} -gt 0 ] && printf '   pass: %s\n' "${PASS[*]}"
+    show_warnings
     if [ ${#FAIL[@]} -gt 0 ]; then
         printf '   FAIL: %s\n' "${FAIL[*]}"
         exit 1
@@ -2504,8 +2518,7 @@ done
 
 note "summary"
 [ ${#PASS[@]} -gt 0 ] && printf '   pass: %s\n' "${PASS[*]}"
-while IFS= read -r warning; do printf '   warn: %s\n' "$warning"; done <"$WARNLOG"
-rm -f "$WARNLOG"
+show_warnings
 if [ ${#FAIL[@]} -gt 0 ]; then
     printf '   FAIL: %s\n' "${FAIL[*]}"
     exit 1
