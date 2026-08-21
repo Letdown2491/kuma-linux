@@ -221,11 +221,18 @@ jobs:
 
       # A boot failure is only useful if the guest's own account of it
       # survives the runner.
+      #
+      # `failure() || cancelled()` rather than `failure()`, because a step
+      # whose process is killed by a signal reports neither. The hibernate
+      # job did exactly that on 2026-08-21: the harness's own trap took
+      # qemu down, the step ended 143, and every capture step after it was
+      # skipped -- so the one run that needed the console produced no
+      # console at all.
       - name: guest console
-        if: failure()
+        if: failure() || cancelled()
         run: tail -200 "vm-smoke/${{ matrix.example }}/console.log" || true
       - uses: actions/upload-artifact@v7
-        if: failure()
+        if: failure() || cancelled()
         with:
           name: console-${{ matrix.example }}
           path: vm-smoke/${{ matrix.example }}/console.log
@@ -266,10 +273,10 @@ jobs:
           smoke_args: --published localhost/kuma-smoke-niri:latest
 
       - name: guest console
-        if: failure()
+        if: failure() || cancelled()
         run: tail -200 vm-smoke/published/console.log || true
       - uses: actions/upload-artifact@v7
-        if: failure()
+        if: failure() || cancelled()
         with:
           name: console-install
           path: vm-smoke/published/console.log
@@ -313,10 +320,10 @@ jobs:
             --hibernate --secure-boot
 
       - name: guest console
-        if: failure()
+        if: failure() || cancelled()
         run: tail -200 vm-smoke/published/console.log || true
       - uses: actions/upload-artifact@v7
-        if: failure()
+        if: failure() || cancelled()
         with:
           name: console-hibernate
           path: vm-smoke/published/console.log
@@ -352,10 +359,10 @@ jobs:
           smoke_args: --dead-disk
 
       - name: guest console
-        if: failure()
+        if: failure() || cancelled()
         run: tail -200 vm-smoke/dead-disk/console.log || true
       - uses: actions/upload-artifact@v7
-        if: failure()
+        if: failure() || cancelled()
         with:
           name: console-dead-disk
           path: vm-smoke/dead-disk/console.log
@@ -417,11 +424,11 @@ jobs:
         run: ./scripts/smoke.sh --iso --keep niri
 
       - name: what the live session said
-        if: failure()
+        if: failure() || cancelled()
         run: tail -100 vm-smoke/niri-iso/console.log || true
 
       - uses: actions/upload-artifact@v7
-        if: failure()
+        if: failure() || cancelled()
         with:
           name: iso-console
           path: vm-smoke/niri-iso/console.log

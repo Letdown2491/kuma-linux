@@ -1474,33 +1474,61 @@ smoke_published() {
             # boot on this disk powers off correctly, so this reaches
             # Secure Boot from a cleanly stopped machine instead of from
             # whatever a SIGKILL leaves on the filesystem.
-            local back=0
-            until guest true; do
-                [ $back -lt 300 ] \
-                    || bad "it neither powered off nor came back; console at $log"
+            #
+            # Three things can happen from here, and the first CI run to
+            # reach this point found the third. It can come back, which is
+            # what a laptop-hosted run does. It can go off late, after the
+            # 180s above but before this gives up -- and reading that as
+            # "it never came back" would be the same misdiagnosis this
+            # file keeps having to unlearn, so qemu's own exit is checked
+            # every time round. Or it can wedge: neither off nor back,
+            # which is what the hosted runner did on 2026-08-21.
+            local back=0 came_back=0
+            while :; do
+                if guest true; then came_back=1; break; fi
+                kill -0 "$qemu" 2>/dev/null || break
+                [ $back -lt 300 ] || break
                 sleep 5
                 back=$((back + 5))
             done
-            # The dying boot's own account, taken while it is still the
-            # previous boot. The console cannot carry this and never
-            # could: `fbcon: Taking over console` moves systemd's output
-            # off ttyS0 on a desktop image, which is why run 10 read as
-            # "no shutdown output at all" and why that reading was wrong.
-            # The journal shows systemd running an ordinary shutdown and
-            # the machine dying about 180ms into it, with nothing logged
-            # at error level.
-            gsudo "journalctl -b -1 --no-pager -o short-monotonic" \
-                >"$dir/poweroff-reset.log" 2>/dev/null || true
 
-            gsudo "systemd-run --no-block systemctl poweroff" >/dev/null 2>&1 || true
-            off=0
-            while kill -0 "$qemu" 2>/dev/null && [ $off -lt 180 ]; do
-                sleep 5
-                off=$((off + 5))
-            done
-            kill -0 "$qemu" 2>/dev/null \
-                && bad "it would not power off from a cold boot either; console at $log"
-            echo "   .. off, from the boot it reset into"
+            if [ $came_back -eq 1 ]; then
+                # The dying boot's own account, taken while it is still the
+                # previous boot. The console cannot carry this and never
+                # could: `fbcon: Taking over console` moves systemd's output
+                # off ttyS0 on a desktop image, which is why run 10 read as
+                # "no shutdown output at all" and why that reading was wrong.
+                # The journal shows systemd running an ordinary shutdown and
+                # the machine dying about 180ms into it, with nothing logged
+                # at error level.
+                gsudo "journalctl -b -1 --no-pager -o short-monotonic" \
+                    >"$dir/poweroff-reset.log" 2>/dev/null || true
+
+                gsudo "systemd-run --no-block systemctl poweroff" >/dev/null 2>&1 || true
+                off=0
+                while kill -0 "$qemu" 2>/dev/null && [ $off -lt 180 ]; do
+                    sleep 5
+                    off=$((off + 5))
+                done
+                kill -0 "$qemu" 2>/dev/null \
+                    && bad "it would not power off from a cold boot either; console at $log"
+                echo "   .. off, from the boot it reset into"
+            elif kill -0 "$qemu" 2>/dev/null; then
+                # Wedged. Take it down by force rather than losing the
+                # Secure Boot half, which is a separate question about a
+                # separate boot and has nothing to do with this one. The
+                # console tail goes to the job log here and not only to
+                # the artifact, because the run that needed it most is the
+                # run whose artifact upload never happened.
+                resumed_poweroff=wedged
+                echo "   .. it neither powered off nor came back in ${back}s; taking it down" >&2
+                echo "   .. last 40 lines of console:" >&2
+                tail -40 "$log" >&2 || true
+                kill -9 "$qemu" 2>/dev/null || true
+                wait "$qemu" 2>/dev/null || true
+            else
+                echo "   .. it went off ${back}s after being asked, later than the 180s allowed"
+            fi
         else
             ok "the resumed machine powered off rather than resetting"
         fi
@@ -1558,14 +1586,26 @@ smoke_published() {
     fi
 
     if [ -n "$resumed_poweroff" ]; then
-        warn "the resumed guest reset instead of powering off (known QEMU artifact; hardware powers off, 2026-08-21)"
-        echo "        systemd runs an ordinary shutdown and the machine dies partway"
-        echo "        through it; the console cannot show that, because fbcon takes"
-        echo "        ttyS0 on a desktop image. The dying boot's own journal is at"
-        echo "        $dir/poweroff-reset.log. The same disk cold-booted powers off"
-        echo "        correctly, and so does real hardware after a real resume, so"
-        echo "        this belongs to hibernating under one OVMF instance and"
-        echo "        resuming under another."
+        case "$resumed_poweroff" in
+            wedged)
+                warn "the resumed guest neither powered off nor came back, and was taken down by force (known QEMU artifact; hardware powers off, 2026-08-21)"
+                echo "        It took the poweroff, stopped answering, and reached"
+                echo "        neither S5 nor a fresh boot inside five minutes. There is"
+                echo "        no journal to read, because the machine never came back to"
+                echo "        be asked; the console tail is above and the whole log is"
+                echo "        at $log"
+                ;;
+            *)
+                warn "the resumed guest reset instead of powering off (known QEMU artifact; hardware powers off, 2026-08-21)"
+                echo "        systemd runs an ordinary shutdown and the machine dies partway"
+                echo "        through it; the console cannot show that, because fbcon takes"
+                echo "        ttyS0 on a desktop image. The dying boot's own journal is at"
+                echo "        $dir/poweroff-reset.log."
+                ;;
+        esac
+        echo "        The same disk cold-booted powers off correctly, and so does real"
+        echo "        hardware after a real resume, so this belongs to hibernating under"
+        echo "        one OVMF instance and resuming under another."
     fi
 
     # --- the cross-version half ----------------------------------------
