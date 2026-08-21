@@ -769,8 +769,15 @@ smoke_published() {
     # the account it creates exists only on the installed machine and
     # nothing has ever logged into it. PubkeyAuthentication=no keeps a
     # runner's own agent from being offered first and eating the attempt.
+    #
+    # ServerAlive*, because this stage now asks a machine to disappear on
+    # purpose. ConnectTimeout only bounds the handshake; a connection
+    # that is already open when the guest stops existing has nothing to
+    # notice it, and waits on TCP for as long as the kernel allows. Three
+    # missed probes at five seconds gives up in fifteen.
     local ssh_opts=(-p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
                     -o ConnectTimeout=5 -o LogLevel=ERROR
+                    -o ServerAliveInterval=5 -o ServerAliveCountMax=3
                     -o PubkeyAuthentication=no -o PreferredAuthentications=password
                     "$user@127.0.0.1")
     # shellcheck disable=SC2029  # client-side expansion is the point.
@@ -1018,7 +1025,22 @@ smoke_published() {
             || bad "the swapfile is not active swap; /proc/swaps says: $swaps"
         grep -q 'zram' <<<"$swaps" \
             || bad "zram is not active, so this run cannot say systemd picked the file over it"
-        ok "both swap areas are active: zram in memory, and the file on disk"
+
+        # And in the right order. The point of giving the file a negative
+        # priority is that ordinary paging keeps going to zram, which is
+        # faster, and the disk is only reached under real pressure. The
+        # property is what is asserted rather than the exact number: the
+        # first run to look found the kernel had assigned -1 where the
+        # fstab line asked for -2, and -1 is just as far below zram's
+        # 100, so pinning the number would fail a machine that is right.
+        local zram_pri file_pri
+        zram_pri=$(awk '$1 ~ /zram/ { print $NF }' <<<"$swaps")
+        file_pri=$(awk '$1 == "/var/swap/swapfile" { print $NF }' <<<"$swaps")
+        [ -n "$zram_pri" ] && [ -n "$file_pri" ] \
+            || bad "cannot read swap priorities from: $swaps"
+        [ "$file_pri" -lt "$zram_pri" ] \
+            || bad "the swapfile has priority $file_pri against zram's $zram_pri, so paging would hit the disk first"
+        ok "both swap areas are active, and the file ($file_pri) sits below zram ($zram_pri)"
 
         # doctor's verdict before anything is asked to sleep. This is what
         # ties the check to reality: doctor compares the resume_offset the
@@ -1062,6 +1084,7 @@ smoke_published() {
         case "$can" in
             yes) ok "logind says this machine can hibernate" ;;
             "")  echo "   .. logind gave no answer to CanHibernate (raw: ${can_raw:-no output at all})." >&2
+                 echo "   .. expected over ssh: polkit gates this on an active session, and there is none." >&2
                  echo "   .. going on, because the kernel offers hibernation and the swapfile is active." >&2 ;;
             *)   bad "logind says CanHibernate=$can on a machine with an active swapfile and a resume karg (raw: $can_raw)" ;;
         esac
@@ -1082,10 +1105,38 @@ smoke_published() {
             || bad "could not leave a marker in /run, so a resume could not be told from a reboot"
         ok "marked the running boot: ${before_boot_id:0:8}, up ${before_uptime}s"
 
+        # `systemctl hibernate` is the wrong lever here, and the first run
+        # to get this far is what proved it:
+        #
+        #     systemctl[4857]: Call to Hibernate failed: Access denied
+        #
+        # That verb asks logind, and logind gates hibernation on polkit,
+        # whose policy for it is auth_admin_keep for anything that is not
+        # an active session. CI has no session and no polkit agent to
+        # answer with, so the request is refused before the kernel is
+        # ever asked. It is refused for root too, because polkit is
+        # asking about the session rather than about the uid. The same
+        # cause is why the CanHibernate query above answers "Access
+        # denied" rather than yes or no.
+        #
+        # None of that is kuma's, and none of it reaches a person
+        # hibernating from their desktop, whose session IS active and
+        # whom polkit allows. It is a property of driving a machine over
+        # ssh, so the gate has to drive it another way.
+        #
+        # systemd-hibernate.service is the unit logind would have
+        # started. systemctl talks to the manager over
+        # /run/systemd/private when it runs as root, and polkit does not
+        # sit in front of that.
+        #
         # --no-block so the call returns rather than being killed halfway
-        # through by the ssh session it is about to take down with it.
+        # through by the ssh session it is about to take down with it,
+        # and the output is kept rather than discarded, because throwing
+        # it away is what turned this into two wasted runs.
         echo "   .. hibernating"
-        gsudo "systemd-run --no-block systemctl hibernate" >/dev/null 2>&1 || true
+        local said
+        said=$(gsudo "systemctl start --no-block systemd-hibernate.service 2>&1" || true)
+        [ -n "$said" ] && echo "   .. $said"
 
         # Powering off is half the claim. A machine that writes an image
         # and then keeps running has not hibernated, and one that never
@@ -1522,8 +1573,15 @@ dead_disk_run() {
     # shellcheck disable=SC2064
     trap "kill $qemu 2>/dev/null || true; stop_minio" EXIT
 
+    #
+    # ServerAlive*, because this stage now asks a machine to disappear on
+    # purpose. ConnectTimeout only bounds the handshake; a connection
+    # that is already open when the guest stops existing has nothing to
+    # notice it, and waits on TCP for as long as the kernel allows. Three
+    # missed probes at five seconds gives up in fifteen.
     local ssh_opts=(-p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
                     -o ConnectTimeout=5 -o LogLevel=ERROR
+                    -o ServerAliveInterval=5 -o ServerAliveCountMax=3
                     -o PubkeyAuthentication=no -o PreferredAuthentications=password
                     "$user@127.0.0.1")
     guest() { sshpass -p "$pass" ssh "${ssh_opts[@]}" "$@" 2>/dev/null; }

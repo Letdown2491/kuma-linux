@@ -62,6 +62,14 @@ pub const FILE: &str = "/var/swap/swapfile";
 /// disk file for hibernation regardless: it skips zram devices when it
 /// looks for somewhere to write an image, since a device that lives in
 /// memory cannot hold a copy of memory.
+///
+/// What is guaranteed is the *order*, not this exact number. The first
+/// machine to be looked at reported -1 for the swapfile against zram's
+/// 100, having been asked for -2, so something between the fstab line
+/// and `swapon` did not carry it through. Both values sit equally far
+/// below zram and behave identically, so the gate asserts that the file
+/// is below zram rather than pinning a number that would fail a machine
+/// which is behaving correctly.
 pub const PRIORITY: i32 = -2;
 
 /// Below this a swapfile is not a hibernate image, it is a mistake with
@@ -321,6 +329,13 @@ pub fn create_script() -> String {
 /// `x-systemd.device-timeout=0` because on an encrypted machine the
 /// device does not exist until the passphrase is typed, and a default
 /// timeout turns a slow person into a failed boot.
+///
+/// No `defaults` on the swap line, unlike the convention fstab invites.
+/// `swapon` takes a real option list and `defaults` is not one of its
+/// options, and a machine asked for `defaults,pri=-2` came up at -1:
+/// something in that chain stopped reading at the word it did not know.
+/// Dropping it costs nothing, because a swap line has no defaults to
+/// name in the first place.
 pub fn fstab_lines(fs_uuid: &str) -> String {
     format!(
         "\n{FSTAB_OPEN}\n\
@@ -329,7 +344,7 @@ pub fn fstab_lines(fs_uuid: &str) -> String {
          # arguments, not through these lines; these are what make it swap\n\
          # once the system is up, which is what hibernating into it needs.\n\
          UUID={fs_uuid} {MOUNT} btrfs subvol={SUBVOL},noatime,nodatacow,x-systemd.device-timeout=0 0 0\n\
-         {FILE} none swap defaults,pri={PRIORITY},x-systemd.requires-mounts-for={MOUNT} 0 0\n\
+         {FILE} none swap pri={PRIORITY},x-systemd.requires-mounts-for={MOUNT} 0 0\n\
          {FSTAB_CLOSE}\n"
     )
 }
