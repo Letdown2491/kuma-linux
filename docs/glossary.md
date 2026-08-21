@@ -56,7 +56,14 @@ back where it was. It needs a swapfile, which kuma can make at install or with
 `kuma hibernate`, and it needs the kernel told where that file sits on the
 disk. Distinct from suspend, which keeps memory powered and needs none of
 this. Not the same as **zram**, which is swap inside memory and therefore
-cannot hold a copy of it.
+cannot hold a copy of it. Unavailable on a machine that booted with Secure
+Boot, because the kernel is then locked down; see **Lockdown**.
+
+**Lockdown.** A kernel mode that blocks operations able to read or write kernel
+memory. Booting with Secure Boot turns it on in `integrity` mode, and one of
+the things it blocks is hibernation, since a hibernate image is a way to write
+memory back into a running kernel. Nothing kuma configures changes it: it is
+decided by the firmware setting and the kernel Fedora ships.
 
 **Installer media.** The USB stick a machine boots to be installed. Kuma's is
 live: its root filesystem is the desktop image itself, so what you look at

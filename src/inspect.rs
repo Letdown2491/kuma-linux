@@ -2473,6 +2473,20 @@ fn check_hibernate(report: &mut impl FnMut(Grade, &str, String, Option<Action>))
                 "a swapfile cannot be grown in place: its offset would move",
             )),
         ),
+        // Warn, not fail: nothing kuma set up is wrong, and nothing kuma
+        // can do will change it. It is still not silent, because the
+        // machine is carrying a swapfile it will never use, and the one
+        // legal move from here is to take that space back.
+        hibernate::Verdict::Refused(detail) => report(
+            Grade::Warn,
+            "hibernate",
+            detail,
+            Some(Action::new(
+                "reclaim",
+                "kuma hibernate --off --yes",
+                "take the swapfile back, or turn Secure Boot off in firmware and reboot",
+            )),
+        ),
         hibernate::Verdict::Broken(detail) => report(
             Grade::Fail,
             "hibernate",

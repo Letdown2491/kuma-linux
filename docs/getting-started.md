@@ -290,6 +290,14 @@ save. The file is never resized in place: growing it would move it, and the
 kernel would then resume from the wrong place on the disk. To change the size,
 turn it off and on again.
 
+**Secure Boot and hibernate do not go together.** A kernel that booted with
+Secure Boot on runs locked down, and a locked-down kernel refuses to hibernate,
+because a hibernate image is a way to write arbitrary memory back into a
+running kernel. Kuma can still set everything up correctly and the machine will
+still refuse. `kuma install` and `kuma hibernate` say so before you spend the
+disk, and `kuma doctor` warns rather than calling the machine ready. Turning
+Secure Boot off in firmware is the only way to have both.
+
 `kuma doctor` grades the result, and grades the part that fails silently: if
 the file and the kernel arguments ever disagree, a hibernated machine boots
 fresh and the session is gone. Running `kuma hibernate --yes` on a machine that

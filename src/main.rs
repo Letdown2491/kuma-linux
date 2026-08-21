@@ -2238,6 +2238,22 @@ fn print_install_plan(view: &PlanView) {
     }
 }
 
+/// What this machine's kernel says about hibernating at all, as the
+/// warning it deserves, or None when there is nothing to say.
+///
+/// Silent when `/sys/power/state` cannot be read, the same way the
+/// encryption check is silent when it cannot tell: a question that could
+/// not be asked is not an answer, and warning about a kernel this could
+/// not reach would be inventing news.
+fn lockdown_warning_here() -> Option<String> {
+    let power_state = std::fs::read_to_string("/sys/power/state").ok()?;
+    let lockdown = std::fs::read_to_string("/sys/kernel/security/lockdown").ok();
+    hibernate::lockdown_warning(
+        hibernate::kernel_allows_hibernation(&power_state),
+        lockdown.as_deref().and_then(hibernate::active_lockdown).as_deref(),
+    )
+}
+
 /// Set hibernate up on a machine that is already running, or take it
 /// away again.
 ///
@@ -2328,7 +2344,7 @@ fn hibernate_cmd(size: Option<String>, off: bool, yes: bool, json: bool) -> Resu
         }
     };
     let repairing = existing.is_some();
-    let warnings = if repairing {
+    let mut warnings = if repairing {
         Vec::new()
     } else {
         // Encryption is read the same way doctor reads it, from the
@@ -2337,6 +2353,10 @@ fn hibernate_cmd(size: Option<String>, off: bool, yes: bool, json: bool) -> Resu
         let encrypted = types.split_whitespace().any(|kind| kind == "crypt");
         hibernate::warnings(size_mib, hibernate::ram_mib(&meminfo), encrypted)
     };
+    // Said even when repairing, because a machine whose kernel refuses
+    // is one where the repair is correct and still changes nothing, and
+    // that is worth hearing before the reboot rather than after it.
+    warnings.extend(lockdown_warning_here());
 
     if !yes {
         let action = Action::new(
@@ -2782,7 +2802,20 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
             None => None,
         }
     };
-    let swap_view = swap_mib.map(|mib| (mib, hibernate::warnings(mib, ram_mib, encrypt)));
+    let swap_view = swap_mib.map(|mib| {
+        let mut warnings = hibernate::warnings(mib, ram_mib, encrypt);
+        // Only for a real disk, and for the same reason memory is only
+        // read for one: installing to a file makes an image for some
+        // other machine, and this one's firmware settings are a fact
+        // about the wrong computer. On live media it is the right
+        // computer, and the answer carries: the installer boots through
+        // the same shim and the same firmware as the machine it writes,
+        // so a kernel locked down here will be locked down there.
+        if !to_file {
+            warnings.extend(lockdown_warning_here());
+        }
+        (mib, warnings)
+    });
 
     // The dry run is a resource like every other read: state, facts, and
     // the one legal move out of it. An agent that follows affordances

@@ -217,6 +217,38 @@ pub fn warnings(size_mib: u64, ram_mib: Option<u64>, encrypted: bool) -> Vec<Str
     out
 }
 
+/// What to say, before a swapfile is made, about a kernel that will not
+/// hibernate anyway.
+///
+/// Separate from `warnings` because it is a different kind of fact: the
+/// size and the encryption are choices somebody is making, and this is a
+/// condition of the machine they are making them on.
+///
+/// The installer can ask this honestly even though it runs from live
+/// media, because live media boots through the same shim and the same
+/// firmware: if Secure Boot is on for the installer, it will be on for
+/// the machine the installer writes, and both kernels lock down the same
+/// way. The verb asks the machine it is standing on, which is simpler.
+///
+/// A warning rather than a refusal. Secure Boot is a firmware setting
+/// somebody can change, and a swapfile made today is still the right
+/// swapfile when they do.
+pub fn lockdown_warning(kernel_allows: bool, lockdown: Option<&str>) -> Option<String> {
+    if kernel_allows {
+        return None;
+    }
+    Some(match lockdown {
+        Some("none") | None => {
+            "this kernel does not offer hibernation, so the swapfile would sit unused".to_string()
+        }
+        Some(mode) => format!(
+            "this kernel is locked down ({mode}), which booting with Secure Boot turns on, \
+             and a locked-down kernel refuses to hibernate. The swapfile would sit unused \
+             until Secure Boot is turned off in firmware"
+        ),
+    })
+}
+
 /// A size in MiB as a person reads it.
 ///
 /// Gibibytes wherever the number is one, because every size this asks
@@ -539,6 +571,38 @@ pub fn resume_from_cmdline(cmdline: &str) -> (Option<String>, Option<u64>) {
     (resume, offset)
 }
 
+/// Whether this kernel will hibernate at all.
+///
+/// `/sys/power/state` lists `disk` only when `hibernation_available()`
+/// says so, and that function is `!security_locked_down(LOCKDOWN_HIBERNATION)`.
+/// So this one file answers the question directly, without kuma having
+/// to know why: a locked-down kernel simply stops offering it.
+///
+/// This is the check kuma shipped without, and a Secure Boot machine is
+/// what proved it necessary. Kernel lockdown runs in integrity mode on
+/// any machine that booted with Secure Boot on, and integrity mode
+/// refuses hibernation because a hibernate image is a way to write
+/// arbitrary memory back into a running kernel. Without this, doctor
+/// looked at a correct swapfile and correct kernel arguments and said
+/// `ok` on a machine that would never hibernate.
+pub fn kernel_allows_hibernation(power_state: &str) -> bool {
+    power_state.split_whitespace().any(|mode| mode == "disk")
+}
+
+/// Which lockdown mode is active, from `/sys/kernel/security/lockdown`.
+///
+/// The file lists every mode and brackets the current one, as in
+/// `none [integrity] confidentiality`. Only ever used to explain a
+/// refusal in words somebody can act on, never to decide anything:
+/// `/sys/power/state` is the authority, and a machine that refuses
+/// hibernation for some other reason should not be told it is Secure
+/// Boot's doing.
+pub fn active_lockdown(text: &str) -> Option<String> {
+    text.split_whitespace()
+        .find_map(|mode| mode.strip_prefix('[')?.strip_suffix(']'))
+        .map(str::to_string)
+}
+
 /// Whether `/proc/swaps` has the swapfile active.
 ///
 /// By the path it was mounted at, which is how swapon reports a file.
@@ -566,6 +630,13 @@ pub struct Status {
     pub active: bool,
     /// What this machine has to hibernate.
     pub ram_mib: Option<u64>,
+    /// Whether the kernel will hibernate at all, which is a different
+    /// question from whether kuma set it up. False on a machine whose
+    /// kernel has been locked down.
+    pub kernel_allows: bool,
+    /// Which lockdown mode is active, when the machine says. Carried
+    /// only to explain the answer above, never to decide it.
+    pub lockdown: Option<String>,
 }
 
 /// Ask this machine everything the verdict needs.
@@ -598,6 +669,8 @@ pub fn probe() -> Status {
         .flatten()
         .and_then(|out| out.trim().parse::<u64>().ok())
         .map(|bytes| bytes / (1024 * 1024));
+    let power_state = std::fs::read_to_string("/sys/power/state").unwrap_or_default();
+    let lockdown = std::fs::read_to_string("/sys/kernel/security/lockdown").ok();
     Status {
         resume,
         resume_offset,
@@ -605,6 +678,8 @@ pub fn probe() -> Status {
         file_mib,
         active: swap_active(&swaps),
         ram_mib: ram_mib(&meminfo),
+        kernel_allows: kernel_allows_hibernation(&power_state),
+        lockdown: lockdown.as_deref().and_then(active_lockdown),
     }
 }
 
@@ -620,6 +695,11 @@ pub enum Verdict {
     Broken(String),
     /// It will work until the day it is needed most.
     Short(String),
+    /// Everything kuma controls is right and the kernel still says no.
+    /// Not a fault in the setup and not something kuma can fix, but not
+    /// something to stay quiet about either: the machine is carrying a
+    /// swapfile it will never use.
+    Refused(String),
 }
 
 /// Grade hibernate the way a machine can be asked, not the way it was
@@ -664,6 +744,22 @@ pub fn verdict(status: &Status) -> Verdict {
             if !status.active {
                 return Verdict::Broken(format!(
                     "{FILE} is not active swap, so there is nowhere to write a hibernate image"
+                ));
+            }
+            // Last, and only once everything kuma owns is right, so that
+            // "refused" means "your setup is correct and the kernel
+            // still will not do it" rather than hiding a real fault
+            // behind a firmware setting.
+            if !status.kernel_allows {
+                let why = match status.lockdown.as_deref() {
+                    Some("none") | None => "this kernel does not offer hibernation".to_string(),
+                    Some(mode) => format!(
+                        "this kernel is locked down ({mode}), which is what booting with \
+                         Secure Boot turns on, and a locked-down kernel refuses hibernation"
+                    ),
+                };
+                return Verdict::Refused(format!(
+                    "the swapfile and resume are set up correctly, but {why}"
                 ));
             }
             match (status.file_mib, status.ram_mib) {
@@ -783,6 +879,8 @@ mod tests {
             file_mib: Some(16 * 1024),
             active: true,
             ram_mib: Some(16 * 1024),
+            kernel_allows: true,
+            lockdown: Some("none".into()),
         };
         match verdict(&status) {
             Verdict::Broken(why) => {
@@ -806,6 +904,8 @@ mod tests {
             file_mib: Some(16 * 1024),
             active: true,
             ram_mib: Some(16 * 1024),
+            kernel_allows: true,
+            lockdown: Some("none".into()),
         };
         assert!(matches!(verdict(&ready), Verdict::Ready(_)));
 
@@ -819,6 +919,8 @@ mod tests {
             file_mib: Some(16 * 1024),
             active: true,
             ram_mib: None,
+            kernel_allows: true,
+            lockdown: None,
         };
         assert!(matches!(verdict(&no_karg), Verdict::Broken(_)));
 
@@ -836,8 +938,55 @@ mod tests {
             file_mib: Some(16 * 1024),
             active: false,
             ram_mib: None,
+            kernel_allows: true,
+            lockdown: None,
         };
         assert!(matches!(verdict(&inactive), Verdict::Broken(_)));
+    }
+
+    /// The finding that a Secure Boot VM produced on the first run of
+    /// the gate, kept as a test because kuma shipped without it and was
+    /// wrong in the most expensive direction: doctor looked at a correct
+    /// swapfile and correct kernel arguments and graded the machine
+    /// `ok`, while logind answered CanHibernate `na` and the kernel
+    /// would never have done it.
+    #[test]
+    fn a_locked_down_kernel_refuses_however_correct_the_setup_is() {
+        // `/sys/power/state` is the authority, and it is authoritative
+        // precisely because the kernel stops listing `disk` when
+        // hibernation is locked down.
+        assert!(kernel_allows_hibernation("freeze mem disk"));
+        assert!(!kernel_allows_hibernation("freeze mem"));
+        assert_eq!(
+            active_lockdown("none [integrity] confidentiality").as_deref(),
+            Some("integrity")
+        );
+        assert_eq!(active_lockdown("[none] integrity confidentiality").as_deref(), Some("none"));
+        assert_eq!(active_lockdown("nothing bracketed here"), None);
+
+        let perfect = Status {
+            resume: Some("UUID=abc".into()),
+            resume_offset: Some(4096),
+            file_offset: Some(4096),
+            file_mib: Some(16 * 1024),
+            active: true,
+            ram_mib: Some(16 * 1024),
+            kernel_allows: false,
+            lockdown: Some("integrity".into()),
+        };
+        match verdict(&perfect) {
+            Verdict::Refused(why) => {
+                assert!(why.contains("set up correctly"), "{why}");
+                assert!(why.contains("Secure Boot"), "it names what turned lockdown on: {why}");
+            }
+            other => panic!("a locked-down kernel must not grade ready, got {other:?}"),
+        }
+
+        // And the same fact ahead of time, which is what stops somebody
+        // spending sixteen gibibytes on a file that cannot be used.
+        let warning = lockdown_warning(false, Some("integrity")).expect("it warns");
+        assert!(warning.contains("Secure Boot"), "{warning}");
+        assert!(lockdown_warning(true, Some("none")).is_none(), "a normal kernel is silent");
     }
 
     /// The command line is parsed rather than pattern-matched, because

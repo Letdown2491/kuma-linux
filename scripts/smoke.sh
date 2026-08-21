@@ -44,12 +44,14 @@
 # kernel's own boot_id, which is generated at boot and lives in the
 # memory a real resume restores, plus a marker left in tmpfs.
 #
-# --secure-boot boots the same disk on firmware with Microsoft's keys
-# enrolled, which needs SMM and a different OVMF pair. It is worth pairing
-# with --hibernate rather than running alone: kernel lockdown under Secure
-# Boot has historically refused hibernation outright, and kuma ships shim,
-# so Secure Boot machines are exactly the ones that could be told by
-# doctor that hibernate is ready while logind refuses to do it.
+# --secure-boot adds a SECOND boot of the same disk, on firmware with
+# Microsoft's keys enrolled. It is not a second attempt at hibernating: a
+# kernel locked down under Secure Boot refuses hibernation outright, so
+# such a machine can never demonstrate a resume. What it tests is whether
+# kuma says so. Doctor grading a Secure Boot machine `ok` on the strength
+# of a correct swapfile, while the kernel would never do it, is the bug
+# the first run of this stage found, and this is the check that would
+# have caught it.
 #
 # --published builds nothing and reads no example: it installs what is on
 # the registry and boots the result, so it is the only stage that can go
@@ -665,36 +667,29 @@ smoke_published() {
     # VARS is copied because pflash wants it writable, and a per-run copy
     # means EFI boot entries cannot leak from one run into the next.
     #
-    # With --secure-boot the pair comes from find_ovmf_secboot instead,
-    # and the machine gains SMM: OVMF keeps the authenticated variables
-    # that hold the enrolled keys in System Management RAM, so without
-    # `smm=on` and a pflash marked secure, the firmware comes up with
-    # Secure Boot reporting disabled and the test quietly measures
-    # nothing.
+    # The plain pair always, because --secure-boot adds a boot rather
+    # than replacing one. The first version of this stage booted
+    # everything under Secure Boot and could not get past its own
+    # CanHibernate check, which was the right answer to the wrong
+    # question: a locked-down kernel refuses to hibernate, so a machine
+    # under Secure Boot can never prove that resume works.
     local ovmf ovmf_code ovmf_vars
-    if [ $SECURE_BOOT -eq 1 ]; then
-        ovmf=$(find_ovmf_secboot) \
-            || bad "no Secure Boot OVMF firmware; --secure-boot cannot be answered on this machine"
-    else
-        ovmf=$(find_ovmf) \
-            || bad "no OVMF firmware; an installed disk is UEFI and will not boot on SeaBIOS"
-    fi
+    ovmf=$(find_ovmf) \
+        || bad "no OVMF firmware; an installed disk is UEFI and will not boot on SeaBIOS"
     ovmf_code=${ovmf%% *}
     ovmf_vars=${ovmf##* }
     cp "$ovmf_vars" "$dir/OVMF_VARS.fd"
 
-    local machine=(-machine q35)
-    local secure_globals=()
+    # And the Secure Boot pair beside it, for the second boot.
+    local sb_code="" sb_vars=""
     if [ $SECURE_BOOT -eq 1 ]; then
-        machine=(-machine "q35,smm=on")
-        # disable_s3, because OVMF's own guidance is that S3 and Secure
-        # Boot together are unsafe: a resume from RAM re-enters the
-        # firmware without re-authenticating. S4 is untouched and S4 is
-        # what hibernate uses, which is the whole reason these two flags
-        # can be asked in one run.
-        secure_globals=(-global "driver=cfi.pflash01,property=secure,value=on"
-                        -global "ICH9-LPC.disable_s3=1")
-        echo "   .. booting on firmware with Microsoft's keys enrolled: $ovmf_code"
+        local sb
+        sb=$(find_ovmf_secboot) \
+            || bad "no Secure Boot OVMF firmware; --secure-boot cannot be answered here"
+        sb_code=${sb%% *}
+        sb_vars=${sb##* }
+        cp "$sb_vars" "$dir/OVMF_VARS.secboot.fd"
+        echo "   .. Secure Boot firmware, Microsoft's keys enrolled: $sb_code"
     fi
 
     # A console that can be typed into, not only read.
@@ -716,11 +711,30 @@ smoke_published() {
     # cannot afford. It sets `qemu` and `unlocker` for the caller.
     local qemu=0 unlocker=0
     boot_vm() {
+        # "plain" or "secure". Secure Boot needs SMM and a pflash marked
+        # secure: OVMF keeps the authenticated variables that hold the
+        # enrolled keys in System Management RAM, so without both the
+        # firmware comes up reporting Secure Boot disabled and the test
+        # quietly measures nothing.
+        #
+        # disable_s3 rides with it, because OVMF's own guidance is that
+        # S3 and Secure Boot together are unsafe: a resume from RAM
+        # re-enters the firmware without re-authenticating. S4 is
+        # untouched, and S4 is what hibernate uses.
+        local mode=${1:-plain} code=$ovmf_code vars="$dir/OVMF_VARS.fd"
+        local machine=(-machine q35) globals=()
+        if [ "$mode" = secure ]; then
+            code=$sb_code
+            vars="$dir/OVMF_VARS.secboot.fd"
+            machine=(-machine "q35,smm=on")
+            globals=(-global "driver=cfi.pflash01,property=secure,value=on"
+                     -global "ICH9-LPC.disable_s3=1")
+        fi
         qemu-system-x86_64 \
             -enable-kvm -cpu host -smp 4 -m 4096 \
-            "${machine[@]}" "${secure_globals[@]}" \
-            -drive "if=pflash,format=raw,readonly=on,file=$ovmf_code" \
-            -drive "if=pflash,format=raw,file=$dir/OVMF_VARS.fd" \
+            "${machine[@]}" "${globals[@]}" \
+            -drive "if=pflash,format=raw,readonly=on,file=$code" \
+            -drive "if=pflash,format=raw,file=$vars" \
             -drive "file=$raw,if=virtio,format=raw" \
             -device "$QEMU_VGA" -display "$QEMU_DISPLAY" \
             -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$port-:22" \
@@ -786,6 +800,16 @@ smoke_published() {
     doctor_grade() {
         gsudo kuma doctor --json \
             | python3 -c 'import sys,json; print(next((c["grade"] for c in json.load(sys.stdin)["checks"] if c["name"]==sys.argv[1]), "absent"))' "$1" \
+            2>/dev/null || true
+    }
+
+    # The words beside the grade. A check can be the right grade for the
+    # wrong reason, and the Secure Boot half below needs to know that
+    # doctor's warning actually names lockdown rather than warning about
+    # something else entirely.
+    doctor_detail() {
+        gsudo kuma doctor --json \
+            | python3 -c 'import sys,json; print(next((c["detail"] for c in json.load(sys.stdin)["checks"] if c["name"]==sys.argv[1]), ""))' "$1" \
             2>/dev/null || true
     }
 
@@ -982,25 +1006,6 @@ smoke_published() {
     # the account is there. What is gone is whatever was open, and nothing
     # logs it.
     if [ $HIBERNATE -eq 1 ]; then
-        if [ $SECURE_BOOT -eq 1 ]; then
-            # Asked of the firmware variable rather than of mokutil, which
-            # the image need not ship. The first four bytes are the EFI
-            # attributes and the fifth is the value.
-            local sb
-            sb=$(guest "od -An -t u1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c 2>/dev/null | tr -d ' '" || true)
-            [ "$sb" = 1 ] || bad \
-                "the guest reports Secure Boot ${sb:-absent}, not enabled: this run measured nothing about Secure Boot"
-            ok "the machine booted with Secure Boot enabled, on shim kuma ships"
-
-            # Reported, not asserted. Which lockdown mode a Secure Boot
-            # kernel takes is Fedora's decision and not kuma's, and the
-            # thing that matters is the consequence below rather than the
-            # mode. Printing it is what makes a future failure legible.
-            local lockdown
-            lockdown=$(guest "cat /sys/kernel/security/lockdown 2>/dev/null" || true)
-            echo "   .. kernel lockdown: ${lockdown:-unavailable}"
-        fi
-
         # Both swap areas, which is the measurement behind a claim kuma's
         # design rests on and had only ever asserted: every image ships
         # zram-generator-defaults, so the machine has compressed swap in
@@ -1032,12 +1037,8 @@ smoke_published() {
         # later, so the message names the cause it most likely has.
         local can
         can=$(guest "busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager CanHibernate 2>/dev/null | tr -d 's\" '" || true)
-        if [ "$can" != yes ]; then
-            if [ $SECURE_BOOT -eq 1 ]; then
-                bad "logind says CanHibernate=${can:-nothing} under Secure Boot (lockdown: ${lockdown:-unknown}): kuma can set this machine up to hibernate and the kernel will not do it"
-            fi
-            bad "logind says CanHibernate=${can:-nothing} on a machine with an active swapfile"
-        fi
+        [ "$can" = yes ] || bad \
+            "logind says CanHibernate=${can:-nothing} on a machine with an active swapfile and a resume karg"
         ok "logind says this machine can hibernate"
 
         # The marker, and it is two markers for two different claims.
@@ -1075,7 +1076,7 @@ smoke_published() {
         ok "the machine wrote its image and powered off after ${waited}s"
 
         echo "   .. starting it again"
-        boot_vm
+        boot_vm plain
         await_healthy_boot "$qemu" "$log" \
             "it came back up and is reachable" \
             "greenboot still says this boot is healthy" \
@@ -1100,6 +1101,81 @@ smoke_published() {
         [ "$hib_grade" = ok ] || bad \
             "doctor grades hibernate '$hib_grade' after a successful resume"
         ok "doctor still grades hibernate ok on the resumed machine"
+    fi
+
+    # --- the Secure Boot half ------------------------------------------
+    #
+    # The same disk, on firmware with Microsoft's keys enrolled. This is
+    # not a second test of hibernating, and trying to make it one is what
+    # the first version of this stage got wrong: a locked-down kernel
+    # refuses hibernation, so a machine under Secure Boot can never
+    # demonstrate a resume. The question here is whether kuma SAYS SO.
+    #
+    # That is the failure this half exists for, and kuma shipped with it.
+    # The first run of this gate found `kuma doctor` grading hibernate
+    # `ok` on a Secure Boot machine, on the strength of a correct
+    # swapfile and correct kernel arguments, while logind answered
+    # CanHibernate `na` and the kernel would never have done it.
+    #
+    # Deliberately not hard-coded to today's answer. If a future kernel
+    # hibernates under Secure Boot, this asserts doctor says `ok`; while
+    # it refuses, this asserts doctor warns and names the reason. What is
+    # pinned is that kuma agrees with the kernel, not what the kernel
+    # says.
+    if [ $SECURE_BOOT -eq 1 ]; then
+        echo "   .. powering off to boot the same disk under Secure Boot"
+        gsudo "systemd-run --no-block systemctl poweroff" >/dev/null 2>&1 || true
+        local off=0
+        while kill -0 "$qemu" 2>/dev/null && [ $off -lt 180 ]; do
+            sleep 5
+            off=$((off + 5))
+        done
+        kill -0 "$qemu" 2>/dev/null && bad "it would not power off; console at $log"
+
+        boot_vm secure
+        await_healthy_boot "$qemu" "$log" \
+            "the disk kuma installed boots on firmware with Microsoft's keys enrolled" \
+            "greenboot says the Secure Boot machine is healthy" \
+            " under Secure Boot"
+
+        # Asked of the firmware variable rather than of mokutil, which the
+        # image need not ship. The first four bytes are the EFI attributes
+        # and the fifth is the value.
+        local sb lockdown
+        sb=$(guest "od -An -t u1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c 2>/dev/null | tr -d ' '" || true)
+        [ "$sb" = 1 ] || bad \
+            "the guest reports Secure Boot ${sb:-absent}: this half measured nothing"
+        lockdown=$(guest "cat /sys/kernel/security/lockdown 2>/dev/null" || true)
+        ok "Secure Boot is on; kernel lockdown reads: ${lockdown:-unreadable}"
+
+        # /sys/power/state is the authority, because the kernel lists
+        # `disk` there only when hibernation_available() says so, and that
+        # is exactly !security_locked_down(LOCKDOWN_HIBERNATION). It is
+        # also the file doctor reads, so this compares kuma against its
+        # own source rather than against a guess.
+        local offers can grade detail
+        offers=$(guest "cat /sys/power/state" || true)
+        can=$(guest "busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager CanHibernate 2>/dev/null | tr -d 's\" '" || true)
+        grade=$(doctor_grade hibernate)
+        detail=$(doctor_detail hibernate)
+
+        if grep -qw disk <<<"$offers"; then
+            [ "$can" = yes ] || bad \
+                "the kernel offers hibernation ($offers) but logind says CanHibernate=${can:-nothing}"
+            [ "$grade" = ok ] || bad \
+                "this kernel hibernates under Secure Boot and doctor grades it '$grade': $detail"
+            ok "this kernel hibernates under Secure Boot, and doctor agrees"
+        else
+            [ "$can" != yes ] || bad \
+                "logind offers hibernation while the kernel does not list disk ($offers)"
+            [ "$grade" != ok ] || bad \
+                "doctor grades hibernate ok on a machine whose kernel refuses it (lockdown: ${lockdown:-unknown}); this is the promise kuma must not make"
+            [ "$grade" = warn ] || bad \
+                "doctor grades hibernate '$grade'; a correct setup that the kernel refuses is a warning, not a $grade"
+            grep -qi "locked down" <<<"$detail" || bad \
+                "doctor warns without naming lockdown, so nobody can act on it: $detail"
+            ok "the kernel refuses hibernation under Secure Boot, and doctor says so instead of claiming ready"
+        fi
     fi
 
     # --- the cross-version half ----------------------------------------
@@ -1381,36 +1457,29 @@ dead_disk_run() {
     # argument naming two files. Split the same way smoke_published does,
     # so there is one account of where firmware lives.
     #
-    # With --secure-boot the pair comes from find_ovmf_secboot instead,
-    # and the machine gains SMM: OVMF keeps the authenticated variables
-    # that hold the enrolled keys in System Management RAM, so without
-    # `smm=on` and a pflash marked secure, the firmware comes up with
-    # Secure Boot reporting disabled and the test quietly measures
-    # nothing.
+    # The plain pair always, because --secure-boot adds a boot rather
+    # than replacing one. The first version of this stage booted
+    # everything under Secure Boot and could not get past its own
+    # CanHibernate check, which was the right answer to the wrong
+    # question: a locked-down kernel refuses to hibernate, so a machine
+    # under Secure Boot can never prove that resume works.
     local ovmf ovmf_code ovmf_vars
-    if [ $SECURE_BOOT -eq 1 ]; then
-        ovmf=$(find_ovmf_secboot) \
-            || bad "no Secure Boot OVMF firmware; --secure-boot cannot be answered on this machine"
-    else
-        ovmf=$(find_ovmf) \
-            || bad "no OVMF firmware; an installed disk is UEFI and will not boot on SeaBIOS"
-    fi
+    ovmf=$(find_ovmf) \
+        || bad "no OVMF firmware; an installed disk is UEFI and will not boot on SeaBIOS"
     ovmf_code=${ovmf%% *}
     ovmf_vars=${ovmf##* }
     cp "$ovmf_vars" "$dir/OVMF_VARS.fd"
 
-    local machine=(-machine q35)
-    local secure_globals=()
+    # And the Secure Boot pair beside it, for the second boot.
+    local sb_code="" sb_vars=""
     if [ $SECURE_BOOT -eq 1 ]; then
-        machine=(-machine "q35,smm=on")
-        # disable_s3, because OVMF's own guidance is that S3 and Secure
-        # Boot together are unsafe: a resume from RAM re-enters the
-        # firmware without re-authenticating. S4 is untouched and S4 is
-        # what hibernate uses, which is the whole reason these two flags
-        # can be asked in one run.
-        secure_globals=(-global "driver=cfi.pflash01,property=secure,value=on"
-                        -global "ICH9-LPC.disable_s3=1")
-        echo "   .. booting on firmware with Microsoft's keys enrolled: $ovmf_code"
+        local sb
+        sb=$(find_ovmf_secboot) \
+            || bad "no Secure Boot OVMF firmware; --secure-boot cannot be answered here"
+        sb_code=${sb%% *}
+        sb_vars=${sb##* }
+        cp "$sb_vars" "$dir/OVMF_VARS.secboot.fd"
+        echo "   .. Secure Boot firmware, Microsoft's keys enrolled: $sb_code"
     fi || bad "cannot stage the OVMF vars"
 
     qemu-system-x86_64 \

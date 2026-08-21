@@ -36,15 +36,28 @@ differently. Why it changed belongs in the commit that made it.
   swapfile repairs exactly that, leaving the file where it is. Machines with no
   swapfile are not graded, because they promise nothing.
 
+- **Secure Boot machines are told the truth.** A kernel that booted with Secure
+  Boot on runs locked down, and a locked-down kernel refuses to hibernate. Kuma
+  can still make the swapfile and set the kernel arguments correctly, and the
+  machine still will not do it. `kuma install` and `kuma hibernate` say so
+  before you spend the disk on it, and `kuma doctor` warns rather than reporting
+  a machine ready that never was. If you want hibernate on such a machine, turn
+  Secure Boot off in firmware; otherwise `kuma hibernate --off --yes` takes the
+  space back.
+
 ### Known limits
 
+- **Hibernate does not work under Secure Boot**, and that is the kernel's
+  decision rather than kuma's. See above: everything kuma sets up is correct and
+  the kernel still refuses. Turning Secure Boot off in firmware is the only way
+  to have both.
 - **Tested in a virtual machine, not on a laptop lid.** CI installs a machine
-  with a swapfile, boots it on firmware with Microsoft's keys enrolled,
-  hibernates it, confirms it powered off, boots it again, and checks the
-  kernel's own `boot_id` to prove it resumed rather than started fresh. What
-  that cannot cover is your hardware: lid-close behaviour, firmware that
-  mishandles S4, and drivers that do not survive a suspend all vary by
-  machine.
+  with a swapfile, hibernates it, confirms it powered off, boots it again, and
+  checks the kernel's own `boot_id` to prove it resumed rather than started
+  fresh. It then boots the same disk on firmware with Microsoft's keys enrolled
+  to check that kuma reports the refusal rather than claiming readiness. What
+  none of that covers is your hardware: lid-close behaviour, firmware that
+  mishandles S4, and drivers that do not survive a suspend all vary by machine.
 
 ## v0.14.0 (2026-08-20)
 
