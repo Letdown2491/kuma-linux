@@ -13,8 +13,12 @@ const NIRI_PACKAGES: &[&str] = &[
     "greetd",
     "tuigreet",
     "fuzzel",
-    "waybar",
-    "mako",
+    // The shell. One process for the bar, notifications, wallpaper,
+    // OSDs, idle, lock, control centre and night light, which is why
+    // waybar, mako, swaybg, swayidle, swaylock, wob and wlsunset are all
+    // gone from this list. In Fedora proper, so this costs kuma no new
+    // trust root and nothing to package.
+    "noctalia",
     "kitty",
     "pipewire",
     "pipewire-pulseaudio",
@@ -91,9 +95,7 @@ const NIRI_PACKAGES: &[&str] = &[
     "avahi",
     "nss-mdns",
     // (nwg-look would fit here for GTK theme tweaks, but it's COPR-only)
-    "wob",
     "libnotify",
-    "wlsunset",
     "cups",
     "system-config-printer",
     // session essentials
@@ -103,9 +105,6 @@ const NIRI_PACKAGES: &[&str] = &[
     "xdg-user-dirs",
     "default-fonts-core-emoji",
     "mate-polkit",
-    "swaybg",
-    "swayidle",
-    "swaylock",
     "firewalld",
     // niri's built-in screenshot UI covers the Print keys; grim+slurp are
     // the wlr-screencopy tools everything scriptable builds on
@@ -114,8 +113,8 @@ const NIRI_PACKAGES: &[&str] = &[
     // Mod+Print: annotate before sharing (satty is COPR-only)
     "swappy",
     // the XF86Audio sed that makes room for kuma-osd also drops niri's
-    // stock playerctl binds; kuma re-adds them, and though waybar already
-    // pulls playerctl in, naming it keeps the binds from ever dangling
+    // stock playerctl binds; kuma re-adds them, and nothing else pulls
+    // playerctl in now that waybar has left the set
     "playerctl",
     // plug-in automount: thunar only mounts on click, and thunar-volman
     // needs the thunar daemon plus xfconf toggles to do its job
@@ -138,6 +137,10 @@ const NIRI_PACKAGES: &[&str] = &[
 /// its client library. cosmic-store is absent, though no longer because
 /// convergence would fight it: a store is a user-facing app, so which
 /// one a machine gets is the declaration's call, not the desktop set's.
+/// niri Recommends these, so they arrive whether or not `NIRI_PACKAGES`
+/// names them. Every one is a program kuma deliberately does not ship.
+const NIRI_EXCLUDES: &[&str] = &["alacritty", "waybar", "swaylock"];
+
 const COSMIC_PACKAGES: &[&str] = &[
     "cosmic-session",
     // the session requires files, term, and settings but not the text
@@ -1637,22 +1640,27 @@ environment {
     GTK_THEME "Adwaita:dark"
     XCURSOR_THEME "Adwaita"
     XCURSOR_SIZE "24"
+    // Where the shell reads kuma's config from. Undocumented in
+    // `noctalia --help` and found by grepping the binary: it redirects
+    // config-home wholesale, and it is the only thing that does.
+    // /etc/xdg and XDG_CONFIG_DIRS are both ignored, measured. Without
+    // this kuma cannot bake the desktop's look at all, so the build
+    // asserts the config survives to `config export merged`.
+    NOCTALIA_CONFIG_HOME "/usr/lib/kuma"
 }
 
 // Kuma session services
 spawn-at-startup "/usr/libexec/polkit-mate-authentication-agent-1"
 spawn-at-startup "/usr/libexec/kuma-clipboard-bridge"
 spawn-at-startup "/usr/libexec/kuma-xsettings"
-spawn-at-startup "/usr/libexec/kuma-wob"
 spawn-at-startup "blueman-applet"
-// Automount removable media at the session level; notifies via mako.
+// Automount removable media at the session level.
 spawn-at-startup "udiskie"
-// Time-based night light: no location needed, unlike solar mode.
-spawn-at-startup "wlsunset" "-S" "07:00" "-s" "20:00"
-spawn-at-startup "waybar"
-spawn-at-startup "swaybg" "-i" "/usr/share/backgrounds/kuma/kuma-wallpaper.jpg" "-m" "fill"
-// Lock at 15 min, screen off a minute later (any input wakes it).
-spawn-at-startup "swayidle" "-w" "timeout" "900" "swaylock -f -i /usr/share/backgrounds/kuma/kuma-wallpaper.jpg -s fill" "timeout" "960" "niri msg action power-off-monitors" "before-sleep" "swaylock -f -i /usr/share/backgrounds/kuma/kuma-wallpaper.jpg -s fill"
+// The shell: bar, notifications, wallpaper, OSDs, idle, lock, control
+// centre and night light, in one process. It stands in for waybar, mako,
+// swaybg, swayidle, swaylock, kuma-wob and wlsunset, all of which leave
+// the niri set with it. Configured from the image, see KUMA_NOCTALIA.
+spawn-at-startup "noctalia"
 spawn-at-startup "/usr/libexec/kuma-battery-watch"
 // Wayland clipboards can die with their window; cliphist keeps history
 // (paste picker on Mod+Ctrl+V, spliced into the stock binds).
@@ -1797,47 +1805,90 @@ read -r _
 ' kuma-launch kuma "$@"
 "#;
 
-/// Volume/brightness OSD: wob draws an overlay bar from levels written
-/// to a FIFO (swayosd would be nicer but is COPR-only). kuma-osd is
-/// bound to the media keys in place of niri's stock wpctl binds — it
-/// makes the same adjustment, then feeds the resulting level to the bar.
-const WOB_INI: &str = r#"[default]
-anchor = bottom
-margin = 48
-height = 28
-width = 360
-border_size = 1
-border_color = 7ee0a8ff
-background_color = 101a28e6
-bar_color = 7ee0a8ff
-"#;
-
-const WOB_LAUNCHER: &str = r#"#!/usr/bin/bash
-set -euo pipefail
-fifo="${XDG_RUNTIME_DIR}/kuma-wob.fifo"
-rm -f "$fifo"; mkfifo "$fifo"
-# tail keeps the fifo open between writes so wob doesn't exit
-exec sh -c "tail -f \"$fifo\" | wob -c /usr/lib/kuma/wob.ini"
-"#;
-
+/// The media keys, bound in place of niri's stock wpctl binds.
+///
+/// It used to feed the resulting level to a wob overlay; the shell draws
+/// its own OSD from the change now (`[osd.kinds]` covers volume and
+/// brightness), so this only makes the adjustment. Still a script rather
+/// than the stock binds, because mute has to re-read the level and
+/// brightness is `brightnessctl` rather than `wpctl`.
 const OSD_SCRIPT: &str = r#"#!/usr/bin/bash
 set -euo pipefail
-fifo="${XDG_RUNTIME_DIR}/kuma-wob.fifo"
-feed() { [ -p "$fifo" ] && echo "$1" > "$fifo" || true; }
-vol() {
-    v=$(wpctl get-volume @DEFAULT_AUDIO_SINK@)
-    case "$v" in
-        *MUTED*) feed 0 ;;
-        *) feed "$(awk '{print int($2*100)}' <<<"$v")" ;;
-    esac
-}
 case "$1" in
-    volume-up)       wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+; vol ;;
-    volume-down)     wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-; vol ;;
-    mute)            wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle; vol ;;
-    brightness-up)   brightnessctl -q set +5%; feed "$(brightnessctl -m | cut -d, -f4 | tr -d %)" ;;
-    brightness-down) brightnessctl -q set 5%-; feed "$(brightnessctl -m | cut -d, -f4 | tr -d %)" ;;
+    volume-up)       wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+ ;;
+    volume-down)     wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%- ;;
+    mute)            wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle ;;
+    brightness-up)   brightnessctl -q set +5% ;;
+    brightness-down) brightnessctl -q set 5%- ;;
 esac
+"#;
+
+/// kuma's noctalia configuration, baked into the image.
+///
+/// Read through `NOCTALIA_CONFIG_HOME` (set in [`NIRI_EXTRAS`]), because
+/// noctalia ignores `/etc/xdg` and `XDG_CONFIG_DIRS` entirely. This is
+/// the authored layer; `~/.local/state/noctalia/settings.toml` is the
+/// person's and overrides it, which is the same shape as everything else
+/// kuma bakes: the image states the default and the machine may differ.
+///
+/// **Two of these are corrections, not taste.** Every
+/// `[idle.behavior.*]` ships `enabled = false`, so a stock noctalia
+/// never locks on idle at all — a regression against the swayidle line
+/// it replaces, and a sharper one since 0.15 gave machines somewhere to
+/// hibernate to. `[nightlight]` ships disabled likewise, where kuma ran
+/// wlsunset from 07:00 to 20:00.
+const KUMA_NOCTALIA: &str = r#"# Generated by kuma. Edit kuma.toml instead.
+#
+# This is the image's copy. Changing the desktop from its own settings
+# writes ~/.local/state/noctalia/settings.toml, which wins over this
+# file; `kuma diff` is how you see that you have.
+
+[theme]
+mode = "dark"
+
+[shell]
+font_family = "Noto Sans"
+
+[bar.default]
+position = "top"
+thickness = 32
+radius = 12
+margin_ends = 10
+start = [ "launcher", "wallpaper", "workspaces" ]
+center = [ "clock" ]
+end = [
+    "media",
+    "tray",
+    "notifications",
+    "clipboard",
+    "network",
+    "bluetooth",
+    "volume",
+    "brightness",
+    "battery",
+    "control-center",
+    "session"
+]
+
+[wallpaper]
+directory = "/usr/share/backgrounds/kuma"
+fill_mode = "crop"
+
+# Replaces wlsunset, which ran on the same schedule and temperatures.
+[nightlight]
+enabled = true
+temperature_day = 6500
+temperature_night = 4000
+
+# Replaces swayidle: lock at 15 minutes, screen off a minute later.
+# Both ship disabled, so leaving this out is a machine that never locks.
+[idle.behavior.lock]
+enabled = true
+timeout = 900.0
+
+[idle.behavior.screen-off]
+enabled = true
+timeout = 960.0
 "#;
 
 /// System-wide default apps: without associations, opening a PDF or a
@@ -1998,7 +2049,6 @@ const NIRI_MEDIA_BINDS: &str = r#"    XF86AudioRaiseVolume allow-when-locked=tru
     XF86AudioNext allow-when-locked=true { spawn "playerctl" "next"; }
     XF86AudioPrev allow-when-locked=true { spawn "playerctl" "previous"; }
     Mod+Ctrl+V { spawn "sh" "-c" "cliphist list | fuzzel --dmenu | cliphist decode | wl-copy"; }
-    Mod+Shift+N { spawn "makoctl" "mode" "-t" "do-not-disturb"; }
     Mod+Alt+R { spawn "/usr/libexec/kuma-record"; }
     Mod+Print { spawn "sh" "-c" "grim -g \"$(slurp)\" - | swappy -f -"; }
 "#;
@@ -2116,31 +2166,8 @@ const FASTFETCH_CONFIG: &str = r#"{
 /// of this theme), and mako (no system path at all) goes through a
 /// launcher that prefers the user's config.
 const WALLPAPER: &[u8] = include_bytes!("../assets/kuma-wallpaper.jpg");
-const WAYBAR_CONFIG: &str = include_str!("../assets/waybar.jsonc");
-const WAYBAR_STYLE: &str = include_str!("../assets/waybar.css");
 const FUZZEL_CONFIG: &str = include_str!("../assets/fuzzel.ini");
-const MAKO_CONFIG: &str = include_str!("../assets/mako.conf");
 const KITTY_CONFIG: &str = include_str!("../assets/kitty.conf");
-
-/// mako is dbus-activated (org.freedesktop.Notifications), so this wrapper
-/// is wired in via its dbus service file rather than spawn-at-startup.
-/// The service file names SystemdService=mako.service, and under a systemd
-/// user session THAT is what actually runs (Exec= is only the fallback) —
-/// so the user unit gets a drop-in pointing at the wrapper too.
-const MAKO_LAUNCHER: &str = r#"#!/usr/bin/bash
-conf="${XDG_CONFIG_HOME:-$HOME/.config}/mako/config"
-if [ -f "$conf" ]; then
-    exec mako
-fi
-exec mako --config /usr/lib/kuma/mako.conf
-"#;
-
-/// Empty ExecStart= first: it clears the unit's own ExecStart, which a
-/// drop-in otherwise appends to (two ExecStarts is a hard unit error).
-const MAKO_DROPIN: &str = r#"[Service]
-ExecStart=
-ExecStart=/usr/libexec/kuma-mako
-"#;
 
 /// Rebrand the OS identity: Kuma, not Fedora. ID_LIKE=fedora keeps tools
 /// that sniff os-release (toolbox, distrobox, dnf COPR, …) working. Runs
@@ -2450,29 +2477,40 @@ pub fn generate(config: &Config) -> String {
     // before the user's packages preserves the build cache across edits.
     if config.system.desktop == Desktop::Niri {
         out.push('\n');
-        // niri Recommends alacritty, which would ride in past the package
-        // list as a weak dep; Kuma's terminal is kitty.
-        out.push_str(&dnf_install(&format!("--exclude=alacritty {}", NIRI_PACKAGES.join(" "))));
+        // niri's weak deps, which ride in past the package list unless
+        // they are named here. alacritty because kuma's terminal is
+        // kitty; waybar and swaylock because the shell replaced them and
+        // dropping them from NIRI_PACKAGES is not enough to remove them.
+        // Measured: an image built without these excludes still had a bar
+        // and a lock screen it never starts.
+        out.push_str(&dnf_install(&format!(
+            "{} {}",
+            NIRI_EXCLUDES.iter().map(|p| format!("--exclude={p}")).collect::<Vec<_>>().join(" "),
+            NIRI_PACKAGES.join(" ")
+        )));
         out.push_str(&mesa_freeworld());
         out.push_str("COPY greetd-config.toml /etc/greetd/config.toml\n");
         out.push_str("COPY kargs-desktop.toml /usr/lib/bootc/kargs.d/10-kuma-desktop.toml\n");
         out.push_str("COPY niri-extras.kdl /usr/lib/kuma/niri-extras.kdl\n");
         out.push_str("COPY kuma-wallpaper.jpg /usr/share/backgrounds/kuma/kuma-wallpaper.jpg\n");
-        out.push_str("COPY waybar-config.jsonc /etc/xdg/waybar/config.jsonc\n");
-        out.push_str("COPY waybar-style.css /etc/xdg/waybar/style.css\n");
         out.push_str("COPY fuzzel.ini /etc/xdg/fuzzel/fuzzel.ini\n");
+        out.push_str("COPY noctalia-config.toml /usr/lib/kuma/noctalia/config.toml\n");
+        // Prove the baked config is actually reachable, in the build.
+        //
+        // `noctalia config validate` is not enough: it accepts
+        // `source = "bogus"` happily, so it checks TOML syntax and key
+        // names and not values. And `NOCTALIA_CONFIG_HOME` is
+        // undocumented in `--help`, so an upstream rename would silently
+        // drop the desktop back to noctalia's own palette with nothing
+        // failing anywhere. This asks the binary what it merged and
+        // greps for two things kuma put there.
+        out.push_str(
+            "RUN out=$(HOME=/tmp NOCTALIA_CONFIG_HOME=/usr/lib/kuma noctalia config export merged); \\\n                 printf '%s\\n' \"$out\"; \\\n                 printf '%s' \"$out\" | grep -q '/usr/share/backgrounds/kuma' \\\n                 && printf '%s' \"$out\" | grep -q 'timeout = 900'\n",
+        );
         // The menu's icons, repainted from Adwaita into kuma's own theme.
         // Beside the fuzzel config on purpose: that file supplies the
         // colour they are painted in, and the two are one decision.
         out.push_str(&icon_theme());
-        out.push_str("COPY mako.conf /usr/lib/kuma/mako.conf\n");
-        out.push_str("COPY --chmod=755 kuma-mako /usr/libexec/kuma-mako\n");
-        out.push_str("COPY mako-dropin.conf /usr/lib/systemd/user/mako.service.d/kuma.conf\n");
-        // grep first: if a mako update moves or rewords the service file,
-        // fail the build instead of silently shipping unthemed notifications
-        out.push_str(
-            "RUN grep -qx 'Exec=/usr/bin/mako' /usr/share/dbus-1/services/fr.emersion.mako.service \\\n    && sed -i 's|^Exec=/usr/bin/mako$|Exec=/usr/libexec/kuma-mako|' /usr/share/dbus-1/services/fr.emersion.mako.service\n",
-        );
         out.push_str("COPY kitty.conf /etc/xdg/kitty/kitty.conf\n");
         // kitty skips settings it doesn't recognise and starts anyway, so a
         // renamed key ships a silently unthemed terminal — which is exactly
@@ -2494,9 +2532,7 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY niri-binds.kdl /usr/lib/kuma/niri-binds.kdl\n");
         out.push_str("COPY --chmod=755 kuma-record /usr/libexec/kuma-record\n");
         out.push_str("COPY --chmod=755 kuma-battery-watch /usr/libexec/kuma-battery-watch\n");
-        out.push_str("COPY --chmod=755 kuma-wob /usr/libexec/kuma-wob\n");
         out.push_str("COPY --chmod=755 kuma-osd /usr/libexec/kuma-osd\n");
-        out.push_str("COPY wob.ini /usr/lib/kuma/wob.ini\n");
         out.push_str("COPY gtk3-settings.ini /etc/gtk-3.0/settings.ini\n");
         out.push_str("COPY gtk4-settings.ini /etc/gtk-4.0/settings.ini\n");
         out.push_str("COPY mimeapps.list /etc/xdg/mimeapps.list\n");
@@ -3089,12 +3125,8 @@ pub fn write_context(
     if config.system.desktop == Desktop::Niri {
         std::fs::write(dir.join("greetd-config.toml"), greetd_config(config))?;
         std::fs::write(dir.join("niri-extras.kdl"), NIRI_EXTRAS)?;
-        std::fs::write(dir.join("waybar-config.jsonc"), WAYBAR_CONFIG)?;
-        std::fs::write(dir.join("waybar-style.css"), WAYBAR_STYLE)?;
         std::fs::write(dir.join("fuzzel.ini"), FUZZEL_CONFIG)?;
-        std::fs::write(dir.join("mako.conf"), MAKO_CONFIG)?;
-        std::fs::write(dir.join("kuma-mako"), MAKO_LAUNCHER)?;
-        std::fs::write(dir.join("mako-dropin.conf"), MAKO_DROPIN)?;
+        std::fs::write(dir.join("noctalia-config.toml"), KUMA_NOCTALIA)?;
         std::fs::write(dir.join("kitty.conf"), KITTY_CONFIG)?;
         std::fs::write(dir.join("kuma-clipboard-bridge"), CLIPBOARD_BRIDGE)?;
         std::fs::write(dir.join("kuma-xsettings"), XSETTINGS_LAUNCHER)?;
@@ -3103,9 +3135,7 @@ pub fn write_context(
         std::fs::write(dir.join("mimeapps.list"), MIMEAPPS)?;
         std::fs::write(dir.join("kuma-record"), RECORD_SCRIPT)?;
         std::fs::write(dir.join("kuma-battery-watch"), BATTERY_WATCH)?;
-        std::fs::write(dir.join("kuma-wob"), WOB_LAUNCHER)?;
         std::fs::write(dir.join("kuma-osd"), OSD_SCRIPT)?;
-        std::fs::write(dir.join("wob.ini"), WOB_INI)?;
         std::fs::write(dir.join("gtk3-settings.ini"), GTK3_SETTINGS_INI)?;
         std::fs::write(dir.join("gtk4-settings.ini"), GTK4_SETTINGS_INI)?;
         std::fs::write(dir.join("dconf-profile"), DCONF_PROFILE)?;
@@ -3465,17 +3495,16 @@ mod tests {
         assert!(
             out.contains("COPY kuma-wallpaper.jpg /usr/share/backgrounds/kuma/kuma-wallpaper.jpg")
         );
-        assert!(out.contains("COPY waybar-config.jsonc /etc/xdg/waybar/config.jsonc"));
-        assert!(out.contains("COPY waybar-style.css /etc/xdg/waybar/style.css"));
+        // The shell's config, in place of waybar's two files and mako's
+        // one. Its reachability is checked in the build itself, see
+        // the_baked_shell_config_is_proved_reachable.
+        assert!(out.contains("COPY noctalia-config.toml /usr/lib/kuma/noctalia/config.toml"));
         // system-wide, never /etc/skel — skel strands existing homes on
         // stale copies (the fuzzel-DPI lesson)
         assert!(!out.contains("/etc/skel"));
         assert!(out.contains("COPY fuzzel.ini /etc/xdg/fuzzel/fuzzel.ini"));
-        assert!(out.contains("COPY mako.conf /usr/lib/kuma/mako.conf"));
-        assert!(out.contains("Exec=/usr/libexec/kuma-mako"));
         // systemd user sessions activate via SystemdService, not Exec —
         // without the drop-in the wrapper never runs where it matters
-        assert!(out.contains("/usr/lib/systemd/user/mako.service.d/kuma.conf"));
         assert!(out.contains("COPY kitty.conf /etc/xdg/kitty/kitty.conf"));
         // an unparseable theme must fail the build, not ship unthemed —
         // and unknown keys only ever reach stderr, so both halves matter
@@ -3487,7 +3516,10 @@ mod tests {
         assert!(out.contains("grep -q '\"alacritty\"' /usr/share/doc/niri/default-config.kdl"));
         assert!(out.contains("sed -e 's/alacritty/kitty/g'"));
         // niri Recommends alacritty; without the exclude it ships anyway
-        assert!(out.contains("--exclude=alacritty"));
+        for excluded in NIRI_EXCLUDES {
+            assert!(out.contains(&format!("--exclude={excluded}")), "{excluded} rides in");
+            assert!(!NIRI_PACKAGES.contains(excluded), "{excluded} is both excluded and asked for");
+        }
         assert!(out.contains("COPY dconf-profile /etc/dconf/profile/user"));
         assert!(out.contains("COPY dconf-kuma-dark /etc/dconf/db/local.d/10-kuma-dark"));
         assert!(out.contains("COPY dconf-kuma-blueman /etc/dconf/db/local.d/10-kuma-blueman"));
@@ -4003,10 +4035,13 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
     #[test]
     fn stock_waybar_spawn_is_deduped() {
         let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
-        // Fedora's default config spawns waybar; the merge must drop it so
-        // only the Kuma extras spawn remains (two spawns = two bars).
+        // Fedora's default config spawns waybar and kuma no longer ships
+        // one, so the sed matters more than it used to rather than less:
+        // without it the session starts a bar that is not in the image
+        // and the shell's own bar comes up beside a black rectangle.
         assert!(out.contains("-e '/^spawn-at-startup \"waybar\"$/d'"));
-        assert_eq!(NIRI_EXTRAS.matches("spawn-at-startup \"waybar\"").count(), 1);
+        assert_eq!(NIRI_EXTRAS.matches("spawn-at-startup \"waybar\"").count(), 0);
+        assert!(!NIRI_PACKAGES.contains(&"waybar"), "nothing left to spawn");
     }
 
     /// The local-override include is worthless anywhere but last: niri
@@ -4037,16 +4072,16 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
         let wallpaper = std::fs::read(dir.path().join("kuma-wallpaper.jpg")).unwrap();
         assert!(!wallpaper.is_empty());
         let extras = std::fs::read_to_string(dir.path().join("niri-extras.kdl")).unwrap();
-        assert!(extras.contains("/usr/share/backgrounds/kuma/kuma-wallpaper.jpg"));
-        assert!(extras.contains("spawn-at-startup \"waybar\""));
+        // The wallpaper is still the image's, but the shell draws it from
+        // its own config rather than a swaybg argument in here.
+        assert!(KUMA_NOCTALIA.contains("/usr/share/backgrounds/kuma"));
+        assert!(extras.contains("spawn-at-startup \"noctalia\""));
         assert!(extras.contains("kuma-clipboard-bridge"));
         assert!(dir.path().join("kuma-clipboard-bridge").exists());
         let greetd = std::fs::read_to_string(dir.path().join("greetd-config.toml")).unwrap();
         assert!(greetd.contains("Welcome to Kuma"));
-        assert!(dir.path().join("waybar-config.jsonc").exists());
-        assert!(dir.path().join("waybar-style.css").exists());
+        assert!(dir.path().join("noctalia-config.toml").exists());
         assert!(dir.path().join("fuzzel.ini").exists());
-        assert!(dir.path().join("mako.conf").exists());
         assert!(dir.path().join("kitty.conf").exists());
         let ff = std::fs::read_to_string(dir.path().join("fastfetch-config.jsonc")).unwrap();
         assert!(ff.contains("/usr/lib/kuma/fastfetch-logo.txt"));
@@ -5174,9 +5209,19 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
 
     #[test]
     fn session_polish_ships_osd_and_battery_watch() {
-        assert!(NIRI_EXTRAS.contains("power-off-monitors"));
+        // Locking and screen-off were swayidle arguments; they are the
+        // shell's now, and they ship DISABLED, so kuma turning them on is
+        // the difference between a machine that locks and one that does
+        // not. Asserted on the config because that is where it lives.
+        assert!(KUMA_NOCTALIA.contains("[idle.behavior.lock]"));
+        assert!(KUMA_NOCTALIA.contains("[idle.behavior.screen-off]"));
+        assert_eq!(
+            KUMA_NOCTALIA.matches("enabled = true").count(),
+            3,
+            "lock, screen-off, nightlight"
+        );
         assert!(NIRI_EXTRAS.contains("kuma-battery-watch"));
-        assert!(NIRI_EXTRAS.contains("kuma-wob"));
+        assert!(NIRI_EXTRAS.contains("noctalia"));
         // media keys route through the OSD helper, spliced into stock binds
         assert!(NIRI_MEDIA_BINDS.contains("kuma-osd"));
         let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
@@ -5344,7 +5389,8 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
         assert!(out.contains("avahi-daemon.service chronyd.service"));
         assert!(out.contains("kuma-flatpak-sync.service kuma-flatpak-sync.timer"));
         assert!(FLATPAK_SYNC_TIMER.contains("Persistent=true"));
-        assert!(NIRI_MEDIA_BINDS.contains("do-not-disturb"));
+        // do-not-disturb left with mako; the control centre owns it.
+        assert!(!NIRI_MEDIA_BINDS.contains("makoctl"), "no daemon behind that key");
         assert!(NIRI_MEDIA_BINDS.contains("kuma-record"));
         // the XF86Audio sed deletes niri's stock playerctl binds; these
         // re-additions ride the bind-splice file, immune to that sed
