@@ -115,7 +115,12 @@ while [ $# -gt 0 ]; do
         --hibernate) HIBERNATE=1 ;;
         --secure-boot) SECURE_BOOT=1 ;;
         --keep) KEEP=1 ;;
-        -h|--help) sed -n '2,54p' "$0"; exit 0 ;;
+        # The header, however long it has become. A line range went
+        # stale the moment the header grew: --hibernate added fourteen
+        # lines and --help silently stopped printing --install, --iso and
+        # the environment variables, while still looking like complete
+        # help. Reading until the comments stop cannot drift.
+        -h|--help) awk 'NR == 1 { next } /^#/ { print; next } { exit }' "$0"; exit 0 ;;
         -*) echo "unknown flag: $1" >&2; exit 2 ;;
         *) SELECTED+=("$1") ;;
     esac
