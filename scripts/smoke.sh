@@ -1211,6 +1211,11 @@ smoke_published() {
         # disk against what is actually loaded.
         resume_pages=$(guest "cat /sys/power/resume_offset")
         [ -n "$before_boot_id" ] || bad "could not read the boot_id before hibernating"
+        # The other half of the same rule. An empty reading here makes the
+        # awk comparison after the resume `b >= 0`, which every possible
+        # uptime satisfies, so a missed reading would have passed the
+        # check instead of failing it.
+        [ -n "$before_uptime" ] || bad "could not read /proc/uptime before hibernating"
         gsudo "touch /run/kuma-resumed" >/dev/null 2>&1 || true
         guest "test -f /run/kuma-resumed" \
             || bad "could not leave a marker in /run, so a resume could not be told from a reboot"
@@ -1282,7 +1287,11 @@ smoke_published() {
                 2>/dev/null || true)
             if [ -n "$part_start" ]; then
                 byte=$(( part_start * 512 + resume_pages * 4096 + 4086 ))
-                sig=$(sudo dd if="$raw" bs=1 skip="$byte" count=10 status=none 2>/dev/null || true)
+                # tr, because an unwritten swap header is mostly NULs and
+                # bash warns on every one of them crossing a command
+                # substitution. The warning is harmless and looks like a
+                # fault in the middle of a run that is being read closely.
+                sig=$(sudo dd if="$raw" bs=1 skip="$byte" count=10 status=none 2>/dev/null | tr -d '\0' || true)
                 case "$sig" in
                     S1SUSPEND)
                         ok "a hibernation image is on the disk where resume_offset points" ;;
@@ -1306,7 +1315,24 @@ smoke_published() {
             "boot_id moved ${before_boot_id:0:8} -> ${after_boot_id:0:8}: this was a fresh boot, not a resume, and whatever was open is gone"
         guest "test -f /run/kuma-resumed" || bad \
             "same boot_id but the tmpfs marker is gone, which should be impossible; console at $log"
-        after_uptime=$(guest "cut -d' ' -f1 /proc/uptime")
+        # Read with retries, and never silently. `guest` throws stderr
+        # away, and `set -e` is disabled for the whole dynamic extent a
+        # stage runs in, so a dropped ssh session arrives here as an
+        # empty string that flows straight into the comparison below.
+        # Run 12 died exactly that way: same boot_id, marker present,
+        # every other assertion passed, and the harness still announced
+        # "the clock says this is a new boot" over a reading it never
+        # got. A check that cannot see has to say it cannot see, not
+        # convict the machine of the thing it failed to measure.
+        local uptime_tries=0
+        after_uptime=$(guest "cut -d' ' -f1 /proc/uptime" || true)
+        while [ -z "$after_uptime" ] && [ $uptime_tries -lt 5 ]; do
+            sleep 3
+            uptime_tries=$((uptime_tries + 1))
+            after_uptime=$(guest "cut -d' ' -f1 /proc/uptime" || true)
+        done
+        [ -n "$after_uptime" ] || bad \
+            "could not read /proc/uptime after resuming, in 6 tries over 15s. The resume itself passed: boot_id is still ${before_boot_id:0:8} and the tmpfs marker survived. This is the harness losing ssh, not a fresh boot; console at $log"
         awk -v a="$before_uptime" -v b="$after_uptime" 'BEGIN { exit !(b + 0 >= a + 0) }' \
             || bad "uptime went backwards ($before_uptime -> $after_uptime), so the clock says this is a new boot"
         ok "resumed: same boot_id, the tmpfs marker survived, uptime continued ${before_uptime}s -> ${after_uptime}s"
