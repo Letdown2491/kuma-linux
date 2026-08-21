@@ -34,6 +34,22 @@
 #   scripts/smoke.sh --published ghcr.io/letdown2491/kuma:niri
 #   scripts/smoke.sh --published <image> --encrypted   # LUKS, unlocked
 #                                                      # at the console
+#   scripts/smoke.sh --published <image> --hibernate --secure-boot
+#
+# --hibernate installs with a swapfile, then asks the machine to suspend
+# to disk and come back. It is the only stage where the verdict is not
+# "did it boot" but "is this the same boot": a machine that hibernates,
+# powers off, and then starts fresh looks identical from the outside and
+# has silently lost everything that was open. So the assertion is the
+# kernel's own boot_id, which is generated at boot and lives in the
+# memory a real resume restores, plus a marker left in tmpfs.
+#
+# --secure-boot boots the same disk on firmware with Microsoft's keys
+# enrolled, which needs SMM and a different OVMF pair. It is worth pairing
+# with --hibernate rather than running alone: kernel lockdown under Secure
+# Boot has historically refused hibernation outright, and kuma ships shim,
+# so Secure Boot machines are exactly the ones that could be told by
+# doctor that hibernate is ready while logind refuses to do it.
 #
 # --published builds nothing and reads no example: it installs what is on
 # the registry and boots the result, so it is the only stage that can go
@@ -82,6 +98,8 @@ PUBLISHED=""
 DEAD_DISK=0
 UPGRADE_TO=""
 ENCRYPTED=0
+HIBERNATE=0
+SECURE_BOOT=0
 KEEP=0
 SELECTED=()
 
@@ -94,6 +112,8 @@ while [ $# -gt 0 ]; do
         --dead-disk) DEAD_DISK=1 ;;
         --upgrade-to) UPGRADE_TO=${2:?--upgrade-to needs an image reference}; shift ;;
         --encrypted) ENCRYPTED=1 ;;
+        --hibernate) HIBERNATE=1 ;;
+        --secure-boot) SECURE_BOOT=1 ;;
         --keep) KEEP=1 ;;
         -h|--help) sed -n '2,54p' "$0"; exit 0 ;;
         -*) echo "unknown flag: $1" >&2; exit 2 ;;
@@ -178,6 +198,40 @@ find_ovmf() {
     echo "   .. looked for OVMF in:" >&2
     ls -1 /usr/share/OVMF /usr/share/edk2/ovmf /usr/share/qemu \
           /usr/share/edk2-ovmf/x64 2>/dev/null >&2 || true
+    return 1
+}
+
+# The Secure Boot firmware pair, printed as "CODE VARS", or nothing and a
+# non-zero status.
+#
+# Spelled as explicit pairs rather than derived from the CODE name the way
+# `find_ovmf` does it, because for this pair the derivation is wrong on
+# the distribution CI runs. Ubuntu's secure-boot code is
+# `OVMF_CODE_4M.secboot.fd` and the vars file that goes with it is
+# `OVMF_VARS_4M.ms.fd`: different infix, and substituting CODE for VARS
+# yields `OVMF_VARS_4M.secboot.fd`, which does not exist. Fedora does use
+# a matching `.secboot` name for both. One list of pairs is the only
+# spelling that is right on both.
+#
+# `.ms.` is not a detail either: it is the whole point. Those vars have
+# Microsoft's keys enrolled, which is what makes a Secure Boot test mean
+# anything for kuma, since what kuma ships is shim and shim is signed by
+# Microsoft. Vars with no keys enrolled boot everything and would turn
+# this into an expensive way to boot normally.
+find_ovmf_secboot() {
+    local pair code vars
+    for pair in "/usr/share/OVMF/OVMF_CODE_4M.secboot.fd /usr/share/OVMF/OVMF_VARS_4M.ms.fd" \
+                "/usr/share/OVMF/OVMF_CODE.secboot.fd /usr/share/OVMF/OVMF_VARS.ms.fd" \
+                "/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd /usr/share/edk2/ovmf/OVMF_VARS.secboot.fd" \
+                "/usr/share/edk2-ovmf/x64/OVMF_CODE.secboot.fd /usr/share/edk2-ovmf/x64/OVMF_VARS.secboot.fd"; do
+        code=${pair%% *}
+        vars=${pair##* }
+        [ -f "$code" ] && [ -f "$vars" ] || continue
+        printf '%s %s\n' "$code" "$vars"
+        return 0
+    done
+    echo "   .. looked for Secure Boot OVMF in:" >&2
+    ls -1 /usr/share/OVMF /usr/share/edk2/ovmf /usr/share/edk2-ovmf/x64 2>/dev/null >&2 || true
     return 1
 }
 
@@ -552,13 +606,22 @@ smoke_published() {
         answers=$(printf '%s\n' "$pass")
     fi
 
+    # 4G against the guest's 4096 MiB, which is the size the installer
+    # would propose for itself: MemTotal reads a little under the RAM the
+    # machine was given, so a whole gibibyte above it is 4G. Passed rather
+    # than left to the interview because there is no terminal here, and
+    # asked for explicitly rather than defaulted so that a change to the
+    # default cannot silently make this stage test a different thing.
+    local swap_args=()
+    [ $HIBERNATE -eq 1 ] && swap_args=(--swap 4G)
+
     echo "   .. installing $image (needs sudo; this is the slow part)"
     printf '%s\n' "$answers" \
         | "$KUMA" install --disk "$raw" --image "$image" \
-            "${update_from[@]}" "${encrypt_args[@]}" \
+            "${update_from[@]}" "${encrypt_args[@]}" "${swap_args[@]}" \
             --user "$user" --hostname smoketest --yes >/dev/null \
         || bad "installing $image failed"
-    ok "installed $image${encrypt_args[*]:+ (encrypted)}"
+    ok "installed $image${encrypt_args[*]:+ (encrypted)}${swap_args[*]:+ (with a swapfile)}"
 
     # A console the serial log can actually capture.
     #
@@ -596,12 +659,38 @@ smoke_published() {
     #
     # VARS is copied because pflash wants it writable, and a per-run copy
     # means EFI boot entries cannot leak from one run into the next.
+    #
+    # With --secure-boot the pair comes from find_ovmf_secboot instead,
+    # and the machine gains SMM: OVMF keeps the authenticated variables
+    # that hold the enrolled keys in System Management RAM, so without
+    # `smm=on` and a pflash marked secure, the firmware comes up with
+    # Secure Boot reporting disabled and the test quietly measures
+    # nothing.
     local ovmf ovmf_code ovmf_vars
-    ovmf=$(find_ovmf) \
-        || bad "no OVMF firmware; an installed disk is UEFI and will not boot on SeaBIOS"
+    if [ $SECURE_BOOT -eq 1 ]; then
+        ovmf=$(find_ovmf_secboot) \
+            || bad "no Secure Boot OVMF firmware; --secure-boot cannot be answered on this machine"
+    else
+        ovmf=$(find_ovmf) \
+            || bad "no OVMF firmware; an installed disk is UEFI and will not boot on SeaBIOS"
+    fi
     ovmf_code=${ovmf%% *}
     ovmf_vars=${ovmf##* }
     cp "$ovmf_vars" "$dir/OVMF_VARS.fd"
+
+    local machine=(-machine q35)
+    local secure_globals=()
+    if [ $SECURE_BOOT -eq 1 ]; then
+        machine=(-machine "q35,smm=on")
+        # disable_s3, because OVMF's own guidance is that S3 and Secure
+        # Boot together are unsafe: a resume from RAM re-enters the
+        # firmware without re-authenticating. S4 is untouched and S4 is
+        # what hibernate uses, which is the whole reason these two flags
+        # can be asked in one run.
+        secure_globals=(-global "driver=cfi.pflash01,property=secure,value=on"
+                        -global "ICH9-LPC.disable_s3=1")
+        echo "   .. booting on firmware with Microsoft's keys enrolled: $ovmf_code"
+    fi
 
     # A console that can be typed into, not only read.
     #
@@ -614,32 +703,48 @@ smoke_published() {
     local serial=(-chardev "socket,id=con,path=$sock,server=on,wait=off,logfile=$log"
                   -serial chardev:con)
 
-    qemu-system-x86_64 \
-        -enable-kvm -cpu host -smp 4 -m 4096 \
-        -machine q35 \
-        -drive "if=pflash,format=raw,readonly=on,file=$ovmf_code" \
-        -drive "if=pflash,format=raw,file=$dir/OVMF_VARS.fd" \
-        -drive "file=$raw,if=virtio,format=raw" \
-        -device "$QEMU_VGA" -display "$QEMU_DISPLAY" \
-        -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$port-:22" \
-        "${serial[@]}" &
-    local qemu=$!
+    # A function rather than a command, because --hibernate boots this
+    # same disk twice and the second boot has to be identical to the
+    # first. Two copies of a fifteen-argument qemu line is two chances
+    # for the resume to be measured against a machine that differs from
+    # the one that hibernated, which is the one difference this stage
+    # cannot afford. It sets `qemu` and `unlocker` for the caller.
+    local qemu=0 unlocker=0
+    boot_vm() {
+        qemu-system-x86_64 \
+            -enable-kvm -cpu host -smp 4 -m 4096 \
+            "${machine[@]}" "${secure_globals[@]}" \
+            -drive "if=pflash,format=raw,readonly=on,file=$ovmf_code" \
+            -drive "if=pflash,format=raw,file=$dir/OVMF_VARS.fd" \
+            -drive "file=$raw,if=virtio,format=raw" \
+            -device "$QEMU_VGA" -display "$QEMU_DISPLAY" \
+            -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$port-:22" \
+            "${serial[@]}" &
+        qemu=$!
 
-    # Typed while the boot is still in the initramfs, so this runs beside
-    # the wait below rather than before it.
-    local unlocker=0
-    if [ $ENCRYPTED -eq 1 ]; then
-        echo "   .. answering the passphrase prompt on the console"
-        scripts/console-unlock.py "$sock" "$disk_pass" 420 \
-            >"$dir/unlock.log" 2>&1 &
-        unlocker=$!
-    fi
-    # EXIT rather than RETURN, for the reason smoke_boot gives: a failed
-    # assertion leaves this subshell without ever returning. The unlocker
-    # goes with it, or a failed encrypted run leaves a python process
-    # holding a socket in a directory the cleanup is about to delete.
-    # shellcheck disable=SC2064
-    trap "kill $qemu $unlocker 2>/dev/null || true" EXIT
+        # Typed while the boot is still in the initramfs, so this runs
+        # beside the wait rather than before it. Inside this function
+        # because a resume from an encrypted disk stops for the
+        # passphrase exactly as a cold boot does: the initramfs has to
+        # open the container before it can read the swapfile it is
+        # resuming from.
+        unlocker=0
+        if [ $ENCRYPTED -eq 1 ]; then
+            echo "   .. answering the passphrase prompt on the console"
+            scripts/console-unlock.py "$sock" "$disk_pass" 420 \
+                >"$dir/unlock.log" 2>&1 &
+            unlocker=$!
+        fi
+        # EXIT rather than RETURN, for the reason smoke_boot gives: a
+        # failed assertion leaves this subshell without ever returning.
+        # The unlocker goes with it, or a failed encrypted run leaves a
+        # python process holding a socket in a directory the cleanup is
+        # about to delete. Re-armed on every boot, because the pids
+        # change and a trap holding the old ones kills nothing.
+        # shellcheck disable=SC2064
+        trap "kill $qemu $unlocker 2>/dev/null || true" EXIT
+    }
+    boot_vm
 
     # Password auth, because `kuma install` has no way to plant a key:
     # the account it creates exists only on the installed machine and
@@ -861,6 +966,136 @@ smoke_published() {
     guest id -nG "$user" | tr ' ' '\n' | grep -qx wheel || bad "$user is not in wheel"
     [ "$(guest hostnamectl hostname)" = smoketest ] || bad "hostname did not converge"
     ok "the installed account and hostname converged"
+
+    # --- the hibernate half --------------------------------------------
+    #
+    # Every other assertion in this file asks whether a machine booted.
+    # This one asks whether it is the SAME boot, because that is the only
+    # question hibernate turns on. A machine that writes its memory to
+    # disk, powers off, and then starts fresh is indistinguishable from a
+    # working one by every check above: ssh answers, greenboot is green,
+    # the account is there. What is gone is whatever was open, and nothing
+    # logs it.
+    if [ $HIBERNATE -eq 1 ]; then
+        if [ $SECURE_BOOT -eq 1 ]; then
+            # Asked of the firmware variable rather than of mokutil, which
+            # the image need not ship. The first four bytes are the EFI
+            # attributes and the fifth is the value.
+            local sb
+            sb=$(guest "od -An -t u1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c 2>/dev/null | tr -d ' '" || true)
+            [ "$sb" = 1 ] || bad \
+                "the guest reports Secure Boot ${sb:-absent}, not enabled: this run measured nothing about Secure Boot"
+            ok "the machine booted with Secure Boot enabled, on shim kuma ships"
+
+            # Reported, not asserted. Which lockdown mode a Secure Boot
+            # kernel takes is Fedora's decision and not kuma's, and the
+            # thing that matters is the consequence below rather than the
+            # mode. Printing it is what makes a future failure legible.
+            local lockdown
+            lockdown=$(guest "cat /sys/kernel/security/lockdown 2>/dev/null" || true)
+            echo "   .. kernel lockdown: ${lockdown:-unavailable}"
+        fi
+
+        # Both swap areas, which is the measurement behind a claim kuma's
+        # design rests on and had only ever asserted: every image ships
+        # zram-generator-defaults, so the machine has compressed swap in
+        # memory at priority 100, and you cannot hibernate into memory.
+        # If systemd were to choose that one there would be nowhere to
+        # write an image to.
+        local swaps
+        swaps=$(guest "cat /proc/swaps" || true)
+        grep -q '/var/swap/swapfile' <<<"$swaps" \
+            || bad "the swapfile is not active swap; /proc/swaps says: $swaps"
+        grep -q 'zram' <<<"$swaps" \
+            || bad "zram is not active, so this run cannot say systemd picked the file over it"
+        ok "both swap areas are active: zram in memory, and the file on disk"
+
+        # doctor's verdict before anything is asked to sleep. This is what
+        # ties the check to reality: doctor compares the resume_offset the
+        # kernel was given against the offset the file actually has, and
+        # if that comparison is wrong here, the resume below is what
+        # proves it wrong.
+        local hib_grade
+        hib_grade=$(doctor_grade hibernate)
+        [ "$hib_grade" = ok ] || bad \
+            "doctor grades hibernate '$hib_grade' on a machine installed with --swap"
+        ok "doctor grades hibernate ok before the machine is asked to do it"
+
+        # logind's own answer, and the place a Secure Boot problem would
+        # surface. A kernel locked down against writing to memory refuses
+        # hibernation outright, and it refuses here rather than failing
+        # later, so the message names the cause it most likely has.
+        local can
+        can=$(guest "busctl call org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager CanHibernate 2>/dev/null | tr -d 's\" '" || true)
+        if [ "$can" != yes ]; then
+            if [ $SECURE_BOOT -eq 1 ]; then
+                bad "logind says CanHibernate=${can:-nothing} under Secure Boot (lockdown: ${lockdown:-unknown}): kuma can set this machine up to hibernate and the kernel will not do it"
+            fi
+            bad "logind says CanHibernate=${can:-nothing} on a machine with an active swapfile"
+        fi
+        ok "logind says this machine can hibernate"
+
+        # The marker, and it is two markers for two different claims.
+        #
+        # boot_id is generated by the kernel at boot and lives in the
+        # memory a real resume restores, so it cannot be forged by a
+        # machine that merely rebooted well. The file in /run is tmpfs,
+        # which a cold boot starts empty, so its presence says userspace
+        # memory came back too and not only the kernel's.
+        local before_boot_id before_uptime
+        before_boot_id=$(guest cat /proc/sys/kernel/random/boot_id)
+        before_uptime=$(guest "cut -d' ' -f1 /proc/uptime")
+        [ -n "$before_boot_id" ] || bad "could not read the boot_id before hibernating"
+        gsudo "touch /run/kuma-resumed" >/dev/null 2>&1 || true
+        guest "test -f /run/kuma-resumed" \
+            || bad "could not leave a marker in /run, so a resume could not be told from a reboot"
+        ok "marked the running boot: ${before_boot_id:0:8}, up ${before_uptime}s"
+
+        # --no-block so the call returns rather than being killed halfway
+        # through by the ssh session it is about to take down with it.
+        echo "   .. hibernating"
+        gsudo "systemd-run --no-block systemctl hibernate" >/dev/null 2>&1 || true
+
+        # Powering off is half the claim. A machine that writes an image
+        # and then keeps running has not hibernated, and one that never
+        # writes one has not either; qemu exiting is how the guest says
+        # it reached S4 and stopped.
+        local waited=0
+        while kill -0 "$qemu" 2>/dev/null && [ $waited -lt 300 ]; do
+            sleep 5
+            waited=$((waited + 5))
+        done
+        kill -0 "$qemu" 2>/dev/null \
+            && bad "still running 300s after systemctl hibernate; console at $log"
+        ok "the machine wrote its image and powered off after ${waited}s"
+
+        echo "   .. starting it again"
+        boot_vm
+        await_healthy_boot "$qemu" "$log" \
+            "it came back up and is reachable" \
+            "greenboot still says this boot is healthy" \
+            " after resuming"
+
+        local after_boot_id after_uptime
+        after_boot_id=$(guest cat /proc/sys/kernel/random/boot_id)
+        [ -n "$after_boot_id" ] || bad "could not read the boot_id after resuming"
+        [ "$after_boot_id" = "$before_boot_id" ] || bad \
+            "boot_id moved ${before_boot_id:0:8} -> ${after_boot_id:0:8}: this was a fresh boot, not a resume, and whatever was open is gone"
+        guest "test -f /run/kuma-resumed" || bad \
+            "same boot_id but the tmpfs marker is gone, which should be impossible; console at $log"
+        after_uptime=$(guest "cut -d' ' -f1 /proc/uptime")
+        awk -v a="$before_uptime" -v b="$after_uptime" 'BEGIN { exit !(b + 0 >= a + 0) }' \
+            || bad "uptime went backwards ($before_uptime -> $after_uptime), so the clock says this is a new boot"
+        ok "resumed: same boot_id, the tmpfs marker survived, uptime continued ${before_uptime}s -> ${after_uptime}s"
+
+        # And the machine's own verdict on itself afterwards, because the
+        # offset check is the thing most likely to be silently wrong and
+        # a resume that worked once is not proof it will work again.
+        hib_grade=$(doctor_grade hibernate)
+        [ "$hib_grade" = ok ] || bad \
+            "doctor grades hibernate '$hib_grade' after a successful resume"
+        ok "doctor still grades hibernate ok on the resumed machine"
+    fi
 
     # --- the cross-version half ----------------------------------------
     #
@@ -1140,12 +1375,38 @@ dead_disk_run() {
     # path is how the first draft of this broke: qemu got one -drive
     # argument naming two files. Split the same way smoke_published does,
     # so there is one account of where firmware lives.
+    #
+    # With --secure-boot the pair comes from find_ovmf_secboot instead,
+    # and the machine gains SMM: OVMF keeps the authenticated variables
+    # that hold the enrolled keys in System Management RAM, so without
+    # `smm=on` and a pflash marked secure, the firmware comes up with
+    # Secure Boot reporting disabled and the test quietly measures
+    # nothing.
     local ovmf ovmf_code ovmf_vars
-    ovmf=$(find_ovmf) \
-        || bad "no OVMF firmware; an installed disk is UEFI and will not boot on SeaBIOS"
+    if [ $SECURE_BOOT -eq 1 ]; then
+        ovmf=$(find_ovmf_secboot) \
+            || bad "no Secure Boot OVMF firmware; --secure-boot cannot be answered on this machine"
+    else
+        ovmf=$(find_ovmf) \
+            || bad "no OVMF firmware; an installed disk is UEFI and will not boot on SeaBIOS"
+    fi
     ovmf_code=${ovmf%% *}
     ovmf_vars=${ovmf##* }
-    cp "$ovmf_vars" "$dir/OVMF_VARS.fd" || bad "cannot stage the OVMF vars"
+    cp "$ovmf_vars" "$dir/OVMF_VARS.fd"
+
+    local machine=(-machine q35)
+    local secure_globals=()
+    if [ $SECURE_BOOT -eq 1 ]; then
+        machine=(-machine "q35,smm=on")
+        # disable_s3, because OVMF's own guidance is that S3 and Secure
+        # Boot together are unsafe: a resume from RAM re-enters the
+        # firmware without re-authenticating. S4 is untouched and S4 is
+        # what hibernate uses, which is the whole reason these two flags
+        # can be asked in one run.
+        secure_globals=(-global "driver=cfi.pflash01,property=secure,value=on"
+                        -global "ICH9-LPC.disable_s3=1")
+        echo "   .. booting on firmware with Microsoft's keys enrolled: $ovmf_code"
+    fi || bad "cannot stage the OVMF vars"
 
     qemu-system-x86_64 \
         -enable-kvm -cpu host -smp 4 -m 4096 \

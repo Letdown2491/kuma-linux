@@ -265,6 +265,53 @@ jobs:
           path: vm-smoke/published/console.log
           if-no-files-found: warn
 
+  # 0.15's gate. Every other job here asks whether a machine booted; this
+  # one asks whether it is the SAME boot.
+  #
+  # That distinction is the whole feature. A machine told to hibernate can
+  # write its memory to disk, power off, and then start fresh, and from
+  # the outside it is indistinguishable from one that worked: ssh answers,
+  # greenboot is green, the account is there. What is gone is whatever was
+  # open, and nothing logs it. So the verdict is the kernel's own boot_id,
+  # which is made at boot and lives in the memory a real resume restores,
+  # plus a marker in tmpfs that a cold boot would have cleared.
+  #
+  # It runs under Secure Boot, and that is not an extra: kuma ships shim,
+  # so Secure Boot machines are in scope, and a kernel locked down under
+  # Secure Boot has historically refused hibernation outright. Without
+  # this, kuma could tell exactly those machines that hibernate is ready
+  # while logind refuses to do it. Asking both questions in one job is
+  # cheap, because the expensive half is the install either way.
+  hibernate:
+    runs-on: ubuntu-latest
+    needs: when
+    if: >-
+      github.event_name != 'pull_request' &&
+      !startsWith(github.ref, 'refs/tags/') &&
+      (github.event_name != 'schedule' || needs.when.outputs.daily == 'true')
+    # Longer than the install job it is built from, because it pays for
+    # two boots and a hibernation on top of the same install.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - name: install with a swapfile, hibernate under Secure Boot, resume
+        uses: ./.github/actions/install-boot
+        with:
+          prebuild: niri
+          smoke_args: >-
+            --published localhost/kuma-smoke-niri:latest
+            --hibernate --secure-boot
+
+      - name: guest console
+        if: failure()
+        run: tail -200 vm-smoke/published/console.log || true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: console-hibernate
+          path: vm-smoke/published/console.log
+          if-no-files-found: warn
+
   # 0.14's gate, and the only job here that answers a question about
   # data rather than about a machine.
   #

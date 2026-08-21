@@ -38,13 +38,13 @@ differently. Why it changed belongs in the commit that made it.
 
 ### Known limits
 
-- **No machine has yet hibernated and resumed under test.** The installer's
-  arithmetic is checked in CI, which installs with a swapfile and compares the
-  offset in the boot entry against the offset btrfs reports for the file it
-  points at. A full suspend-to-disk and resume cycle is not covered yet.
-- **Secure Boot is unmeasured.** Kernel lockdown can refuse hibernation, and
-  kuma ships shim, so Secure Boot machines are in scope. Whether hibernate
-  works on one has not been tested either way.
+- **Tested in a virtual machine, not on a laptop lid.** CI installs a machine
+  with a swapfile, boots it on firmware with Microsoft's keys enrolled,
+  hibernates it, confirms it powered off, boots it again, and checks the
+  kernel's own `boot_id` to prove it resumed rather than started fresh. What
+  that cannot cover is your hardware: lid-close behaviour, firmware that
+  mishandles S4, and drivers that do not survive a suspend all vary by
+  machine.
 
 ## v0.14.0 (2026-08-20)
 
