@@ -531,10 +531,30 @@ await_healthy_boot() {
 
     # Let boot finish before judging it: a first boot creates the user and
     # converges flatpaks and brew, and greenboot runs after all of it.
+    #
+    # 1200s, and the number has a measurement behind it now. What
+    # dominates a first boot is Homebrew's own bootstrap: kuma-brew-sync
+    # downloads portable-ruby and then clones homebrew-core, which is a
+    # large git repository over whatever network is available. A first
+    # boot measured here reached "Initialized empty Git repository" one
+    # second in and was still there nine minutes later, while flatpak
+    # convergence had finished in under two minutes and greenboot in
+    # eighteen. This deadline exists to bound a hang, not to assert a
+    # speed, and at 600s it was failing runs over a slow clone.
     echo "   .. waiting for the boot to settle"
-    deadline=$((SECONDS + 600))
+    deadline=$((SECONDS + 1200))
     until [[ "$(guest systemctl is-system-running)" =~ ^(running|degraded)$ ]]; do
-        [ $SECONDS -lt $deadline ] || bad "boot never settled${when}; console at $log"
+        if [ $SECONDS -ge $deadline ]; then
+            # What is still going, rather than only that something is.
+            # Without this the message is "boot never settled" and the
+            # only way on is to boot the disk by hand and ask it, which
+            # is exactly what the first one of these cost.
+            echo "   .. jobs still running:" >&2
+            guest systemctl list-jobs --no-pager >&2 || true
+            echo "   .. failed units:" >&2
+            guest systemctl --failed --no-legend --no-pager >&2 || true
+            bad "boot never settled${when}; console at $log"
+        fi
         sleep 10
     done
 
