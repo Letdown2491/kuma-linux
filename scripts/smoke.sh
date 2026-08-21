@@ -690,12 +690,29 @@ smoke_published() {
     # seven-minute ssh timeout with no way to tell them apart. Added to
     # the installed disk rather than the image, so it is a property of
     # the thing under test here and not of what kuma ships.
+    #
+    # --hibernate needs two more kargs than the rest, and run 9 is why.
+    # `quiet` is in the image's kargs and it is right to be, but the only
+    # thing the hibernation path prints above it is `PM: Image not
+    # found`. A resume that finds its image and then dies says nothing at
+    # all, which on the console is indistinguishable from a resume that
+    # worked: run 9 reset silently between the initramfs and real root
+    # and left no word for either. Dropping `quiet` puts the rest of the
+    # PM messages on the wire.
+    #
+    # no_console_suspend, because the console is suspended for exactly
+    # the part of the restore most likely to kill the machine. Without it
+    # those messages are produced and then dropped on the floor.
+    local karg_edit='s/^options .*/& console=ttyS0/'
+    [ $HIBERNATE -eq 1 ] \
+        && karg_edit='s/ quiet / /; s/^options .*/& console=ttyS0 no_console_suspend/'
+
     local kloop kboot
     kloop=$(sudo losetup -fP --show "$raw") || bad "cannot attach $raw to add a console karg"
     kboot="$dir/bootmnt"
     mkdir -p "$kboot"
     if sudo mount "${kloop}p2" "$kboot" 2>/dev/null; then
-        sudo sed -i 's/^options .*/& console=ttyS0/' "$kboot"/loader/entries/*.conf 2>/dev/null \
+        sudo sed -i "$karg_edit" "$kboot"/loader/entries/*.conf 2>/dev/null \
             && ok "serial console added to the boot entry" \
             || echo "   .. no loader entry to add a console to; the log will be firmware only" >&2
         sudo umount "$kboot"
@@ -750,7 +767,12 @@ smoke_published() {
     # testable at all; the chardev logs to the same file either way, so
     # the artifact is unchanged. Both cases use it, because two console
     # paths would mean the encrypted one is the only one nobody exercises.
-    local serial=(-chardev "socket,id=con,path=$sock,server=on,wait=off,logfile=$log"
+    #
+    # logappend, because this stage boots the same disk more than once
+    # and qemu truncates a chardev logfile when it opens it. The boot
+    # that hibernated was overwritten by the boot that tried to resume,
+    # so the two halves of the claim could never be read side by side.
+    local serial=(-chardev "socket,id=con,path=$sock,server=on,wait=off,logfile=$log,logappend=on"
                   -serial chardev:con)
 
     # A function rather than a command, because --hibernate boots this
