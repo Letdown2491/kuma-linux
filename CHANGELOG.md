@@ -6,6 +6,57 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+### Fixed
+
+- **A credential file is no longer executed as root.** `kuma install
+  --restore` writes a repository password to
+  `/var/lib/kuma/secrets/restore.env`, and the first-boot restore used to
+  read it with a shell, which runs whatever is on the right-hand side. A
+  value like `$(...)` executed as root before anybody logged in. Both that
+  unit and `kuma backup` now parse the file instead. **If your repository
+  password contains a `$`, a backtick, a quote or a backslash, kuma will
+  now refuse it by name**, because those characters meant different things
+  to different readers of the same file. A repository created before this
+  release was encrypted with the expanded value, so change its password
+  with `restic passwd` before rewriting the file.
+
+- **`kuma doctor` no longer reports a working swapfile as missing.** The
+  hibernate check reads the swapfile through `sudo`, and a declined or
+  unpromptable `sudo` graded the same as a broken file. It now says it
+  could not ask. This was invisible in a terminal, where `sudo` prompts,
+  and reliable for anything reading `doctor --json`.
+
+- **Nothing suspends into an unlocked session.** The desktop shell owns
+  idle lock, the lock keybind and lock-before-suspend, and it used to be
+  started in a way that could not restart it. It now runs supervised, and
+  a machine whose shell is gone ends the session rather than sleeping with
+  the desktop on screen. A shell that hangs rather than exits is still not
+  covered.
+
+- **A mounted disk image is refused again.** `kuma install --disk
+  <file>` claimed to check whether the image was already mounted and could
+  not: `lsblk` refuses a file path. It resolves the loop device now.
+
+- **The install no longer widens your password hash.** For two process
+  spawns, the account hash and the backup password were readable by every
+  local account on the machine.
+
+### Changed
+
+- **`kuma doctor` says when your desktop is running something other than
+  what the image set.** Settings you change in the shell are yours and the
+  image will not overwrite them, but kuma cannot read that file, so
+  `kuma diff` never mentioned it. Doctor now names the keys and points at
+  `noctalia config export merged`.
+
+- **`kuma build` is about four seconds faster.** It deleted the image it
+  replaced by sweeping the whole store; it deletes that one image now.
+
+- **SECURITY.md says that `sshd` is enabled on every image and that the
+  firewall lets it through**, which means the account's password answers a
+  prompt on port 22. That was true before and undocumented. Turn it off
+  with `[services] disable = ["sshd.service"]` if you do not want it.
+
 ## v0.16.0 (2026-08-22)
 
 ### Added
