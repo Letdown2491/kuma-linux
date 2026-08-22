@@ -1243,7 +1243,29 @@ smoke_published() {
                 gsudo "sh -c 'cat /tmp/kuma-initial-session >> /etc/greetd/config.toml'"
                 gsudo 'grep -q "^\[initial_session\]" /etc/greetd/config.toml' \
                     || bad "the autologin block never landed in greetd's config"
-                gsudo "systemctl restart greetd"
+
+                # Reboot, not `systemctl restart greetd`: greetd runs
+                # initial_session only on the first start of a boot, and
+                # a restart opens the greeter instead. Measured twice on
+                # 2026-08-22 — once in this stage's journal, once by hand
+                # against the same disk, which then booted straight into
+                # niri. What this gate asserts is that the machine BOOTS
+                # into the session, so boot it. The wait keys on boot_id
+                # rather than ssh answering, because sshd keeps answering
+                # for the old boot for several seconds after the call.
+                local old_boot new_boot reboot_deadline
+                old_boot=$(guest 'cat /proc/sys/kernel/random/boot_id')
+                gsudo "systemd-run --no-block systemctl reboot" || true
+                reboot_deadline=$((SECONDS + 300))
+                until new_boot=$(guest 'cat /proc/sys/kernel/random/boot_id') \
+                    && [ -n "$new_boot" ] && [ "$new_boot" != "$old_boot" ]; do
+                    kill -0 "$qemu" 2>/dev/null \
+                        || bad "qemu died under the autologin reboot; console at $log"
+                    [ $SECONDS -lt $reboot_deadline ] \
+                        || bad "the machine did not come back from its autologin reboot"
+                    sleep 5
+                done
+                ok "rebooted into the boot the autologin belongs to"
             fi
 
             # seat0 alone is not the question: greetd's own greeter holds
