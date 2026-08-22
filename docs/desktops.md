@@ -67,19 +67,22 @@ machine is, and picking a network is not that.
 Idle lock, `Super+Alt+L` and locking before suspend are all the shell's, so it
 runs as a systemd user service that restarts if it stops rather than as a
 one-shot spawn that could vanish quietly. `kuma doctor` grades that it is
-running. If it is not there at all when the machine is asked to sleep, the
-session ends instead of suspending: a session with no shell has no lock screen,
-and sleeping into one means an unlocked machine in a bag. A shell that hangs
-rather than exits is not covered by either.
+running, and that it came up reading the image's config rather than the
+shell's own defaults. If it is not there at all when the machine is asked to
+sleep, the session ends instead of suspending: a session with no shell has no
+lock screen, and sleeping into one means an unlocked machine in a bag. A shell
+that hangs rather than exits is not covered by either.
 
 **The desktop's own look comes from the image.** Kuma bakes a noctalia config
 (bar layout, fonts, wallpaper, and the idle lock and night light that noctalia
-ships turned off) and the shell reads it from there. Changing
-anything from the desktop's own settings writes
-`~/.local/state/noctalia/settings.toml`, which wins over the image. That file
-is yours and the image will not overwrite it. Kuma does not read it either, so
-`kuma diff` will not mention it: `noctalia config export merged` is what shows
-which settings are actually in effect.
+ships turned off) and the shell reads it from there. The path reaches the
+shell through the service that starts it, so a shell started any other way
+comes up on noctalia's defaults: a different bar, no palette taken from the
+wallpaper, and a first-run wizard. Changing anything from the desktop's own
+settings writes `~/.local/state/noctalia/settings.toml`, which wins over the
+image. That file is yours and the image will not overwrite it. Kuma does not
+read it either, so `kuma diff` will not mention it: `noctalia config export
+merged` is what shows which settings are actually in effect.
 
 **The terminal and GTK3 applications follow the shell's palette.** Noctalia
 derives that palette from the wallpaper by default, and whatever it is showing,

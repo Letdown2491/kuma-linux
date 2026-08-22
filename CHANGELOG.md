@@ -51,6 +51,13 @@ differently. Why it changed belongs in the commit that made it.
   `kuma diff` never mentioned it. Doctor now names the keys and points at
   `noctalia config export merged`.
 
+- **`kuma doctor` fails a desktop whose shell is drawing its own defaults.**
+  The shell reads kuma's config only because the service that starts it hands
+  over the path, and one that comes up without it has a different bar, no
+  palette taken from the wallpaper, and a first-run wizard. Doctor reads the
+  running process rather than any file, because every file on such a machine
+  still says the right thing.
+
 - **`kuma build` is about four seconds faster.** It deleted the image it
   replaced by sweeping the whole store; it deletes that one image now.
 
