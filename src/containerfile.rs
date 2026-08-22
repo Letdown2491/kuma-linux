@@ -1797,7 +1797,12 @@ fi
 # rather than pasted into it. Assembling a command line into a string is
 # how an argument with a space in it becomes two arguments, and nothing
 # here has to be a string.
-exec "$terminal" -e /usr/bin/bash -c '
+# A LOGIN shell. Without `-l` nothing sources /etc/profile.d, so a
+# desktop entry runs with a smaller PATH than the same person's terminal
+# — on a machine with brew packages, `kuma edit` fell back to vi while
+# the nano they installed sat unfound. A launcher that opens a terminal
+# should hand over the environment that terminal would have had.
+exec "$terminal" -e /usr/bin/bash -lc '
 "$@"
 status=$?
 printf "\n"
@@ -3911,7 +3916,7 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
             .unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         let lines: Vec<&str> = std::str::from_utf8(&out.stdout).unwrap().lines().collect();
-        assert_eq!(&lines[..3], ["-e", "/usr/bin/bash", "-c"], "{lines:?}");
+        assert_eq!(&lines[..3], ["-e", "/usr/bin/bash", "-lc"], "{lines:?}");
         // The held script is one argument spanning several printed lines;
         // $0 and the command follow it, and it is their boundaries this
         // test is about.
