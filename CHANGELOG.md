@@ -6,26 +6,6 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
-### Changed
-
-- **The desktop follows one palette.** On the niri desktop, kitty and GTK3
-  applications now take their colours from the palette noctalia is showing, on
-  every change and again at login. That palette comes from the wallpaper by
-  default, so changing the wallpaper changes the terminal, thunar, pavucontrol
-  and nm-connection-editor with it; switch the shell to a built-in palette and
-  they follow that instead. The image ships `adw-gtk3-theme` and GTK3
-  applications now use it rather than Adwaita.
-
-  This includes the terminal's sixteen ANSI colours. A palette generated from a
-  wallpaper maps all of them into one hue family, so a diff's `+` and `-` come
-  out as tints of the same colour; a palette picked by name keeps real hues.
-  The generated colours arrive as `~/.config/kitty/themes/noctalia.conf` and
-  `~/.config/gtk-3.0/noctalia.css`: delete them and their include lines to keep
-  the image's fixed palette.
-
-  GTK4 applications, mostly flatpaks, do not follow. libadwaita ignores a user
-  stylesheet that redefines its palette.
-
 ## v0.16.0
 
 ### Added
@@ -67,6 +47,26 @@ differently. Why it changed belongs in the commit that made it.
   it resolved without opening anything, which is the answer to "which kuma.toml
   am I editing" when a `./kuma.toml` in the current directory is outranking
   `~/.config/kuma/kuma.toml`.
+
+### Changed
+
+- **The desktop follows one palette.** On the niri desktop, kitty and GTK3
+  applications now take their colours from the palette noctalia is showing, on
+  every change and again at login. That palette comes from the wallpaper by
+  default, so changing the wallpaper changes the terminal, thunar, pavucontrol
+  and nm-connection-editor with it; switch the shell to a built-in palette and
+  they follow that instead. The image ships `adw-gtk3-theme` and GTK3
+  applications now use it rather than Adwaita.
+
+  This includes the terminal's sixteen ANSI colours. A palette generated from a
+  wallpaper maps all of them into one hue family, so a diff's `+` and `-` come
+  out as tints of the same colour; a palette picked by name keeps real hues.
+  The generated colours arrive as `~/.config/kitty/themes/noctalia.conf` and
+  `~/.config/gtk-3.0/noctalia.css`: delete them and their include lines to keep
+  the image's fixed palette.
+
+  GTK4 applications, mostly flatpaks, do not follow. libadwaita ignores a user
+  stylesheet that redefines its palette.
 
 ## v0.15.0 (2026-08-21)
 
