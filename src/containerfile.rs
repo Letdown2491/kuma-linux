@@ -3702,6 +3702,9 @@ mod tests {
         assert!(DCONF_DARK.contains("color-scheme='prefer-dark'"));
         // a titlebar in a tiling compositor renders light Adwaita chrome
         assert!(KITTY_CONFIG.contains("hide_window_decorations yes"));
+        // the terminal's background is the shell's surface now, and any
+        // translucency at all means it stops equalling the bar
+        assert!(KITTY_CONFIG.contains("background_opacity 1.0"));
     }
 
     #[test]

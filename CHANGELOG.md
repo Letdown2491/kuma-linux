@@ -24,6 +24,10 @@ differently. Why it changed belongs in the commit that made it.
   GTK4 applications, mostly flatpaks, do not follow. libadwaita ignores a user
   stylesheet that redefines its palette.
 
+  kitty is no longer slightly translucent. At the old `background_opacity 0.96`
+  the wallpaper showed through, so the terminal never quite equalled the bar,
+  and by a different amount in each window.
+
 ## v0.16.0
 
 ### Added
