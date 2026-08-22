@@ -1157,6 +1157,94 @@ smoke_published() {
             guest grep -q fuzzel /etc/niri/config.kdl \
                 && bad "the baked niri config still names fuzzel, which is not in the image"
             ok "Mod+D opens the launcher, and no bind names a program that left"
+
+            # ---- a real login, and the three things only a session can
+            # answer.
+            #
+            # Everything above is the image. Nothing in CI had ever run a
+            # kuma DESKTOP: the published stage installs from a
+            # declaration with no [user], so greetd autologins nobody and
+            # niri never starts. That is why "the shell owns
+            # notifications", "it registers the lock-before-suspend
+            # inhibitor" and the fail-open lock itself were all measured
+            # by hand on somebody's laptop and by nothing else.
+            #
+            # greetd's [initial_session] is the autologin kuma already
+            # writes when a declaration asks for it, so this asks for it
+            # here and restarts the greeter. The session that comes up is
+            # the same one a person gets.
+            # Only when the image does not already autologin. Appending
+            # a second [initial_session] is invalid TOML and greetd would
+            # refuse to start, which would fail this gate for a reason
+            # that has nothing to do with the desktop. The declaration
+            # this stage installs from declares no [user], so today it
+            # never has one; a future one might.
+            if guest 'grep -q "^\[initial_session\]" /etc/greetd/config.toml'; then
+                ok "the image already autologins; the session is a real one either way"
+            else
+                gsudo "printf '\n[initial_session]\ncommand = \"niri-session\"\nuser = \"$user\"\n' \
+                    >> /etc/greetd/config.toml"
+                gsudo "systemctl restart greetd"
+            fi
+
+            local session_deadline=$((SECONDS + 120))
+            until guest "loginctl list-sessions --no-legend | grep -q seat0"; do
+                [ $SECONDS -lt $session_deadline ] \
+                    || bad "no graphical session within 120s of enabling autologin"
+                sleep 5
+            done
+            ok "the greeter logged a session in"
+
+            # The shell has to actually come up in it. Supervised now, so
+            # a crash would restart rather than vanish, which is the
+            # property being tested as much as the presence.
+            local shell_deadline=$((SECONDS + 60))
+            until guest pgrep -x noctalia >/dev/null; do
+                [ $SECONDS -lt $shell_deadline ] || bad "the shell never started in a real session"
+                sleep 3
+            done
+            guest 'systemctl --user is-active kuma-shell.service' >/dev/null \
+                || bad "the shell is running but not under its unit, so nothing would restart it"
+            ok "the shell came up under supervision in a real session"
+
+            # Notifications: mako left with the swap, and if nothing took
+            # the name every notify-send on the machine goes nowhere and
+            # says nothing about it.
+            local owner_call='busctl --user call org.freedesktop.DBus'
+            owner_call="$owner_call /org/freedesktop/DBus org.freedesktop.DBus"
+            owner_call="$owner_call GetNameOwner s org.freedesktop.Notifications"
+            guest "XDG_RUNTIME_DIR=/run/user/\$(id -u) $owner_call" >/dev/null \
+                || bad "nothing owns org.freedesktop.Notifications in a live session"
+            ok "the shell owns org.freedesktop.Notifications"
+
+            # Lock before suspend. `lock_before_suspend = true` is baked,
+            # and a setting that arrived is not a setting that took
+            # effect; the logind inhibitor is the readback. A machine that
+            # suspends unlocked is the failure, and it is invisible until
+            # somebody opens a lid in public.
+            guest systemd-inhibit --list --no-pager \
+                | awk '$1 == "noctalia" && $6 ~ /sleep/ { found = 1 } END { exit !found }' \
+                || bad "the shell holds no sleep inhibitor: this machine suspends without locking"
+            ok "the shell inhibits sleep to lock first"
+
+            # And the guard for when the shell is not there at all.
+            #
+            # THE SESSION IT KILLED, by id, not "any seat0 session":
+            # greetd puts the greeter back the moment a session ends, so
+            # a fresh seat0 session appears within a second and "no
+            # graphical session" would be false while the property still
+            # held. Naming the id is the difference between testing the
+            # thing and testing the timing.
+            local before_id
+            before_id=$(guest "loginctl list-sessions --no-legend | awk '\$4 == \"seat0\" {print \$1; exit}'")
+            [ -n "$before_id" ] || bad "no seat0 session to test the sleep guard against"
+            guest 'systemctl --user stop kuma-shell.service'
+            guest pgrep -x noctalia >/dev/null \
+                && bad "the shell survived its own unit being stopped"
+            gsudo "/usr/libexec/kuma-sleep-guard" || true
+            guest "loginctl list-sessions --no-legend | awk '{print \$1}' | grep -qx '$before_id'" \
+                && bad "session $before_id had no shell and the guard left it to suspend into"
+            ok "a session with no shell is ended rather than suspended into"
         fi
 
         # Named rather than left to the scan above, because the ways this
