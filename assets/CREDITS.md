@@ -22,5 +22,5 @@ unmodified, and compiling Unsplash images into a competing image service.
 
 ## The rest
 
-`fuzzel.ini`, `kitty.conf`, `mako.conf`, `waybar.css`, and `waybar.jsonc` are
-configuration written for kuma and carry the project's MIT license.
+`kitty.conf` is configuration written for kuma and carries the project's MIT
+license.

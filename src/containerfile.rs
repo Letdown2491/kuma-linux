@@ -12,7 +12,6 @@ const NIRI_PACKAGES: &[&str] = &[
     "xwayland-satellite",
     "greetd",
     "tuigreet",
-    "fuzzel",
     // The shell. One process for the bar, notifications, wallpaper,
     // OSDs, idle, lock, control centre and night light, which is why
     // waybar, mako, swaybg, swayidle, swaylock, wob and wlsunset are all
@@ -46,27 +45,28 @@ const NIRI_PACKAGES: &[&str] = &[
     // 45), so naming the faces breaks the build on every Font Awesome
     // major. The metapackage's name is version-free, it requires
     // exactly those two packages, and it owns no files itself.
-    // waybar.css carries the other half of this: font *family* names
-    // are versioned too, and it lists both generations.
+    // Kept after the bar that needed it left: the shell bundles its own
+    // icon font, but flatpaks and the odd GTK app still reach for these
+    // glyphs and render tofu without them.
     "fontawesome-fonts-all",
     // base ships glibc-minimal-langpack only; without real locale data
-    // en_US.UTF-8 fails to resolve and waybar's clock disables itself
+    // en_US.UTF-8 fails to resolve and anything formatting a date or a
+    // number falls back to C
     "glibc-langpack-en",
     // hardware enablement — the minimal base targets servers
     "NetworkManager-wifi",
-    // The icons `kuma menu` repaints into its own theme. GTK already
-    // drags this in, but the menu depends on the individual files by
-    // name, which is not something to leave to somebody else's
-    // dependency graph.
+    // The icons kuma's desktop entries name, by file. GTK drags this in
+    // anyway, and that is exactly the kind of luck the seam should not
+    // run on: an entry whose icon does not resolve draws a blank square
+    // and reports nothing. Named here so it is kuma's dependency and not
+    // somebody else's.
     "adwaita-icon-theme",
     // desktop-file-validate: the build checks the entries it generates
     "desktop-file-utils",
-    // nmtui: what `kuma menu` offers for wifi, in preference to the
-    // graphical editor below, because a terminal program inherits the
-    // terminal's theme instead of arriving as a window from another
-    // system. It also runs in a TTY, which is the only place left when
-    // a session refuses to start and the machine needs the network to
-    // be fixed at all.
+    // The shell's control centre owns wifi now, so this is no longer the
+    // desktop's answer for it. It stays because it is the TTY answer:
+    // when a session refuses to start, this is the only way left to get
+    // the network up and fix the machine.
     "NetworkManager-tui",
     "wpa_supplicant",
     "brightnessctl",
@@ -82,7 +82,6 @@ const NIRI_PACKAGES: &[&str] = &[
     "file-roller",
     "gvfs",
     "gvfs-mtp",
-    "cliphist",
     "wf-recorder",
     // base ships zram-generator but not the defaults that activate it:
     // without this the desktop has zero swap and the OOM killer eats
@@ -139,7 +138,13 @@ const NIRI_PACKAGES: &[&str] = &[
 /// one a machine gets is the declaration's call, not the desktop set's.
 /// niri Recommends these, so they arrive whether or not `NIRI_PACKAGES`
 /// names them. Every one is a program kuma deliberately does not ship.
-const NIRI_EXCLUDES: &[&str] = &["alacritty", "waybar", "swaylock"];
+///
+/// All four were found the same way and none of them by a test: build
+/// the image, then ask it whether the thing you removed is still there.
+/// Removing a package from `NIRI_PACKAGES` does nothing when something
+/// else recommends it, and the symptom is an image quietly carrying a
+/// bar, a lock screen and a launcher that nothing starts.
+const NIRI_EXCLUDES: &[&str] = &["alacritty", "waybar", "swaylock", "fuzzel"];
 
 const COSMIC_PACKAGES: &[&str] = &[
     "cosmic-session",
@@ -1662,9 +1667,6 @@ spawn-at-startup "udiskie"
 // the niri set with it. Configured from the image, see KUMA_NOCTALIA.
 spawn-at-startup "noctalia"
 spawn-at-startup "/usr/libexec/kuma-battery-watch"
-// Wayland clipboards can die with their window; cliphist keeps history
-// (paste picker on Mod+Ctrl+V, spliced into the stock binds).
-spawn-at-startup "wl-paste" "--watch" "cliphist" "store"
 
 // Kuma look: rounded windows, quiet neutral focus ring. Window rules are
 // additive, so this themes every window without touching the stock layout.
@@ -1979,76 +1981,12 @@ while sleep 60; do
 done
 "#;
 
-/// The build step that gives `kuma menu` its icons.
-///
-/// Adwaita's symbolic icons are the right drawings and the wrong colour:
-/// each hardcodes a near-black fill, fuzzel renders the file as it is,
-/// and kuma's launcher is `#0e1626`. So every icon the menu names is
-/// copied and repainted in the launcher's own foreground, into a theme
-/// kuma owns.
-///
-/// **Any hex is rewritten, not one known value.** The twenty files carry
-/// three different darks (`#2e3436`, `#474747`, `#222222`) and one of
-/// them also sets `color=`; a sed for the common one would have left two
-/// icons invisible, which reads as a glitch rather than as a bug.
-/// `fill="none"` is deliberately untouched: it means transparent, and
-/// painting it would fill a shape that should not be there.
-///
-/// **`Inherits=` is load-bearing.** The menu asks fuzzel for this theme
-/// by name, and application rows carry whatever `Icon=` their desktop
-/// entry names, which lives in Adwaita or hicolor. Without the
-/// inheritance every application in the list would draw a hole.
-///
-/// Then it checks its own work, twice, because a generator that cannot
-/// say whether it worked is how the icons went out invisible the first
-/// time. **Every `fill=` and `color=` in the output has to be the fill
-/// we set, or `none`.** Grepping only for a stray *hex* would pass an
-/// Adwaita that had moved to `fill="currentColor"` or a named colour:
-/// the sed would rewrite nothing, no hex would be left to find, and the
-/// icons would draw near-black on `#0e1626` again, which is exactly the
-/// failure this check exists to prevent. The hex sweep stays as well,
-/// for a colour hiding somewhere neither attribute reaches, such as a
-/// `style=`.
-///
-/// Adwaita is walked once and the list is reused, rather than a `find`
-/// per icon across a tree of thousands of files. `grep -m1` over the
-/// sorted list also makes the choice deterministic where two files
-/// share a name; `find -print -quit` took whichever one the filesystem
-/// happened to yield.
-fn icon_theme() -> String {
-    let names = crate::menu::ICONS.join(" ");
-    let fill = crate::menu::ICON_FILL;
-    let theme = crate::menu::ICON_THEME;
-    // r##"…"## rather than r#"…"#: the sed contains `="#`, which would
-    // end a single-hash raw string in the middle of the pattern it is
-    // matching.
-    format!(
-        r##"RUN set -eu \
-    && mkdir -p /usr/share/icons/{theme}/scalable/actions \
-    && found=$(find /usr/share/icons/Adwaita -name '*.svg' | sort) \
-    && for name in {names}; do \
-         src=$(printf '%s\n' "$found" | grep -m1 "/$name\.svg$" || true); \
-         [ -n "$src" ] || {{ echo "kuma: Adwaita has no $name" >&2; exit 1; }}; \
-         out=/usr/share/icons/{theme}/scalable/actions/$name.svg; \
-         sed -E 's/(fill|color)="#[0-9a-fA-F]{{3,8}}"/\1="{fill}"/g' "$src" > "$out"; \
-         painted=$(grep -oiE '(fill|color)="[^"]*"' "$out" | sort -u | grep -viE '"({fill}|none)"' || true); \
-         [ -z "$painted" ] || {{ echo "kuma: $name kept $painted" >&2; exit 1; }}; \
-         stray=$(grep -oiE '#[0-9a-f]{{3,8}}' "$out" | sort -u | grep -vix '{fill}' || true); \
-         [ -z "$stray" ] || {{ echo "kuma: $name kept $stray" >&2; exit 1; }}; \
-       done \
-    && printf '[Icon Theme]\nName={theme}\nComment=kuma menu icons, repainted for the launcher palette\nInherits=Adwaita,hicolor\nDirectories=scalable/actions\n\n[scalable/actions]\nSize=16\nMinSize=8\nMaxSize=512\nType=Scalable\nContext=Actions\n' \
-       > /usr/share/icons/{theme}/index.theme
-"##
-    )
-}
-
 /// What `Mod+D` becomes.
 ///
-/// Stock niri binds it to plain fuzzel, which was the right launcher
-/// until `kuma menu` started listing applications itself. Two keys for
-/// one job, one of which shows strictly less, is not a choice worth
-/// giving anybody, so the menu takes the key the hand already goes to
-/// and plain fuzzel stops being bound.
+/// Stock niri binds it to plain fuzzel, and the image no longer ships
+/// fuzzel: the shell brought a launcher and fuzzel left with the menu
+/// that was the only other thing using it. The key the hand already
+/// goes to should open the thing that lists applications.
 ///
 /// Substituted into the stock config rather than added beside it: niri
 /// takes the last bind for a key, so a second `Mod+D` would leave the
@@ -2059,9 +1997,9 @@ const NIRI_MENU_BIND: &str = r#"Mod+D hotkey-overlay-title="Applications" { spaw
 /// release that renames it fails the build instead of shipping media
 /// whose main key does nothing.
 ///
-/// The key spawned `kuma menu` until the shell arrived with a launcher of
-/// its own. Two launchers is one too many, and the one on Mod+D should be
-/// the one that lists applications.
+/// Rewritten rather than left alone even though kuma once put its own
+/// menu here: the stock line spawns a program this image does not have,
+/// so leaving it is a dead key on the most-used bind there is.
 const NIRI_STOCK_LAUNCHER: &str =
     r#"Mod+D hotkey-overlay-title="Run an Application: fuzzel" { spawn "fuzzel"; }"#;
 
@@ -2086,7 +2024,7 @@ const NIRI_LOCK_BIND: &str = r#"Super+Alt+L hotkey-overlay-title="Lock the Scree
 /// Titles are not decoration here. niri shows EVERY bind on the
 /// Important Hotkeys overlay and generates the label from the action, so
 /// an untitled `spawn` advertises itself as its own command line: the
-/// clipboard bind read as `sh -c cliphist list | fuzzel --dmenu | ...`
+/// clipboard bind read as its whole `sh -c` pipeline
 /// on the first screen of a new machine. The three worth naming are
 /// named, and the media keys are hidden outright — they are printed on
 /// the keyboard, and ten of them crowd out everything worth reading.
@@ -2104,7 +2042,7 @@ const NIRI_MEDIA_BINDS: &str = r#"    XF86AudioRaiseVolume allow-when-locked=tru
     XF86AudioStop allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "stop"; }
     XF86AudioNext allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "next"; }
     XF86AudioPrev allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "previous"; }
-    Mod+Ctrl+V hotkey-overlay-title="Clipboard History" { spawn "sh" "-c" "cliphist list | fuzzel --dmenu | cliphist decode | wl-copy"; }
+    Mod+Ctrl+V hotkey-overlay-title="Clipboard History" { spawn "noctalia" "msg" "panel-toggle" "clipboard"; }
     Mod+Alt+R hotkey-overlay-title="Record the Screen" { spawn "/usr/libexec/kuma-record"; }
     Mod+Print hotkey-overlay-title="Screenshot a Region, then Annotate" { spawn "sh" "-c" "grim -g \"$(slurp)\" - | swappy -f -"; }
 "#;
@@ -2183,7 +2121,7 @@ $2     k   u   m   a
 "#;
 
 /// System-wide default via XDG_CONFIG_DIRS; a user config in
-/// ~/.config/fastfetch still wins, same as waybar and fuzzel.
+/// ~/.config/fastfetch still wins, same as every other config here.
 const FASTFETCH_CONFIG: &str = r#"{
     "logo": {
         "type": "file",
@@ -2217,12 +2155,11 @@ const FASTFETCH_CONFIG: &str = r#"{
 /// All system-wide (never /etc/skel): skel only reaches homes created after
 /// the image ships, so it strands existing users on stale copies — image
 /// updates must retheme every account. User dotfiles still win everywhere:
-/// waybar and fuzzel search /etc/xdg after ~/.config, kitty merges
+/// The shell reads its own config-home, kitty merges
 /// /etc/xdg beneath the user's file (so a one-key override keeps the rest
 /// of this theme), and mako (no system path at all) goes through a
 /// launcher that prefers the user's config.
 const WALLPAPER: &[u8] = include_bytes!("../assets/kuma-wallpaper.jpg");
-const FUZZEL_CONFIG: &str = include_str!("../assets/fuzzel.ini");
 const KITTY_CONFIG: &str = include_str!("../assets/kitty.conf");
 
 /// Rebrand the OS identity: Kuma, not Fedora. ID_LIKE=fedora keeps tools
@@ -2549,7 +2486,6 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY kargs-desktop.toml /usr/lib/bootc/kargs.d/10-kuma-desktop.toml\n");
         out.push_str("COPY niri-extras.kdl /usr/lib/kuma/niri-extras.kdl\n");
         out.push_str("COPY kuma-wallpaper.jpg /usr/share/backgrounds/kuma/kuma-wallpaper.jpg\n");
-        out.push_str("COPY fuzzel.ini /etc/xdg/fuzzel/fuzzel.ini\n");
         out.push_str("COPY noctalia-config.toml /usr/lib/kuma/noctalia/config.toml\n");
         // The wallpaper the shell falls back to when nobody has chosen
         // one, which on a new machine is always.
@@ -2578,10 +2514,6 @@ pub fn generate(config: &Config) -> String {
         out.push_str(
             "RUN out=$(HOME=/tmp NOCTALIA_CONFIG_HOME=/usr/lib/kuma noctalia config export merged); \\\n                 printf '%s\\n' \"$out\"; \\\n                 printf '%s' \"$out\" | grep -q '/usr/share/backgrounds/kuma' \\\n                 && printf '%s' \"$out\" | grep -q 'timeout = 900'\n",
         );
-        // The menu's icons, repainted from Adwaita into kuma's own theme.
-        // Beside the fuzzel config on purpose: that file supplies the
-        // colour they are painted in, and the two are one decision.
-        out.push_str(&icon_theme());
         out.push_str("COPY kitty.conf /etc/xdg/kitty/kitty.conf\n");
         // kitty skips settings it doesn't recognise and starts anyway, so a
         // renamed key ships a silently unthemed terminal — which is exactly
@@ -3196,7 +3128,6 @@ pub fn write_context(
     if config.system.desktop == Desktop::Niri {
         std::fs::write(dir.join("greetd-config.toml"), greetd_config(config))?;
         std::fs::write(dir.join("niri-extras.kdl"), NIRI_EXTRAS)?;
-        std::fs::write(dir.join("fuzzel.ini"), FUZZEL_CONFIG)?;
         std::fs::write(dir.join("noctalia-config.toml"), KUMA_NOCTALIA)?;
         std::fs::write(dir.join("kitty.conf"), KITTY_CONFIG)?;
         std::fs::write(dir.join("kuma-clipboard-bridge"), CLIPBOARD_BRIDGE)?;
@@ -3573,7 +3504,6 @@ mod tests {
         // system-wide, never /etc/skel — skel strands existing homes on
         // stale copies (the fuzzel-DPI lesson)
         assert!(!out.contains("/etc/skel"));
-        assert!(out.contains("COPY fuzzel.ini /etc/xdg/fuzzel/fuzzel.ini"));
         // systemd user sessions activate via SystemdService, not Exec —
         // without the drop-in the wrapper never runs where it matters
         assert!(out.contains("COPY kitty.conf /etc/xdg/kitty/kitty.conf"));
@@ -4152,7 +4082,6 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
         let greetd = std::fs::read_to_string(dir.path().join("greetd-config.toml")).unwrap();
         assert!(greetd.contains("Welcome to Kuma"));
         assert!(dir.path().join("noctalia-config.toml").exists());
-        assert!(dir.path().join("fuzzel.ini").exists());
         assert!(dir.path().join("kitty.conf").exists());
         let ff = std::fs::read_to_string(dir.path().join("fastfetch-config.jsonc")).unwrap();
         assert!(ff.contains("/usr/lib/kuma/fastfetch-logo.txt"));
@@ -5183,79 +5112,6 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
         assert!(NIRI_STOCK_LAUNCHER.contains(r#"spawn "fuzzel";"#));
     }
 
-    /// `kuma menu --help` names the key that opens the menu, and names
-    /// no other.
-    ///
-    /// This release moved the menu from Mod+Alt+Space to Mod+D and left
-    /// the help text behind, so a person who typed `--help` was told to
-    /// press a key bound to nothing. Neither docs test caught it: one
-    /// walks the docs to the CLI and the other walks the CLI to the
-    /// docs, and **clap's own help is a third surface, which nothing
-    /// read.** The bind is the authority here, so the two cannot part
-    /// company again.
-    #[test]
-    fn the_menu_help_names_the_key_that_opens_it() {
-        use clap::CommandFactory;
-        let key = NIRI_MENU_BIND.split_whitespace().next().expect("a bind starts with its key");
-        let help = crate::Cli::command()
-            .find_subcommand_mut("menu")
-            .expect("kuma menu")
-            .render_long_help()
-            .to_string();
-        assert!(help.contains(key), "`kuma menu --help` does not name {key}, which opens it");
-        // Every chord the help names has to be that one. Without this
-        // half, moving the bind again leaves the old key in the prose
-        // beside the new one and the assertion above still passes.
-        for word in help.split_whitespace() {
-            let chord = word.trim_end_matches(['.', ',', ';', ':']);
-            if chord.starts_with("Mod+") || chord.starts_with("Super+") {
-                assert_eq!(chord, key, "the help names {chord}, which is not what opens the menu");
-            }
-        }
-    }
-
-    /// A keybinding that spawns `kuma` names the verb in a string, in a
-    /// file the compiler never reads, so a renamed verb leaves a key
-    /// that does nothing and says nothing. Same failure the menu's own
-    /// leaf test prevents, one layer out: found by sabotage, which
-    /// renamed the bound verb and watched every test still pass.
-    /// The icons the menu draws and the icons the build generates are
-    /// one list, so a row cannot name a file the image does not carry.
-    /// The step also has to check its own work: the first version of
-    /// these icons shipped invisible, and a generator that cannot say
-    /// whether it worked is how that happens twice.
-    #[test]
-    fn the_icon_step_generates_exactly_what_the_menu_names() {
-        let step = icon_theme();
-        for icon in crate::menu::ICONS {
-            assert!(step.contains(icon), "the build does not generate {icon}");
-        }
-        assert!(step.contains(crate::menu::ICON_FILL), "the icons are not repainted");
-        assert!(
-            step.contains("(fill|color)=") && step.contains("[0-9a-fA-F]"),
-            "any colour must be rewritten, not one known value: Adwaita ships three darks"
-        );
-        assert!(!step.contains("#2e3436"), "a sed for one known dark leaves the others invisible");
-        assert!(step.contains("exit 1"), "the step must fail the build rather than ship a hole");
-        assert!(step.contains("kept"), "the step must name the icon it could not repaint");
-        assert!(
-            step.contains("Inherits=Adwaita,hicolor"),
-            "an application row's icon comes from the themes this one inherits"
-        );
-    }
-
-    /// The desktop that has the menu has the icons, and says so rather
-    /// than relying on GTK to drag the theme in.
-    #[test]
-    fn the_niri_image_generates_the_menus_icons() {
-        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
-        assert!(out.contains("/usr/share/icons/kuma/index.theme"));
-        assert!(
-            NIRI_PACKAGES.contains(&"adwaita-icon-theme"),
-            "the source of the icons is declared"
-        );
-    }
-
     /// Nothing greets a person on kuma's behalf but kuma.
     ///
     /// The shell ships a first-run wizard, and a kuma machine has
@@ -5462,26 +5318,6 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
         assert!(MIMEAPPS.contains("x-scheme-handler/https=org.mozilla.firefox.desktop"));
     }
 
-    /// fuzzel runs `Terminal=true` desktop entries through whatever
-    /// `terminal=` names, so it has to be a binary the image ships. Nothing
-    /// fails at build time if it isn't: the symptom is a launcher entry
-    /// that silently does nothing. This read `foot` until kuma switched
-    /// terminals, and the package list was the obvious edit to remember.
-    #[test]
-    fn fuzzels_terminal_is_one_the_desktop_installs() {
-        let terminal = FUZZEL_CONFIG
-            .lines()
-            .find_map(|line| line.strip_prefix("terminal="))
-            .expect("fuzzel names a terminal")
-            .split_whitespace()
-            .next()
-            .expect("the terminal is not blank");
-        assert!(
-            NIRI_PACKAGES.contains(&terminal),
-            "fuzzel launches terminal apps with {terminal}, which the niri image doesn't install"
-        );
-    }
-
     /// The example's `disable` line must not name a unit kuma's desktop
     /// deliberately enables, or the file argues with the image it
     /// compiles to. It read `avahi-daemon.service` when this was written,
@@ -5517,7 +5353,7 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
 
     #[test]
     fn daily_driver_glue() {
-        assert!(NIRI_MEDIA_BINDS.contains("cliphist list"));
+        assert!(NIRI_MEDIA_BINDS.contains(r#"panel-toggle" "clipboard"#));
         assert!(MIMEAPPS.contains("application/pdf=org.gnome.Papers.desktop"));
         assert!(MIMEAPPS.contains("inode/directory=thunar.desktop"));
         let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));

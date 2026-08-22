@@ -18,6 +18,26 @@ differently. Why it changed belongs in the commit that made it.
   Each opens a terminal window and holds it open after the verb exits, so
   output you were meant to read is still there. Press enter to close it.
 
+- **The niri desktop is one shell instead of eight programs.** Noctalia draws
+  the bar, notifications, wallpaper, OSDs, idle, lock screen, night light and a
+  control centre that owns wifi, bluetooth, audio and brightness. waybar, mako,
+  fuzzel, wob, swaybg, swayidle, swaylock and wlsunset are gone from the image,
+  along with `kuma menu` and the icon theme built for it.
+
+  `Mod+D` opens the shell's launcher, which lists your applications and kuma's
+  verbs together. Wifi and bluetooth are in the control centre rather than in a
+  GTK window from another desktop.
+
+  Kuma configures it from the image: its own bar layout and fonts, its
+  wallpaper, and two things noctalia ships **disabled** that would have been
+  regressions to inherit — locking on idle, and night light.
+
+- **`kuma menu` is gone.** Everything it offered that was kuma's is in your
+  launcher as a desktop entry, on COSMIC as well as niri, which the menu never
+  reached. Everything it offered that was a device setting belongs to the
+  shell's control centre. `kuma clean` removes the launch-count cache it left
+  in your home.
+
 - **`kuma edit`** opens the declaration this machine is actually using, in
   `$EDITOR` and otherwise nano, vim or vi. `kuma edit --print` prints the path
   it resolved without opening anything, which is the answer to "which kuma.toml

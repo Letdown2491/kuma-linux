@@ -1,4 +1,3 @@
-mod apps;
 mod backup;
 mod bootentries;
 mod capture;
@@ -12,7 +11,6 @@ mod inspect;
 mod install;
 mod liveiso;
 mod lock;
-mod menu;
 mod overrides;
 mod partition;
 mod seam;
@@ -347,16 +345,6 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Open kuma's menu in the desktop's launcher: apps, settings, system, power
-    ///
-    /// Bound to Mod+D on the niri desktop. Needs a graphical session
-    /// and fuzzel; it draws nothing itself.
-    Menu {
-        /// Print the rows instead of drawing them (read-only). What the
-        /// menu would offer on this machine, applications included.
-        #[arg(long)]
-        list: bool,
-    },
     /// List the snapshots this machine has taken, or restore a path from one
     Snapshot {
         /// Restore this path (absolute, inside the snapshot target)
@@ -676,7 +664,6 @@ fn run(
                 },
             )
         }
-        Cmd::Menu { list } => menu::menu(config_path, list),
         Cmd::BootTitles => boot_titles(),
         Cmd::FlatpakOverrides { scope } => flatpak_overrides(scope),
         Cmd::Hibernate { size, off, yes, json: _ } => hibernate_cmd(size, off, yes, json),
@@ -1907,6 +1894,18 @@ fn sync(declared: Option<&Config>, json: bool) -> Result<()> {
 /// while being invisible to `podman images` — one was found holding 68 GB.
 /// `kuma build` self-cleans its own label; this reclaims everything,
 /// including composed-base content tags the declaration no longer uses.
+/// Where the removed menu kept its launch counts.
+///
+/// Its own path under the cache dir, not a location anybody chose, which
+/// is what makes it kuma's to delete rather than the person's to keep.
+fn menu_cache_path() -> Option<PathBuf> {
+    let base = match std::env::var_os("XDG_CACHE_HOME") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => PathBuf::from(std::env::var_os("HOME")?).join(".cache"),
+    };
+    Some(base.join("kuma").join("menu-apps"))
+}
+
 fn clean(config_path: &Path, json: bool) -> Result<()> {
     // Held rather than printed as it goes, so the same run can render as
     // text or as one JSON document. Progress chatter from host::note
@@ -2012,8 +2011,26 @@ fn clean(config_path: &Path, json: bool) -> Result<()> {
         }
     }
 
-    let nothing =
-        abandoned.is_empty() && pruned == 0 && base_pruned == 0 && !live_pruned && root_pruned == 0;
+    // The menu ranked applications by how often they were launched and
+    // kept the counts here. The menu is gone; the file is not, because
+    // it sits in every existing niri user's home and convergence does
+    // not reach into home ([[kuma-cleanup-conventions]]: what kuma left
+    // behind is kuma's to reclaim, what a person put there is not).
+    // Kilobytes, and unread by anything that ships.
+    let mut menu_cache_removed = false;
+    if let Some(cache) = menu_cache_path() {
+        if cache.exists() && std::fs::remove_file(&cache).is_ok() {
+            menu_cache_removed = true;
+            say(format!("Removed {} (the old menu's launch counts).", cache.display()));
+        }
+    }
+
+    let nothing = abandoned.is_empty()
+        && pruned == 0
+        && base_pruned == 0
+        && !live_pruned
+        && root_pruned == 0
+        && !menu_cache_removed;
     let freed = match (before, avail_bytes()) {
         (Some(before), Some(after)) if after > before => Some(after - before),
         _ => None,
@@ -2028,6 +2045,7 @@ fn clean(config_path: &Path, json: bool) -> Result<()> {
                 "base_images_pruned": base_pruned,
                 "live_image_pruned": live_pruned,
                 "root_images_pruned": root_pruned,
+                "menu_cache_removed": menu_cache_removed,
                 "freed_bytes": freed,
                 "actions": [],
             })
@@ -4025,7 +4043,6 @@ mod tests {
     /// obviously correct and would be re-added on sight, and both already
     /// have working replacements (/etc/hostname in the image; -fw_cfg and
     /// kuma-vm-timezone at boot), so the absence is pinned here.
-    #[test]
     /// A disk built from an image that declares a shell logs you into it.
     ///
     /// `[system].shell` exists for the image with no `[user]`, which is
@@ -4045,6 +4062,7 @@ mod tests {
         assert!(at < out.find("[[customizations.filesystem]]").unwrap(), "{out}");
     }
 
+    #[test]
     fn vm_config_asks_bib_for_nothing_it_refuses() {
         let out = super::bib_config_toml(None, None);
         assert!(!out.contains("hostname"), "bib rejects it for qcow2");

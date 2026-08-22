@@ -41,14 +41,14 @@ explicitly.
 | | |
 |---|---|
 | Session | `niri`, `xwayland-satellite`, `greetd`, `tuigreet` |
-| Shell | `waybar`, `fuzzel`, `mako`, `wob`, `swaybg`, `swayidle`, `swaylock` |
+| Shell | `noctalia` (bar, notifications, wallpaper, OSDs, idle, lock, control centre) |
 | Terminal and files | `kitty`, `thunar` (+ archive plugin), `file-roller`, `gvfs`, `udiskie`, `7zip`, `unar` |
 | Portals | `xdg-desktop-portal-gtk`, `xdg-desktop-portal-gnome` |
 | Audio | `pipewire`, `pipewire-pulseaudio`, `wireplumber`, `pavucontrol` |
 | Graphics | `mesa-dri-drivers`, `mesa-vulkan-drivers`, `vulkan-loader` |
 | Hardware | `NetworkManager-wifi`, `NetworkManager-tui`, `wpa_supplicant`, `bluez`, `blueman`, `brightnessctl`, `power-profiles-daemon` |
 | Printing and discovery | `cups`, `system-config-printer`, `avahi`, `nss-mdns` |
-| Screen and clipboard | `grim`, `slurp`, `swappy`, `wf-recorder`, `wl-clipboard`, `cliphist` |
+| Screen and clipboard | `grim`, `slurp`, `swappy`, `wf-recorder`, `wl-clipboard` |
 | Session glue | `polkit`, `mate-polkit`, `dconf`, `gnome-keyring`, `xsettingsd`, `xdg-user-dirs`, `firewalld`, `flatpak` |
 | Fonts and icons | sans, mono, emoji, CJK, Font Awesome (free and brands), `adwaita-icon-theme` |
 
@@ -56,14 +56,11 @@ Settings tools for wifi, bluetooth, audio, and printers are included on
 purpose. Those are machine state, not system definition: the declaration
 describes what a machine is, and picking a network is not that.
 
-`Mod+D` opens `kuma menu` rather than the bare launcher. The menu lists your
-applications, so it replaces what that key used to do, and adds the settings
-tools above, the declaration, machine health, updates, rollback, and the power
-actions that stock niri binds no key for at all. See
-[the menu](concepts.md#the-menu).
-
-COSMIC has no menu: it ships no fuzzel, and `kuma menu` says so rather than
-guessing at another launcher.
+`Mod+D` opens the shell's launcher. Your applications are in it, and so are
+kuma's own verbs: edit the declaration, show drift, system health, check for
+updates, rebuild, roll back, snapshots. Those arrive as ordinary desktop
+entries rather than anything the shell knows about, so they are on the COSMIC
+desktop too. See [kuma in your launcher](concepts.md#kuma-in-your-launcher).
 
 ## COSMIC
 

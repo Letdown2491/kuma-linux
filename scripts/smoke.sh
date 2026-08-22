@@ -1069,16 +1069,31 @@ smoke_published() {
         ok "kuma doctor finds nothing failing"
 
         # The menu, on a real image, without a display. --list is the
-        # whole thing except the drawing: it reads the desktop entries,
-        # ranks them, and builds every row. A crash here is a menu that
-        # cannot open, and nothing else would find it, because the menu
-        # is the one surface no automated boot ever touches.
-        local menu_rows
-        menu_rows=$(guest kuma menu --list 2>/dev/null | wc -l || echo 0)
-        [ "$menu_rows" -ge 20 ] || bad "kuma menu --list produced $menu_rows rows"
-        guest kuma menu --list | grep -q "Power . Power off" \
-            || bad "kuma menu is missing rows it always has"
-        ok "kuma menu builds $menu_rows rows on this image"
+        # kuma's verbs reach the desktop through freedesktop desktop
+        # entries. A malformed one is not an error anywhere: every
+        # launcher skips it in silence, so the symptom is a verb that is
+        # simply absent, on a surface no automated boot would otherwise
+        # touch. The build validates what it generates; this checks that
+        # what it generated survived into a booted machine.
+        local seam_entries
+        seam_entries=$(guest sh -c 'ls /usr/share/applications/kuma-*.desktop 2>/dev/null | wc -l' || echo 0)
+        [ "$seam_entries" -eq 8 ] || bad "expected 8 kuma desktop entries, found $seam_entries"
+        guest sh -c 'desktop-file-validate /usr/share/applications/kuma-*.desktop' \
+            || bad "kuma's desktop entries do not validate on the booted machine"
+        guest test -x /usr/libexec/kuma-launch \
+            || bad "the entries' Exec is not executable on the booted machine"
+        ok "the seam ships $seam_entries entries and they validate"
+
+        # The shell, and the absence of everything it stands in for. Two
+        # bars is the failure this catches, and it looks like a working
+        # desktop in every log.
+        guest pgrep -x noctalia >/dev/null || bad "the shell is not running"
+        local displaced
+        for displaced in waybar mako swaybg swayidle swaylock wob wlsunset; do
+            guest pgrep -x "$displaced" >/dev/null \
+                && bad "$displaced is running beside the shell that replaced it"
+        done
+        ok "the shell is running and nothing it replaced is"
 
         # Named rather than left to the scan above, because the ways this
         # control goes missing are all graded `warn`: no policy file, one

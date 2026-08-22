@@ -1100,7 +1100,6 @@ pub(crate) mod tests {
             Proof::Runs("scripts/smoke.sh", "install --disk \"$raw\" --image"),
         ),
         ("kuma doctor", Proof::Runs("scripts/smoke.sh", "kuma doctor --json")),
-        ("kuma menu --list", Proof::Runs("scripts/smoke.sh", "kuma menu --list")),
         ("kuma update --check", Proof::Runs("scripts/smoke.sh", "update --check")),
         ("kuma update --yes", Proof::Unexecuted("builds and stages a deployment; nothing runs it")),
         ("kuma rollback --yes", Proof::Unexecuted("mutates the boot order; nothing runs it")),
@@ -1129,7 +1128,7 @@ pub(crate) mod tests {
     ///
     /// The sibling test walks the docs and checks each command against
     /// the CLI. This walks it the other way, which is the direction a
-    /// new verb goes missing in: `kuma menu` shipped, worked, and was
+    /// new verb goes missing in: a verb once shipped, worked, and was
     /// documented nowhere, and every test passed. A verb nobody can find
     /// is a feature nobody has.
     ///

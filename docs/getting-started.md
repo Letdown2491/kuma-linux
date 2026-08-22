@@ -341,17 +341,15 @@ After that `kuma backup` reports without touching the network, and
 `kuma doctor` grades how fresh the copies stay, which matters because the way
 backups fail is silence rather than errors.
 
-**On a desktop, `Mod+D` opens kuma's menu.** Your applications are in it, so
-it is the launcher; so are the settings tools kuma does not own (network,
-bluetooth, audio), the ones it does (your declaration, health, updates,
-rollback), and lock, suspend, reboot and power off. Opening it shows the
-groups and typing searches every row, so `reboot` finds the reboot without
-going anywhere. It never writes your declaration: those rows open the file or
-run a command that asks first. To read it without a desktop:
+**On a desktop, `Mod+D` opens the launcher.** Your applications are in it, and
+so are kuma's own verbs: type `kuma` and you get edit the declaration, show
+drift, review proposals, system health, check for updates, rebuild, roll back,
+snapshots. Each opens a terminal and leaves it open afterwards, because
+several of them ask for a password and all of them print something worth
+reading.
 
-```console
-$ kuma menu --list      # the rows the menu would offer on this machine
-```
+None of them writes your declaration without asking. Wifi, bluetooth, audio
+and brightness are the shell's control centre rather than kuma's business.
 
 **When something is wrong and you want help.** `kuma doctor --report` prints
 one JSON document with the findings, which kuma is running, which image is
