@@ -918,6 +918,7 @@ pub fn doctor(json: bool, as_report: bool) -> Result<()> {
         check_enablements(Path::new("/etc/systemd/user"), &mut report);
         check_snapshots(&mut report);
         check_shell(&mut report);
+        check_shell_config(&mut report);
         check_backup(&mut report);
         check_boot_health(&mut report);
         check_boot_titles(Path::new(crate::bootentries::ENTRIES), Path::new("/"), &mut report);
@@ -1796,6 +1797,99 @@ fn backup_stamp(text: &str) -> Option<i64> {
 /// a thing that hangs on a train and prompts for a secret to tell you
 /// how you are. The stamp answers the question that matters, which is
 /// whether this machine is still managing to send its data somewhere.
+/// Every key the image sets, and what the machine is actually using.
+///
+/// Pure so the walk is testable without a shell. Returns the dotted paths
+/// where the merged answer is not what the image asked for, which is the
+/// only comparison worth making: the merged export carries several
+/// hundred keys of the shell's own defaults, and kuma has an opinion
+/// about twenty-six of them.
+pub fn shell_overrides(baked: &toml::Value, merged: &toml::Value) -> Vec<String> {
+    fn walk(node: &toml::Value, prefix: &str, merged: &toml::Value, out: &mut Vec<String>) {
+        let Some(table) = node.as_table() else { return };
+        for (key, value) in table {
+            let path = if prefix.is_empty() { key.clone() } else { format!("{prefix}.{key}") };
+            if value.is_table() {
+                walk(value, &path, merged, out);
+                continue;
+            }
+            let mut cursor = Some(merged);
+            for part in path.split('.') {
+                cursor = cursor.and_then(|node| node.get(part));
+            }
+            if cursor != Some(value) {
+                out.push(path);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(baked, "", merged, &mut out);
+    out
+}
+
+/// What the desktop is running, against what the image asked for.
+///
+/// **The gap 0.16 shipped and documented as a Known limit.** The shell
+/// writes changes to `~/.local/state/noctalia/settings.toml`, which wins
+/// over the config kuma bakes and which nothing in kuma reads, so
+/// `kuma diff` said a machine matched its declaration while its bar was
+/// visibly something else. Measured on a booted machine, where an
+/// override that had rewritten the bar produced "No drift".
+///
+/// Graded WARN rather than FAIL, and deliberately. A person changing
+/// their own desktop is not a fault, it is drift, and this project's
+/// stance is that drift is a proposal rather than an error to erase. The
+/// point is that it stops being invisible.
+///
+/// Asked through the shell's own exporter rather than by reading the
+/// state file, for the reason that file taught us: what is in effect is
+/// what the merged answer says, not what any single file says.
+fn check_shell_config(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
+    const BAKED: &str = "/usr/lib/kuma/noctalia/config.toml";
+    if !Path::new(BAKED).exists() {
+        return;
+    }
+    let Ok(baked_text) = std::fs::read_to_string(BAKED) else {
+        return;
+    };
+    let Ok(merged_text) = host_output(&[
+        "sh",
+        "-c",
+        "NOCTALIA_CONFIG_HOME=/usr/lib/kuma noctalia config export merged",
+    ]) else {
+        // No shell on this machine, or it refused to answer. Not a fault
+        // to report here: check_shell already grades whether it is
+        // running at all.
+        return;
+    };
+    let (Ok(baked), Ok(merged)) =
+        (toml::from_str::<toml::Value>(&baked_text), toml::from_str::<toml::Value>(&merged_text))
+    else {
+        return;
+    };
+    let overridden = shell_overrides(&baked, &merged);
+    if overridden.is_empty() {
+        report(Grade::Ok, "shell config", "the desktop is running what the image set".into(), None);
+        return;
+    }
+    report(
+        Grade::Warn,
+        "shell config",
+        format!(
+            "the desktop is running {} differently from the image: {}. Settings you \
+             change belong to you and the image will not overwrite them, but nothing \
+             in kuma reads that file, so `kuma diff` cannot mention it",
+            overridden.len(),
+            overridden.join(", ")
+        ),
+        Some(Action::new(
+            "compare",
+            "noctalia config export merged",
+            "what the shell is actually running, which is the only honest answer",
+        )),
+    );
+}
+
 /// The one process every lock on this desktop goes through.
 ///
 /// Idle lock, the keybind and lock-before-suspend all run through the
@@ -1810,6 +1904,14 @@ fn backup_stamp(text: &str) -> Option<i64> {
 /// has no shell to miss, and grading one there would be this check
 /// reporting the wrong desktop rather than a broken one.
 fn check_shell(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
+    // Only where the IMAGE ships the unit. A machine built before 0.17
+    // starts its shell from a niri spawn and is perfectly correct, and
+    // grading it against a unit its image never had would be this check
+    // reporting the wrong version rather than a broken machine. That is
+    // the same mistake three smoke assertions made this cycle.
+    if !Path::new("/usr/lib/systemd/user/kuma-shell.service").exists() {
+        return;
+    }
     if !Path::new("/etc/niri/config.kdl").exists() {
         return;
     }
@@ -3723,5 +3825,66 @@ mod tests {
         assert_eq!(json["sections"][0]["entries"][0]["item"], "org.gnome.Loupe");
         assert!(json["sections"][1]["skipped"].is_string());
         assert_eq!(json["actions"][0]["cmd"], "kuma sync");
+    }
+}
+
+#[cfg(test)]
+mod shell_config_tests {
+    use super::shell_overrides;
+
+    /// The walk names what the machine changed and stays quiet about the
+    /// several hundred keys the image has no opinion on.
+    #[test]
+    fn only_the_keys_the_image_set_are_compared() {
+        let baked: toml::Value = toml::from_str(
+            r#"
+[bar.default]
+position = "top"
+thickness = 32
+[idle.behavior.lock]
+enabled = true
+timeout = 900.0
+"#,
+        )
+        .unwrap();
+
+        // A machine running exactly what the image asked for, plus a pile
+        // of the shell's own defaults kuma never mentions.
+        let agreeing: toml::Value = toml::from_str(
+            r#"
+[bar.default]
+position = "top"
+thickness = 32
+radius = 12
+[idle.behavior.lock]
+enabled = true
+timeout = 900.0
+[weather]
+enabled = false
+"#,
+        )
+        .unwrap();
+        assert!(shell_overrides(&baked, &agreeing).is_empty());
+
+        // And one where the person moved the bar and turned the idle
+        // lock off, which is the case that used to be invisible.
+        let overridden: toml::Value = toml::from_str(
+            r#"
+[bar.default]
+position = "bottom"
+thickness = 32
+[idle.behavior.lock]
+enabled = false
+timeout = 900.0
+"#,
+        )
+        .unwrap();
+        let found = shell_overrides(&baked, &overridden);
+        assert_eq!(found, vec!["bar.default.position", "idle.behavior.lock.enabled"], "{found:?}");
+
+        // A key the image sets and the machine does not have at all is a
+        // difference too: it means the shell is not honouring it.
+        let missing: toml::Value = toml::from_str("[bar.default]\nposition = \"top\"\n").unwrap();
+        assert!(shell_overrides(&baked, &missing).contains(&"idle.behavior.lock.enabled".into()));
     }
 }
