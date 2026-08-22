@@ -1223,18 +1223,35 @@ smoke_published() {
             if guest 'grep -q "^\[initial_session\]" /etc/greetd/config.toml'; then
                 ok "the image already autologins; the session is a real one either way"
             else
-                gsudo "printf '\n[initial_session]\ncommand = \"niri-session\"\nuser = \"$user\"\n' \
-                    >> /etc/greetd/config.toml"
+                # Staged in /tmp and appended by a sudo'd cat, never by a
+                # `sudo printf ... >> /etc/...`: the remote shell opens
+                # the redirection as the unprivileged user, so the write
+                # is denied and the failure hides in guest's 2>/dev/null,
+                # with set -e off in this subshell to keep it quiet.
+                # Measured 2026-08-22: the block never landed, greetd
+                # fell back to its greeter, and the shell gate below read
+                # a harness bug as a product bug.
+                guest "printf '\n[initial_session]\ncommand = \"niri-session\"\nuser = \"$user\"\n' \
+                    > /tmp/kuma-initial-session" \
+                    || bad "could not stage the autologin block in the guest"
+                gsudo "sh -c 'cat /tmp/kuma-initial-session >> /etc/greetd/config.toml'"
+                gsudo 'grep -q "^\[initial_session\]" /etc/greetd/config.toml' \
+                    || bad "the autologin block never landed in greetd's config"
                 gsudo "systemctl restart greetd"
             fi
 
+            # seat0 alone is not the question: greetd's own greeter holds
+            # a seat0 session on tty1, and `grep seat0` passed on it all
+            # night on 2026-08-22 while no user session existed. The
+            # question is a seat0 session belonging to the declared user.
             local session_deadline=$((SECONDS + 120))
-            until guest "loginctl list-sessions --no-legend | grep -q seat0"; do
+            until guest "loginctl list-sessions --no-legend \
+                | grep -qE '^ *[a-z0-9]+ +[0-9]+ +$user +seat0( |$)'"; do
                 [ $SECONDS -lt $session_deadline ] \
-                    || bad "no graphical session within 120s of enabling autologin"
+                    || bad "no graphical session for $user within 120s of enabling autologin"
                 sleep 5
             done
-            ok "the greeter logged a session in"
+            ok "the greeter logged $user into a session"
 
             # The shell has to actually come up in it. Supervised now, so
             # a crash would restart rather than vanish, which is the
