@@ -1110,6 +1110,26 @@ fn build_image_pinned(config_path: &Path, tag: &str, pin: Pin) -> Result<Option<
     Ok(lock::record(config_path, &declared_base, digest, tag))
 }
 
+/// Where a disk image is mounted, if anything has it open through a loop
+/// device.
+///
+/// `lsblk` refuses a file path outright, so this resolves the file to the
+/// loop devices backing it and asks about those. Empty when nothing has
+/// it attached, which is every ordinary case.
+fn loop_backed_mountpoints(file: &str) -> String {
+    let Ok(devices) = host_output_any(&["losetup", "-j", file, "-O", "NAME", "--noheadings"])
+    else {
+        return String::new();
+    };
+    devices
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|device| host_output_any(&["lsblk", "-no", "MOUNTPOINTS", device]).ok())
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
 /// Whether an image is stranded, which is the only state it is kuma's to
 /// delete. An image somebody has tagged is somebody's.
 fn has_no_tags(id: &str) -> bool {
@@ -2724,6 +2744,18 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     // missing would be its own kind of wrong.
     let lsblk = match known_mounts {
         Some(mounts) => mounts,
+        // A FILE cannot be asked of lsblk: it answers "not a block
+        // device" and the guard that was supposed to refuse a mounted
+        // disk image received an empty string and refused nothing. The
+        // comment in disk_objections claimed that check still ran, and
+        // its test passed only because it fed lsblk output by hand,
+        // which the caller could never produce.
+        //
+        // losetup takes a file and names the loop devices backing it,
+        // needs no privilege, and answers empty for the ordinary case.
+        // Then the mount question is asked of those devices, which is a
+        // question lsblk can answer.
+        None if to_file => loop_backed_mountpoints(disk_str),
         None => host_output_any(&["lsblk", "-no", "MOUNTPOINTS", disk_str]).unwrap_or_default(),
     };
     let objections = install::disk_objections(disk_str, &mounts, &lsblk, to_file);

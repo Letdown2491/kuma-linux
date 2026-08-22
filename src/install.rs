@@ -315,9 +315,15 @@ pub fn disk_objections(
     let mut out = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     // A file target is a disk image, written through a loopback device.
-    // It is not a device path and must not be judged as one, but the
-    // mount checks below still run: a disk image that is currently
-    // mounted somewhere is exactly as bad to overwrite as a disk.
+    // It is not a device path and must not be judged as one.
+    //
+    // The mount checks below still run, and for a file the caller has to
+    // work for that: `lsblk` refuses a file path, so it resolves the
+    // image to the loop devices backing it (`losetup -j`) and asks about
+    // those. Before that, this function received an empty string for
+    // every file target and the comment here claimed a protection that
+    // could not fire, with a test that passed only because it fed the
+    // input by hand.
     if !to_file && !disk.starts_with("/dev/") {
         out.push(format!("{disk} is not a device path"));
     }
