@@ -1678,6 +1678,13 @@ environment {
     // /etc/xdg and XDG_CONFIG_DIRS are both ignored, measured. Without
     // this kuma cannot bake the desktop's look at all, so the build
     // asserts the config survives to `config export merged`.
+    //
+    // This is HALF of the answer, and it stopped being the half that
+    // matters in 0.17. It reaches what niri spawns: the `noctalia msg`
+    // keybinds below, and a terminal where you ask the shell what it is
+    // running. The shell itself runs from kuma-shell.service now, and a
+    // unit inherits nothing from here, so [`SHELL_SERVICE`] states the
+    // same variable and a test holds the two together.
     NOCTALIA_CONFIG_HOME "/usr/lib/kuma"
 }
 
@@ -1738,6 +1745,14 @@ include optional=true "~/.config/niri/local.kdl"
 ///
 /// `Restart=always` rather than `on-failure`: a shell that exits zero has
 /// still taken the lock screen with it.
+///
+/// `Environment=` because a unit inherits nothing from niri's
+/// `environment` block, and 0.17 shipped without it: the first boot of
+/// the supervised shell came up as stock noctalia, welcome screen and
+/// all, because the one variable that points it at kuma's config was
+/// stated only in a file that no longer applied to it. The check that
+/// should have caught it read the niri config, which still said the
+/// right thing about a process it no longer started.
 const SHELL_SERVICE: &str = r#"[Unit]
 Description=Noctalia, the kuma desktop shell
 PartOf=graphical-session.target
@@ -1745,6 +1760,21 @@ After=graphical-session.target
 
 [Service]
 Type=simple
+# The variable that makes this kuma's desktop rather than noctalia's.
+# niri's `environment` block reaches the processes NIRI spawns, and the
+# shell stopped being one of them the moment it moved into this unit, so
+# the same variable has to be stated here or nothing states it: /etc/xdg
+# and XDG_CONFIG_DIRS are both ignored by the shell, measured. Without
+# it the desktop comes up on stock defaults, which is a wider bar, no
+# wallpaper-derived palette, and the welcome screen kuma turns off.
+# Measured on a booted 0.17 machine, where the running shell's environ
+# held no NOCTALIA_ variable at all.
+Environment=NOCTALIA_CONFIG_HOME=/usr/lib/kuma
+# Out of the same block and lost the same way. The shell draws its own
+# surfaces, so the cursor over the bar and the lock screen is themed by
+# these or by nothing.
+Environment=XCURSOR_THEME=Adwaita
+Environment=XCURSOR_SIZE=24
 ExecStart=/usr/bin/noctalia
 Restart=always
 RestartSec=1
@@ -4194,6 +4224,35 @@ mod tests {
         // And it runs on the way down, on every path into sleep.
         assert!(SLEEP_GUARD_SERVICE.contains("Before=sleep.target"), "{SLEEP_GUARD_SERVICE}");
         assert!(SLEEP_GUARD_SERVICE.contains("WantedBy=sleep.target"), "{SLEEP_GUARD_SERVICE}");
+    }
+
+    /// The unit carries what the spawn used to hand it.
+    ///
+    /// 0.17 moved the shell into kuma-shell.service and left
+    /// NOCTALIA_CONFIG_HOME behind in niri's `environment` block, which
+    /// a unit does not read. The machine booted, the shell ran, the
+    /// service was active and every check was green, and the desktop
+    /// was stock noctalia: a wider bar, no wallpaper-derived palette,
+    /// and the welcome screen. Every variable the shell needs is now
+    /// asserted in the unit, and asserted to say what the niri block
+    /// says, because two places holding one value drift silently.
+    #[test]
+    fn the_shell_unit_carries_the_shells_environment() {
+        for var in
+            ["NOCTALIA_CONFIG_HOME=/usr/lib/kuma", "XCURSOR_THEME=Adwaita", "XCURSOR_SIZE=24"]
+        {
+            assert!(
+                SHELL_SERVICE.contains(&format!("Environment={var}")),
+                "the shell unit does not set {var}, so the session will not:\n{SHELL_SERVICE}"
+            );
+            // Same value on both sides of the seam. The niri block
+            // states them as `NAME "value"`.
+            let (name, value) = var.split_once('=').unwrap();
+            assert!(
+                NIRI_EXTRAS.contains(&format!("{name} \"{value}\"")),
+                "{name} disagrees between the unit and niri's environment block"
+            );
+        }
     }
 
     #[test]

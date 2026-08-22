@@ -1903,6 +1903,38 @@ fn check_shell_config(report: &mut impl FnMut(Grade, &str, String, Option<Action
 /// a COSMIC image, or an ssh login to a machine sitting at its greeter
 /// has no shell to miss, and grading one there would be this check
 /// reporting the wrong desktop rather than a broken one.
+/// The variables the shell has to have been handed, read off the running
+/// process rather than off any file. Returns the first one missing.
+///
+/// `/proc/<pid>/environ` because that is the only place the answer is
+/// not a claim: the unit can say it, the niri config can say it, and
+/// neither settles what the process that is drawing the screen was
+/// given. Same user, so it reads without sudo.
+fn shell_env_missing() -> Option<String> {
+    let pid = host_output_any(&[
+        "systemctl",
+        "--user",
+        "show",
+        "kuma-shell.service",
+        "-p",
+        "MainPID",
+        "--value",
+    ])
+    .ok()?;
+    let pid = pid.trim();
+    if pid.is_empty() || pid == "0" {
+        return None;
+    }
+    // Unreadable environ is not a finding: a machine where this cannot
+    // be asked is not a machine where it is known to be wrong.
+    let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    let set: Vec<&[u8]> = environ.split(|b| *b == 0).collect();
+    ["NOCTALIA_CONFIG_HOME=/usr/lib/kuma"]
+        .into_iter()
+        .find(|want| !set.contains(&want.as_bytes()))
+        .map(|want| want.split('=').next().unwrap_or(want).to_string())
+}
+
 fn check_shell(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     // Only where the IMAGE ships the unit. A machine built before 0.17
     // starts its shell from a niri spawn and is perfectly correct, and
@@ -1919,12 +1951,41 @@ fn check_shell(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
         return;
     }
     match host_output_any(&["systemctl", "--user", "is-active", "kuma-shell.service"]) {
-        Ok(state) if state.trim() == "active" => report(
-            Grade::Ok,
-            "shell",
-            "the desktop shell is running under supervision".into(),
-            None,
-        ),
+        Ok(state) if state.trim() == "active" => {
+            // Running is not the same as running as kuma's desktop.
+            //
+            // 0.17.0 moved the shell out of a niri spawn and into this
+            // unit, and left NOCTALIA_CONFIG_HOME behind in niri's
+            // `environment` block, which a unit does not inherit. The
+            // machine booted, the unit was active, the config was in
+            // the image and the niri file still named the variable, so
+            // every check passed while the desktop drew stock noctalia:
+            // a wider bar, no wallpaper-derived palette, and the
+            // welcome screen the config turns off. Nothing on that
+            // machine was readable as wrong except the process itself,
+            // so the process is what this asks.
+            if let Some(missing) = shell_env_missing() {
+                report(
+                    Grade::Fail,
+                    "shell",
+                    format!(
+                        "the desktop shell is running without {missing}, so it is drawing                          noctalia's defaults rather than this image's: the bar, the                          wallpaper-derived palette and the welcome screen are all its own"
+                    ),
+                    Some(Action::new(
+                        "read",
+                        "systemctl --user cat kuma-shell.service",
+                        "the unit has to set the variable itself; niri's environment block                          does not reach it",
+                    )),
+                );
+                return;
+            }
+            report(
+                Grade::Ok,
+                "shell",
+                "the desktop shell is running under supervision".into(),
+                None,
+            )
+        }
         Ok(state) => report(
             Grade::Fail,
             "shell",

@@ -1116,6 +1116,15 @@ smoke_published() {
                 || bad "the image ships no noctalia config for the shell to read"
             guest 'grep -q NOCTALIA_CONFIG_HOME /etc/niri/config.kdl' \
                 || bad "the session would not point the shell at kuma's config"
+            # THE UNIT, not just the niri config. This assertion passed
+            # every run of 0.17 while the shell came up as stock
+            # noctalia: the shell moved out of a niri spawn and into a
+            # unit, which inherits nothing from niri's environment
+            # block, so the file it grepped was still true about a
+            # process it no longer started.
+            guest 'grep -q "^Environment=NOCTALIA_CONFIG_HOME=/usr/lib/kuma$" \
+                /usr/lib/systemd/user/kuma-shell.service' \
+                || bad "the shell unit does not point the shell at kuma's config"
             # Started by a SUPERVISED unit, not a niri spawn. A spawn
             # lands in a transient scope, a scope cannot restart, and
             # every lock on this desktop runs through that one process,
@@ -1206,6 +1215,17 @@ smoke_published() {
             guest 'systemctl --user is-active kuma-shell.service' >/dev/null \
                 || bad "the shell is running but not under its unit, so nothing would restart it"
             ok "the shell came up under supervision in a real session"
+
+            # What the RUNNING shell was handed, read off the process
+            # itself. Everything above this grades files, and files were
+            # all correct on the machine that booted 0.17 into stock
+            # noctalia. This is the only assertion here that would have
+            # failed it.
+            guest 'p=$(pgrep -u "$(id -u)" -x noctalia | head -1);
+                   tr "\0" "\n" < /proc/$p/environ \
+                     | grep -qx NOCTALIA_CONFIG_HOME=/usr/lib/kuma' \
+                || bad "the running shell was not given kuma's config, so it drew noctalia's"
+            ok "the running shell is reading kuma's config"
 
             # Notifications: mako left with the swap, and if nothing took
             # the name every notify-send on the machine goes nowhere and
