@@ -87,6 +87,21 @@ fn rank(severity: Option<&str>) -> usize {
 /// is the reason this is fast twice: a cold run downloads ~140MB of repo
 /// metadata and takes half a minute, every run after it re-checks
 /// freshness and answers in about two seconds.
+/// Where kuma keeps its dnf cache, for both readers of it.
+fn cache_setopts_root() -> Result<String> {
+    let base: PathBuf = match std::env::var_os("XDG_CACHE_HOME") {
+        Some(dir) => PathBuf::from(dir),
+        None => {
+            let home =
+                std::env::var_os("HOME").context("neither XDG_CACHE_HOME nor HOME is set")?;
+            PathBuf::from(home).join(".cache")
+        }
+    };
+    let root = base.join("kuma/dnf");
+    std::fs::create_dir_all(&root).with_context(|| format!("cannot create {}", root.display()))?;
+    Ok(root.display().to_string())
+}
+
 fn cache_setopts() -> Result<String> {
     let base: PathBuf = match std::env::var_os("XDG_CACHE_HOME") {
         Some(dir) => PathBuf::from(dir),
@@ -152,12 +167,44 @@ pub fn moved(source: &Source) -> Result<Vec<Move>> {
             let setopts = cache_setopts()?;
             host_output(&["sh", "-c", &script(&setopts)])?
         }
-        // No setopts: inside the container dnf is root and its defaults
-        // are writable. The cache dies with the container, so this path
-        // pays the cold download every time, which is why a machine that
-        // can answer for itself does.
+        // The same cache as the machine path, mounted in, and the
+        // container picks its own subdirectory inside it.
+        //
+        // This used to run with no cachedir at all: the cache died with
+        // the container and every check paid a cold ~140MB download and
+        // half a minute. That is the common case for anyone building on
+        // a host that is not itself a kuma machine.
+        //
+        // The subdirectory is derived INSIDE the container from its own
+        // /etc/os-release rather than keyed by kuma out here, which
+        // removes the question rather than answering it: dnf's cache
+        // layout is not a contract, it is free to change between dnf
+        // versions, and a Fedora 45 image and a Fedora 44 host sharing
+        // one directory would put two sets of metadata under one repo
+        // id. Keyed by releasever AND basearch, because a cross-arch
+        // build is exactly the case nobody tests.
         Source::Image(tag) => {
-            host_output(&["podman", "run", "--rm", tag, "sh", "-c", &script("")])?
+            let host = cache_setopts_root()?;
+            let inner = "/kuma-dnf";
+            let keyed = format!(
+                ". /etc/os-release; key=$VERSION_ID.$(rpm -E %_arch); \
+                 mkdir -p {inner}/$key/cache {inner}/$key/state; \
+                 {}",
+                script(&format!(
+                    "--setopt=cachedir={inner}/$key/cache --setopt=persistdir={inner}/$key/state"
+                ))
+            );
+            host_output(&[
+                "podman",
+                "run",
+                "--rm",
+                "-v",
+                &format!("{host}:{inner}:z"),
+                tag,
+                "sh",
+                "-c",
+                &keyed,
+            ])?
         }
     };
     Ok(parse(&out))
