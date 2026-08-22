@@ -1116,9 +1116,24 @@ smoke_published() {
                 || bad "the image ships no noctalia config for the shell to read"
             guest 'grep -q NOCTALIA_CONFIG_HOME /etc/niri/config.kdl' \
                 || bad "the session would not point the shell at kuma's config"
-            guest 'grep -qE "spawn-at-startup .noctalia." /etc/niri/config.kdl' \
-                || bad "nothing in the session starts the shell"
-            ok "the shell is installed, configured, and started by the session"
+            # Started by a SUPERVISED unit, not a niri spawn. A spawn
+            # lands in a transient scope, a scope cannot restart, and
+            # every lock on this desktop runs through that one process,
+            # so a crash took the lock screen with it silently.
+            guest 'test -f /usr/lib/systemd/user/kuma-shell.service' \
+                || bad "the image ships no unit to run the shell"
+            guest 'test -L /etc/systemd/user/graphical-session.target.wants/kuma-shell.service' \
+                || bad "kuma-shell.service is not enabled, so nothing starts the shell"
+            guest 'grep -q Restart=always /usr/lib/systemd/user/kuma-shell.service' \
+                || bad "the shell unit would not come back from a crash"
+            ok "the shell is installed, configured, and started under supervision"
+
+            # And the guard that refuses to sleep without it.
+            guest 'test -x /usr/libexec/kuma-sleep-guard' \
+                || bad "no sleep guard, so a shell-less session suspends unlocked"
+            guest 'systemctl is-enabled kuma-sleep-guard.service' >/dev/null \
+                || bad "kuma-sleep-guard.service is not enabled"
+            ok "a session with no shell ends rather than suspending unlocked"
 
             # INSTALLED, not running, and that is the stronger question.
             # niri Recommends alacritty, waybar, swaylock and fuzzel, so
