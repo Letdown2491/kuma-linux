@@ -1091,50 +1091,47 @@ smoke_published() {
             || bad "the entries' Exec is not executable on the booted machine"
         ok "the seam ships $seam_entries entries and they validate"
 
-        # The shell, and the absence of everything it stands in for. Two
-        # bars is the failure this catches, and it looks like a working
-        # desktop in every log.
+        # The shell, asked the only way this stage can ask.
+        #
+        # THERE IS NO SESSION HERE. The installed machine declares no
+        # [user], so greetd autologins nobody, niri never starts and
+        # neither does the shell. The check this replaced was written as
+        # `kuma menu --list` with "without a display" in its first line
+        # for exactly that reason, and asserting that noctalia is
+        # RUNNING failed a machine that was perfectly correct.
+        #
+        # So what gets asked is the wiring: the shell is in the image,
+        # kuma's config is where the session will look for it, and the
+        # session starts it. Whether it then draws a bar is a question
+        # only a real session answers, and nothing in CI has one.
         #
         # Asked of the niri image only, and asked by its config rather
         # than by the tag: --published takes any image, and a COSMIC one
-        # failing "the shell is not running" would be this harness
-        # reporting the wrong desktop rather than a broken one.
+        # failing these would be this harness reporting the wrong
+        # desktop rather than a broken one.
         if guest test -f /etc/niri/config.kdl; then
-            guest pgrep -x noctalia >/dev/null || bad "the shell is not running"
+            guest 'command -v noctalia >/dev/null' \
+                || bad "the shell is not in the image"
+            guest 'test -f /usr/lib/kuma/noctalia/config.toml' \
+                || bad "the image ships no noctalia config for the shell to read"
+            guest 'grep -q NOCTALIA_CONFIG_HOME /etc/niri/config.kdl' \
+                || bad "the session would not point the shell at kuma's config"
+            guest 'grep -qE "spawn-at-startup .noctalia." /etc/niri/config.kdl' \
+                || bad "nothing in the session starts the shell"
+            ok "the shell is installed, configured, and started by the session"
+
+            # INSTALLED, not running, and that is the stronger question.
+            # niri Recommends alacritty, waybar, swaylock and fuzzel, so
+            # dropping a name from NIRI_PACKAGES does not remove it and
+            # the image quietly keeps a bar and a lock screen nothing
+            # starts. That trap was found by hand once, by building the
+            # image and asking it, and nothing has guarded it since.
             local displaced
-            for displaced in waybar mako swaybg swayidle swaylock wob wlsunset; do
-                guest pgrep -x "$displaced" >/dev/null \
-                    && bad "$displaced is running beside the shell that replaced it"
+            for displaced in waybar mako fuzzel swaylock swayidle swaybg wob wlsunset; do
+                guest "command -v $displaced >/dev/null" \
+                    && bad "$displaced is installed beside the shell that replaced it"
             done
-            ok "the shell is running and nothing it replaced is"
-
-            # A running process is not the same as a working one, and
-            # the three things the shell took over that fail SILENTLY
-            # are the three asked here. Each is one command, which is
-            # the whole reason to ask it instead of writing down that
-            # somebody looked.
-
-            # Notifications: mako left, and if nothing took the name
-            # every notify-send on the machine goes nowhere with no
-            # error. Asked of the session bus, which is this user's
-            # because the ssh login and the desktop are the same account.
-            local owner_call='busctl --user call org.freedesktop.DBus'
-            owner_call="$owner_call /org/freedesktop/DBus org.freedesktop.DBus"
-            owner_call="$owner_call GetNameOwner s org.freedesktop.Notifications"
-            guest "XDG_RUNTIME_DIR=/run/user/\$(id -u) $owner_call" >/dev/null \
-                || bad "nothing owns org.freedesktop.Notifications on the session bus"
-            ok "the shell owns org.freedesktop.Notifications"
-
-            # Lock before suspend: `lock_before_suspend = true` is baked,
-            # and a setting that arrived is not a setting that took
-            # effect. The shell registers a logind sleep inhibitor when
-            # it does take effect, so the inhibitor is the readback. A
-            # machine that suspends unlocked is the failure, and it is
-            # invisible until somebody opens the lid in public.
-            guest systemd-inhibit --list --no-pager \
-                | awk '$1 == "noctalia" && $6 ~ /sleep/ { found = 1 } END { exit !found }' \
-                || bad "the shell holds no sleep inhibitor: this machine suspends without locking"
-            ok "the shell inhibits sleep to lock first"
+            ok "nothing the shell replaced survived into the image"
 
             # Mod+D, read out of the baked config rather than assumed.
             # niri's stock bind spawns fuzzel, which this image does not
