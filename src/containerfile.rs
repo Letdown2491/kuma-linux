@@ -1854,6 +1854,14 @@ source = "wallpaper"
 [shell]
 font_family = "Noto Sans"
 
+# No "Welcome to Noctalia" on a kuma machine's first login. kuma already
+# decided the things that wizard asks about, and a second vendor's
+# onboarding on the first screen is the same incoherence the shell was
+# adopted to end. Verified honored from config-home, which is not a
+# given here: [wallpaper.default] validates and is ignored from the same
+# file.
+setup_wizard_enabled = false
+
 [bar.default]
 position = "top"
 thickness = 32
@@ -5246,6 +5254,18 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
             NIRI_PACKAGES.contains(&"adwaita-icon-theme"),
             "the source of the icons is declared"
         );
+    }
+
+    /// Nothing greets a person on kuma's behalf but kuma.
+    ///
+    /// The shell ships a first-run wizard, and a kuma machine has
+    /// already answered what it asks. Asserted because it is a
+    /// first-impression setting: it is invisible on every boot after the
+    /// first, so losing it would be noticed by strangers and by nobody
+    /// testing.
+    #[test]
+    fn no_other_vendor_greets_the_person_on_first_login() {
+        assert!(KUMA_NOCTALIA.contains("setup_wizard_enabled = false"));
     }
 
     /// The shell's fallback wallpaper is kuma's.
