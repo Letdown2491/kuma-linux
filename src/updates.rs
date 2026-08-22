@@ -103,15 +103,7 @@ fn cache_setopts_root() -> Result<String> {
 }
 
 fn cache_setopts() -> Result<String> {
-    let base: PathBuf = match std::env::var_os("XDG_CACHE_HOME") {
-        Some(dir) => PathBuf::from(dir),
-        None => {
-            let home =
-                std::env::var_os("HOME").context("neither XDG_CACHE_HOME nor HOME is set")?;
-            PathBuf::from(home).join(".cache")
-        }
-    };
-    let root = base.join("kuma/dnf");
+    let root = PathBuf::from(cache_setopts_root()?);
     let cache = root.join("cache");
     let state = root.join("state");
     std::fs::create_dir_all(&cache)

@@ -188,6 +188,23 @@ pub fn restore_file_is_usable(text: &str) -> Result<(), String> {
              nothing could open the repository"
             .to_string());
     }
+    // And the values, which this used to skip entirely while `kuma
+    // backup` refused them. This is the door the file comes in through
+    // and the best place to say no: refusing here costs somebody a
+    // sentence, and not refusing here means a machine that installs,
+    // reboots, and fails its restore with the repository password read
+    // differently from the one that encrypted it.
+    let ambiguous = crate::backup::ambiguous_values(text);
+    if !ambiguous.is_empty() {
+        return Err(format!(
+            "the restore file sets {} with a value carrying a quote, a backslash, `$` or a \
+             backtick. The first-boot restore reads this file through systemd and `kuma \
+             backup` reads it with a shell loop, and they do not agree about such a value, \
+             so write it as plain text. A repository made before kuma 0.17 was encrypted \
+             with the expanded value and needs `restic passwd` first.",
+            ambiguous.join(", ")
+        ));
+    }
     Ok(())
 }
 

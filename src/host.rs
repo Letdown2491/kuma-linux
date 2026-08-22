@@ -40,12 +40,26 @@ pub fn note(msg: &str) {
 /// prints as `podman image inspect`, which is stable, and two identical
 /// lines in one verb's ledger is itself a finding.
 fn canonical<S: AsRef<str>>(args: &[S]) -> String {
-    args.iter()
-        .map(|a| a.as_ref())
+    let words: Vec<&str> = args.iter().map(|a| a.as_ref()).collect();
+    let mut out: Vec<&str> = words
+        .iter()
+        .copied()
         .take_while(|word| !word.starts_with('-') && !word.contains('/') && !word.contains('='))
         .take(3)
-        .collect::<Vec<&str>>()
-        .join(" ")
+        .collect();
+    // `sh -c <script>` would otherwise print as `sh`, and the first two
+    // lines of doctor's own ledger were two indistinguishable `sudo sh`
+    // entries at 2.2s and 1.9s. An instrument that cannot tell its most
+    // expensive entries apart is not one. The script's first word is
+    // what it actually ran.
+    if let Some(index) = words.iter().position(|word| *word == "-c") {
+        if let Some(script) = words.get(index + 1) {
+            if let Some(first) = script.split_whitespace().next() {
+                out.push(first);
+            }
+        }
+    }
+    out.join(" ")
 }
 
 fn trace<S: AsRef<str>>(args: &[S], started: std::time::Instant) {

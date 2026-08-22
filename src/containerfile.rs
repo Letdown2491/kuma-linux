@@ -1792,10 +1792,18 @@ set -euo pipefail
 # A graphical session on the seat, and the account that owns it. Anything
 # else (no session, a TTY login, a machine at the greeter) is nothing to
 # do here.
-while read -r id _uid user seat _rest; do
+while read -r id _rest; do
+    # Only the session id is read positionally, and everything else is
+    # ASKED. `loginctl list-sessions` has nine columns today and has
+    # gained columns before; a guard that reads the wrong one skips
+    # silently, and a security guard that skips silently is the exact
+    # property this exists to prevent.
+    seat=$(loginctl show-session "$id" -p Seat --value 2>/dev/null || true)
     [ "$seat" = "seat0" ] || continue
     type=$(loginctl show-session "$id" -p Type --value 2>/dev/null || true)
     [ "$type" = "wayland" ] || continue
+    user=$(loginctl show-session "$id" -p Name --value 2>/dev/null || true)
+    [ -n "$user" ] || continue
     # The shell owns every lock path on this desktop. If it is running,
     # its own inhibitor already held sleep long enough to lock.
     if pgrep -u "$user" -x noctalia >/dev/null 2>&1; then
