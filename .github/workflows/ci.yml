@@ -488,3 +488,54 @@ jobs:
         with:
           tool: cargo-audit
       - run: cargo audit
+
+      # What a stranger clones must say nothing about who built it.
+      #
+      # Three history rewrites established that before this repo went
+      # public, and every line of prose written afterwards put it back:
+      # sixteen in tracked files and four in commit messages, found by
+      # hand on 2026-08-22, six releases after the rule was set. A rule
+      # nothing grades is not kept, so this grades it.
+      #
+      # BY SHAPE, because a public gate cannot name the private strings
+      # without writing them into the repo it is protecting. An absolute
+      # home path has a shape, and scripts/publish-audit.sh already
+      # matches it against the built binary for the same reason;
+      # linuxbrew is excluded there and here because it is a real path
+      # that belongs to the software rather than to a person.
+      - name: no builder identity in the tree
+        run: |
+          set -euo pipefail
+          # The allowlist is names that are deliberately not anybody's:
+          # linuxbrew is the software's own path, runner is GitHub's, and
+          # the rest are fixtures. Adding a real name here is a visible
+          # act in review, which is the point of listing them.
+          allowed='linuxbrew|/home/runner/|myuser|home/x/|home/me/|home/shared/|mira|kai|testbox'
+          if paths=$(grep -rInoE '/(var/)?home/[a-z_][a-z0-9_-]*/' \
+                --exclude-dir=.git . | grep -vE "$allowed" | head -5) && [ -n "$paths" ]; then
+            echo "::error::an absolute home path is in the tree:"; echo "$paths"; exit 1
+          fi
+          echo "no absolute home paths outside linuxbrew"
+
+      # And by name, with the names kept OUT of the repo. The needle is a
+      # regex in a secret; the gate is public and the thing it looks for
+      # is not. Absent secret means skip, so a fork and an outside pull
+      # request do not fail on something they cannot see.
+      - name: no builder identity in the messages
+        env:
+          NEEDLE: ${{ secrets.IDENTITY_REGEX }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NEEDLE:-}" ]; then
+            echo "::notice::IDENTITY_REGEX is not set; name check skipped"
+            exit 0
+          fi
+          if git log --format='%H %B' -50 | grep -iqE "$NEEDLE"; then
+            echo "::error::a commit message in the last 50 names the builder"
+            exit 1
+          fi
+          if grep -rIlqE "$NEEDLE" --exclude-dir=.git . ; then
+            echo "::error::a tracked file names the builder"
+            exit 1
+          fi
+          echo "no builder identity by name"
