@@ -2136,13 +2136,24 @@ temperature_night = 4000
 
 # Replaces swayidle: lock at 15 minutes, screen off a minute later.
 # Both ship disabled, so leaving this out is a machine that never locks.
+#
+# `action` is what the behavior DOES; the table name is only a label the
+# settings UI shows. A behavior with no action is dropped at
+# registration, and the shell says so once in the journal and nowhere
+# else: the config still validates, `config export merged` still shows
+# the timeout, and the machine simply never locks. The four the shell
+# accepts are `lock`, `screen_off`, `suspend` and `lock_and_suspend`,
+# measured by registering each one against a running shell; `dpms`,
+# `screen-off` and `caffeine` are all rejected as "needs an action".
 [idle.behavior.lock]
 enabled = true
 timeout = 900.0
+action = "lock"
 
 [idle.behavior.screen-off]
 enabled = true
 timeout = 960.0
+action = "screen_off"
 
 # The third clause of the swayidle line that left: `before-sleep`. The
 # shell does this by default, so this line changes nothing today and is
@@ -5667,6 +5678,28 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
             3,
             "lock, screen-off, nightlight"
         );
+        // `enabled = true` was not enough, and a booted machine is how
+        // that was found: both behaviors were dropped at registration
+        // for want of an `action`, on an image whose config validated
+        // and whose merged export showed both timeouts. Every behavior
+        // carries one now, and it has to be one of the four the shell
+        // takes, or the machine silently never locks again.
+        let actions: Vec<&str> = KUMA_NOCTALIA
+            .lines()
+            .filter_map(|l| l.strip_prefix("action = \""))
+            .filter_map(|l| l.strip_suffix('"'))
+            .collect();
+        assert_eq!(
+            actions.len(),
+            KUMA_NOCTALIA.matches("[idle.behavior.").count(),
+            "every idle behavior needs an action: {actions:?}"
+        );
+        for a in &actions {
+            assert!(
+                ["lock", "screen_off", "suspend", "lock_and_suspend"].contains(a),
+                "the shell rejects idle action `{a}`"
+            );
+        }
         assert!(NIRI_EXTRAS.contains("kuma-battery-watch"));
         assert!(NIRI_EXTRAS.contains("noctalia"));
         // Both X11 helpers wait for a DISPLAY that does not exist yet

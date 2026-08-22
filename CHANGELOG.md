@@ -35,6 +35,18 @@ differently. Why it changed belongs in the commit that made it.
   the desktop on screen. A shell that hangs rather than exits is still not
   covered.
 
+- **The desktop locks on idle again.** Every kuma niri machine has shipped
+  an idle lock at 15 minutes and screen-off at 16 that never armed: the
+  shell needs each idle behavior to name an `action`, and kuma set only a
+  timeout, so both were dropped at startup. The config validated, `noctalia
+  config export merged` showed both timeouts, and the machine never locked.
+  It says so once in the journal (`idle behavior 'lock' ignored: needs an
+  action`), which is where this was found. Rebuild and reboot to arm it; if
+  you have set idle behaviors of your own in
+  `~/.local/state/noctalia/settings.toml`, check each one names an action.
+  **`kuma doctor` grades this now**, from the shell's journal, since that is
+  the only place a refused behavior is reported.
+
 - **A mounted disk image is refused again.** `kuma install --disk
   <file>` claimed to check whether the image was already mounted and could
   not: `lsblk` refuses a file path. It resolves the loop device now.

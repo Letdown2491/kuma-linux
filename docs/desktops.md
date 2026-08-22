@@ -67,8 +67,12 @@ machine is, and picking a network is not that.
 Idle lock, `Super+Alt+L` and locking before suspend are all the shell's, so it
 runs as a systemd user service that restarts if it stops rather than as a
 one-shot spawn that could vanish quietly. `kuma doctor` grades that it is
-running, and that it came up reading the image's config rather than the
-shell's own defaults. If it is not there at all when the machine is asked to
+running, that it came up reading the image's config rather than the shell's
+own defaults, and that the shell accepted the idle behaviours it was given.
+That last one is graded from the shell's journal because nowhere else says
+so: a behaviour with a timeout and no action is thrown away at startup, and
+the config still validates and still exports the timeout. If the shell is not
+there at all when the machine is asked to
 sleep, the session ends instead of suspending: a session with no shell has no
 lock screen, and sleeping into one means an unlocked machine in a bag. A shell
 that hangs rather than exits is not covered by either.

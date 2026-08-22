@@ -1910,6 +1910,63 @@ fn check_shell_config(report: &mut impl FnMut(Grade, &str, String, Option<Action
 /// not a claim: the unit can say it, the niri config can say it, and
 /// neither settles what the process that is drawing the screen was
 /// given. Same user, so it reads without sudo.
+/// The idle behaviors this shell actually armed, and the ones it threw
+/// away, by name. The journal is the only witness: a behavior the shell
+/// refuses is refused silently everywhere else. `noctalia config
+/// validate` passes, `noctalia config export merged` still prints the
+/// timeout, and the desktop simply never locks.
+///
+/// The last word about a name wins, because the config can be reloaded
+/// and an answer from before a reload is not this machine's answer.
+/// `None` means the journal could not be read, which is not a finding.
+fn shell_idle_unarmed() -> Option<Vec<String>> {
+    let log = host_output_any(&[
+        "journalctl",
+        "--user",
+        "-b",
+        "-u",
+        "kuma-shell.service",
+        "--no-pager",
+        "-o",
+        "cat",
+    ])
+    .ok()?;
+    let mut unarmed = idle_verdicts(&log)?;
+    // The journal remembers the whole boot, including behaviors that
+    // have since been deleted. Somebody who fixes a dead behavior by
+    // removing it would otherwise be told it is still dead until they
+    // reboot, which is this check failing a machine that is correct.
+    // Only what the shell is running now can be wrong now. An
+    // unreadable config is not a reason to drop evidence, so the
+    // journal's answer stands on its own if this cannot be asked.
+    if let Ok(merged) = host_output_any(&["noctalia", "config", "export", "merged"]) {
+        unarmed.retain(|name| merged.contains(&format!("[idle.behavior.{name}]")));
+    }
+    Some(unarmed)
+}
+
+/// The parse, kept apart from the journal so it can be tested against a
+/// log rather than against a machine.
+fn idle_verdicts(log: &str) -> Option<Vec<String>> {
+    let mut seen: Vec<(String, bool)> = Vec::new();
+    for line in log.lines() {
+        let armed = line.contains("registered idle behavior '");
+        if !armed && !(line.contains("idle behavior '") && line.contains("ignored")) {
+            continue;
+        }
+        let Some(rest) = line.split_once("idle behavior '") else { continue };
+        let Some(name) = rest.1.split('\'').next() else { continue };
+        match seen.iter_mut().find(|(n, _)| n == name) {
+            Some(entry) => entry.1 = armed,
+            None => seen.push((name.to_string(), armed)),
+        }
+    }
+    if seen.is_empty() {
+        return None;
+    }
+    Some(seen.into_iter().filter(|(_, armed)| !armed).map(|(n, _)| n).collect())
+}
+
 fn shell_env_missing() -> Option<String> {
     let pid = host_output_any(&[
         "systemctl",
@@ -1988,7 +2045,59 @@ fn check_shell(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
                 "shell",
                 "the desktop shell is running under supervision".into(),
                 None,
-            )
+            );
+            // Supervised and configured is still not locking.
+            //
+            // Every niri image kuma ever built set an idle lock at 15
+            // minutes and screen-off at 16, and no machine ever armed
+            // either: the shell wants each behavior to name an `action`
+            // and kuma gave it only a timeout, so both were dropped at
+            // startup. Nothing above could see it. The unit was active,
+            // the environment was right, the config validated, and the
+            // merged config printed both timeouts. Only the shell knows,
+            // and it says so once, in the journal.
+            match shell_idle_unarmed() {
+                Some(unarmed) if !unarmed.is_empty() => report(
+                    Grade::Fail,
+                    "idle lock",
+                    format!(
+                        "the shell threw away {}, so this desktop does not lock itself",
+                        if unarmed.len() == 1 {
+                            format!(
+                                "the idle behavior {}, which names a timeout and no action",
+                                unarmed[0]
+                            )
+                        } else {
+                            format!(
+                                "{} idle behaviors ({}), each naming a timeout and no action",
+                                unarmed.len(),
+                                unarmed.join(", ")
+                            )
+                        }
+                    ),
+                    Some(Action::new(
+                        "read",
+                        "journalctl --user -b -u kuma-shell.service | grep 'idle behavior'",
+                        "each behavior needs action = lock, screen_off, suspend or \
+                         lock_and_suspend; an override in \
+                         ~/.local/state/noctalia/settings.toml is read before the image",
+                    )),
+                ),
+                Some(_) => report(
+                    Grade::Ok,
+                    "idle lock",
+                    "the shell armed every idle behavior it was given".into(),
+                    None,
+                ),
+                None => report(
+                    Grade::Warn,
+                    "idle lock",
+                    "cannot read the shell's journal, so whether it locks on idle is \
+                     unknown"
+                        .into(),
+                    None,
+                ),
+            }
         }
         Ok(state) => report(
             Grade::Fail,
@@ -2945,6 +3054,32 @@ mod tests {
 
     fn set(items: &[&str]) -> BTreeSet<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The lines below are real, copied off a machine that had shipped a
+    /// dead idle lock since the shell arrived. The log is colored and
+    /// reloadable, so the parse has to survive escape codes in the
+    /// middle of a line and has to take the LAST word about a name: a
+    /// behavior fixed by a reload is armed, not broken, and one that was
+    /// armed and then edited into nonsense is broken, not armed.
+    #[test]
+    fn the_last_word_about_an_idle_behavior_is_the_one_that_counts() {
+        let log = "\
+03:31:37.902 [\u{1b}[33mWRN\u{1b}[0m] [idle] idle behavior 'lock' ignored: needs an action\n\
+03:31:37.902 [WRN] [idle] idle behavior 'screen-off' ignored: needs an action\n\
+03:38:17.588 [INF] [idle] registered idle behavior 'lock' timeout=900s\n\
+03:38:17.588 [INF] [idle] idle behavior 'lock' triggered\n";
+        assert_eq!(idle_verdicts(log), Some(vec!["screen-off".to_string()]));
+
+        // Armed, then edited into nonsense and reloaded.
+        let log = "registered idle behavior 'lock' timeout=900s\n\
+                   idle behavior 'lock' ignored: needs an action\n";
+        assert_eq!(idle_verdicts(log), Some(vec!["lock".to_string()]));
+
+        // All good, and a machine whose journal says nothing about idle
+        // at all, which is unknown rather than broken.
+        assert_eq!(idle_verdicts("registered idle behavior 'lock' timeout=900s"), Some(vec![]));
+        assert_eq!(idle_verdicts("[config] idle behaviors=2"), None);
     }
 
     /// `systemctl show` answers for many units in one flat stream, and
