@@ -20,7 +20,7 @@ Fedora supplies the packages and the kernel; kuma decides what goes into the
 image and keeps the running machine matching your file. New to any of these
 words? [The glossary](docs/glossary.md) defines each in a line.
 
-![Kuma running the niri desktop: a scrollable tiling Wayland session with kitty and fastfetch reporting a read-only overlay root](docs/screenshots/niri.jpg)
+![Kuma running the niri desktop: a scrollable tiling Wayland session, with the shell drawing a single bar over three workspaces](docs/screenshots/niri.jpg)
 
 ## Your declaration
 

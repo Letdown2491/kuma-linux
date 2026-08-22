@@ -1876,19 +1876,25 @@ position = "top"
 thickness = 32
 radius = 12
 margin_ends = 10
-start = [ "launcher", "wallpaper", "workspaces" ]
+# The left group is where you are and what you can start; the wallpaper
+# picker is neither, and it sat between the two things a person touches
+# most. It keeps its panel, bound below.
+start = [ "launcher", "workspaces" ]
 center = [ "clock" ]
+# Notifications, then state, then the control centre, which is where the
+# rest of it lives. Three widgets left the bar in 0.16, each a glyph that
+# reported nothing: brightness, a control rather than a state and already
+# on the media keys; the clipboard, which Mod+Ctrl+V opens; and the
+# session buttons, which are one click into the control centre, whose
+# header carries the same power glyph.
 end = [
     "tray",
     "notifications",
-    "clipboard",
     "network",
     "bluetooth",
     "volume",
-    "brightness",
     "battery",
-    "control-center",
-    "session"
+    "control-center"
 ]
 
 [wallpaper]
@@ -1907,6 +1913,9 @@ fill_mode = "crop"
 show_label = false
 
 [widget.volume]
+show_label = false
+
+[widget.battery]
 show_label = false
 
 # Replaces wlsunset, which ran on the same schedule and temperatures.
@@ -2041,7 +2050,7 @@ const NIRI_LOCK_BIND: &str = r#"Super+Alt+L hotkey-overlay-title="Lock the Scree
 /// Important Hotkeys overlay and generates the label from the action, so
 /// an untitled `spawn` advertises itself as its own command line: the
 /// clipboard bind read as its whole `sh -c` pipeline
-/// on the first screen of a new machine. The three worth naming are
+/// on the first screen of a new machine. The four worth naming are
 /// named, and the media keys are hidden outright — they are printed on
 /// the keyboard, and ten of them crowd out everything worth reading.
 ///
@@ -2059,6 +2068,7 @@ const NIRI_MEDIA_BINDS: &str = r#"    XF86AudioRaiseVolume allow-when-locked=tru
     XF86AudioNext allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "next"; }
     XF86AudioPrev allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "previous"; }
     Mod+Ctrl+V hotkey-overlay-title="Clipboard History" { spawn "noctalia" "msg" "panel-toggle" "clipboard"; }
+    Mod+Ctrl+W hotkey-overlay-title="Wallpaper" { spawn "noctalia" "msg" "panel-toggle" "wallpaper"; }
     Mod+Alt+R hotkey-overlay-title="Record the Screen" { spawn "/usr/libexec/kuma-record"; }
     Mod+Print hotkey-overlay-title="Screenshot a Region, then Annotate" { spawn "sh" "-c" "grim -g \"$(slurp)\" - | swappy -f -"; }
 "#;
@@ -5403,7 +5413,12 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
 
     #[test]
     fn daily_driver_glue() {
+        // The clipboard and wallpaper widgets both left the bar in 0.16,
+        // so these two binds are the only routes to their panels left in
+        // the image. Losing a bind here strands a panel.
         assert!(NIRI_MEDIA_BINDS.contains(r#"panel-toggle" "clipboard"#));
+        assert!(NIRI_MEDIA_BINDS.contains(r#"panel-toggle" "wallpaper"#));
+        assert!(KUMA_NOCTALIA.contains(r#"start = [ "launcher", "workspaces" ]"#));
         assert!(MIMEAPPS.contains("application/pdf=org.gnome.Papers.desktop"));
         assert!(MIMEAPPS.contains("inode/directory=thunar.desktop"));
         let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
