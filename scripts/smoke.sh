@@ -1221,6 +1221,7 @@ smoke_published() {
             # all correct on the machine that booted 0.17 into stock
             # noctalia. This is the only assertion here that would have
             # failed it.
+            # shellcheck disable=SC2016  # the $ expands on the guest; the single quotes are the point.
             guest 'p=$(pgrep -u "$(id -u)" -x noctalia | head -1);
                    tr "\0" "\n" < /proc/$p/environ \
                      | grep -qx NOCTALIA_CONFIG_HOME=/usr/lib/kuma' \
