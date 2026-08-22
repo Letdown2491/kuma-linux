@@ -226,13 +226,18 @@ bad()  {
         guest 'systemctl --user --failed --no-pager --plain' || true
         guest 'loginctl list-sessions --no-legend' || true
         # The harness's own polling opens an ssh connection every few
-        # seconds, and a raw journal tail is then nothing but its own
-        # sshd-session disconnects: measured on the 2026-08-22 run, which
-        # lost the lines the dump exists to keep. greetd and the session
-        # log at info, so one tail is unfiltered by severity.
+        # seconds, and each one logs a disconnect, a logind session
+        # lifecycle and an audit line: a raw tail is the harness
+        # describing itself, measured on both 2026-08-22 runs, which
+        # lost the lines the dump exists to keep. So ask positively
+        # for the names a failing desktop would mention, and take the
+        # wide tails with the harness's own noise cut out. greetd and
+        # the session log at info, so severity filters alone miss them.
         guest 'journalctl -b -p err --no-pager | tail -20' || true
-        guest 'journalctl -b --no-pager | grep -v sshd-session | tail -30' || true
-        guest 'journalctl --user -b --no-pager | grep -v sshd-session | tail -30' || true
+        guest 'journalctl -b -u greetd.service --no-pager | tail -20' || true
+        guest 'journalctl -b --no-pager | grep -iE "greetd|niri|noctalia|kuma-shell" | tail -30' || true
+        guest 'journalctl -b --no-pager | grep -vE "sshd|logind|audit|session-[0-9]+" | tail -30' || true
+        guest 'journalctl --user -b --no-pager | grep -vE "sshd|logind|audit|session-[0-9]+" | tail -30' || true
     fi
     exit 1
 }
@@ -1218,8 +1223,9 @@ smoke_published() {
             #
             # greetd's [initial_session] is the autologin kuma already
             # writes when a declaration asks for it, so this asks for it
-            # here and restarts the greeter. The session that comes up is
-            # the same one a person gets.
+            # here and reboots: greetd honors the block only on a boot's
+            # first start, which is also the only way a person gets the
+            # session — there is no restart path to it.
             # Only when the image does not already autologin. Appending
             # a second [initial_session] is invalid TOML and greetd would
             # refuse to start, which would fail this gate for a reason
