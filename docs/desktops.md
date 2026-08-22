@@ -56,9 +56,11 @@ colour and on nothing else.
 | Fonts and icons | sans, mono, emoji, CJK, Font Awesome (free and brands), `adwaita-icon-theme` |
 
 The control centre owns the everyday cases: wifi, bluetooth, audio,
-brightness, night light. The separate settings tools stay for what it does not
-reach — `nm-connection-editor` for a VPN or a static route, `pavucontrol` for
-per-application routing, `system-config-printer` for printers. All of it is
+brightness, night light, and the power button in its header opens lock, log
+out, suspend, reboot and shut down. The separate settings tools stay for what
+it does not reach — `nm-connection-editor` for a VPN or a static route,
+`pavucontrol` for per-application routing, `system-config-printer` for
+printers. All of it is
 machine state rather than system definition: the declaration describes what a
 machine is, and picking a network is not that.
 
@@ -70,6 +72,10 @@ anything from the desktop's own settings writes
 is yours and the image will not overwrite it. Kuma does not read it either, so
 `kuma diff` will not mention it: `noctalia config export merged` is what shows
 which settings are actually in effect.
+
+The bar carries state and little else, so the two panels that are not state
+are on keys: `Mod+Ctrl+V` for clipboard history, `Mod+Ctrl+W` for the
+wallpaper picker. `Mod+Shift+/` lists every bind the session has.
 
 `Mod+D` opens the shell's launcher. Your applications are in it, and so are
 kuma's own verbs: edit the declaration, show drift, system health, check for

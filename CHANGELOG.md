@@ -27,8 +27,10 @@ differently. Why it changed belongs in the commit that made it.
   along with `kuma menu` and the icon theme built for it.
 
   `Mod+D` opens the shell's launcher, which lists your applications and kuma's
-  verbs together. Wifi and bluetooth are in the control centre rather than in a
-  GTK window from another desktop.
+  verbs together, `Mod+Ctrl+V` opens clipboard history and `Mod+Ctrl+W` the
+  wallpaper picker; `Mod+Shift+/` lists every bind. Wifi and bluetooth are in
+  the control centre rather than in a GTK window from another desktop, and its
+  header holds lock, log out, suspend, reboot and shut down.
 
   Kuma configures it from the image: its own bar layout and fonts, its
   wallpaper, and two things noctalia ships **disabled** that would have been
