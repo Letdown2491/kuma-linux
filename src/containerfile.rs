@@ -2178,34 +2178,43 @@ const GTK4_SETTINGS_INI: &str = r#"[Settings]
 gtk-application-prefer-dark-theme = true
 "#;
 
-const XSETTINGS_LAUNCHER: &str = r#"#!/usr/bin/bash
-set -euo pipefail
-for _ in $(seq 60); do
+/// The two X11 helpers below both start before XWayland does.
+///
+/// `xwayland-satellite` publishes `DISPLAY` into the session environment
+/// when it comes up, which is after `spawn-at-startup` has already run
+/// both of these. Waiting is the whole difference between a helper that
+/// works and one that exits instantly on every login, so it is written
+/// once: two copies of a 30-second timeout is two chances to fix half a
+/// bug. Exit 0 rather than fail after the wait, because a session with
+/// no XWayland at all is a session with nothing for either to do.
+const WAIT_FOR_DISPLAY: &str = r#"for _ in $(seq 60); do
     [ -n "${DISPLAY:-}" ] && break
     DISPLAY=$(systemctl --user show-environment 2>/dev/null | sed -n 's/^DISPLAY=//p')
     [ -n "$DISPLAY" ] && export DISPLAY && break
     sleep 0.5
 done
 [ -n "${DISPLAY:-}" ] || exit 0
-exec xsettingsd -c /usr/lib/kuma/xsettingsd.conf
 "#;
+
+fn xsettings_launcher() -> String {
+    format!(
+        "#!/usr/bin/bash\nset -euo pipefail\n{WAIT_FOR_DISPLAY}\
+         exec xsettingsd -c /usr/lib/kuma/xsettingsd.conf\n"
+    )
+}
 
 /// Session half of host<->guest clipboard in `kuma vm`. spice-vdagent's
 /// clipboard side is X11, so under niri it rides the xwayland-satellite
 /// bridge — wait briefly for DISPLAY to appear in the session
 /// environment. No vdagent port (real hardware) means exit quietly.
-const CLIPBOARD_BRIDGE: &str = r#"#!/usr/bin/bash
-set -euo pipefail
-[ -e /dev/virtio-ports/com.redhat.spice.0 ] || exit 0
-for _ in $(seq 60); do
-    [ -n "${DISPLAY:-}" ] && break
-    DISPLAY=$(systemctl --user show-environment 2>/dev/null | sed -n 's/^DISPLAY=//p')
-    [ -n "$DISPLAY" ] && export DISPLAY && break
-    sleep 0.5
-done
-[ -n "${DISPLAY:-}" ] || exit 0
-exec spice-vdagent -x
-"#;
+fn clipboard_bridge() -> String {
+    format!(
+        "#!/usr/bin/bash\nset -euo pipefail\n\
+         [ -e /dev/virtio-ports/com.redhat.spice.0 ] || exit 0\n\
+         {WAIT_FOR_DISPLAY}\
+         exec spice-vdagent -x\n"
+    )
+}
 
 /// Joan G. Stark's classic ASCII bear (her "jgs" signature moved here so
 /// it doesn't render on every run), wallpaper-bear warm brown ($1) with
@@ -3260,8 +3269,8 @@ pub fn write_context(
         std::fs::write(dir.join("niri-extras.kdl"), NIRI_EXTRAS)?;
         std::fs::write(dir.join("noctalia-config.toml"), KUMA_NOCTALIA)?;
         std::fs::write(dir.join("kitty.conf"), KITTY_CONFIG)?;
-        std::fs::write(dir.join("kuma-clipboard-bridge"), CLIPBOARD_BRIDGE)?;
-        std::fs::write(dir.join("kuma-xsettings"), XSETTINGS_LAUNCHER)?;
+        std::fs::write(dir.join("kuma-clipboard-bridge"), clipboard_bridge())?;
+        std::fs::write(dir.join("kuma-xsettings"), xsettings_launcher())?;
         std::fs::write(dir.join("xsettingsd.conf"), XSETTINGSD_CONF)?;
         std::fs::write(dir.join("niri-binds.kdl"), NIRI_MEDIA_BINDS)?;
         std::fs::write(dir.join("mimeapps.list"), MIMEAPPS)?;
@@ -5397,6 +5406,15 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
         );
         assert!(NIRI_EXTRAS.contains("kuma-battery-watch"));
         assert!(NIRI_EXTRAS.contains("noctalia"));
+        // Both X11 helpers wait for a DISPLAY that does not exist yet
+        // when they are spawned. They share one copy of that wait, so
+        // this asks the rendered scripts rather than the const: a
+        // refactor that dropped it from one of them would leave a
+        // helper that exits on every login and reports nothing.
+        for script in [xsettings_launcher(), clipboard_bridge()] {
+            assert!(script.contains("systemctl --user show-environment"), "{script}");
+            assert!(script.trim_end().ends_with("-x") || script.contains("exec xsettingsd"));
+        }
         // media keys route through the OSD helper, spliced into stock binds
         assert!(NIRI_MEDIA_BINDS.contains("kuma-osd"));
         let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
