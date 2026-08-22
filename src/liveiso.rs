@@ -610,7 +610,8 @@ mod tests {
         }
     }
 
-    /// Found in a live session's shell prompt: `liveuser@motherbox`.
+    /// Found in a live session's shell prompt: `liveuser@` the builder's
+    /// own hostname.
     /// The declaration's hostname is baked into every image, so media
     /// built from a real declaration announces the machine that built
     /// it. COPY rather than a redirect because podman bind-mounts
@@ -618,11 +619,11 @@ mod tests {
     #[test]
     fn the_iso_does_not_carry_the_builders_hostname() {
         let out = super::live_containerfile(
-            &config("schema_version = 1\n[system]\ndesktop = \"niri\"\nhostname = \"motherbox\"\n"),
+            &config("schema_version = 1\n[system]\ndesktop = \"niri\"\nhostname = \"testbox\"\n"),
             "t",
         );
         assert!(out.contains("COPY live-hostname /etc/hostname"));
-        assert!(!out.contains("motherbox"));
+        assert!(!out.contains("testbox"));
         assert!(!out.contains("RUN echo"), "a redirect never reaches the layer");
     }
 

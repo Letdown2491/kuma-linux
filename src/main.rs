@@ -4103,14 +4103,14 @@ mod tests {
     fn only_loop_devices_under_run_media_are_reported() {
         let mountinfo = "\
 25 30 0:22 / /proc rw,nosuid,nodev,noexec,relatime shared:12 - proc proc rw
-99 33 7:4 / /run/media/martin/root ro,nosuid,nodev,relatime shared:1 - ext4 /dev/loop0p4 ro,seclabel
-98 33 7:3 / /run/media/martin/boot ro,nosuid,nodev,relatime shared:2 - xfs /dev/loop0p3 ro,seclabel
-97 33 8:17 / /run/media/martin/usb rw,nosuid,nodev,relatime shared:3 - vfat /dev/sdb1 rw
+99 33 7:4 / /run/media/mira/root ro,nosuid,nodev,relatime shared:1 - ext4 /dev/loop0p4 ro,seclabel
+98 33 7:3 / /run/media/mira/boot ro,nosuid,nodev,relatime shared:2 - xfs /dev/loop0p3 ro,seclabel
+97 33 8:17 / /run/media/mira/usb rw,nosuid,nodev,relatime shared:3 - vfat /dev/sdb1 rw
 96 33 7:9 / /mnt/scratch rw,relatime shared:4 - ext4 /dev/loop9 rw,seclabel
 ";
         assert_eq!(
             super::loop_mounts_in(mountinfo),
-            ["/run/media/martin/root", "/run/media/martin/boot"]
+            ["/run/media/mira/root", "/run/media/mira/boot"]
         );
     }
 

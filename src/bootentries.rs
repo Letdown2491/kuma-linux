@@ -258,7 +258,7 @@ mod tests {
         std::os::unix::fs::symlink(&deploy, slot.join(index.to_string())).unwrap();
     }
 
-    /// motherbox on 2026-08-18, booted into 0.12.0: two deployments, and
+    /// A laptop on 2026-08-18, booted into 0.12.0: two deployments, and
     /// two entry titles each naming the version that used to hold the
     /// slot.
     fn off_by_one() -> tempfile::TempDir {

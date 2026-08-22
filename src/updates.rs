@@ -236,7 +236,7 @@ pub fn by_severity(moves: &[Move]) -> BTreeMap<usize, (&'static str, usize)> {
 mod tests {
     use super::*;
 
-    /// Real output from motherbox, trimmed to the shape rather than the
+    /// Real output from a booted machine, trimmed to the shape rather than
     /// length: an upgrade with two advisories (the kernel is Moderate and
     /// Important at once), one with none, and one the rpmdb doesn't know.
     const OUT: &str = "kernel 7.1.8-200.fc44.x86_64\n\

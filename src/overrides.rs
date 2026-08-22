@@ -539,8 +539,8 @@ fn representable(group: &str, key: &str) -> bool {
 /// What `kuma capture` offers: permissions this machine carries that the
 /// declaration does not name.
 ///
-/// Scoped to apps the declaration already installs, which is Martin's
-/// call and the sweep's evidence agrees: a machine accumulates override
+/// Scoped to apps the declaration already installs, which is a
+/// deliberate call and the sweep's evidence agrees: a machine accumulates override
 /// files for apps that left years ago, and the user store on the machine
 /// this was written on holds five, three of them for software that is
 /// not installed. Proposing those would be proposing rubble. It also

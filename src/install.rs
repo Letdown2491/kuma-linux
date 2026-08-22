@@ -1008,8 +1008,8 @@ tmpfs /tmp tmpfs rw 0 0
 
     /// A greeter that autologins the image author's account cannot start
     /// on a machine that has a different one. Proven on a real install:
-    /// `pam_acct_mgmt: USER_UNKNOWN` from `getpwnam(martin)`, five
-    /// restarts, then no greeter at all.
+    /// `pam_acct_mgmt: USER_UNKNOWN` from `getpwnam()` for an account
+    /// the machine lacked, five restarts, then no greeter at all.
     #[test]
     fn autologin_for_an_account_this_machine_lacks_is_removed() {
         let out = install_containerfile("localhost/kuma:latest", &account(), false);
@@ -1101,19 +1101,19 @@ tmpfs /tmp tmpfs rw 0 0
     /// create. `kuma iso` warns about the same thing for media.
     #[test]
     fn installing_someone_elses_image_says_what_rides_along() {
-        let baked = "schema_version = 1\n[user]\nname = \"martin\"\n\
+        let baked = "schema_version = 1\n[user]\nname = \"kai\"\n\
                      password_hash = '$6$abc$def'\nautologin = true\n";
         let warning = baked_user_warning(baked, "mira").expect("a declared user is worth saying");
-        assert!(warning.contains("martin"));
+        assert!(warning.contains("kai"));
         assert!(warning.contains("password hash"));
         assert!(warning.contains("autologin"));
         // Nothing to warn about when the image declares the same account
         // it is being installed for, or declares none at all.
-        assert!(baked_user_warning(baked, "martin").is_none());
+        assert!(baked_user_warning(baked, "kai").is_none());
         assert!(baked_user_warning("schema_version = 1\n", "mira").is_none());
         // A declaration without autologin still carries the hash, and
         // still says so, but has no greeter line to explain.
-        let quiet = "schema_version = 1\n[user]\nname = \"martin\"\n";
+        let quiet = "schema_version = 1\n[user]\nname = \"kai\"\n";
         let warning = baked_user_warning(quiet, "mira").unwrap();
         assert!(warning.contains("password hash") && !warning.contains("autologin"));
     }

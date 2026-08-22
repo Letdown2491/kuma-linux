@@ -1281,7 +1281,7 @@ smoke_published() {
         # restored, `Waking up from system sleep state S4`, tasks
         # restarted -- and then the guest reset itself seven seconds
         # later, unasked, with nothing on the console and nothing in the
-        # resumed boot's journal. Hardware does not do this: motherbox
+        # resumed boot's journal. Hardware does not do this: a real laptop
         # hibernated, resumed and stayed up twice on 2026-08-21, and
         # powered off cleanly from a resumed boot. It is the same family
         # as the poweroff reset below, and it lands about one run in two.
