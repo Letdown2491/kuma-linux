@@ -1688,11 +1688,13 @@ spawn-at-startup "/usr/libexec/kuma-xsettings"
 spawn-at-startup "blueman-applet"
 // Automount removable media at the session level.
 spawn-at-startup "udiskie"
-// The shell: bar, notifications, wallpaper, OSDs, idle, lock, control
-// centre and night light, in one process. It stands in for waybar, mako,
-// swaybg, swayidle, swaylock, kuma-wob and wlsunset, all of which leave
-// the niri set with it. Configured from the image, see KUMA_NOCTALIA.
-spawn-at-startup "noctalia"
+// The shell is NOT spawned here. It runs as kuma-shell.service, a
+// supervised user unit, because a `spawn-at-startup` lands in a
+// transient scope and a scope cannot carry Restart=. Every lock this
+// machine has goes through that one process: idle, the keybind, and
+// lock-before-suspend. When it died, nothing restarted it and nothing
+// said so, and the next lid close suspended the machine with an
+// unlocked session inside it.
 spawn-at-startup "/usr/libexec/kuma-battery-watch"
 
 // Kuma look: rounded windows, quiet neutral focus ring. Window rules are
@@ -1718,6 +1720,91 @@ window-rule {
 // ~ expansion landed in niri 26.04, so this needs that or newer.
 include optional=true "~/.config/niri/local.kdl"
 "##;
+
+/// The shell, supervised.
+///
+/// niri's `spawn-at-startup` hands the process to systemd as a transient
+/// SCOPE, and a scope cannot carry `Restart=`: measured on a booted
+/// machine, where the shell sat in `app-niri-noctalia-1441.scope` with
+/// nothing watching it. That matters more here than for an ordinary
+/// panel, because all three of this desktop's lock paths run through
+/// that one process. A crash took the bar with it, which you notice, and
+/// the idle lock and the sleep inhibitor, which you do not.
+///
+/// `PartOf=` and `WantedBy=graphical-session.target` because that target
+/// is real in this session (measured active) and niri imports
+/// WAYLAND_DISPLAY and NIRI_SOCKET into the user manager's environment
+/// before it, so the unit starts with what it needs.
+///
+/// `Restart=always` rather than `on-failure`: a shell that exits zero has
+/// still taken the lock screen with it.
+const SHELL_SERVICE: &str = r#"[Unit]
+Description=Noctalia, the kuma desktop shell
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/noctalia
+Restart=always
+RestartSec=1
+Slice=session.slice
+
+[Install]
+WantedBy=graphical-session.target
+"#;
+
+/// Do not sleep into an unlocked session.
+///
+/// The residual case after supervision: the shell is gone at the moment
+/// the lid closes, so its logind sleep inhibitor is gone too and the
+/// machine suspends with the desktop on screen. Supervision makes that
+/// rare; this makes it loud instead of silent.
+///
+/// Terminating the session is the honest move rather than a harsh one:
+/// with the shell dead that session has no bar, no lock screen and no
+/// idle handling, so it is already unusable. What changes is that the
+/// machine sleeps showing a greeter instead of sleeping showing your
+/// work.
+///
+/// Ordered `Before=sleep.target` and pulled in by it, so it runs on the
+/// way down and on every path into sleep rather than only on the lid.
+const SLEEP_GUARD_SERVICE: &str = r#"[Unit]
+Description=Refuse to suspend a kuma desktop into an unlocked session
+Before=sleep.target
+StopWhenUnneeded=yes
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/kuma-sleep-guard
+
+[Install]
+WantedBy=sleep.target
+"#;
+
+const SLEEP_GUARD: &str = r#"#!/usr/bin/bash
+set -euo pipefail
+
+# Only on a machine kuma gave a shell to. A server has no session to
+# protect and no shell to miss.
+[ -f /etc/niri/config.kdl ] || exit 0
+
+# A graphical session on the seat, and the account that owns it. Anything
+# else (no session, a TTY login, a machine at the greeter) is nothing to
+# do here.
+while read -r id _uid user seat _rest; do
+    [ "$seat" = "seat0" ] || continue
+    type=$(loginctl show-session "$id" -p Type --value 2>/dev/null || true)
+    [ "$type" = "wayland" ] || continue
+    # The shell owns every lock path on this desktop. If it is running,
+    # its own inhibitor already held sleep long enough to lock.
+    if pgrep -u "$user" -x noctalia >/dev/null 2>&1; then
+        exit 0
+    fi
+    logger -t kuma-sleep-guard         "the desktop shell is not running in session $id; ending it rather than suspending an unlocked session"
+    loginctl terminate-session "$id" || true
+done < <(loginctl list-sessions --no-legend 2>/dev/null || true)
+"#;
 
 /// Dark by default. Apps learn the preference from the settings portal,
 /// which reads org.gnome.desktop.interface from dconf; without it every
@@ -2680,6 +2767,19 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY niri-binds.kdl /usr/lib/kuma/niri-binds.kdl\n");
         out.push_str("COPY --chmod=755 kuma-record /usr/libexec/kuma-record\n");
         out.push_str("COPY --chmod=755 kuma-battery-watch /usr/libexec/kuma-battery-watch\n");
+        // The shell as a supervised unit, and the guard that refuses to
+        // sleep without it. `--global` because the shell is a user unit
+        // and every account on this image should get it; the sleep guard
+        // is system-wide because sleep is.
+        out.push_str("COPY kuma-shell.service /usr/lib/systemd/user/kuma-shell.service\n");
+        out.push_str(
+            "COPY kuma-sleep-guard.service /usr/lib/systemd/system/kuma-sleep-guard.service\n",
+        );
+        out.push_str("COPY --chmod=755 kuma-sleep-guard /usr/libexec/kuma-sleep-guard\n");
+        out.push_str(
+            "RUN systemctl --global enable kuma-shell.service \\\n    \
+             && systemctl enable kuma-sleep-guard.service\n",
+        );
         out.push_str("COPY --chmod=755 kuma-osd /usr/libexec/kuma-osd\n");
         out.push_str("COPY gtk3-settings.ini /etc/gtk-3.0/settings.ini\n");
         out.push_str("COPY gtk4-settings.ini /etc/gtk-4.0/settings.ini\n");
@@ -3292,6 +3392,9 @@ pub fn write_context(
         std::fs::write(dir.join("mimeapps.list"), MIMEAPPS)?;
         std::fs::write(dir.join("kuma-record"), RECORD_SCRIPT)?;
         std::fs::write(dir.join("kuma-battery-watch"), BATTERY_WATCH)?;
+        std::fs::write(dir.join("kuma-shell.service"), SHELL_SERVICE)?;
+        std::fs::write(dir.join("kuma-sleep-guard.service"), SLEEP_GUARD_SERVICE)?;
+        std::fs::write(dir.join("kuma-sleep-guard"), SLEEP_GUARD)?;
         std::fs::write(dir.join("kuma-osd"), OSD_SCRIPT)?;
         std::fs::write(dir.join("gtk3-settings.ini"), GTK3_SETTINGS_INI)?;
         std::fs::write(dir.join("gtk4-settings.ini"), GTK4_SETTINGS_INI)?;
@@ -4050,6 +4153,41 @@ mod tests {
         }
     }
 
+    /// The sleep guard fires, which is the half a guard usually fails.
+    ///
+    /// Both paths were run against a booted machine before this was
+    /// written: with the shell running it exits 0 silently, and with the
+    /// process name changed to one that does not exist it names the
+    /// session and reaches the terminate. A guard that cannot fire is
+    /// the failure this project has already shipped once (the
+    /// mounted-image check in install.rs), so this one was proved
+    /// firing rather than assumed.
+    #[test]
+    fn the_sleep_guard_parses_and_asks_the_right_questions() {
+        let out = std::process::Command::new("bash")
+            .args(["-n", "/dev/stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                child.stdin.take().unwrap().write_all(SLEEP_GUARD.as_bytes())?;
+                child.wait_with_output()
+            })
+            .expect("bash -n");
+        assert!(out.status.success(), "sleep guard is not valid shell");
+        // Only where kuma put a shell, and only for a real session.
+        assert!(SLEEP_GUARD.contains("/etc/niri/config.kdl"), "{SLEEP_GUARD}");
+        assert!(SLEEP_GUARD.contains("seat0"), "{SLEEP_GUARD}");
+        // The property: no shell means the session ends rather than the
+        // machine sleeping with the desktop on screen.
+        assert!(SLEEP_GUARD.contains("pgrep -u \"$user\" -x noctalia"), "{SLEEP_GUARD}");
+        assert!(SLEEP_GUARD.contains("loginctl terminate-session"), "{SLEEP_GUARD}");
+        // And it runs on the way down, on every path into sleep.
+        assert!(SLEEP_GUARD_SERVICE.contains("Before=sleep.target"), "{SLEEP_GUARD_SERVICE}");
+        assert!(SLEEP_GUARD_SERVICE.contains("WantedBy=sleep.target"), "{SLEEP_GUARD_SERVICE}");
+    }
+
     #[test]
     fn kuma_launch_parses_as_shell() {
         use std::io::Write;
@@ -4283,7 +4421,11 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
         // The wallpaper is still the image's, but the shell draws it from
         // its own config rather than a swaybg argument in here.
         assert!(KUMA_NOCTALIA.contains("/usr/share/backgrounds/kuma"));
-        assert!(extras.contains("spawn-at-startup \"noctalia\""));
+        // The shell is a supervised unit now, not a spawn: a niri
+        // spawn lands in a transient scope, and a scope cannot restart.
+        assert!(!extras.contains("spawn-at-startup \"noctalia\""), "{extras}");
+        assert!(dir.path().join("kuma-shell.service").exists());
+        assert!(SHELL_SERVICE.contains("Restart=always"), "{SHELL_SERVICE}");
         assert!(extras.contains("kuma-clipboard-bridge"));
         assert!(dir.path().join("kuma-clipboard-bridge").exists());
         let greetd = std::fs::read_to_string(dir.path().join("greetd-config.toml")).unwrap();
@@ -5573,13 +5715,17 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
     #[test]
     fn the_disable_example_does_not_fight_the_desktop() {
         let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
+        // EVERY enabling line, not the first one. There is more than one
+        // now (the shell's user unit and the sleep guard have their own),
+        // and picking the first made this test read a line it was not
+        // written about and fail on a tree that was correct.
         let enabled: Vec<&str> = out
             .lines()
-            .find(|line| line.contains("systemctl enable "))
-            .expect("the desktop arm enables units")
-            .split_whitespace()
+            .filter(|line| line.contains("systemctl enable "))
+            .flat_map(|line| line.split_whitespace())
             .filter(|word| word.ends_with(".service"))
             .collect();
+        assert!(!enabled.is_empty(), "the desktop arm enables units");
         assert!(enabled.contains(&"avahi-daemon.service"), "sanity: kuma enables avahi");
 
         let example =

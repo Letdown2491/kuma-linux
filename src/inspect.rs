@@ -917,6 +917,7 @@ pub fn doctor(json: bool, as_report: bool) -> Result<()> {
         // deliberately not read; that is theirs.
         check_enablements(Path::new("/etc/systemd/user"), &mut report);
         check_snapshots(&mut report);
+        check_shell(&mut report);
         check_backup(&mut report);
         check_boot_health(&mut report);
         check_boot_titles(Path::new(crate::bootentries::ENTRIES), Path::new("/"), &mut report);
@@ -1795,6 +1796,51 @@ fn backup_stamp(text: &str) -> Option<i64> {
 /// a thing that hangs on a train and prompts for a secret to tell you
 /// how you are. The stamp answers the question that matters, which is
 /// whether this machine is still managing to send its data somewhere.
+/// The one process every lock on this desktop goes through.
+///
+/// Idle lock, the keybind and lock-before-suspend all run through the
+/// shell. Until 0.17 it was started by `spawn-at-startup`, which lands in
+/// a transient scope that cannot be restarted, so a crash took the lock
+/// with it and nothing said so. It is a supervised unit now, and this is
+/// the readback: a fact a command can check, which is the whole reason
+/// the unit exists rather than the spawn.
+///
+/// Asked only where kuma put a shell and only inside a session. A server,
+/// a COSMIC image, or an ssh login to a machine sitting at its greeter
+/// has no shell to miss, and grading one there would be this check
+/// reporting the wrong desktop rather than a broken one.
+fn check_shell(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
+    if !Path::new("/etc/niri/config.kdl").exists() {
+        return;
+    }
+    if std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        return;
+    }
+    match host_output_any(&["systemctl", "--user", "is-active", "kuma-shell.service"]) {
+        Ok(state) if state.trim() == "active" => report(
+            Grade::Ok,
+            "shell",
+            "the desktop shell is running under supervision".into(),
+            None,
+        ),
+        Ok(state) => report(
+            Grade::Fail,
+            "shell",
+            format!(
+                "kuma-shell.service is {}, so nothing on this desktop locks: not on idle, \
+                 not on the keybind, and not before suspend",
+                state.trim()
+            ),
+            Some(Action::new(
+                "start",
+                "systemctl --user start kuma-shell.service",
+                "bring the shell back, which brings the lock back with it",
+            )),
+        ),
+        Err(_) => report(Grade::Warn, "shell", "cannot ask systemd about the shell".into(), None),
+    }
+}
+
 fn check_backup(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     let Ok(config) = Config::load(Path::new(BAKED_CONFIG)) else {
         // check_snapshots already named an unreadable baked declaration;

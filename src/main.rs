@@ -1085,10 +1085,11 @@ fn build_image_pinned(config_path: &Path, tag: &str, pin: Pin) -> Result<Option<
     // removing by ID there would either fail or take a tag somebody
     // wanted.
     if let (Some(before), Ok(after)) = (previous, image_id(tag)) {
-        if before != after && has_no_tags(&before) {
-            if host_output(&["podman", "rmi", &before]).is_ok() {
-                note("Reclaimed the previous build.");
-            }
+        if before != after
+            && has_no_tags(&before)
+            && host_output(&["podman", "rmi", &before]).is_ok()
+        {
+            note("Reclaimed the previous build.");
         }
     }
     // A build that followed a pin built from exactly that digest, so
