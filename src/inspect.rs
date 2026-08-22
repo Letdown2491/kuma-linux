@@ -2488,6 +2488,9 @@ pub fn root_device(findmnt_source: &str) -> &str {
 fn check_hibernate(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     match hibernate::verdict(&hibernate::probe()) {
         hibernate::Verdict::NotSet => {}
+        // Warn, like the bootc and grub.cfg reads that also need root.
+        // A check that cannot run says so; it does not invent an answer.
+        hibernate::Verdict::Unasked(detail) => report(Grade::Warn, "hibernate", detail, None),
         hibernate::Verdict::Ready(detail) => report(Grade::Ok, "hibernate", detail, None),
         hibernate::Verdict::Short(detail) => report(
             Grade::Warn,

@@ -689,6 +689,11 @@ pub struct Status {
     /// Which lockdown mode is active, when the machine says. Carried
     /// only to explain the answer above, never to decide it.
     pub lockdown: Option<String>,
+    /// Whether the swapfile is there at all, which needs no privilege.
+    pub present: bool,
+    /// Whether the privileged read ran at all. False means sudo could
+    /// not run, which is not an answer and must not grade like one.
+    pub asked: bool,
     /// The swapfile's SELinux type, when the machine has SELinux. None
     /// where there is nothing to ask.
     pub selinux_type: Option<String>,
@@ -719,30 +724,59 @@ pub fn probe() -> Status {
     // so a file that has become unusable answers None here and grades
     // the same as a missing one. That is the intent. A swapfile the
     // kernel would refuse is not a swapfile.
-    let file_offset = present
+    // ONE privileged call, and the reason is the verdict rather than the
+    // three spawns it saves.
+    //
+    // These were four `sudo` calls whose failures were each `.ok()`d into
+    // the same `None` as "the kernel would refuse this file", so a
+    // declined or unpromptable sudo graded identically to an unusable
+    // swapfile. `kuma doctor` reported "missing or unusable" about a 15G
+    // swapfile that was present, active and correct, and which answer you
+    // got depended on whether sudo could prompt: green in a terminal,
+    // FAIL for anything reading `doctor --json`, which docs/agents.md
+    // points agents at, and invisible to CI because smoke runs doctor
+    // through `gsudo`.
+    //
+    // Every question prints its marker whether or not it can answer, so
+    // there are three states rather than two: no markers at all (the
+    // shell never ran), a marker with a value (answered), and a marker
+    // with nothing after it (asked and unanswerable). The last still
+    // grades exactly as a missing file does, which is the documented
+    // intent below and stays.
+    let probe = present
         .then(|| {
-            host_output(&["sudo", "btrfs", "inspect-internal", "map-swapfile", "-r", FILE]).ok()
+            host_output(&[
+                "sudo",
+                "sh",
+                "-c",
+                &format!(
+                    "printf '@offset\\n'; btrfs inspect-internal map-swapfile -r {FILE} || true; \
+                     printf '@size\\n'; stat -c %s {FILE} || true; \
+                     printf '@fcon\\n'; stat -c %C {FILE} || true; \
+                     printf '@mcon\\n'; stat -c %C {MOUNT} || true"
+                ),
+            ])
+            .ok()
         })
-        .flatten()
-        .and_then(|out| out.trim().parse().ok());
-    let file_mib = present
-        .then(|| host_output(&["sudo", "stat", "-c", "%s", FILE]).ok())
-        .flatten()
-        .and_then(|out| out.trim().parse::<u64>().ok())
-        .map(|bytes| bytes / (1024 * 1024));
-    let selinux = present
-        .then(|| host_output(&["sudo", "stat", "-c", "%C", FILE]).ok())
-        .flatten()
-        .and_then(|out| selinux_type(&out));
-    let mount_selinux = present
-        .then(|| host_output(&["sudo", "stat", "-c", "%C", MOUNT]).ok())
-        .flatten()
-        .and_then(|out| selinux_type(&out));
+        .flatten();
+    let asked = probe.is_some();
+    let section = |name: &str| -> Option<String> {
+        let text = probe.as_deref()?;
+        let after = text.split(&format!("@{name}\n")).nth(1)?;
+        let value = after.split('@').next()?.trim().to_string();
+        (!value.is_empty()).then_some(value)
+    };
+    let file_offset = section("offset").and_then(|v| v.parse().ok());
+    let file_mib = section("size").and_then(|v| v.parse::<u64>().ok()).map(|b| b / (1024 * 1024));
+    let selinux = section("fcon").and_then(|out| selinux_type(&out));
+    let mount_selinux = section("mcon").and_then(|out| selinux_type(&out));
     let power_state = std::fs::read_to_string("/sys/power/state").unwrap_or_default();
     let lockdown = std::fs::read_to_string("/sys/kernel/security/lockdown").ok();
     Status {
         resume,
         resume_offset,
+        present,
+        asked,
         file_offset,
         file_mib,
         active: swap_active(&swaps),
@@ -766,6 +800,12 @@ pub enum Verdict {
     Broken(String),
     /// It will work until the day it is needed most.
     Short(String),
+    /// The question could not be asked. The swapfile is there and the
+    /// privileged read that grades it did not run, which is what a
+    /// declined or unpromptable `sudo` looks like. NOT a fault: reporting
+    /// one here is how doctor came to tell a correct machine its swapfile
+    /// was missing.
+    Unasked(String),
     /// Everything kuma controls is right and the kernel still says no.
     /// Not a fault in the setup and not something kuma can fix, but not
     /// something to stay quiet about either: the machine is carrying a
@@ -788,6 +828,12 @@ pub fn verdict(status: &Status) -> Verdict {
     let claimed = status.resume.is_some() || status.resume_offset.is_some();
     match (claimed, status.file_offset) {
         (false, None) => Verdict::NotSet,
+        // Present, and nothing privileged could read it. Only sudo tells
+        // these apart, so the verdict has to as well.
+        (true, None) if status.present && !status.asked => Verdict::Unasked(format!(
+            "{FILE} is there and grading it needs root, which was declined or could not \
+             be asked for; run this with sudo to have it checked"
+        )),
         (true, None) => Verdict::Broken(format!(
             "the kernel is told to resume from a swapfile, but {FILE} is missing or unusable"
         )),
@@ -888,6 +934,42 @@ mod tests {
 
     /// A bare number is the one input that is dangerous to guess at, and
     /// both units have to survive both spellings.
+    /// A machine whose swapfile could not be READ is not a machine whose
+    /// swapfile is missing.
+    ///
+    /// This is the bug the marked probe exists for: four `.ok()`d sudo
+    /// calls made "sudo declined" and "the kernel would refuse this file"
+    /// the same `None`, so `kuma doctor` told a correct machine with a
+    /// 15G active swapfile that it was missing or unusable, and only when
+    /// sudo could not prompt. Green in a terminal, FAIL for `doctor
+    /// --json`, invisible to CI because smoke runs doctor through sudo.
+    #[test]
+    fn a_swapfile_that_could_not_be_read_is_not_a_swapfile_that_is_gone() {
+        let unreadable = Status {
+            present: true,
+            asked: false,
+            resume: Some("UUID=x".into()),
+            resume_offset: Some(103032064),
+            file_offset: None,
+            file_mib: None,
+            active: true,
+            ram_mib: Some(16 * 1024),
+            kernel_allows: true,
+            lockdown: None,
+            selinux_type: None,
+            mount_selinux_type: None,
+        };
+        assert!(
+            matches!(verdict(&unreadable), Verdict::Unasked(_)),
+            "a declined sudo must not grade as a broken swapfile: {:?}",
+            verdict(&unreadable)
+        );
+        // And a machine that really has no file still grades Broken, which
+        // is the documented intent and does not change.
+        let gone = Status { present: false, asked: false, ..unreadable };
+        assert!(matches!(verdict(&gone), Verdict::Broken(_)), "{:?}", verdict(&gone));
+    }
+
     #[test]
     fn sizes_parse_with_a_unit_and_are_refused_without_one() {
         assert_eq!(parse_size("16G").unwrap(), Some(16 * 1024));
@@ -975,6 +1057,9 @@ mod tests {
     #[test]
     fn a_stale_resume_offset_is_broken_rather_than_merely_odd() {
         let status = Status {
+            // A fixture is a machine whose privileged read succeeded.
+            present: true,
+            asked: true,
             resume: Some("UUID=abc".into()),
             resume_offset: Some(4096),
             file_offset: Some(999_999),
@@ -1002,6 +1087,9 @@ mod tests {
         assert_eq!(verdict(&Status::default()), Verdict::NotSet);
 
         let ready = Status {
+            // A fixture is a machine whose privileged read succeeded.
+            present: true,
+            asked: true,
             resume: Some("UUID=abc".into()),
             resume_offset: Some(4096),
             file_offset: Some(4096),
@@ -1019,6 +1107,9 @@ mod tests {
         assert!(matches!(verdict(&short), Verdict::Short(_)));
 
         let no_karg = Status {
+            // A fixture is a machine whose privileged read succeeded.
+            present: true,
+            asked: true,
             resume: None,
             resume_offset: None,
             file_offset: Some(4096),
@@ -1033,6 +1124,9 @@ mod tests {
         assert!(matches!(verdict(&no_karg), Verdict::Broken(_)));
 
         let no_file = Status {
+            // A fixture is a machine whose privileged read succeeded.
+            present: true,
+            asked: true,
             resume: Some("UUID=abc".into()),
             resume_offset: Some(4096),
             ..Status::default()
@@ -1040,6 +1134,9 @@ mod tests {
         assert!(matches!(verdict(&no_file), Verdict::Broken(_)));
 
         let inactive = Status {
+            // A fixture is a machine whose privileged read succeeded.
+            present: true,
+            asked: true,
             resume: Some("UUID=abc".into()),
             resume_offset: Some(4096),
             file_offset: Some(4096),
@@ -1075,6 +1172,9 @@ mod tests {
         assert_eq!(active_lockdown("nothing bracketed here"), None);
 
         let perfect = Status {
+            // A fixture is a machine whose privileged read succeeded.
+            present: true,
+            asked: true,
             resume: Some("UUID=abc".into()),
             resume_offset: Some(4096),
             file_offset: Some(4096),
@@ -1116,6 +1216,9 @@ mod tests {
         assert_eq!(selinux_type("  "), None);
 
         let mislabelled = Status {
+            // A fixture is a machine whose privileged read succeeded.
+            present: true,
+            asked: true,
             resume: Some("UUID=abc".into()),
             resume_offset: Some(4096),
             file_offset: Some(4096),
@@ -1151,6 +1254,9 @@ mod tests {
         // A closure rather than one value reused, because Status owns
         // Strings and the three shapes below each need their own.
         let with_dir = |dir: Option<&str>| Status {
+            // A fixture is a machine whose privileged read succeeded.
+            present: true,
+            asked: true,
             resume: Some("UUID=abc".into()),
             resume_offset: Some(4096),
             file_offset: Some(4096),
