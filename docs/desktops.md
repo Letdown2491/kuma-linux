@@ -63,6 +63,15 @@ it does not reach: `nm-connection-editor` for a VPN or a static route,
 printers. All of it is machine state rather than system definition: the declaration describes what a
 machine is, and picking a network is not that.
 
+**The shell is supervised, because everything that locks runs through it.**
+Idle lock, `Super+Alt+L` and locking before suspend are all the shell's, so it
+runs as a systemd user service that restarts if it stops rather than as a
+one-shot spawn that could vanish quietly. `kuma doctor` grades that it is
+running. If it is not there at all when the machine is asked to sleep, the
+session ends instead of suspending: a session with no shell has no lock screen,
+and sleeping into one means an unlocked machine in a bag. A shell that hangs
+rather than exits is not covered by either.
+
 **The desktop's own look comes from the image.** Kuma bakes a noctalia config
 (bar layout, fonts, wallpaper, and the idle lock and night light that noctalia
 ships turned off) and the shell reads it from there. Changing

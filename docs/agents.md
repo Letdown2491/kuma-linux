@@ -8,6 +8,17 @@ file or a stream rather than an answer, and they are listed below.
 
 The loop is: probe, execute one of the actions it named, probe again.
 
+**A check that could not be made says so rather than guessing.** Several of
+what `doctor` grades need root, and an agent has no terminal for `sudo` to
+prompt at. Those come back as `warn` naming what could not be asked, never as
+`fail`: a declined password is not a broken machine. Run the whole verb through
+`sudo` if you want those graded rather than skipped.
+
+**`KUMA_TRACE=1` prints one line per subprocess on stderr**, as elapsed time
+and a canonical command name, leaving `--json` on stdout untouched. It is a
+diagnostic rather than an interface: the names are stable enough to diff
+between runs, and nothing promises they will not gain detail.
+
 - **Probe.** `kuma --json` is the root resource: state, facts, and `actions`
   as `{rel, cmd, why}`. Execute an action's `cmd` verbatim, then re-probe.
   `doctor --json` and `diff --json` carry findings with their fixes in the

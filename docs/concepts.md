@@ -520,6 +520,15 @@ it on the stick beside the ISO and a dead disk needs nothing else typed. An
 install refuses it before touching the disk if it could not open the
 repository, since the old machine may still be the only copy.
 
+**Write the values as plain text.** A value carrying `$`, a backtick, a quote
+or a backslash is refused, by `kuma install --restore` and by `kuma backup`
+alike. Two things read this file, the first boot through systemd and the verb
+through a shell loop, and they do not agree about what those characters mean,
+so a password containing one would be a different password depending on which
+one opened the repository. Kuma will not guess which you meant. If a repository
+predates kuma 0.17 and its password contains one, change it with `restic
+passwd` before rewriting the file: it was encrypted with the expanded value.
+
 **The install does not restore anything.** It writes the request and the
 credential onto the new machine, and the first boot does the work, after the
 unit that gives `/var/home` its own subvolume has run and after your account
