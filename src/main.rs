@@ -3509,6 +3509,11 @@ fn image_shell(tag: &str) -> Option<String> {
         return None;
     }
     let parsed: Config = toml::from_str(&String::from_utf8(out.stdout).ok()?).ok()?;
+    // Validated, because `Config::load` is what normally does that and
+    // this does not go through it. `--tag` can name an image kuma did
+    // not build, so a declaration read here has been through no build
+    // of kuma's and no check of kuma's.
+    parsed.validate().ok()?;
     parsed.system.shell
 }
 
@@ -3549,9 +3554,12 @@ fn bib_config_toml(pubkey: Option<&str>, shell: Option<&str>) -> String {
     //
     // `kuma install` already honors it, through the converger sourcing
     // the baked /usr/lib/kuma/user. The bib-made convenience account
-    // never went near that path, so it needs telling directly. Safe to
-    // pass as a path: the build already ran `test -x /usr/bin/<shell>`
-    // against the image, so this cannot name a binary that is not there.
+    // never went near that path, so it needs telling directly.
+    //
+    // The name is validated by `image_shell`, which is where that has to
+    // happen: `--tag` can name an image kuma did not build, so "the
+    // build already ran `test -x /usr/bin/<shell>`" is true of kuma's
+    // own images and of nothing else.
     if let Some(shell) = shell {
         let value = toml::Value::String(format!("/usr/bin/{shell}"));
         out.push_str(&format!("shell = {value}\n"));
