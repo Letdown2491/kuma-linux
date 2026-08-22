@@ -2108,7 +2108,10 @@ fn vm(tag: &str, output: &Path, no_run: bool, rebuild: bool, apply: bool) -> Res
 fn build_disk(tag: &str, output: &Path) -> Result<()> {
     let local_id = sync_image_to_root(tag, output)?;
     let bib_config = output.join("config.toml");
-    std::fs::write(&bib_config, bib_config_toml(vm_ssh_key(output).as_deref()))?;
+    std::fs::write(
+        &bib_config,
+        bib_config_toml(vm_ssh_key(output).as_deref(), image_shell(tag).as_deref()),
+    )?;
     println!("Building qcow2 with bootc-image-builder (this takes a few minutes)...");
     run_bib(output, &bib_config, "qcow2", tag, &[])?;
     // Stamp which image this disk came from, so a later `kuma vm` can
@@ -3464,7 +3467,33 @@ fn iso_config_toml(config: &Config) -> String {
     out
 }
 
-fn bib_config_toml(pubkey: Option<&str>) -> String {
+/// The shell the image says accounts on this machine should get.
+///
+/// Read from the image rather than from the declaration on disk, because
+/// the disk is built from an image and `--tag` can name one this working
+/// directory did not produce. Asked of a container rather than parsed
+/// out of a file kuma might not have: `sync_image_to_root` has already
+/// run podman against this tag by the time we get here, so it costs
+/// nothing new.
+///
+/// Every failure is None. A tag that is not a kuma image, an image from
+/// before this file existed, a declaration that declares no shell: all
+/// of them mean "say nothing to bib", which is what kuma did before.
+fn image_shell(tag: &str) -> Option<String> {
+    let out = std::process::Command::new("podman")
+        .args(["run", "--rm", "--entrypoint", "", tag, "cat", "/usr/lib/kuma/kuma.toml"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let parsed: Config = toml::from_str(&String::from_utf8(out.stdout).ok()?).ok()?;
+    parsed.system.shell
+}
+
+/// `pubkey` and `shell` are both optional and both omitted entirely when
+/// absent, never emitted empty.
+fn bib_config_toml(pubkey: Option<&str>, shell: Option<&str>) -> String {
     // Only what bib actually supports for qcow2. It rejects anything else
     // with "blueprint validation failed for image type qcow2: <key>: not
     // supported" and then builds the disk regardless, so an unsupported
@@ -3490,6 +3519,21 @@ fn bib_config_toml(pubkey: Option<&str>) -> String {
         // parse.
         let value = toml::Value::String(key.trim().to_string());
         out.push_str(&format!("key = {value}\n"));
+    }
+    // What the image says accounts on it should get. `[system].shell`
+    // exists precisely for the image that declares no [user] — which is
+    // every published one and every committed example — so a disk built
+    // from a declaration saying `shell = "fish"` handing back a bash
+    // login is the one case the field was invented to cover, failing.
+    //
+    // `kuma install` already honors it, through the converger sourcing
+    // the baked /usr/lib/kuma/user. The bib-made convenience account
+    // never went near that path, so it needs telling directly. Safe to
+    // pass as a path: the build already ran `test -x /usr/bin/<shell>`
+    // against the image, so this cannot name a binary that is not there.
+    if let Some(shell) = shell {
+        let value = toml::Value::String(format!("/usr/bin/{shell}"));
+        out.push_str(&format!("shell = {value}\n"));
     }
     // Headroom for `kuma vm --apply`: image updates transiently need a few
     // GB in the guest. Sparse qcow2, so the host pays nothing up front.
@@ -3982,8 +4026,27 @@ mod tests {
     /// have working replacements (/etc/hostname in the image; -fw_cfg and
     /// kuma-vm-timezone at boot), so the absence is pinned here.
     #[test]
+    /// A disk built from an image that declares a shell logs you into it.
+    ///
+    /// `[system].shell` exists for the image with no `[user]`, which is
+    /// every published image and every committed example. `kuma install`
+    /// honored it and `kuma vm` did not, so `examples/niri.toml` says
+    /// `shell = "fish"` and its VM handed back bash — the exact case the
+    /// field was added for.
+    #[test]
+    fn a_vm_disk_honors_the_shell_its_image_declares() {
+        let out = super::bib_config_toml(None, Some("fish"));
+        assert!(out.contains("shell = \"/usr/bin/fish\""), "{out}");
+        // Omitted, never empty: bib treats an empty shell as a shell.
+        assert!(!super::bib_config_toml(None, None).contains("shell ="));
+        // And it is the account's key, so it has to sit inside the user
+        // table rather than after the filesystem block that follows it.
+        let at = out.find("shell =").unwrap();
+        assert!(at < out.find("[[customizations.filesystem]]").unwrap(), "{out}");
+    }
+
     fn vm_config_asks_bib_for_nothing_it_refuses() {
-        let out = super::bib_config_toml(None);
+        let out = super::bib_config_toml(None, None);
         assert!(!out.contains("hostname"), "bib rejects it for qcow2");
         assert!(!out.contains("timezone"), "bib rejects it for qcow2");
         // and still carries what bib does support
@@ -4030,7 +4093,7 @@ mod tests {
     #[test]
     fn a_pubkey_comment_cannot_break_the_blueprint() {
         let hostile = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 a \"quoted\\name\"\n";
-        let out = super::bib_config_toml(Some(hostile));
+        let out = super::bib_config_toml(Some(hostile), None);
         let parsed: toml::Value = toml::from_str(&out).expect("blueprint stays valid TOML");
         assert_eq!(parsed["customizations"]["user"][0]["key"].as_str().unwrap(), hostile.trim());
     }
