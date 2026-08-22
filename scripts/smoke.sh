@@ -1068,7 +1068,6 @@ smoke_published() {
         fi
         ok "kuma doctor finds nothing failing"
 
-        # The menu, on a real image, without a display. --list is the
         # kuma's verbs reach the desktop through freedesktop desktop
         # entries. A malformed one is not an error anywhere: every
         # launcher skips it in silence, so the symptom is a verb that is
@@ -1087,13 +1086,58 @@ smoke_published() {
         # The shell, and the absence of everything it stands in for. Two
         # bars is the failure this catches, and it looks like a working
         # desktop in every log.
-        guest pgrep -x noctalia >/dev/null || bad "the shell is not running"
-        local displaced
-        for displaced in waybar mako swaybg swayidle swaylock wob wlsunset; do
-            guest pgrep -x "$displaced" >/dev/null \
-                && bad "$displaced is running beside the shell that replaced it"
-        done
-        ok "the shell is running and nothing it replaced is"
+        #
+        # Asked of the niri image only, and asked by its config rather
+        # than by the tag: --published takes any image, and a COSMIC one
+        # failing "the shell is not running" would be this harness
+        # reporting the wrong desktop rather than a broken one.
+        if guest test -f /etc/niri/config.kdl; then
+            guest pgrep -x noctalia >/dev/null || bad "the shell is not running"
+            local displaced
+            for displaced in waybar mako swaybg swayidle swaylock wob wlsunset; do
+                guest pgrep -x "$displaced" >/dev/null \
+                    && bad "$displaced is running beside the shell that replaced it"
+            done
+            ok "the shell is running and nothing it replaced is"
+
+            # A running process is not the same as a working one, and
+            # the three things the shell took over that fail SILENTLY
+            # are the three asked here. Each is one command, which is
+            # the whole reason to ask it instead of writing down that
+            # somebody looked.
+
+            # Notifications: mako left, and if nothing took the name
+            # every notify-send on the machine goes nowhere with no
+            # error. Asked of the session bus, which is this user's
+            # because the ssh login and the desktop are the same account.
+            local owner_call='busctl --user call org.freedesktop.DBus'
+            owner_call="$owner_call /org/freedesktop/DBus org.freedesktop.DBus"
+            owner_call="$owner_call GetNameOwner s org.freedesktop.Notifications"
+            guest "XDG_RUNTIME_DIR=/run/user/\$(id -u) $owner_call" >/dev/null \
+                || bad "nothing owns org.freedesktop.Notifications on the session bus"
+            ok "the shell owns org.freedesktop.Notifications"
+
+            # Lock before suspend: `lock_before_suspend = true` is baked,
+            # and a setting that arrived is not a setting that took
+            # effect. The shell registers a logind sleep inhibitor when
+            # it does take effect, so the inhibitor is the readback. A
+            # machine that suspends unlocked is the failure, and it is
+            # invisible until somebody opens the lid in public.
+            guest systemd-inhibit --list --no-pager \
+                | awk '$1 == "noctalia" && $6 ~ /sleep/ { found = 1 } END { exit !found }' \
+                || bad "the shell holds no sleep inhibitor: this machine suspends without locking"
+            ok "the shell inhibits sleep to lock first"
+
+            # Mod+D, read out of the baked config rather than assumed.
+            # niri's stock bind spawns fuzzel, which this image does not
+            # have, so a merge that stopped substituting leaves the
+            # most-used key on the machine spawning nothing at all.
+            guest grep -q 'panel-toggle" "launcher' /etc/niri/config.kdl \
+                || bad "Mod+D does not open the shell's launcher in the baked config"
+            guest grep -q fuzzel /etc/niri/config.kdl \
+                && bad "the baked niri config still names fuzzel, which is not in the image"
+            ok "Mod+D opens the launcher, and no bind names a program that left"
+        fi
 
         # Named rather than left to the scan above, because the ways this
         # control goes missing are all graded `warn`: no policy file, one
