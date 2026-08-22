@@ -26,8 +26,17 @@ pub(crate) struct Entry {
     /// the reason for it.
     pub(crate) id: &'static str,
     pub(crate) name: &'static str,
-    /// One line, in the CLI's own words. The same sentence twice in two
-    /// voices is how they drift.
+    /// One line, and deliberately not clap's `about` string verbatim.
+    ///
+    /// A launcher renders this as a tooltip under a name, where the CLI
+    /// renders its own next to a verb, so the parentheticals that earn
+    /// their place in `--help` ("prints unless --yes", "read-only" on a
+    /// verb whose name does not say so) are noise in one and load-bearing
+    /// in the other. Two of these are the `about` line exactly and the
+    /// rest are it minus the part a person clicking cannot use. What is
+    /// checked by test is that the verb and its flags are real; the
+    /// wording is not, because there is no version of it that is right
+    /// in both places.
     pub(crate) comment: &'static str,
     /// A symbolic name from Adwaita, which both desktop sets install.
     /// Deliberately not `/usr/share/icons/kuma`: that theme exists only

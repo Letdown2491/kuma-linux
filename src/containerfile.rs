@@ -1719,12 +1719,17 @@ gtk-theme='adw-gtk3-dark'
 /// blueman-applet earns its place as the Bluetooth agent: it answers
 /// pairing requests and reconnects devices, and nothing else here does.
 /// What it also does is spawn `blueman-tray`, which puts a second
-/// bluetooth indicator in waybar's tray beside waybar's own bluetooth
-/// module. The bar then shows one state twice, in two styles, because a
+/// bluetooth indicator in the bar's tray beside the bar's own bluetooth
+/// widget. The bar then shows one state twice, in two styles, because a
 /// tray renders the application's own coloured icon while every other
-/// module is a font glyph, and a tray cannot recolour what it is given.
-/// The module already opens blueman-manager on click, so the tray icon
+/// widget is a font glyph, and a tray cannot recolour what it is given.
+/// The widget already opens blueman-manager on click, so the tray icon
 /// was carrying no capability of its own.
+///
+/// Written against waybar and still true of the shell that replaced it,
+/// which carries `tray` and `bluetooth` in the same group: verified on
+/// the booted image, where blueman-applet runs, blueman-tray does not,
+/// and one bluetooth glyph reaches the bar.
 ///
 /// Disabling StatusIcon alone does nothing, which is the part worth
 /// writing down: ShowConnected declares `__depends__ = ["StatusIcon"]`,
@@ -2048,9 +2053,19 @@ audio/webm=io.github.celluloid_player.Celluloid.desktop
 application/zip=org.gnome.FileRoller.desktop
 "#;
 
-/// Battery warnings through mako. Polls sysfs — upower-notifier tools
-/// (poweralertd) aren't in Fedora's repos. No battery (desktops, VMs)
-/// means the loop just idles cheaply.
+/// Battery warnings, sent to whatever owns
+/// `org.freedesktop.Notifications`, which on this desktop is the shell.
+/// Polls sysfs: upower-notifier tools (poweralertd) aren't in Fedora's
+/// repos. No battery (desktops, VMs) means the loop just idles cheaply.
+///
+/// **This overlaps the shell and the overlap is not settled.** noctalia
+/// ships `[battery] warning_threshold = 10` and carries its own
+/// low-and-critical notifications, so a discharging laptop gets warned
+/// at 15 here, at 10 by the shell, and at 5 here again: one state
+/// announced by two programs in two styles, which is the shape
+/// `DCONF_BLUEMAN` above exists to undo. Removing this in favour of the
+/// shell's own threshold is the obvious move and needs a battery to
+/// prove, because nothing in a VM ever discharges.
 const BATTERY_WATCH: &str = r#"#!/usr/bin/bash
 set -u
 warned=""
@@ -2248,10 +2263,9 @@ const FASTFETCH_CONFIG: &str = r#"{
 /// All system-wide (never /etc/skel): skel only reaches homes created after
 /// the image ships, so it strands existing users on stale copies — image
 /// updates must retheme every account. User dotfiles still win everywhere:
-/// The shell reads its own config-home, kitty merges
+/// The shell reads its own config-home, and kitty merges
 /// /etc/xdg beneath the user's file (so a one-key override keeps the rest
-/// of this theme), and mako (no system path at all) goes through a
-/// launcher that prefers the user's config.
+/// of this theme).
 const WALLPAPER: &[u8] = include_bytes!("../assets/kuma-wallpaper.jpg");
 const KITTY_CONFIG: &str = include_str!("../assets/kitty.conf");
 
