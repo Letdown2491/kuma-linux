@@ -78,6 +78,12 @@ differently. Why it changed belongs in the commit that made it.
   prompt on port 22. That was true before and undocumented. Turn it off
   with `[services] disable = ["sshd.service"]` if you do not want it.
 
+- **The examples added Trayscale, and the niri example removed
+  TextEditor.** A machine rebuilt from an updated example gains
+  Trayscale, and a niri one loses TextEditor, because convergence
+  removes what it installed. Keep TextEditor by naming it in your own
+  declaration.
+
 ## v0.16.0 (2026-08-22)
 
 ### Added
