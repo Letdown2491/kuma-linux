@@ -266,7 +266,7 @@ The base is composed locally from Fedora's repos (localhost/kuma-base:m26ccdd18f
       sqlite-libs 3.51.2-1.fc44.x86_64 -> 3.51.2-2.fc44.x86_64 (important)
       linux-firmware 20260622-1.fc44.noarch -> 20260810-1.fc44.noarch (moderate)
       ripgrep 14.1.1-4.fc44.x86_64 -> 15.2.0-1.fc44.x86_64
-      waybar 0.15.0-1.fc44.x86_64 -> 0.15.0-2.fc44.x86_64
+      kitty 0.45.1-1.fc44.x86_64 -> 0.45.2-1.fc44.x86_64
 rpm   20 moved, 16 with security advisories (5 important, 11 moderate)
 ```
 

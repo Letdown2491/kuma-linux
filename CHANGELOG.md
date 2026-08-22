@@ -6,6 +6,8 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+## v0.16.0
+
 ### Added
 
 - **kuma's own verbs are in your launcher.** Eight entries: edit the
