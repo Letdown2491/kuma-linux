@@ -53,7 +53,7 @@ colour and on nothing else.
 | Printing and discovery | `cups`, `system-config-printer`, `avahi`, `nss-mdns` |
 | Screen and clipboard | `grim`, `slurp`, `swappy`, `wf-recorder`, `wl-clipboard` |
 | Session glue | `polkit`, `mate-polkit`, `dconf`, `gnome-keyring`, `xsettingsd`, `xdg-user-dirs`, `firewalld`, `flatpak`, `desktop-file-utils` |
-| Fonts and icons | sans, mono, emoji, CJK, Font Awesome (free and brands), `adwaita-icon-theme` |
+| Fonts and icons | sans, mono, emoji, CJK, Font Awesome (free and brands), `adwaita-icon-theme`, `adw-gtk3-theme` |
 
 The control centre owns the everyday cases: wifi, bluetooth, audio,
 brightness, night light, and the power button in its header opens lock, log
@@ -72,6 +72,25 @@ anything from the desktop's own settings writes
 is yours and the image will not overwrite it. Kuma does not read it either, so
 `kuma diff` will not mention it: `noctalia config export merged` is what shows
 which settings are actually in effect.
+
+**The terminal and GTK3 applications follow the shell's palette.** Noctalia
+derives that palette from the wallpaper by default, and whatever it is showing,
+the shell renders it into `~/.config/kitty/themes/noctalia.conf` and
+`~/.config/gtk-3.0/noctalia.css` whenever it changes and again at login. Point
+the shell at one of its built-in palettes instead and the terminal, thunar,
+pavucontrol and the rest move with it. The image ships `adw-gtk3-theme` for
+this: stock Adwaita GTK3 ignores the colour names a palette can set.
+
+kitty's sixteen ANSI colours are the exception, and stay fixed in
+`/etc/xdg/kitty/kitty.conf`. The palette maps every ANSI slot into its own hue
+family, and a terminal whose green is blue makes a passing test look like a
+failing one. To keep the image's fixed colours instead, delete
+`~/.config/kitty/themes/noctalia.conf` and the include line in
+`~/.config/kitty/kitty.conf`.
+
+GTK4 applications do not follow, which on a kuma machine mostly means
+flatpaks. libadwaita ignores a user stylesheet that redefines its palette, so
+they keep their own dark theme.
 
 The bar carries state and little else, so the two panels that are not state
 are on keys: `Mod+Ctrl+V` for clipboard history, `Mod+Ctrl+W` for the
