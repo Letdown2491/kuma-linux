@@ -1879,8 +1879,17 @@ source = "wallpaper"
 # [theme] source at a built-in or community palette instead and the same
 # files re-render from that.
 #
-#   - kitty renders through kuma's own template, baked over noctalia's;
-#     the COPY in generate() carries that argument.
+#   - kitty takes every colour it shows from the palette, the sixteen
+#     ANSI slots included, through noctalia's own template. That has a
+#     cost and it was chosen with the cost on screen: Material You maps
+#     every ANSI slot into the palette's hue family, so on a
+#     wallpaper-derived palette red renders #ffb4ab, green #afc8ee and
+#     blue #e3b9e2, and a diff's + and - become two tints of the same
+#     colour. A palette picked by name keeps real hues, Gruvbox's green
+#     being #b8bb26. The alternative was a terminal carrying sixteen
+#     colours from a palette the machine no longer has, which is what
+#     the old fixed set had become the moment the shell started
+#     following the wallpaper.
 #   - gtk3 is what adw-gtk3 is in the package list for. The template
 #     writes ~/.config/gtk-3.0/noctalia.css and an @import into gtk.css,
 #     and adw-gtk3 reads those colour names where stock Adwaita ignores
@@ -2230,9 +2239,12 @@ const FASTFETCH_CONFIG: &str = r#"{
 }
 "#;
 
-/// Theme files for the curated desktop. The navy base is the wallpaper's own
-/// darkest tones; the accent is picked to sit against it, not sampled from it,
-/// so replacing the wallpaper does not oblige a retheme.
+/// Theme files for the curated desktop. The colours here are a fallback
+/// now rather than the theme: the shell renders the live palette into
+/// `~/.config/kitty/themes/noctalia.conf` and kitty loads that on top of
+/// this file, so what is written here is what a terminal shows when the
+/// shell has not rendered anything yet. Everything else in the file
+/// (font, padding, decorations, opacity) is still the only copy.
 /// All system-wide (never /etc/skel): skel only reaches homes created after
 /// the image ships, so it strands existing users on stale copies — image
 /// updates must retheme every account. User dotfiles still win everywhere:
@@ -2242,15 +2254,6 @@ const FASTFETCH_CONFIG: &str = r#"{
 /// launcher that prefers the user's config.
 const WALLPAPER: &[u8] = include_bytes!("../assets/kuma-wallpaper.jpg");
 const KITTY_CONFIG: &str = include_str!("../assets/kitty.conf");
-
-/// The same theme's moving half, rendered by noctalia rather than frozen
-/// here: the surface follows the wallpaper the shell is already showing,
-/// while [`KITTY_CONFIG`] keeps the sixteen ANSI colours underneath it.
-/// Substituted for noctalia's own kitty template, which is the only way
-/// in: the template registry is `builtin.toml` plus the community cache,
-/// a `template.toml` in the config dir is read as settings and warns
-/// `unknown section`, and `-c <file>` never reaches the running shell.
-const KITTY_NOCTALIA: &str = include_str!("../assets/kitty-noctalia.conf");
 
 /// Rebrand the OS identity: Kuma, not Fedora. ID_LIKE=fedora keeps tools
 /// that sniff os-release (toolbox, distrobox, dnf COPR, …) working. Runs
@@ -2609,16 +2612,6 @@ pub fn generate(config: &Config) -> String {
             "RUN out=$(HOME=/tmp NOCTALIA_CONFIG_HOME=/usr/lib/kuma noctalia config export merged); \\\n                 printf '%s\\n' \"$out\"; \\\n                 printf '%s' \"$out\" | grep -q '/usr/share/backgrounds/kuma' \\\n                 && printf '%s' \"$out\" | grep -q 'timeout = 900' \\\n                 && printf '%s' \"$out\" | grep -q 'builtin_ids = \\[ \"kitty\"'\n",
         );
         out.push_str("COPY kitty.conf /etc/xdg/kitty/kitty.conf\n");
-        // The half of that theme the shell rewrites. Overwriting a
-        // vendored template is the only lever noctalia offers: a
-        // kuma-owned template cannot be added beside the built-in one,
-        // only substituted for it, so the guard fails the build the day
-        // upstream moves or renames this path rather than shipping a
-        // terminal that quietly stopped following the wallpaper.
-        out.push_str("RUN test -f /usr/share/noctalia/assets/templates/kitty/kitty.conf\n");
-        out.push_str(
-            "COPY kitty-noctalia.conf /usr/share/noctalia/assets/templates/kitty/kitty.conf\n",
-        );
         // kitty skips settings it doesn't recognise and starts anyway, so a
         // renamed key ships a silently unthemed terminal — which is exactly
         // how foot 1.27 voided this palette before kuma switched. Parse the
@@ -2631,14 +2624,14 @@ pub fn generate(config: &Config) -> String {
         out.push_str(
             "RUN rc=0; kitty +runpy \"import sys; from kitty.config import load_config; bad = []; load_config('/etc/xdg/kitty/kitty.conf', accumulate_bad_lines=bad); sys.exit('malformed kitty.conf lines: %s' % bad if bad else 0)\" 2>/tmp/kitty.err || rc=$?; \\\n    cat /tmp/kitty.err >&2; \\\n    if grep -q 'unknown config key' /tmp/kitty.err; then rc=1; fi; \\\n    rm -f /tmp/kitty.err; exit $rc\n",
         );
-        // And prove the moving half renders, with the same engine the
-        // running shell uses. Two failures this catches: a placeholder
-        // noctalia stopped filling in, which would ship a kitty.conf
-        // full of literal {{colors...}}, and anyone pasting color0 back
-        // into the template, which would hand the sixteen back to
-        // Material You and turn the terminal's green blue again.
+        // And prove the template the shell will render actually renders,
+        // with the same engine it uses. It catches a placeholder noctalia
+        // stopped filling in, which would ship a kitty theme full of
+        // literal {{colors...}}, and an upstream template that stopped
+        // carrying the ANSI sixteen, which would leave the terminal half
+        // on the palette and half on the image's fallback colours.
         out.push_str(
-            "RUN HOME=/tmp NOCTALIA_CONFIG_HOME=/usr/lib/kuma noctalia theme \\\n      /usr/share/backgrounds/kuma/kuma-wallpaper.jpg --dark \\\n      -r /usr/share/noctalia/assets/templates/kitty/kitty.conf:/tmp/kitty-rendered.conf \\\n    && cat /tmp/kitty-rendered.conf \\\n    && grep -Eq '^background +#[0-9a-fA-F]{6}$' /tmp/kitty-rendered.conf \\\n    && ! grep -q '{{' /tmp/kitty-rendered.conf \\\n    && ! grep -qE '^color[0-9]' /tmp/kitty-rendered.conf \\\n    && rm -f /tmp/kitty-rendered.conf\n",
+            "RUN HOME=/tmp NOCTALIA_CONFIG_HOME=/usr/lib/kuma noctalia theme \\\n      /usr/share/backgrounds/kuma/kuma-wallpaper.jpg --dark \\\n      -r /usr/share/noctalia/assets/templates/kitty/kitty.conf:/tmp/kitty-rendered.conf \\\n    && cat /tmp/kitty-rendered.conf \\\n    && grep -Eq '^background +#[0-9a-fA-F]{6}$' /tmp/kitty-rendered.conf \\\n    && grep -qE '^color0 +#[0-9a-fA-F]{6}$' /tmp/kitty-rendered.conf \\\n    && ! grep -q '{{' /tmp/kitty-rendered.conf \\\n    && rm -f /tmp/kitty-rendered.conf\n",
         );
         out.push_str("COPY --chmod=755 kuma-clipboard-bridge /usr/libexec/kuma-clipboard-bridge\n");
         out.push_str("COPY fastfetch-config.jsonc /etc/xdg/fastfetch/config.jsonc\n");
@@ -3253,7 +3246,6 @@ pub fn write_context(
         std::fs::write(dir.join("niri-extras.kdl"), NIRI_EXTRAS)?;
         std::fs::write(dir.join("noctalia-config.toml"), KUMA_NOCTALIA)?;
         std::fs::write(dir.join("kitty.conf"), KITTY_CONFIG)?;
-        std::fs::write(dir.join("kitty-noctalia.conf"), KITTY_NOCTALIA)?;
         std::fs::write(dir.join("kuma-clipboard-bridge"), CLIPBOARD_BRIDGE)?;
         std::fs::write(dir.join("kuma-xsettings"), XSETTINGS_LAUNCHER)?;
         std::fs::write(dir.join("xsettingsd.conf"), XSETTINGSD_CONF)?;
@@ -3636,20 +3628,13 @@ mod tests {
         assert!(out.contains("kitty +runpy"));
         assert!(out.contains("accumulate_bad_lines=bad"));
         assert!(out.contains("grep -q 'unknown config key' /tmp/kitty.err"));
-        // the terminal's colours split in two: the sixteen stay in the
-        // image, the surface is rendered by the shell from the live
-        // palette. Both halves are asserted because either one alone is
-        // a terminal that half-follows its wallpaper.
-        assert!(out.contains("RUN test -f /usr/share/noctalia/assets/templates/kitty/kitty.conf"));
-        assert!(out.contains(
-            "COPY kitty-noctalia.conf /usr/share/noctalia/assets/templates/kitty/kitty.conf"
-        ));
+        // The palette owns every colour the terminal shows, all sixteen
+        // ANSI slots included, so the build renders the template it will
+        // actually use and insists on both halves being there. The
+        // image's own colours stay as the fallback for a terminal opened
+        // before the shell has rendered anything.
         assert!(KITTY_CONFIG.contains("color0"));
-        assert!(!KITTY_NOCTALIA.lines().any(|l| l.starts_with("color")));
-        // Material You maps every ANSI slot into the wallpaper's hue
-        // family, so a template that renders them ships a terminal whose
-        // green is blue. The build refuses one.
-        assert!(out.contains("! grep -qE '^color[0-9]' /tmp/kitty-rendered.conf"));
+        assert!(out.contains("grep -qE '^color0 +#[0-9a-fA-F]{6}$' /tmp/kitty-rendered.conf"));
         // and the config that turns the templates on at all
         assert!(KUMA_NOCTALIA.contains("builtin_ids = [ \"kitty\", \"gtk3\", \"gtk4\" ]"));
         // the GTK3 half only themes anything with adw-gtk3 present, and
@@ -4234,7 +4219,6 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
         assert!(greetd.contains("Welcome to Kuma"));
         assert!(dir.path().join("noctalia-config.toml").exists());
         assert!(dir.path().join("kitty.conf").exists());
-        assert!(dir.path().join("kitty-noctalia.conf").exists());
         let ff = std::fs::read_to_string(dir.path().join("fastfetch-config.jsonc")).unwrap();
         assert!(ff.contains("/usr/lib/kuma/fastfetch-logo.txt"));
         assert!(dir.path().join("fastfetch-logo.txt").exists());

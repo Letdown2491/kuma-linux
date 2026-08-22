@@ -81,12 +81,12 @@ the shell at one of its built-in palettes instead and the terminal, thunar,
 pavucontrol and the rest move with it. The image ships `adw-gtk3-theme` for
 this: stock Adwaita GTK3 ignores the colour names a palette can set.
 
-kitty's sixteen ANSI colours are the exception, and stay fixed in
-`/etc/xdg/kitty/kitty.conf`. The palette maps every ANSI slot into its own hue
-family, and a terminal whose green is blue makes a passing test look like a
-failing one. To keep the image's fixed colours instead, delete
-`~/.config/kitty/themes/noctalia.conf` and the include line in
-`~/.config/kitty/kitty.conf`.
+That includes the terminal's sixteen ANSI colours. A palette generated from a
+wallpaper maps every one of them into its own hue family, so red, green and
+blue come out as tints of the same colour and a diff's `+` and `-` stop being
+easy to tell apart. A palette you pick by name keeps real hues. To go back to
+the image's fixed colours, delete `~/.config/kitty/themes/noctalia.conf` and
+the include line in `~/.config/kitty/kitty.conf`.
 
 GTK4 applications do not follow, which on a kuma machine mostly means
 flatpaks. libadwaita ignores a user stylesheet that redefines its palette, so

@@ -16,8 +16,10 @@ differently. Why it changed belongs in the commit that made it.
   they follow that instead. The image ships `adw-gtk3-theme` and GTK3
   applications now use it rather than Adwaita.
 
-  kitty's sixteen ANSI colours are unchanged, so green is still green. The
-  generated colours arrive as `~/.config/kitty/themes/noctalia.conf` and
+  This includes the terminal's sixteen ANSI colours. A palette generated from a
+  wallpaper maps all of them into one hue family, so a diff's `+` and `-` come
+  out as tints of the same colour; a palette picked by name keeps real hues.
+  The generated colours arrive as `~/.config/kitty/themes/noctalia.conf` and
   `~/.config/gtk-3.0/noctalia.css`: delete them and their include lines to keep
   the image's fixed palette.
 
