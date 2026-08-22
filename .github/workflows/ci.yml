@@ -31,6 +31,14 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Declared rather than inherited. The repository default is already
+# read-only (measured, not assumed: `default_workflow_permissions` is
+# "read"), so this changes nothing today. It is the durable record: a
+# default lives in a web UI where nobody reviewing this file can see it,
+# and nothing here needs more than the checkout.
+permissions:
+  contents: read
+
 jobs:
   # Which run is this. Four jobs below gate on "a push or the daily cron,
   # but not the weekly audit", and each used to re-type the schedule
@@ -45,6 +53,8 @@ jobs:
   # a pull request waits on.
   when:
     runs-on: ubuntu-latest
+    # a guard job that takes 3s
+    timeout-minutes: 5
     outputs:
       daily: ${{ steps.q.outputs.daily }}
     steps:
@@ -81,6 +91,8 @@ jobs:
   # declaration, a greeter check on every desktop).
   test:
     runs-on: ubuntu-latest
+    # cargo with a warm cache runs in under a minute
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -111,7 +123,11 @@ jobs:
       # GitHub. actionlint reads the event schema, and shellchecks the
       # inline run blocks that the step above cannot see.
       - name: actionlint
-        uses: docker://rhysd/actionlint:latest
+        # Pinned by DIGEST, for the reason the step above gives about
+        # shellcheck: a moving tag silently decides what this gate means.
+        # A version tag would still be mutable, so this is the honest
+        # form of the same argument. Bump it deliberately.
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
         with:
           args: -color
 
@@ -140,6 +156,8 @@ jobs:
   #
   image:
     runs-on: ubuntu-latest
+    # the real exposure here: it normally takes 12 to 14 minutes, and the default is six hours
+    timeout-minutes: 45
     # Skipped on both scheduled runs: this builds a real image with
     # podman, and the tree it builds from is the same one it built last
     # week. The boot job below does run on the daily one, because its
@@ -461,6 +479,8 @@ jobs:
   # worth blocking a push over.
   audit:
     runs-on: ubuntu-latest
+    # 17s in practice
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
