@@ -85,8 +85,26 @@ fn restic_argv_within(
     // nor `sudo` can be relied on to leave a usable HOME behind. Naming
     // it also means the verb and the timer share one cache rather than
     // filling two.
+    // READ AND EXPORT, never source. `. file` runs whatever is on a
+    // right-hand side, so a repository password of `$(curl ...|sh)`
+    // executed as root here. `export "$line"` does not: the result of a
+    // parameter expansion is not rescanned, so the value arrives
+    // literally. Measured both ways, and the same change went into the
+    // first-boot restore unit, which uses systemd's EnvironmentFile= for
+    // the same reason.
+    //
+    // The two now agree because `usable` below refuses every value they
+    // could read differently, so this loop and systemd's parser see one
+    // file one way.
     let open = format!(
-        "set -a; . \"$1\"; set +a; export RESTIC_REPOSITORY=\"$2\"; \
+        // `|| [ -n "$line" ]` because a file whose last line carries no
+        // newline otherwise loses that variable, and systemd's parser does
+        // not. Measured: without it, a one-line restore.env written by
+        // `printf` reached restic with no password at all.
+        "while IFS= read -r line || [ -n \"$line\" ]; do \
+           case \"$line\" in \"\"|\\#*) continue ;; esac; \
+           export \"$line\"; \
+         done < \"$1\"; export RESTIC_REPOSITORY=\"$2\"; \
          export RESTIC_CACHE_DIR=/var/cache/restic; install -d -m 0700 /var/cache/restic; \
          shift 2; exec {}restic \"$@\"",
         seconds.map(|s| format!("timeout {s} ")).unwrap_or_default()
@@ -97,6 +115,36 @@ fn restic_argv_within(
     argv
 }
 
+/// Keys whose values three different readers would not agree about.
+///
+/// This file has three readers and they never had one meaning. Until
+/// 0.17 the verb SOURCED it, which expands `$(...)`, backticks and
+/// `$VAR` and removes quotes; systemd's `EnvironmentFile=` in the timer
+/// and the restore unit PARSES it, which does none of that but does
+/// strip one pair of surrounding quotes; and the verb's loop now takes
+/// the value literally. A password of `$(id -u)` was therefore three
+/// different passwords depending on which one opened the repository, and
+/// nothing said so.
+///
+/// The narrow subset all three agree about is a value with no `$`, no
+/// backtick, no quote and no backslash. Anything else is refused rather
+/// than guessed, because guessing here means either opening the wrong
+/// repository or being unable to open the right one.
+///
+/// **This is a real migration, not a lint.** A machine whose repository
+/// was initialised through the old sourcing path encrypted it with the
+/// EXPANDED value, so its password is not what is written in the file.
+/// `restic passwd` is the way out, and the message says so.
+pub fn ambiguous_values(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_once('='))
+        .filter(|(_, value)| value.contains(['$', '`', '"', '\'', '\\']))
+        .map(|(key, _)| key.trim().to_string())
+        .collect()
+}
+
 fn ready(config: &Config) -> Result<(String, String)> {
     if !config.backup.enable {
         bail!(
@@ -105,6 +153,23 @@ fn ready(config: &Config) -> Result<(String, String)> {
         );
     }
     let secret = secret_path(config);
+    // Read before use, so a file three readers disagree about is refused
+    // here rather than silently meaning something different in the timer.
+    if let Ok(text) = std::fs::read_to_string(&secret) {
+        let ambiguous = ambiguous_values(&text);
+        if !ambiguous.is_empty() {
+            bail!(
+                "{secret} sets {} with a value carrying a quote, a backslash, `$` or a \
+                 backtick. Three things read this file and they do not agree about such a \
+                 value: this verb, the backup timer, and the first-boot restore, so the \
+                 password one of them uses is not the password another one uses. Rewrite \
+                 the value as plain text. If the repository was created before kuma 0.17 \
+                 it was encrypted with the EXPANDED value, so change the password with \
+                 `restic passwd` first or the repository will not open.",
+                ambiguous.join(", ")
+            );
+        }
+    }
     if !Path::new(&secret).exists() {
         bail!(
             "no credential at {secret}. The declaration names it; this machine has \
@@ -436,6 +501,40 @@ mod tests {
     /// The secret is passed as a path and read inside the shell, never
     /// as a value in argv, because `ps` shows any process's arguments to
     /// every user on the machine for as long as it runs.
+    /// The verb reads the credential and never runs it.
+    ///
+    /// `. file` expands `$(...)` as root; the loop does not. Both were
+    /// measured before this was written: sourcing `A=$(id -u)` yields
+    /// `1000`, exporting the read line yields the literal `$(id -u)`.
+    #[test]
+    fn the_credential_is_read_and_never_sourced() {
+        let argv = restic_argv("/s.env", "b2:kuma", &["snapshots"]);
+        let script = argv.iter().find(|a| a.contains("restic \"$@\"")).expect("the sh -c body");
+        assert!(!script.contains(". \"$1\""), "still sourcing: {script}");
+        assert!(script.contains("export \"$line\""), "{script}");
+        // A last line with no newline is a variable systemd would read
+        // and this loop would drop without it.
+        assert!(script.contains("|| [ -n \"$line\" ]"), "{script}");
+        // And the secret is still a path, never a value: ps shows argv.
+        assert!(argv.iter().any(|a| a == "/s.env"));
+        assert!(!argv.iter().any(|a| a.contains("RESTIC_PASSWORD")));
+    }
+
+    /// Every value three readers would read differently is refused.
+    #[test]
+    fn a_value_the_readers_disagree_about_is_named() {
+        let hostile = "RESTIC_PASSWORD=$(id -u)\nB2_ACCOUNT_ID=plain\n";
+        assert_eq!(ambiguous_values(hostile), vec!["RESTIC_PASSWORD"]);
+        for bad in ["`id`", "\"quoted\"", "'single'", "back\\slash", "$VAR"] {
+            let text = format!("RESTIC_PASSWORD={bad}\n");
+            assert_eq!(ambiguous_values(&text), vec!["RESTIC_PASSWORD"], "{bad} slipped through");
+        }
+        // The ordinary case stays ordinary: comments, blanks, plain
+        // values, and punctuation no reader treats specially.
+        let fine = "# a comment\n\nRESTIC_PASSWORD=hunter2-with.punct_and/slash\nB2_KEY=abc123\n";
+        assert!(ambiguous_values(fine).is_empty());
+    }
+
     #[test]
     fn the_credential_is_never_an_argument() {
         let argv = restic_argv("/var/lib/kuma/secrets/backup.env", "b2:kuma", &["snapshots"]);

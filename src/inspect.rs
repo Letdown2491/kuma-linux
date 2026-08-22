@@ -1851,6 +1851,32 @@ fn check_backup(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
             );
         }
     }
+    // A value the readers disagree about, named before the night the
+    // timer needs it rather than after. Only when the file is readable:
+    // it is 0600 root by design, so an ordinary `kuma doctor` cannot see
+    // it and says nothing rather than guessing. A root-run doctor can,
+    // and `kuma backup` refuses outright, which is the enforcing path.
+    if let Ok(text) = std::fs::read_to_string(&secret) {
+        let ambiguous = crate::backup::ambiguous_values(&text);
+        if !ambiguous.is_empty() {
+            report(
+                Grade::Fail,
+                "backup",
+                format!(
+                    "{secret} sets {} with a value this machine's three readers would read \
+                     differently (the verb, the timer, and the first-boot restore), so the \
+                     password one uses is not the password another uses",
+                    ambiguous.join(", ")
+                ),
+                Some(Action::new(
+                    "rewrite",
+                    format!("sudoedit {secret}"),
+                    "write the value as plain text; a repository made before 0.17 needs \
+                     `restic passwd` first, because it was encrypted with the expanded value",
+                )),
+            );
+        }
+    }
     if !Path::new(&secret).exists() {
         let fix = Action::new(
             "provision",
