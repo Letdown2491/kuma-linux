@@ -1969,12 +1969,16 @@ fn check_shell(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
                     Grade::Fail,
                     "shell",
                     format!(
-                        "the desktop shell is running without {missing}, so it is drawing                          noctalia's defaults rather than this image's: the bar, the                          wallpaper-derived palette and the welcome screen are all its own"
+                        "the desktop shell is running without {missing}, so it is drawing \
+                         noctalia's defaults rather than this image's: the bar, \
+                         the wallpaper-derived palette and the welcome screen are \
+                         all its own"
                     ),
                     Some(Action::new(
                         "read",
                         "systemctl --user cat kuma-shell.service",
-                        "the unit has to set the variable itself; niri's environment block                          does not reach it",
+                        "the unit has to set the variable itself; niri's \
+                         environment block does not reach it",
                     )),
                 );
                 return;
