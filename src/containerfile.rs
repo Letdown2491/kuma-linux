@@ -4308,11 +4308,28 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let out = std::process::Command::new(&launch)
-            .args(["snapshot", "restore", "/home/a b"])
-            .env("PATH", bin.to_str().unwrap())
-            .output()
-            .unwrap();
+        // CI's runner sporadically answers the exec of a just-written
+        // script with ETXTBSY: measured 2026-08-22, 380 tests green and
+        // this one red on a tree identical to a passing run. A moment
+        // later the same exec answers fine, so ask a few times rather
+        // than flake the suite on the filesystem's bookkeeping.
+        let mut out = None;
+        for _ in 0..5 {
+            match std::process::Command::new(&launch)
+                .args(["snapshot", "restore", "/home/a b"])
+                .env("PATH", bin.to_str().unwrap())
+                .output()
+            {
+                Err(e) if e.raw_os_error() == Some(26) => {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                other => {
+                    out = Some(other.unwrap());
+                    break;
+                }
+            }
+        }
+        let out = out.expect("five ETXTBSY in a row is a broken box, not a flake");
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         let lines: Vec<&str> = std::str::from_utf8(&out.stdout).unwrap().lines().collect();
         assert_eq!(&lines[..3], ["-e", "/usr/bin/bash", "-lc"], "{lines:?}");
