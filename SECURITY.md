@@ -197,6 +197,34 @@ examples declare no user for this reason.
 It's a deliberate choice for a kiosk or a VM, and it is not a good one for a
 laptop that leaves the house.
 
+### That hash is reachable from the network
+
+The paragraphs above discuss cracking the hash offline, from a published image.
+There is a second way to meet it, and this document used to leave it out.
+
+**Every kuma image enables `sshd`, and the firewall lets it through.** The
+default zone is `public`, which permits the `ssh` service, and nothing kuma
+writes changes OpenSSH's own defaults, so password authentication is on. The
+account `kuma install` creates is in `wheel`. On a laptop that joins a network
+you do not run, that is a password prompt anybody on that network can reach.
+
+The hash itself is calibrated for the offline case: sha512-crypt at 656,000
+rounds, which is expensive per guess. Online guessing is a different problem,
+and OpenSSH's answer to it is rate limiting rather than lockout, so a weak
+password is weak here in a way the round count does not help with.
+
+If you do not want that, either turn it off in the declaration:
+
+```toml
+[services]
+disable = ["sshd.service"]
+```
+
+or leave it on and make sure the account has a password worth having, or set
+`user.ssh_keys` and turn password authentication off yourself. Kuma ships the
+distribution default rather than choosing for you, and it says so here rather
+than leaving you to find out.
+
 ### The one secret a declaration deliberately does not carry
 
 `[backup]` needs a credential for its repository, and `backup.secret` names it
