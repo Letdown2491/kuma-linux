@@ -6,6 +6,8 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+## v0.17.0
+
 ### Fixed
 
 - **A credential file is no longer executed as root.** `kuma install
