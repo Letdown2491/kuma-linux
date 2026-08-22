@@ -1080,10 +1080,10 @@ fn build_image_pinned(config_path: &Path, tag: &str, pin: Pin) -> Result<Option<
     // Two guards, and both have a real machine behind them. A rebuild
     // that changes nothing leaves the tag on the SAME image, so deleting
     // "the previous one" unguarded deletes what was just built. And an
-    // image that still carries another tag is not stranded: this machine
-    // had `kuma:latest` and `kuma-motherbox:latest` side by side, and
-    // removing by ID there would either fail or take a tag somebody
-    // wanted.
+    // image that still carries another tag is not stranded: a machine
+    // that keeps a second `localhost/kuma-*` tag pointing at the same
+    // image is ordinary, and removing by ID there would either fail on
+    // multiple tags or take one somebody wanted.
     if let (Some(before), Ok(after)) = (previous, image_id(tag)) {
         if before != after
             && has_no_tags(&before)
