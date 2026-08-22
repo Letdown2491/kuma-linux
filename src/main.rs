@@ -1051,6 +1051,10 @@ fn build_image_pinned(config_path: &Path, tag: &str, pin: Pin) -> Result<Option<
     let self_exe = std::env::current_exe().context("cannot locate the running kuma binary")?;
     containerfile::write_context(&config, &config_text, &self_exe, dir.path())?;
 
+    // What the tag pointed at before this build moved it. Asked now
+    // because afterwards there is no way back to it.
+    let previous = image_id(tag).ok();
+
     run_host(&[
         "podman",
         "build",
@@ -1060,15 +1064,32 @@ fn build_image_pinned(config_path: &Path, tag: &str, pin: Pin) -> Result<Option<
     ])?;
 
     // The tag just moved, stranding the previous build as a dangling
-    // <none> (~3.5 GB each — they once piled up to 150 GB). The label
-    // filter keeps this to kuma's own images; a prune failure is not a
-    // build failure.
-    let pruned =
-        host_output(&["podman", "image", "prune", "-f", "--filter", "label=io.kuma.image"])
-            .map(|out| out.lines().filter(|l| !l.trim().is_empty()).count())
-            .unwrap_or(0);
-    if pruned > 0 {
-        note(&format!("Reclaimed {pruned} stale build image(s)."));
+    // <none> (~3.5 GB each — they once piled up to 150 GB).
+    //
+    // This used to be `podman image prune -f --filter label=io.kuma.image`,
+    // which is a sweep of the whole store and MEASURED AT 4.6 TO 5.1
+    // SECONDS ON EVERY BUILD, including a first build with nothing to
+    // reclaim. A bare prune was 3.8s and listing by label alone 2.1s, so
+    // the cost is podman walking storage rather than the filter or the
+    // size of the pile. One targeted delete is milliseconds.
+    //
+    // Reclaiming what is already lying around is `kuma clean`'s job and
+    // it is documented as such; what belongs here is only the stray this
+    // build just made.
+    //
+    // Two guards, and both have a real machine behind them. A rebuild
+    // that changes nothing leaves the tag on the SAME image, so deleting
+    // "the previous one" unguarded deletes what was just built. And an
+    // image that still carries another tag is not stranded: this machine
+    // had `kuma:latest` and `kuma-motherbox:latest` side by side, and
+    // removing by ID there would either fail or take a tag somebody
+    // wanted.
+    if let (Some(before), Ok(after)) = (previous, image_id(tag)) {
+        if before != after && has_no_tags(&before) {
+            if host_output(&["podman", "rmi", &before]).is_ok() {
+                note("Reclaimed the previous build.");
+            }
+        }
     }
     // A build that followed a pin built from exactly that digest, so
     // there is nothing to resolve; one that refreshed asks the tag it
@@ -1086,6 +1107,14 @@ fn build_image_pinned(config_path: &Path, tag: &str, pin: Pin) -> Result<Option<
     // The record is taken from the image that just came out, so it says
     // what shipped rather than what was asked for.
     Ok(lock::record(config_path, &declared_base, digest, tag))
+}
+
+/// Whether an image is stranded, which is the only state it is kuma's to
+/// delete. An image somebody has tagged is somebody's.
+fn has_no_tags(id: &str) -> bool {
+    host_output(&["podman", "image", "inspect", "--format", "{{len .RepoTags}}", id])
+        .map(|out| out.trim() == "0")
+        .unwrap_or(false)
 }
 
 fn switch(tag: &str, yes: bool, json: bool) -> Result<()> {
