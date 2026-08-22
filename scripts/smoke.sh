@@ -1074,10 +1074,18 @@ smoke_published() {
         # simply absent, on a surface no automated boot would otherwise
         # touch. The build validates what it generates; this checks that
         # what it generated survived into a booted machine.
+        #
+        # ONE STRING, not `guest sh -c '...'`. ssh joins its arguments
+        # with spaces and hands the result to the guest's login shell,
+        # which re-parses it: the quotes are this side's and never
+        # arrive. `sh -c ls <paths>` runs a bare `ls` with the paths as
+        # $0 and $1, so it listed $HOME, which on a fresh install is
+        # empty. The check reported "found 0" on a machine carrying all
+        # eight, and only the install stage could ever see it.
         local seam_entries
-        seam_entries=$(guest sh -c 'ls /usr/share/applications/kuma-*.desktop 2>/dev/null | wc -l' || echo 0)
+        seam_entries=$(guest 'ls /usr/share/applications/kuma-*.desktop 2>/dev/null | wc -l' || echo 0)
         [ "$seam_entries" -eq 8 ] || bad "expected 8 kuma desktop entries, found $seam_entries"
-        guest sh -c 'desktop-file-validate /usr/share/applications/kuma-*.desktop' \
+        guest 'desktop-file-validate /usr/share/applications/kuma-*.desktop' \
             || bad "kuma's desktop entries do not validate on the booted machine"
         guest test -x /usr/libexec/kuma-launch \
             || bad "the entries' Exec is not executable on the booted machine"
@@ -1132,7 +1140,7 @@ smoke_published() {
             # niri's stock bind spawns fuzzel, which this image does not
             # have, so a merge that stopped substituting leaves the
             # most-used key on the machine spawning nothing at all.
-            guest grep -q 'panel-toggle" "launcher' /etc/niri/config.kdl \
+            guest 'grep -qE "Mod\\+D.*panel-toggle.*launcher" /etc/niri/config.kdl' \
                 || bad "Mod+D does not open the shell's launcher in the baked config"
             guest grep -q fuzzel /etc/niri/config.kdl \
                 && bad "the baked niri config still names fuzzel, which is not in the image"
