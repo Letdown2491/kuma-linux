@@ -41,9 +41,10 @@ The loop is: probe, execute one of the actions it named, probe again.
   agent polling machine health never blocks on a repository being reachable.
   `backup --list` is the one that asks the far end.
 - **What does not speak JSON, and why.** `init`, `generate`, `vm`, `iso`,
-  `menu`, `schema`, `passwd` and `completions` each produce a file, a stream,
-  or a picker rather than a report, so there is no document for them to emit
-  and no next command for them to name. `schema` already emits JSON, of a
+  `edit`, `schema`, `passwd` and `completions` each produce a file, a stream,
+  or an editor rather than a report, so there is no document for them to emit
+  and no next command for them to name. `edit --print` answers the one
+  question an agent would ask of it: which declaration this machine resolves. `schema` already emits JSON, of a
   different kind: the declaration's schema rather than a response.
 - **A Fedora release change is a separate field, not a big diff.** `update`
   and `update --check` carry `fedora_release` with `current`, `changed`,

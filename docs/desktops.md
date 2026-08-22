@@ -36,7 +36,10 @@ rather than twice here. What that rule costs in practice is
 
 Hand-assembled, because niri is a window manager rather than a desktop: it
 requires nothing beyond itself, so every part of a working session is named
-explicitly.
+explicitly. Most of that session is now one program. Noctalia draws the bar,
+notifications, wallpaper, on-screen displays, the lock screen and a control
+centre, where kuma previously assembled seven separate tools that agreed on
+colour and on nothing else.
 
 | | |
 |---|---|
@@ -49,12 +52,23 @@ explicitly.
 | Hardware | `NetworkManager-wifi`, `NetworkManager-tui`, `wpa_supplicant`, `bluez`, `blueman`, `brightnessctl`, `power-profiles-daemon` |
 | Printing and discovery | `cups`, `system-config-printer`, `avahi`, `nss-mdns` |
 | Screen and clipboard | `grim`, `slurp`, `swappy`, `wf-recorder`, `wl-clipboard` |
-| Session glue | `polkit`, `mate-polkit`, `dconf`, `gnome-keyring`, `xsettingsd`, `xdg-user-dirs`, `firewalld`, `flatpak` |
+| Session glue | `polkit`, `mate-polkit`, `dconf`, `gnome-keyring`, `xsettingsd`, `xdg-user-dirs`, `firewalld`, `flatpak`, `desktop-file-utils` |
 | Fonts and icons | sans, mono, emoji, CJK, Font Awesome (free and brands), `adwaita-icon-theme` |
 
-Settings tools for wifi, bluetooth, audio, and printers are included on
-purpose. Those are machine state, not system definition: the declaration
-describes what a machine is, and picking a network is not that.
+The control centre owns the everyday cases: wifi, bluetooth, audio,
+brightness, night light. The separate settings tools stay for what it does not
+reach — `nm-connection-editor` for a VPN or a static route, `pavucontrol` for
+per-application routing, `system-config-printer` for printers. All of it is
+machine state rather than system definition: the declaration describes what a
+machine is, and picking a network is not that.
+
+**The desktop's own look comes from the image.** Kuma bakes a noctalia config
+— bar layout, fonts, wallpaper, and the idle lock and night light that
+noctalia ships turned off — and the shell reads it from there. Changing
+anything from the desktop's own settings writes
+`~/.local/state/noctalia/settings.toml`, which wins over the image. That file
+is yours; the image will not overwrite it, and `kuma diff` is how you see that
+it exists.
 
 `Mod+D` opens the shell's launcher. Your applications are in it, and so are
 kuma's own verbs: edit the declaration, show drift, system health, check for
@@ -103,15 +117,16 @@ failure someone had to diagnose:
   memory*, so it cannot hold a copy of memory: hibernating needs a file on a
   disk, which is what `kuma hibernate` makes.
 - **`glibc-langpack-en`** provides real locale data. The base ships
-  `glibc-minimal-langpack`, so `en_US.UTF-8` fails to resolve and waybar's
-  clock disables itself.
+  `glibc-minimal-langpack`, so `en_US.UTF-8` fails to resolve and anything
+  formatting a date, a time or a number falls back to C.
 - **`mesa-vulkan-drivers`** and **`vulkan-loader`**: OpenGL drivers alone
   strand every Vulkan application on software rendering.
-- **`fontawesome-fonts-all`** pulls both Font Awesome faces, because the
-  bluetooth glyph waybar uses lives in the Brands face and the rest live in
-  Free. It is named instead of the two faces directly because their package
-  names carry the major version, which changes under you; this one does not,
-  and it adds no files of its own.
+- **`fontawesome-fonts-all`** pulls both Font Awesome faces. The shell bundles
+  its own icon font, but flatpaks and GTK applications still reach for these
+  glyphs and render tofu without them, and the brands live in a different face
+  from the rest. It is named instead of the two faces directly because their
+  package names carry the major version, which changes under you; this one
+  does not, and it adds no files of its own.
 - **`google-noto-sans-cjk-vf-fonts`**, because the default sans is latin-only
   and CJK pages render as tofu.
 - **`avahi`** is named rather than assumed. It used to arrive with
