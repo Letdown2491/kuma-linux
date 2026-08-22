@@ -1878,11 +1878,11 @@ end = [
 directory = "/usr/share/backgrounds/kuma"
 fill_mode = "crop"
 
-# Naming the directory only puts kuma's wallpaper in the picker; the
-# shell still starts on its own. This is what actually sets it, and with
-# theme.source above it is also what the palette is derived from.
-[wallpaper.default]
-path = "/usr/share/backgrounds/kuma/kuma-wallpaper.jpg"
+# There is deliberately no [wallpaper.default] here. The key exists and
+# `config validate` accepts it, but the shell drops it from config-home
+# and keeps its own: measured on a booted VM with a fresh home, where
+# `wallpaper-get` answered with noctalia's asset. The image replaces that
+# asset instead, see the COPY in generate().
 
 # Icons, no text. The bar is 32px and an SSID or a percentage beside
 # every glyph is what turns a bar into a status line.
@@ -2543,6 +2543,21 @@ pub fn generate(config: &Config) -> String {
         out.push_str("COPY kuma-wallpaper.jpg /usr/share/backgrounds/kuma/kuma-wallpaper.jpg\n");
         out.push_str("COPY fuzzel.ini /etc/xdg/fuzzel/fuzzel.ini\n");
         out.push_str("COPY noctalia-config.toml /usr/lib/kuma/noctalia/config.toml\n");
+        // The wallpaper the shell falls back to when nobody has chosen
+        // one, which on a new machine is always.
+        //
+        // Not settable from the config: `[wallpaper.default] path` is a
+        // real key that `config validate` accepts and the shell ignores
+        // outside its own state, so the only way to change what a first
+        // boot shows is to change the file it defaults to. kuma owns the
+        // image, so it changes the file. A person who picks another
+        // wallpaper still wins — that goes to state, which outranks this.
+        //
+        // A JPEG under a .png name on purpose: the path is noctalia's and
+        // the decoder sniffs the content rather than trusting the suffix,
+        // verified by setting one and reading it back.
+        out.push_str("RUN test -f /usr/share/noctalia/assets/noctalia-wallpaper.png\n");
+        out.push_str("COPY kuma-wallpaper.jpg /usr/share/noctalia/assets/noctalia-wallpaper.png\n");
         // Prove the baked config is actually reachable, in the build.
         //
         // `noctalia config validate` is not enough: it accepts
@@ -5230,6 +5245,30 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
         assert!(
             NIRI_PACKAGES.contains(&"adwaita-icon-theme"),
             "the source of the icons is declared"
+        );
+    }
+
+    /// The shell's fallback wallpaper is kuma's.
+    ///
+    /// `[wallpaper.default] path` in kuma's config is not the mechanism
+    /// and cannot be: the shell accepts the key and ignores it outside
+    /// its own state, so a first boot showed noctalia's asset with kuma's
+    /// config loaded and validating clean. Replacing the file is the only
+    /// lever, and the `test -f` in front of it means an upstream rename
+    /// fails the build rather than quietly restoring their wallpaper.
+    #[test]
+    fn the_shells_default_wallpaper_is_kumas() {
+        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
+        let guard = out.find("RUN test -f /usr/share/noctalia/assets/noctalia-wallpaper.png");
+        let copy = out.find("COPY kuma-wallpaper.jpg /usr/share/noctalia/assets/");
+        assert!(guard.is_some() && copy.is_some(), "the asset is not replaced");
+        assert!(guard < copy, "the guard must run before the file is overwritten");
+        // The table header, not the string: the config explains in a
+        // comment why the key is absent, and a substring check reads its
+        // own explanation as the thing it forbids.
+        assert!(
+            !KUMA_NOCTALIA.lines().any(|line| line.trim() == "[wallpaper.default]"),
+            "that key reads as if it works; it does not"
         );
     }
 
