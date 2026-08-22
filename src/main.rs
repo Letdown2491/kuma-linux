@@ -626,9 +626,12 @@ fn run(
             capture::capture(config_path, &config, &names, yes, json)
         }
         Cmd::Remove { names, json: _ } => edit::remove(config_path, &names, json),
-        // announce=false: the path is the output when --print, and the
-        // editor takes the terminal when it isn't.
-        Cmd::Edit { print } => edit::open(&read_config_path(config_path, explicit, false), print),
+        // `config_path`, not `read_config_path`. The reader's fallback
+        // resolves to the baked declaration in /usr, which on a bootc
+        // machine is read-only: the launcher's Edit Declaration entry
+        // opened an editor on a file that cannot be saved. Same reason
+        // `add` and `remove` take this path.
+        Cmd::Edit { print } => edit::open(config_path, print),
         Cmd::Diff { json } => {
             let json = json || root_json;
             // announce=false in JSON mode: stdout must stay pure JSON
@@ -1889,11 +1892,6 @@ fn sync(declared: Option<&Config>, json: bool) -> Result<()> {
 }
 
 /// Two kinds of leftovers accumulate in podman storage. Every rebuild
-/// strands the previous image as a dangling <none>; worse, an interrupted
-/// build abandons its buildah "working container", which pins its layers
-/// while being invisible to `podman images` — one was found holding 68 GB.
-/// `kuma build` self-cleans its own label; this reclaims everything,
-/// including composed-base content tags the declaration no longer uses.
 /// Where the removed menu kept its launch counts.
 ///
 /// Its own path under the cache dir, not a location anybody chose, which
@@ -1906,6 +1904,11 @@ fn menu_cache_path() -> Option<PathBuf> {
     Some(base.join("kuma").join("menu-apps"))
 }
 
+/// strands the previous image as a dangling <none>; worse, an interrupted
+/// build abandons its buildah "working container", which pins its layers
+/// while being invisible to `podman images` — one was found holding 68 GB.
+/// `kuma build` self-cleans its own label; this reclaims everything,
+/// including composed-base content tags the declaration no longer uses.
 fn clean(config_path: &Path, json: bool) -> Result<()> {
     // Held rather than printed as it goes, so the same run can render as
     // text or as one JSON document. Progress chatter from host::note
@@ -4042,7 +4045,6 @@ mod tests {
     /// until the smoke tests started reading the output. Both look
     /// obviously correct and would be re-added on sight, and both already
     /// have working replacements (/etc/hostname in the image; -fw_cfg and
-    /// kuma-vm-timezone at boot), so the absence is pinned here.
     /// A disk built from an image that declares a shell logs you into it.
     ///
     /// `[system].shell` exists for the image with no `[user]`, which is
@@ -4062,6 +4064,7 @@ mod tests {
         assert!(at < out.find("[[customizations.filesystem]]").unwrap(), "{out}");
     }
 
+    /// kuma-vm-timezone at boot), so the absence is pinned here.
     #[test]
     fn vm_config_asks_bib_for_nothing_it_refuses() {
         let out = super::bib_config_toml(None, None);

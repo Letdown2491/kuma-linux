@@ -8,7 +8,7 @@ and [the glossary](glossary.md) defines the vocabulary.
 - [What happens to changes you make by hand](#what-happens-to-changes-you-make-by-hand)
 - [Where the base system comes from](#where-the-base-system-comes-from)
 - [What every image carries](#what-every-image-carries)
-- [The menu](#the-menu)
+- [kuma in your launcher](#kuma-in-your-launcher)
 - [Why a desktop installs things you did not name](#why-a-desktop-installs-things-you-did-not-name)
 - [What a build records: kuma.lock](#what-a-build-records-kumalock)
 - [What updates itself, and what waits for you](#what-updates-itself-and-what-waits-for-you)

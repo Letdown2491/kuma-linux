@@ -127,15 +127,6 @@ const NIRI_PACKAGES: &[&str] = &[
     "fastfetch",
 ];
 
-/// The curated COSMIC desktop. Unlike niri's hand-assembled set, COSMIC
-/// curates itself: cosmic-session hard-requires the whole coherent
-/// desktop (compositor, panel, applets, settings, files, terminal,
-/// notifications, OSD, screenshot, portal, fonts), so this list is the
-/// session plus the hardware enablement a desktop lives on. pipewire is
-/// explicit because nothing in the session requires the daemon, only
-/// its client library. cosmic-store is absent, though no longer because
-/// convergence would fight it: a store is a user-facing app, so which
-/// one a machine gets is the declaration's call, not the desktop set's.
 /// niri Recommends these, so they arrive whether or not `NIRI_PACKAGES`
 /// names them. Every one is a program kuma deliberately does not ship.
 ///
@@ -146,6 +137,15 @@ const NIRI_PACKAGES: &[&str] = &[
 /// bar, a lock screen and a launcher that nothing starts.
 const NIRI_EXCLUDES: &[&str] = &["alacritty", "waybar", "swaylock", "fuzzel"];
 
+/// The curated COSMIC desktop. Unlike niri's hand-assembled set, COSMIC
+/// curates itself: cosmic-session hard-requires the whole coherent
+/// desktop (compositor, panel, applets, settings, files, terminal,
+/// notifications, OSD, screenshot, portal, fonts), so this list is the
+/// session plus the hardware enablement a desktop lives on. pipewire is
+/// explicit because nothing in the session requires the daemon, only
+/// its client library. cosmic-store is absent, though no longer because
+/// convergence would fight it: a store is a user-facing app, so which
+/// one a machine gets is the declaration's call, not the desktop set's.
 const COSMIC_PACKAGES: &[&str] = &[
     "cosmic-session",
     // the session requires files, term, and settings but not the text
@@ -1917,6 +1917,15 @@ timeout = 900.0
 [idle.behavior.screen-off]
 enabled = true
 timeout = 960.0
+
+# The third clause of the swayidle line that left: `before-sleep`. The
+# shell does this by default, so this line changes nothing today and is
+# here anyway — every other security-shaped setting in this file is
+# pinned because its default was wrong, and a beta that flips this one
+# would unlock every kuma machine that suspends, silently. Pinned, and
+# asserted.
+[lockscreen]
+lock_before_suspend = true
 "#;
 
 /// System-wide default apps: without associations, opening a PDF or a
@@ -2003,13 +2012,6 @@ const NIRI_MENU_BIND: &str = r#"Mod+D hotkey-overlay-title="Applications" { spaw
 const NIRI_STOCK_LAUNCHER: &str =
     r#"Mod+D hotkey-overlay-title="Run an Application: fuzzel" { spawn "fuzzel"; }"#;
 
-/// niri's stock lock bind, and what kuma puts in its place.
-///
-/// This one is advertised on the Important Hotkeys overlay that opens on
-/// every first login, so a dead key here is the first thing a new
-/// machine shows a person. It was live until the shell replaced
-/// swaylock, and swaylock is now excluded from the image outright, which
-/// is exactly the shape of change that leaves a bind pointing at nothing.
 /// niri's stock screen-reader toggle. kuma has never shipped orca, so
 /// this has been a key that does nothing since the first niri image —
 /// hidden from the overlay by its own `=null`, which is why it survived
@@ -2017,6 +2019,13 @@ const NIRI_STOCK_LAUNCHER: &str =
 /// tells a screen-reader user the machine has a screen reader.
 const NIRI_STOCK_ORCA: &str = r#"Super+Alt+S allow-when-locked=true hotkey-overlay-title=null { spawn-sh "pkill orca || exec orca"; }"#;
 
+/// niri's stock lock bind, and what kuma puts in its place.
+///
+/// This one is advertised on the Important Hotkeys overlay that opens on
+/// every first login, so a dead key here is the first thing a new
+/// machine shows a person. It was live until the shell replaced
+/// swaylock, and swaylock is now excluded from the image outright, which
+/// is exactly the shape of change that leaves a bind pointing at nothing.
 const NIRI_STOCK_LOCK: &str =
     r#"Super+Alt+L hotkey-overlay-title="Lock the Screen: swaylock" { spawn "swaylock"; }"#;
 const NIRI_LOCK_BIND: &str = r#"Super+Alt+L hotkey-overlay-title="Lock the Screen" { spawn "noctalia" "msg" "session" "lock"; }"#;
@@ -2845,9 +2854,19 @@ pub fn generate(config: &Config) -> String {
         // `/usr/bin/kuma` is deliberately not checked here — it is copied
         // much later in the file and proved runnable there, and a guard
         // before its COPY proves nothing.
-        out.push_str(
-            "RUN test -x /usr/libexec/kuma-launch \\\n    && test -f /usr/share/icons/Adwaita/symbolic/legacy/text-editor-symbolic.svg\n",
-        );
+        out.push_str("RUN test -x /usr/libexec/kuma-launch \\\n");
+        // Every icon, not the first one. The deleted icon_theme() step
+        // failed per icon and searched for the file; checking one name
+        // and calling it "the icons are checked" is how the other seven
+        // ship as blank squares when Adwaita moves a name.
+        for (i, entry) in seam::ENTRIES.iter().enumerate() {
+            let last = i + 1 == seam::ENTRIES.len();
+            out.push_str(&format!(
+                "    && find /usr/share/icons/Adwaita -name {}.svg | grep -q .{}\n",
+                entry.icon,
+                if last { "" } else { " \\" }
+            ));
+        }
     }
     out.push_str("COPY --chmod=755 kuma-boot-health-sync /usr/libexec/kuma-boot-health-sync\n");
     out.push_str(
@@ -5119,6 +5138,30 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
     /// first-impression setting: it is invisible on every boot after the
     /// first, so losing it would be noticed by strangers and by nobody
     /// testing.
+    /// Suspending locks, which was a clause of the swayidle line that
+    /// left and is not covered by the two idle behaviors that replaced
+    /// it. The shell defaults to it; kuma pins it, because a beta that
+    /// flips this default unlocks every machine that suspends and says
+    /// nothing.
+    #[test]
+    fn suspending_locks_the_screen() {
+        assert!(KUMA_NOCTALIA.contains("lock_before_suspend = true"));
+    }
+
+    /// Every icon an entry names is checked in the build, not the first.
+    #[test]
+    fn the_build_checks_every_icon_the_entries_name() {
+        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
+        for entry in seam::ENTRIES {
+            assert!(
+                out.contains(&format!("-name {}.svg", entry.icon)),
+                "{} names {}, which the build never looks for",
+                entry.id,
+                entry.icon
+            );
+        }
+    }
+
     #[test]
     fn no_other_vendor_greets_the_person_on_first_login() {
         assert!(KUMA_NOCTALIA.contains("setup_wizard_enabled = false"));

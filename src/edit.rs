@@ -30,6 +30,20 @@ pub fn open(path: &Path, print: bool) -> Result<()> {
         return Ok(());
     }
     if !path.exists() {
+        // The baked declaration is deliberately not opened instead. It
+        // lives in /usr, which is read-only on a booted kuma machine, so
+        // editing it is a session of typing that cannot be saved. Named
+        // in the message because a person looking at a machine that
+        // plainly has a declaration deserves to know why they are being
+        // asked to make one.
+        if Path::new(crate::state::BAKED_CONFIG).exists() {
+            bail!(
+                "no declaration at {}; this machine was built from {}, and \
+                 `kuma init` writes you a copy to edit",
+                path.display(),
+                crate::state::BAKED_CONFIG
+            );
+        }
         bail!("no declaration at {}; `kuma init` writes one", path.display());
     }
     let editor = editor();
@@ -50,9 +64,23 @@ fn editor() -> String {
         .unwrap_or_else(|| "vi".to_string())
 }
 
+/// Through `sh -c`, because `$EDITOR` is a command line and not a
+/// program name. `EDITOR="code -w"`, `EDITOR="emacsclient -c -a ''"` and
+/// `EDITOR="nvim -u NONE"` are all ordinary values, and exec'ing one as
+/// a filename is ENOENT on a program nobody has. git, crontab and
+/// `$VISUAL` all resolve it this way.
+///
+/// The path arrives as `"$@"` rather than pasted into the string: a home
+/// directory can hold a space or a quote, and a command assembled by
+/// concatenation is how that becomes two arguments.
 fn exec_editor(editor: &str, path: &Path) -> std::io::Error {
     use std::os::unix::process::CommandExt;
-    std::process::Command::new(editor).arg(path).exec()
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("{editor} \"$@\""))
+        .arg(editor)
+        .arg(path)
+        .exec()
 }
 
 /// A program somebody can actually run. `is_file` alone would pick an
