@@ -8,11 +8,17 @@ file or a stream rather than an answer, and they are listed below.
 
 The loop is: probe, execute one of the actions it named, probe again.
 
-**A check that could not be made says so rather than guessing.** Several of
-what `doctor` grades need root, and an agent has no terminal for `sudo` to
-prompt at. Those come back as `warn` naming what could not be asked, never as
-`fail`: a declined password is not a broken machine. Run the whole verb through
-`sudo` if you want those graded rather than skipped.
+**A check that could not be made grades `warn`, not `fail`.** Several of what
+`doctor` grades need root, and an agent has no terminal for `sudo` to prompt
+at. A declined password is not a broken machine, so none of those report one.
+
+Most of them name what could not be asked. Not all: a check whose privileged
+read fails may instead report the state it inferred without it, and the
+deployment check is one, so an agent that has not run `doctor` through `sudo`
+can be told a newer image is waiting when the answer is really that nobody
+could look. **Run the whole verb through `sudo` when you need a definite
+answer**, and treat a `warn` from an unprivileged run as "unknown" rather than
+as a finding.
 
 **`KUMA_TRACE=1` prints one line per subprocess on stderr**, as elapsed time
 and a canonical command name, leaving `--json` on stdout untouched. It is a
