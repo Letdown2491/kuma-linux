@@ -67,8 +67,9 @@ machine is, and picking a network is not that.
 noctalia ships turned off — and the shell reads it from there. Changing
 anything from the desktop's own settings writes
 `~/.local/state/noctalia/settings.toml`, which wins over the image. That file
-is yours; the image will not overwrite it, and `kuma diff` is how you see that
-it exists.
+is yours and the image will not overwrite it. Kuma does not read it either, so
+`kuma diff` will not mention it: `noctalia config export merged` is what shows
+which settings are actually in effect.
 
 `Mod+D` opens the shell's launcher. Your applications are in it, and so are
 kuma's own verbs: edit the declaration, show drift, system health, check for
