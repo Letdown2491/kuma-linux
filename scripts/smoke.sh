@@ -210,7 +210,26 @@ show_warnings() {
 # FAIL and then carried on to the next assertion and the summary. This
 # harness reported "all good" over a failing unit exactly once, which is
 # once more than a test harness gets to.
-bad()  { printf '   FAIL %s\n' "$*"; exit 1; }
+bad()  {
+    printf '   FAIL %s\n' "$*"
+    # The guest's own account, while there is one to ask. The EXIT trap
+    # takes qemu down with the assertion, and the job-level capture
+    # steps that would tail the console have now been skipped by an
+    # unlucky step outcome twice; nothing after this line can ask the
+    # machine anything. No guest function means the stage never booted
+    # a VM, and `guest true` is the five-second answer to whether ssh
+    # is still up; both skip quietly. The user journal is the half that
+    # matters: the shell, niri and every lock path log there.
+    if declare -F guest >/dev/null && guest true; then
+        printf '   --- the guest, asked before the trap takes it down ---\n'
+        guest 'systemctl --failed --no-pager --plain' || true
+        guest 'systemctl --user --failed --no-pager --plain' || true
+        guest 'loginctl list-sessions --no-legend' || true
+        guest 'journalctl -b -p err --no-pager | tail -30' || true
+        guest 'journalctl --user -b --no-pager | tail -40' || true
+    fi
+    exit 1
+}
 
 # One value out of the declaration, by dotted key, so every assertion
 # below reads what the example actually asks for instead of a copy of it
@@ -867,8 +886,21 @@ smoke_published() {
         # python process holding a socket in a directory the cleanup is
         # about to delete. Re-armed on every boot, because the pids
         # change and a trap holding the old ones kills nothing.
+        #
+        # The unlocker pid rides only when there is one. An unencrypted
+        # stage leaves it 0, and `kill 0` signals the whole process
+        # group, this script included: the trap then took the harness
+        # down beside qemu, the step ended 143, GitHub read it as
+        # cancelled rather than failed, and every `if: failure()` or
+        # `cancelled()` capture step was skipped. The one run that
+        # needed the console produced no console at all, 2026-08-21,
+        # and again 2026-08-22 when the real-session gate went red.
         # shellcheck disable=SC2064
-        trap "kill $qemu $unlocker 2>/dev/null || true" EXIT
+        if [ "$unlocker" != 0 ]; then
+            trap "kill $qemu $unlocker 2>/dev/null || true" EXIT
+        else
+            trap "kill $qemu 2>/dev/null || true" EXIT
+        fi
     }
     boot_vm
 
