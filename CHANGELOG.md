@@ -33,8 +33,9 @@ differently. Why it changed belongs in the commit that made it.
   header holds lock, log out, suspend, reboot and shut down.
 
   Kuma configures it from the image: its own bar layout and fonts, its
-  wallpaper, and two things noctalia ships **disabled** that would have been
-  regressions to inherit — locking on idle, and night light.
+  wallpaper, no first-login welcome screen, and two things noctalia ships
+  **disabled** that would have been regressions to inherit, locking on idle
+  and night light.
 
 - **`kuma menu` is gone.** Everything it offered that was kuma's is in your
   launcher as a desktop entry, on COSMIC as well as niri, which the menu never
@@ -65,8 +66,34 @@ differently. Why it changed belongs in the commit that made it.
   `~/.config/gtk-3.0/noctalia.css`: delete them and their include lines to keep
   the image's fixed palette.
 
-  GTK4 applications, mostly flatpaks, do not follow. libadwaita ignores a user
-  stylesheet that redefines its palette.
+### Fixed
+
+- **A VM disk logs you into the shell its image declares.** `kuma vm` gave its
+  convenience account a bash login whatever `[system].shell` said, so a
+  declaration reading `shell = "fish"` produced a VM that handed back bash.
+  `kuma install` already honored it. Rebuild the disk to pick it up.
+
+- **niri's Important Hotkeys overlay says what the keys do.** The binds kuma
+  splices into the session carried no titles, so the overlay that opens on
+  first login named them by their command lines, one of which was an entire
+  `sh -c` pipeline. The media keys are hidden from it now and the rest are
+  named. `Super+Alt+S` is gone with them: it toggled a screen reader this
+  image has never shipped, and a key that does nothing is worse than no key
+  at all when the thing it claims to start is a screen reader.
+
+### Known limits
+
+- **Kuma cannot see the settings you change from the desktop.** The shell
+  writes them to `~/.local/state/noctalia/settings.toml`, which wins over the
+  config kuma bakes into the image and which the image will never overwrite.
+  Nothing in kuma reads that file, so `kuma diff` will say a machine matches
+  its declaration while the desktop is visibly running something else.
+  `noctalia config export merged` is what shows which settings are in effect.
+
+- **GTK4 applications do not follow the palette**, which on a kuma machine
+  mostly means flatpaks. libadwaita ignores a user stylesheet that redefines
+  its palette, so they keep their own dark theme while the terminal and every
+  GTK3 application move.
 
 ## v0.15.0 (2026-08-21)
 

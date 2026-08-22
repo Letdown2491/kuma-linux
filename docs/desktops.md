@@ -58,15 +58,14 @@ colour and on nothing else.
 The control centre owns the everyday cases: wifi, bluetooth, audio,
 brightness, night light, and the power button in its header opens lock, log
 out, suspend, reboot and shut down. The separate settings tools stay for what
-it does not reach — `nm-connection-editor` for a VPN or a static route,
+it does not reach: `nm-connection-editor` for a VPN or a static route,
 `pavucontrol` for per-application routing, `system-config-printer` for
-printers. All of it is
-machine state rather than system definition: the declaration describes what a
+printers. All of it is machine state rather than system definition: the declaration describes what a
 machine is, and picking a network is not that.
 
 **The desktop's own look comes from the image.** Kuma bakes a noctalia config
-— bar layout, fonts, wallpaper, and the idle lock and night light that
-noctalia ships turned off — and the shell reads it from there. Changing
+(bar layout, fonts, wallpaper, and the idle lock and night light that noctalia
+ships turned off) and the shell reads it from there. Changing
 anything from the desktop's own settings writes
 `~/.local/state/noctalia/settings.toml`, which wins over the image. That file
 is yours and the image will not overwrite it. Kuma does not read it either, so
