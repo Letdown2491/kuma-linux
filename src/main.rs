@@ -3140,23 +3140,40 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
 
     // The script runs as root and reads this directory, and a tempdir is
     // 0700 for whoever created it.
-    run_host(&["sudo", "chmod", "-R", "a+rX", path_str(dir.path())?])?;
-    // ...except the files with a credential in them, and it is a list
-    // rather than a line because it was a line and then a second
-    // credential arrived. That recursive chmod made the account's
-    // password hash readable by every local account for as long as the
-    // install ran; when `--restore` came along it did the same to the
-    // repository password, which decrypts every backup this person has,
-    // and only the hash was put back. Root, which is what actually reads
-    // these, needs no permission at all. The disk passphrase was never
-    // here: it goes to the script on stdin.
+    //
+    // The credentials are SKIPPED rather than widened and put back.
+    // This was `chmod -R a+rX` over everything followed by two `chmod
+    // 600` calls, which made the account's password hash and the backup
+    // repository password readable by every local account on the machine
+    // for the two process spawns in between, and longer on a sudo
+    // configuration that re-prompts. The comment that shipped with it
+    // already named the right answer: root, which is what actually reads
+    // these, needs no permission at all. So they never get any.
+    //
+    // `-prune` rather than a second pass, so there is no window at all
+    // rather than a smaller one. The disk passphrase was never here: it
+    // goes to the script on stdin, because `ps` shows argv.
     let mut credentials = vec![user_file.clone()];
     if restore.is_some() {
         credentials.push(dir.path().join("kuma-restore-secret"));
     }
-    for credential in &credentials {
-        run_host(&["sudo", "chmod", "600", path_str(credential)?])?;
+    let mut widen = vec![
+        "sudo".to_string(),
+        "find".to_string(),
+        path_str(dir.path())?.to_string(),
+        "(".to_string(),
+    ];
+    for (i, credential) in credentials.iter().enumerate() {
+        if i > 0 {
+            widen.push("-o".to_string());
+        }
+        widen.push("-path".to_string());
+        widen.push(path_str(credential)?.to_string());
     }
+    widen.extend(
+        [")", "-prune", "-o", "-exec", "chmod", "a+rX", "{}", "+"].iter().map(|s| s.to_string()),
+    );
+    run_host(&widen)?;
 
     // Read before, compared after. Installing to a file leaves a boot
     // entry in this machine's firmware naming a partition inside that
