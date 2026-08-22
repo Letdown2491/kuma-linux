@@ -865,9 +865,16 @@ if [ ! -r "$secret" ]; then
     exit 1
 fi
 
-set -a
-. "$secret"
-set +a
+# Nothing is sourced here. The values arrive through the unit's
+# EnvironmentFile=, and what this checks is that they arrived: an
+# unparseable file leaves the variable unset, and `set -u` would
+# otherwise abort with a message about a shell variable rather than
+# about the file somebody wrote.
+if [ -z "${RESTIC_REPOSITORY:-}" ]; then
+    echo "$secret set no RESTIC_REPOSITORY that systemd could parse" >&2
+    rm -f "$request"
+    exit 1
+fi
 
 # Same reason as the converger: a unit has no HOME, and restic will not
 # start without somewhere to cache.
@@ -908,6 +915,15 @@ Before=greetd.service
 
 [Service]
 Type=oneshot
+# systemd PARSES this; it never executes it. The script used to source
+# the same file, which ran whatever was on a right-hand side as root on
+# first boot, on a file concepts.md tells people to carry on the stick
+# beside the ISO. The backup timer beside this one already read it this
+# way, so the two halves of one file now agree.
+#
+# `-` so a missing file is not a unit failure: the script checks for it
+# and says so in words, which is the better message.
+EnvironmentFile=-/var/lib/kuma/secrets/restore.env
 ExecStart=/usr/libexec/kuma-restore
 TimeoutStartSec=infinity
 
@@ -4002,6 +4018,38 @@ mod tests {
 
     /// `kuma-launch` is valid bash. Every script kuma embeds has shipped
     /// unchecked at least once, and CI only shellchecks `scripts/`.
+    /// **No root-run script sources a credential file, and this is the
+    /// grep rather than the fix.**
+    ///
+    /// The restore unit ran `. /var/lib/kuma/secrets/restore.env` as
+    /// root on first boot, so `RESTIC_PASSWORD=$(curl ...|sh)` executed
+    /// with everything. That file is not the operator's own private
+    /// state either: concepts.md tells people to put it on the stick
+    /// beside the ISO, so it is designed to travel between machines and
+    /// hands.
+    ///
+    /// Measured rather than argued, because the difference is the whole
+    /// finding: reading `A=$(id -u)` through a read-and-export loop
+    /// yields the literal `$(id -u)`, and sourcing the same line yields
+    /// `1000`. systemd's EnvironmentFile= does the first.
+    #[test]
+    fn no_baked_script_sources_a_credential_file() {
+        for (name, script) in [
+            ("kuma-restore", RESTORE_SCRIPT),
+            ("kuma-backup", BACKUP_SCRIPT),
+            ("kuma-snapshot", SNAPSHOT_SCRIPT),
+            ("kuma-user-sync", USER_SYNC_SCRIPT),
+        ] {
+            for line in script.lines().map(str::trim) {
+                let sources = line.starts_with(". ") || line.starts_with("source ");
+                assert!(
+                    !(sources && line.contains("secret")),
+                    "{name} sources a credential file: {line}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn kuma_launch_parses_as_shell() {
         use std::io::Write;
@@ -4881,6 +4929,12 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
         assert!(RESTORE_SERVICE.contains("ConditionPathExists=/var/lib/kuma/restore-request"));
         // A home directory over a slow link outlasts any default.
         assert!(RESTORE_SERVICE.contains("TimeoutStartSec=infinity"));
+        // The credential is PARSED by systemd, never executed by a
+        // shell. See the sibling test below for what sourcing it did.
+        assert!(
+            RESTORE_SERVICE.contains("EnvironmentFile=-/var/lib/kuma/secrets/restore.env"),
+            "{RESTORE_SERVICE}"
+        );
 
         // Whatever the converger stores, this has to bring back. The
         // network connections were the entire reason for a knob, and
