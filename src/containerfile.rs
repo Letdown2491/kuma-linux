@@ -2057,22 +2057,48 @@ const NIRI_MENU_BIND: &str = r#"Mod+D hotkey-overlay-title="Applications" { spaw
 const NIRI_STOCK_LAUNCHER: &str =
     r#"Mod+D hotkey-overlay-title="Run an Application: fuzzel" { spawn "fuzzel"; }"#;
 
+/// niri's stock lock bind, and what kuma puts in its place.
+///
+/// This one is advertised on the Important Hotkeys overlay that opens on
+/// every first login, so a dead key here is the first thing a new
+/// machine shows a person. It was live until the shell replaced
+/// swaylock, and swaylock is now excluded from the image outright, which
+/// is exactly the shape of change that leaves a bind pointing at nothing.
+/// niri's stock screen-reader toggle. kuma has never shipped orca, so
+/// this has been a key that does nothing since the first niri image —
+/// hidden from the overlay by its own `=null`, which is why it survived
+/// this long. A dead accessibility key is worse than an absent one: it
+/// tells a screen-reader user the machine has a screen reader.
+const NIRI_STOCK_ORCA: &str = r#"Super+Alt+S allow-when-locked=true hotkey-overlay-title=null { spawn-sh "pkill orca || exec orca"; }"#;
+
+const NIRI_STOCK_LOCK: &str =
+    r#"Super+Alt+L hotkey-overlay-title="Lock the Screen: swaylock" { spawn "swaylock"; }"#;
+const NIRI_LOCK_BIND: &str = r#"Super+Alt+L hotkey-overlay-title="Lock the Screen" { spawn "noctalia" "msg" "session" "lock"; }"#;
+
+/// Titles are not decoration here. niri shows EVERY bind on the
+/// Important Hotkeys overlay and generates the label from the action, so
+/// an untitled `spawn` advertises itself as its own command line: the
+/// clipboard bind read as `sh -c cliphist list | fuzzel --dmenu | ...`
+/// on the first screen of a new machine. The three worth naming are
+/// named, and the media keys are hidden outright — they are printed on
+/// the keyboard, and ten of them crowd out everything worth reading.
+///
 /// Media-key binds routed through kuma-osd, spliced INTO the stock
 /// `binds {}` section during the merge (niri rejects a second binds
 /// node) while the stock wpctl/brightnessctl lines are sed-stripped.
-const NIRI_MEDIA_BINDS: &str = r#"    XF86AudioRaiseVolume allow-when-locked=true { spawn "/usr/libexec/kuma-osd" "volume-up"; }
-    XF86AudioLowerVolume allow-when-locked=true { spawn "/usr/libexec/kuma-osd" "volume-down"; }
-    XF86AudioMute allow-when-locked=true { spawn "/usr/libexec/kuma-osd" "mute"; }
-    XF86AudioMicMute allow-when-locked=true { spawn "wpctl" "set-mute" "@DEFAULT_AUDIO_SOURCE@" "toggle"; }
-    XF86MonBrightnessUp allow-when-locked=true { spawn "/usr/libexec/kuma-osd" "brightness-up"; }
-    XF86MonBrightnessDown allow-when-locked=true { spawn "/usr/libexec/kuma-osd" "brightness-down"; }
-    XF86AudioPlay allow-when-locked=true { spawn "playerctl" "play-pause"; }
-    XF86AudioStop allow-when-locked=true { spawn "playerctl" "stop"; }
-    XF86AudioNext allow-when-locked=true { spawn "playerctl" "next"; }
-    XF86AudioPrev allow-when-locked=true { spawn "playerctl" "previous"; }
-    Mod+Ctrl+V { spawn "sh" "-c" "cliphist list | fuzzel --dmenu | cliphist decode | wl-copy"; }
-    Mod+Alt+R { spawn "/usr/libexec/kuma-record"; }
-    Mod+Print { spawn "sh" "-c" "grim -g \"$(slurp)\" - | swappy -f -"; }
+const NIRI_MEDIA_BINDS: &str = r#"    XF86AudioRaiseVolume allow-when-locked=true hotkey-overlay-title=null { spawn "/usr/libexec/kuma-osd" "volume-up"; }
+    XF86AudioLowerVolume allow-when-locked=true hotkey-overlay-title=null { spawn "/usr/libexec/kuma-osd" "volume-down"; }
+    XF86AudioMute allow-when-locked=true hotkey-overlay-title=null { spawn "/usr/libexec/kuma-osd" "mute"; }
+    XF86AudioMicMute allow-when-locked=true hotkey-overlay-title=null { spawn "wpctl" "set-mute" "@DEFAULT_AUDIO_SOURCE@" "toggle"; }
+    XF86MonBrightnessUp allow-when-locked=true hotkey-overlay-title=null { spawn "/usr/libexec/kuma-osd" "brightness-up"; }
+    XF86MonBrightnessDown allow-when-locked=true hotkey-overlay-title=null { spawn "/usr/libexec/kuma-osd" "brightness-down"; }
+    XF86AudioPlay allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "play-pause"; }
+    XF86AudioStop allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "stop"; }
+    XF86AudioNext allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "next"; }
+    XF86AudioPrev allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "previous"; }
+    Mod+Ctrl+V hotkey-overlay-title="Clipboard History" { spawn "sh" "-c" "cliphist list | fuzzel --dmenu | cliphist decode | wl-copy"; }
+    Mod+Alt+R hotkey-overlay-title="Record the Screen" { spawn "/usr/libexec/kuma-record"; }
+    Mod+Print hotkey-overlay-title="Screenshot a Region, then Annotate" { spawn "sh" "-c" "grim -g \"$(slurp)\" - | swappy -f -"; }
 "#;
 
 /// GTK theme settings travel two roads: Wayland-native apps read
@@ -2577,7 +2603,7 @@ pub fn generate(config: &Config) -> String {
         // stops naming alacritty, fail the build instead of silently
         // shipping a Mod+T that spawns a terminal the image doesn't have.
         out.push_str(
-            &format!("RUN grep -q '\"alacritty\"' /usr/share/doc/niri/default-config.kdl \\\n    && grep -qF '{NIRI_STOCK_LAUNCHER}' /usr/share/doc/niri/default-config.kdl \\\n    && mkdir -p /etc/niri \\\n    && sed -e 's/alacritty/kitty/g' -e '/starts waybar/d' -e '/^spawn-at-startup \"waybar\"$/d' -e '/XF86Audio/d' -e '/XF86MonBrightness/d' -e 's|{NIRI_STOCK_LAUNCHER}|{NIRI_MENU_BIND}|' -e '/^binds {{/r /usr/lib/kuma/niri-binds.kdl' /usr/share/doc/niri/default-config.kdl > /etc/niri/config.kdl \\\n    && cat /usr/lib/kuma/niri-extras.kdl >> /etc/niri/config.kdl \\\n    && niri validate --config /etc/niri/config.kdl\n"),
+            &format!("RUN grep -q '\"alacritty\"' /usr/share/doc/niri/default-config.kdl \\\n    && grep -qF '{NIRI_STOCK_LAUNCHER}' /usr/share/doc/niri/default-config.kdl \\\n    && grep -qF '{NIRI_STOCK_LOCK}' /usr/share/doc/niri/default-config.kdl \\\n    && grep -qF '{NIRI_STOCK_ORCA}' /usr/share/doc/niri/default-config.kdl \\\n    && mkdir -p /etc/niri \\\n    && sed -e 's/alacritty/kitty/g' -e '/starts waybar/d' -e '/^spawn-at-startup \"waybar\"$/d' -e '/XF86Audio/d' -e '/XF86MonBrightness/d' -e 's|{NIRI_STOCK_LAUNCHER}|{NIRI_MENU_BIND}|' -e 's|{NIRI_STOCK_LOCK}|{NIRI_LOCK_BIND}|' -e '/pkill orca/d' -e '/^binds {{/r /usr/lib/kuma/niri-binds.kdl' /usr/share/doc/niri/default-config.kdl > /etc/niri/config.kdl \\\n    && cat /usr/lib/kuma/niri-extras.kdl >> /etc/niri/config.kdl \\\n    && niri validate --config /etc/niri/config.kdl\n"),
         );
         // Every "attach a file" button in every app did nothing, silently.
         //
@@ -5205,6 +5231,37 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
             NIRI_PACKAGES.contains(&"adwaita-icon-theme"),
             "the source of the icons is declared"
         );
+    }
+
+    /// No bind advertises a program the image does not have.
+    ///
+    /// The lock bind is the one that matters most: niri puts it on the
+    /// Important Hotkeys overlay that opens at first login, so a dead key
+    /// there is the first thing a new machine tells a person to press.
+    /// It went dead the moment swaylock left the set, silently, and it
+    /// took looking at a booted VM to notice.
+    #[test]
+    fn no_bind_names_a_program_the_image_excludes() {
+        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
+        // grepped for before the rewrite, so a niri release that rewords
+        // the line fails the build instead of shipping the dead key
+        assert!(out.contains(&format!("grep -qF '{NIRI_STOCK_LOCK}'")), "unguarded rewrite");
+        assert!(out.contains(&format!("s|{NIRI_STOCK_LOCK}|{NIRI_LOCK_BIND}|")), "not rewritten");
+        // Spawn lines only. The prose in NIRI_EXTRAS names every program
+        // the shell replaced, which is the point of it.
+        let spawns = [NIRI_MENU_BIND, NIRI_LOCK_BIND, NIRI_MEDIA_BINDS, NIRI_EXTRAS]
+            .iter()
+            .flat_map(|block| block.lines())
+            .map(str::trim)
+            .filter(|line| !line.starts_with("//") && line.contains("spawn"));
+        for line in spawns {
+            for excluded in NIRI_EXCLUDES {
+                assert!(
+                    !line.contains(excluded),
+                    "this spawns {excluded}, which the image excludes: {line}"
+                );
+            }
+        }
     }
 
     #[test]
