@@ -225,8 +225,14 @@ bad()  {
         guest 'systemctl --failed --no-pager --plain' || true
         guest 'systemctl --user --failed --no-pager --plain' || true
         guest 'loginctl list-sessions --no-legend' || true
-        guest 'journalctl -b -p err --no-pager | tail -30' || true
-        guest 'journalctl --user -b --no-pager | tail -40' || true
+        # The harness's own polling opens an ssh connection every few
+        # seconds, and a raw journal tail is then nothing but its own
+        # sshd-session disconnects: measured on the 2026-08-22 run, which
+        # lost the lines the dump exists to keep. greetd and the session
+        # log at info, so one tail is unfiltered by severity.
+        guest 'journalctl -b -p err --no-pager | tail -20' || true
+        guest 'journalctl -b --no-pager | grep -v sshd-session | tail -30' || true
+        guest 'journalctl --user -b --no-pager | grep -v sshd-session | tail -30' || true
     fi
     exit 1
 }
