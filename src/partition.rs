@@ -480,8 +480,19 @@ pub fn install_script(plan: &[Partition], encrypt: bool, swap_mib: Option<u64>) 
              echo \"kuma: it would never be activated, so this install stops here.\" >&2\n    \
              exit 1\n\
              fi\n\
-             cat >> \"$etc_fstab\" <<FSTAB\n{}FSTAB\n\n",
-            crate::hibernate::fstab_lines("$fs_uuid")
+             cat >> \"$etc_fstab\" <<FSTAB\n{}FSTAB\n\n\
+             # The lid's half of the same setup: this machine will have\n\
+             # somewhere to hibernate into, so closing it suspends first\n\
+             # and hibernates before the battery dies. Into the same\n\
+             # deployment /etc the fstab was found in, for the same\n\
+             # reason: $mnt/etc is not the etc that boots. First boot\n\
+             # reads it; nothing here restarts logind, because nothing\n\
+             # here has one to restart.\n\
+             lid_dir=$(dirname \"$etc_fstab\")/systemd/logind.conf.d\n\
+             mkdir -p \"$lid_dir\"\n\
+             cat > \"$lid_dir/kuma-suspend-then-hibernate.conf\" <<'LID'\n{}LID\n",
+            crate::hibernate::fstab_lines("$fs_uuid"),
+            crate::hibernate::lid_dropin()
         ),
         None => String::new(),
     };
@@ -1134,6 +1145,34 @@ mod tests {
         // And nothing of the sort appears when no swapfile was asked for.
         let plain = install_script(&plan(40 * 1024 * 1024 * 1024, false).unwrap(), false, None);
         assert!(!plain.contains("etc_fstab"), "no swapfile, no fstab surgery");
+    }
+
+    /// The lid's half rides the same glob the fstab was found by, into
+    /// the same deployment etc, and only when a swapfile was asked for:
+    /// an install with no hibernate gets no lid setting, which is the
+    /// combination doctor calls NotSet and stays silent about.
+    #[test]
+    fn a_swapfile_install_points_the_lid_at_suspend_then_hibernate() {
+        let script =
+            install_script(&plan(40 * 1024 * 1024 * 1024, false).unwrap(), false, Some(4096));
+        let dropin = script
+            .find("kuma-suspend-then-hibernate.conf")
+            .expect("the install writes the lid setting");
+        let fstab = script.find("<<FSTAB").expect("the fstab append");
+        assert!(fstab < dropin, "the lid write rides the etc the fstab search found");
+        assert!(
+            script.contains("HandleLidSwitch=suspend-then-hibernate"),
+            "the setting is the one the verb writes, or the two paths drift"
+        );
+        assert!(
+            script.contains("$(dirname \"$etc_fstab\")/systemd/logind.conf.d"),
+            "it lands in the deployment's /etc, not the root subvolume's"
+        );
+        let plain = install_script(&plan(40 * 1024 * 1024 * 1024, false).unwrap(), false, None);
+        assert!(
+            !plain.contains("suspend-then-hibernate"),
+            "no swapfile asked for, no lid setting installed"
+        );
     }
 
     /// Both scripts have to be shell before they are anything else. A

@@ -2808,16 +2808,24 @@ pub fn root_device(findmnt_source: &str) -> &str {
 /// compares those two numbers, which is the whole reason this check is
 /// worth its two `sudo` calls.
 fn check_hibernate(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
-    match hibernate::verdict(&hibernate::probe()) {
+    // Probed once for both gradings: the lid verdict is a pure function
+    // of the hibernate one plus one world-readable file, and asking the
+    // machine twice for the sake of two check names is the lesser
+    // version of the four-sudo probe this check used to be.
+    let status = hibernate::probe();
+    let verdict = hibernate::verdict(&status);
+    match &verdict {
         hibernate::Verdict::NotSet => {}
         // Warn, like the bootc and grub.cfg reads that also need root.
         // A check that cannot run says so; it does not invent an answer.
-        hibernate::Verdict::Unasked(detail) => report(Grade::Warn, "hibernate", detail, None),
-        hibernate::Verdict::Ready(detail) => report(Grade::Ok, "hibernate", detail, None),
+        hibernate::Verdict::Unasked(detail) => {
+            report(Grade::Warn, "hibernate", detail.clone(), None)
+        }
+        hibernate::Verdict::Ready(detail) => report(Grade::Ok, "hibernate", detail.clone(), None),
         hibernate::Verdict::Short(detail) => report(
             Grade::Warn,
             "hibernate",
-            detail,
+            detail.clone(),
             Some(Action::new(
                 "resize",
                 "kuma hibernate --off --yes, then kuma hibernate --size <bigger> --yes",
@@ -2831,7 +2839,7 @@ fn check_hibernate(report: &mut impl FnMut(Grade, &str, String, Option<Action>))
         hibernate::Verdict::Refused(detail) => report(
             Grade::Warn,
             "hibernate",
-            detail,
+            detail.clone(),
             Some(Action::new(
                 "reclaim",
                 "kuma hibernate --off --yes",
@@ -2841,11 +2849,39 @@ fn check_hibernate(report: &mut impl FnMut(Grade, &str, String, Option<Action>))
         hibernate::Verdict::Broken(detail) => report(
             Grade::Fail,
             "hibernate",
-            detail,
+            detail.clone(),
             Some(Action::new(
                 "repair",
                 "kuma hibernate --yes",
                 "relabel the swapfile and put the kernel arguments back in step",
+            )),
+        ),
+    }
+    // The lid, beside hibernate and after it: a separate setting with a
+    // separate name, so an assertion (and a reader) can ask for it
+    // alone, and so hibernate's own grade stays about the swapfile and
+    // the kernel arguments.
+    match hibernate::lid_verdict(&verdict, status.lid_dropin) {
+        hibernate::LidVerdict::Silent => {}
+        hibernate::LidVerdict::Ok(detail) => report(Grade::Ok, "lid", detail, None),
+        hibernate::LidVerdict::Missing(detail) => report(
+            Grade::Fail,
+            "lid",
+            detail,
+            Some(Action::new(
+                "repair",
+                "kuma hibernate --yes",
+                "write the lid's suspend-then-hibernate setting; it rides the repair",
+            )),
+        ),
+        hibernate::LidVerdict::Stale(detail) => report(
+            Grade::Warn,
+            "lid",
+            detail,
+            Some(Action::new(
+                "take back",
+                "kuma hibernate --off --yes",
+                "remove the lid setting along with the rest of what it no longer rides on",
             )),
         ),
     }

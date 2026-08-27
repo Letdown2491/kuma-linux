@@ -72,6 +72,39 @@ pub const FILE: &str = "/var/swap/swapfile";
 /// which is behaving correctly.
 pub const PRIORITY: i32 = -2;
 
+/// Where the lid's suspend-then-hibernate setting lives, once the
+/// swapfile below has given the machine somewhere to hibernate into.
+pub const LID_DROPIN: &str = "/etc/systemd/logind.conf.d/kuma-suspend-then-hibernate.conf";
+
+/// The whole of the lid half of hibernate.
+///
+/// Closing a laptop lid is the dominant suspend trigger, and logind is
+/// what answers it, so the setting is a logind drop-in rather than a
+/// sleep.conf one: sleep.conf tunes what suspend-then-hibernate does
+/// once invoked (its `HibernateDelaySec` and friends) but cannot make
+/// anything invoke it, while `HandleLidSwitch` is the switch itself.
+/// The shell's own suspend paths stay plain suspend on purpose: its
+/// session actions try `systemctl suspend` first and nothing kuma ships
+/// should turn an explicit "suspend" button into a hibernate, and its
+/// idle behaviors only ever lock and turn the screen off.
+///
+/// Nothing sets `HibernateDelaySec`, which is the deliberate half of
+/// this: with a battery and no delay configured, systemd-sleep wakes on
+/// the firmware's own low-battery alarm and hibernates just before the
+/// machine would have died, which beats any fixed number kuma could
+/// guess. Only a machine with no battery falls back to the 2h default.
+///
+/// No logind restart anywhere, on any path that writes this. Restarting
+/// logind on a running desktop is disruptive, and nothing needs it: the
+/// runtime verb's resume kernel arguments demand a reboot, the install
+/// path is read at first boot, and both of those reload logind for free.
+pub fn lid_dropin() -> String {
+    "[Login]\n\
+     HandleLidSwitch=suspend-then-hibernate\n\
+     HandleLidSwitchExternalPower=suspend-then-hibernate\n"
+        .to_string()
+}
+
 /// Below this a swapfile is not a hibernate image, it is a mistake with
 /// a unit suffix. The smallest machine anyone hibernates has more than a
 /// gibibyte of memory, so a smaller file can only be a typo.
@@ -529,10 +562,10 @@ pub fn enable_script() -> String {
          # has none at all, and systemd-sleep must search the directory\n\
          # before it can read the file inside it. Tolerated when absent,\n\
          # because a machine without SELinux has nothing to label.\n\
-         restorecon -RF {MOUNT} 2>/dev/null || true\n\
-         systemctl start \"$(systemd-escape -p --suffix=swap {FILE})\"\n\n\
-         # Last line, and the only thing on stdout: the caller reads it.\n\
-         echo \"$swap_offset\"\n",
+          restorecon -RF {MOUNT} 2>/dev/null || true\n\
+          systemctl start \"$(systemd-escape -p --suffix=swap {FILE})\"\n\n\
+          # Last line, and the only thing on stdout: the caller reads it.\n\
+          echo \"$swap_offset\"\n",
         create = create_script(),
         fstab = fstab_lines("$fs_uuid"),
     )
@@ -576,11 +609,15 @@ pub fn disable_script() -> String {
          rmdir \"$fsmnt\" 2>/dev/null || true\n\
          }}\n\
          trap cleanup EXIT\n\
-         mount -o subvolid=5 \"$dev\" \"$fsmnt\"\n\
-         if [ -d \"$fsmnt/{SUBVOL}\" ]; then\n    \
-         rm -f \"$fsmnt/{SUBVOL}/swapfile\"\n    \
-         btrfs subvolume delete \"$fsmnt/{SUBVOL}\" >/dev/null\n\
-         fi\n"
+          mount -o subvolid=5 \"$dev\" \"$fsmnt\"\n\
+          if [ -d \"$fsmnt/{SUBVOL}\" ]; then\n    \
+          rm -f \"$fsmnt/{SUBVOL}/swapfile\"\n    \
+          btrfs subvolume delete \"$fsmnt/{SUBVOL}\" >/dev/null\n\
+          fi\n\n\
+          # The lid goes back to plain suspend with the rest of it. No\
+          # logind restart: the reboot the karg removal below asks for\
+          # reloads it, same as the one that put the setting in did.\n\
+          rm -f {LID_DROPIN}\n"
     )
 }
 
@@ -703,6 +740,9 @@ pub struct Status {
     /// anything inside it, so a labelled file in an unlabelled directory
     /// fails exactly as a mislabelled file does.
     pub mount_selinux_type: Option<String>,
+    /// Whether the lid is set to suspend-then-hibernate. Needs no
+    /// privilege: /etc is world-readable, and the drop-in is kuma's own.
+    pub lid_dropin: bool,
 }
 
 /// Ask this machine everything the verdict needs.
@@ -785,6 +825,12 @@ pub fn probe() -> Status {
         lockdown: lockdown.as_deref().and_then(active_lockdown),
         selinux_type: selinux,
         mount_selinux_type: mount_selinux,
+        // Graded by setting, not by byte equality: a person who adds a
+        // HibernateDelaySec to kuma's own file has tuned it, not broken
+        // it, and the question doctor asks is whether the lid still
+        // suspend-then-hibernates.
+        lid_dropin: std::fs::read_to_string(LID_DROPIN)
+            .is_ok_and(|text| text.contains("HandleLidSwitch=suspend-then-hibernate")),
     }
 }
 
@@ -928,6 +974,55 @@ pub fn verdict(status: &Status) -> Verdict {
     }
 }
 
+/// What doctor says about the lid, given the hibernate verdict it sits
+/// beside. A separate answer because it is a separate setting: the
+/// swapfile can be perfect while the lid still only suspends, and a
+/// machine can carry the lid setting with no swapfile behind it.
+#[derive(Debug, PartialEq)]
+pub enum LidVerdict {
+    /// Nothing to say: hibernate itself is off, broken, or unasked, and
+    /// whichever of those it is gets its own line from its own check.
+    /// A machine whose hibernate is broken has no use for a lid grading,
+    /// and one that never asked for hibernate owes nobody a lid line.
+    Silent,
+    /// Hibernate works and the lid uses it.
+    Ok(String),
+    /// Hibernate works and the lid does not use it: the machine will
+    /// suspend into a battery that runs out instead of hibernating.
+    Missing(String),
+    /// The lid setting is here and hibernate is not. systemd falls back
+    /// to plain suspend, so nothing is dangerous; it is drift between
+    /// two things kuma owns, which is the shape doctor names.
+    Stale(String),
+}
+
+/// Grade the lid against the hibernate it is supposed to ride on.
+pub fn lid_verdict(hibernate: &Verdict, lid_dropin: bool) -> LidVerdict {
+    match (hibernate, lid_dropin) {
+        // Ready means the machine can really hibernate, so the promise
+        // the lid makes is one it can keep: suspend first, hibernate
+        // when the battery says so, and either way the session comes
+        // back locked.
+        (Verdict::Ready(_), true) => LidVerdict::Ok(
+            "closing the lid suspends, then hibernates before the battery runs out".into(),
+        ),
+        (Verdict::Ready(_), false) => LidVerdict::Missing(
+            "hibernate is set up but closing the lid only suspends, so a machine left \
+             asleep in a bag drains and dies instead of hibernating"
+                .into(),
+        ),
+        (Verdict::NotSet, true) => LidVerdict::Stale(
+            "the lid is set to suspend-then-hibernate but there is no swapfile to \
+             hibernate into, so it silently falls back to plain suspend"
+                .into(),
+        ),
+        // Every other hibernate verdict already says something is wrong
+        // with hibernation itself; a second line about the lid would be
+        // doctor listing features rather than grading them.
+        _ => LidVerdict::Silent,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -958,6 +1053,7 @@ mod tests {
             lockdown: None,
             selinux_type: None,
             mount_selinux_type: None,
+            lid_dropin: false,
         };
         assert!(
             matches!(verdict(&unreadable), Verdict::Unasked(_)),
@@ -1070,6 +1166,7 @@ mod tests {
             lockdown: Some("none".into()),
             selinux_type: Some(SWAPFILE_TYPE.into()),
             mount_selinux_type: Some("var_t".into()),
+            lid_dropin: false,
         };
         match verdict(&status) {
             Verdict::Broken(why) => {
@@ -1100,6 +1197,7 @@ mod tests {
             lockdown: Some("none".into()),
             selinux_type: Some(SWAPFILE_TYPE.into()),
             mount_selinux_type: Some("var_t".into()),
+            lid_dropin: false,
         };
         assert!(matches!(verdict(&ready), Verdict::Ready(_)));
 
@@ -1120,6 +1218,7 @@ mod tests {
             lockdown: None,
             selinux_type: None,
             mount_selinux_type: None,
+            lid_dropin: false,
         };
         assert!(matches!(verdict(&no_karg), Verdict::Broken(_)));
 
@@ -1147,6 +1246,7 @@ mod tests {
             lockdown: None,
             selinux_type: None,
             mount_selinux_type: None,
+            lid_dropin: false,
         };
         assert!(matches!(verdict(&inactive), Verdict::Broken(_)));
     }
@@ -1185,6 +1285,7 @@ mod tests {
             lockdown: Some("integrity".into()),
             selinux_type: Some(SWAPFILE_TYPE.into()),
             mount_selinux_type: Some("var_t".into()),
+            lid_dropin: false,
         };
         match verdict(&perfect) {
             Verdict::Refused(why) => {
@@ -1231,6 +1332,7 @@ mod tests {
             // therefore what a plain restorecon produces.
             selinux_type: Some("var_t".into()),
             mount_selinux_type: Some("var_t".into()),
+            lid_dropin: false,
         };
         match verdict(&mislabelled) {
             Verdict::Broken(why) => {
@@ -1267,6 +1369,7 @@ mod tests {
             lockdown: Some("none".into()),
             selinux_type: Some(SWAPFILE_TYPE.into()),
             mount_selinux_type: dir.map(str::to_string),
+            lid_dropin: false,
         };
         // No label at all, which is what the installer leaves behind.
         match verdict(&with_dir(None)) {
@@ -1458,5 +1561,86 @@ mod tests {
         let deferred = kargs("$fs_uuid", "$swap_offset");
         assert_eq!(deferred[0], "resume=UUID=$fs_uuid");
         assert_eq!(deferred[1], "resume_offset=$swap_offset");
+    }
+
+    /// The lid setting is two lines, one section, and deliberately names
+    /// no HibernateDelaySec: the battery-alarm behavior that comes from
+    /// NOT naming one is the product. Pinned so a future edit that
+    /// "helpfully" adds a delay fails here rather than shipping a
+    /// machine that hibernates on a timer instead of on the battery's
+    /// own word.
+    #[test]
+    fn the_lid_setting_is_the_switch_and_no_timer() {
+        let dropin = lid_dropin();
+        assert_eq!(
+            dropin,
+            "[Login]\nHandleLidSwitch=suspend-then-hibernate\n\
+             HandleLidSwitchExternalPower=suspend-then-hibernate\n"
+        );
+        assert!(!dropin.contains("HibernateDelaySec"), "the delay is the battery's to say");
+        assert_eq!(
+            LID_DROPIN, "/etc/systemd/logind.conf.d/kuma-suspend-then-hibernate.conf",
+            "the path is a promise the installer and the verb both write to"
+        );
+    }
+
+    /// Taking hibernate away takes the lid setting with it: a drop-in
+    /// that outlives its swapfile is the stale state lid_verdict names,
+    /// and this verb is the only thing that could have left it.
+    #[test]
+    fn disabling_takes_the_lid_setting_with_it() {
+        let script = disable_script();
+        let rm = script.find(&format!("rm -f {LID_DROPIN}")).expect("it removes the drop-in");
+        let delete = script.find("subvolume delete").expect("it deletes the subvolume");
+        assert!(
+            delete < rm,
+            "the swapfile goes first; the lid setting is the cheapest thing there"
+        );
+    }
+
+    /// The lid grades against the hibernate it rides on, and each
+    /// combination says its own thing. Ready-without-it is the failure
+    /// that matters most: a machine that CAN hibernate and never will,
+    /// because the one trigger laptops actually use was never pointed
+    /// at it.
+    #[test]
+    fn the_lid_is_graded_against_the_hibernate_it_rides_on() {
+        let ready = Verdict::Ready("swapfile active".into());
+        assert_eq!(
+            lid_verdict(&ready, true),
+            LidVerdict::Ok(
+                "closing the lid suspends, then hibernates before the battery runs out".into()
+            )
+        );
+        assert_eq!(
+            lid_verdict(&ready, false),
+            LidVerdict::Missing(
+                "hibernate is set up but closing the lid only suspends, so a machine left \
+             asleep in a bag drains and dies instead of hibernating"
+                    .into()
+            )
+        );
+        assert_eq!(
+            lid_verdict(&Verdict::NotSet, true),
+            LidVerdict::Stale(
+                "the lid is set to suspend-then-hibernate but there is no swapfile to \
+             hibernate into, so it silently falls back to plain suspend"
+                    .into()
+            )
+        );
+        assert_eq!(lid_verdict(&Verdict::NotSet, false), LidVerdict::Silent);
+        // A machine whose hibernate is already broken, short, refused or
+        // unasked has its line from the hibernate check; the lid stays
+        // quiet rather than piling on.
+        for verdict in [
+            Verdict::Broken("no swapfile".into()),
+            Verdict::Short("too small".into()),
+            Verdict::Refused("locked down".into()),
+            Verdict::Unasked("needs sudo".into()),
+        ] {
+            for lid in [true, false] {
+                assert_eq!(lid_verdict(&verdict, lid), LidVerdict::Silent);
+            }
+        }
     }
 }

@@ -1838,12 +1838,46 @@ while read -r id _rest; do
     [ "$type" = "wayland" ] || continue
     user=$(loginctl show-session "$id" -p Name --value 2>/dev/null || true)
     [ -n "$user" ] || continue
-    # The shell owns every lock path on this desktop. If it is running,
-    # its own inhibitor already held sleep long enough to lock.
-    if pgrep -u "$user" -x noctalia >/dev/null 2>&1; then
+    # A process is not proof the shell can act. 0.17's residual case is
+    # a shell that hangs rather than exits: it holds its logind delay
+    # inhibitor, never locks, logind waits out InhibitDelayMaxSec and
+    # suspends anyway, and the machine sleeps with the desktop on
+    # screen while pgrep says everything is fine. So the process is
+    # checked and then ASKED: the shell owns org.freedesktop.ScreenSaver
+    # on its session bus from its first moment (sdbus-c++ takes the name
+    # at connect), and Peer.Ping is answered by sd-bus itself, no shell
+    # code involved. A live shell answers in milliseconds whatever else
+    # it is doing; a hung one has an event loop that is not turning, and
+    # no answer comes. That a ping needs no argument and has no side
+    # effect is the whole reason it is the probe.
+    if ! pgrep -u "$user" -x noctalia >/dev/null 2>&1; then
+        logger -t kuma-sleep-guard         "the desktop shell is not running in session $id; ending it rather than suspending an unlocked session"
+        loginctl terminate-session "$id" || true
+        continue
+    fi
+    # Without both halves of the probe there is no probe, and a guard
+    # that cannot ask must not guess: the machine falls back to the
+    # process check, which is the 0.17 answer and not a wrong one.
+    # runuser rather than sudo: this unit runs as root, where runuser
+    # asks nobody's permission, while sudo -u with an env_reset policy
+    # would strip the XDG_RUNTIME_DIR the probe depends on and turn
+    # every healthy shell into a false "not answering".
+    command -v busctl >/dev/null 2>&1 || exit 0
+    command -v runuser >/dev/null 2>&1 || exit 0
+    uid=$(id -u "$user")
+    probe() {
+        runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
+            busctl --user --timeout=3 call \
+            org.freedesktop.ScreenSaver /org/freedesktop/ScreenSaver \
+            org.freedesktop.DBus.Peer Ping >/dev/null 2>&1
+    }
+    # Twice, because the verdict is destructive and the timeout is short:
+    # a shell that was merely busy answers the second ping, and a hung
+    # one has now ignored six seconds of asking.
+    if probe || probe; then
         exit 0
     fi
-    logger -t kuma-sleep-guard         "the desktop shell is not running in session $id; ending it rather than suspending an unlocked session"
+    logger -t kuma-sleep-guard         "the desktop shell in session $id is running but not answering; ending it rather than suspending an unlocked session"
     loginctl terminate-session "$id" || true
 done < <(loginctl list-sessions --no-legend 2>/dev/null || true)
 "#;
@@ -4488,6 +4522,29 @@ mod tests {
         // machine sleeping with the desktop on screen.
         assert!(SLEEP_GUARD.contains("pgrep -u \"$user\" -x noctalia"), "{SLEEP_GUARD}");
         assert!(SLEEP_GUARD.contains("loginctl terminate-session"), "{SLEEP_GUARD}");
+        // The residual case: a shell that hangs rather than exits. The
+        // process check passes it; the guard must then ASK the shell,
+        // over the session bus it owns from its first moment, and end
+        // the session when nothing answers. Peer.Ping because sd-bus
+        // answers it without shell code, and runuser because sudo's
+        // env_reset would strip the XDG_RUNTIME_DIR the probe needs and
+        // turn every healthy shell into a false positive.
+        assert!(
+            SLEEP_GUARD.contains("org.freedesktop.DBus.Peer Ping"),
+            "the probe is a ping, not a guess"
+        );
+        assert!(
+            SLEEP_GUARD.contains("runuser -u \"$user\" -- env XDG_RUNTIME_DIR"),
+            "the probe runs as the session's user with the session's runtime dir"
+        );
+        assert!(
+            SLEEP_GUARD.contains("if probe || probe; then"),
+            "the destructive verdict needs two failures, not one"
+        );
+        assert!(
+            SLEEP_GUARD.contains("not answering"),
+            "the hung-shell termination says why, in the journal"
+        );
         // And it runs on the way down, on every path into sleep.
         assert!(SLEEP_GUARD_SERVICE.contains("Before=sleep.target"), "{SLEEP_GUARD_SERVICE}");
         assert!(SLEEP_GUARD_SERVICE.contains("WantedBy=sleep.target"), "{SLEEP_GUARD_SERVICE}");

@@ -537,6 +537,18 @@ smoke_install() {
         || bad "nothing in fstab mounts the subvolume the swapfile is on"
     ok "the installed fstab mounts and activates the swapfile"
 
+    # The lid's half of the same setup, in the deployment etc the fstab
+    # was found in: a swapfile with a lid that only suspends is a machine
+    # doctor grades as hibernating on paper only, straight off the
+    # install.
+    local lid_dropin
+    lid_dropin="$(dirname "$fstab")/systemd/logind.conf.d/kuma-suspend-then-hibernate.conf"
+    sudo test -f "$lid_dropin" \
+        || bad "no suspend-then-hibernate lid setting beside the installed fstab"
+    sudo grep -q 'HandleLidSwitch=suspend-then-hibernate' "$lid_dropin" \
+        || bad "the installed lid setting does not suspend-then-hibernate"
+    ok "the installed lid suspends, then hibernates"
+
     # No /var/home assertion here on purpose: the image ships none, and
     # tmpfiles creates it at first boot. Whether it is a subvolume is a
     # question for a booted machine, and smoke_boot asks it.
@@ -1432,6 +1444,17 @@ smoke_published() {
             "doctor grades hibernate '$hib_grade' on a machine installed with --swap"
         ok "doctor grades hibernate ok before the machine is asked to do it"
 
+        # The lid's verdict beside it: this machine was installed with
+        # --swap, so the install wrote the suspend-then-hibernate setting
+        # and doctor must say so. This is what ties that file, which the
+        # disk asserts in the install stage, to the running machine's
+        # account of itself.
+        local lid_grade
+        lid_grade=$(doctor_grade lid)
+        [ "$lid_grade" = ok ] || bad \
+            "doctor grades lid '$lid_grade' on a machine installed with --swap"
+        ok "doctor grades the lid suspend-then-hibernate before the machine is asked to do it"
+
         # Whether the kernel will do it at all, asked of the file that
         # decides: /sys/power/state lists `disk` only when
         # hibernation_available() says so. A file rather than a service,
@@ -1670,6 +1693,106 @@ smoke_published() {
             [ "$hib_grade" = ok ] || bad \
                 "doctor grades hibernate '$hib_grade' after a successful resume"
             ok "doctor still grades hibernate ok on the resumed machine"
+
+            # --- the whole point of 0.18's item 1 ------------------------
+            #
+            # A suspend-then-hibernate cycle, which is a different machine
+            # path than the plain one above: suspend to RAM first, wake on
+            # the RTC alarm systemd-sleep sets, then hibernate from that
+            # suspended state. The lid setting itself cannot be driven
+            # from here (no VM has a lid), so this drives the unit the lid
+            # would start; what the lid adds is only logind's choice of
+            # this unit, and that choice is asserted as a file on the
+            # installed disk and as doctor's `lid` grade above.
+            #
+            # The delay is harness-only, and it exists because a VM has no
+            # battery: with none and no HibernateDelaySec, systemd waits
+            # 2h before waking to hibernate, which no run has. On real
+            # hardware the product deliberately sets no delay, because a
+            # battery makes the low-battery alarm a better trigger than
+            # any number. Written into the machine rather than the
+            # command line because systemd-sleep reads it at unit start.
+            echo "   .. suspend-then-hibernate"
+            gsudo "mkdir -p /etc/systemd/sleep.conf.d && printf '%s\\n' '[Sleep]' 'HibernateDelaySec=15' > /etc/systemd/sleep.conf.d/kuma-smoke.conf" \
+                || bad "cannot stage the harness's short hibernate delay"
+
+            local s2h_boot_id s2h_uptime
+            s2h_boot_id=$(guest cat /proc/sys/kernel/random/boot_id)
+            s2h_uptime=$(guest "cut -d' ' -f1 /proc/uptime")
+            [ -n "$s2h_boot_id" ] || bad "could not read the boot_id before suspend-then-hibernate"
+            [ -n "$s2h_uptime" ] || bad "could not read /proc/uptime before suspend-then-hibernate"
+
+            # Same unit-starting trick as the plain cycle: logind's polkit
+            # is not in the way of the manager, and --no-block because the
+            # suspend is about to take the ssh session with it.
+            local s2h_said
+            s2h_said=$(gsudo "systemctl start --no-block systemd-suspend-then-hibernate.service 2>&1" || true)
+            [ -n "$s2h_said" ] && echo "   .. $s2h_said"
+
+            # Suspend first, for at least the 15s delay, then the image
+            # write, then S4 powers off and qemu exits. The plain cycle's
+            # 300s ceiling covers both stages here with room to spare.
+            local s2h_waited=0
+            while kill -0 "$qemu" 2>/dev/null && [ $s2h_waited -lt 300 ]; do
+                sleep 5
+                s2h_waited=$((s2h_waited + 5))
+            done
+            kill -0 "$qemu" 2>/dev/null \
+                && bad "still running 300s after suspend-then-hibernate; console at $log"
+            ok "suspended, woke on the alarm, hibernated, powered off after ${s2h_waited}s"
+
+            # The image must be on the disk for this cycle too, at the
+            # same offset: a suspend-then-hibernate that reached S4 without
+            # writing one is the identical silent failure the plain cycle's
+            # signature check exists for.
+            if [ -n "$resume_pages" ]; then
+                local part_start byte sig
+                part_start=$(sudo sfdisk -J "$raw" 2>/dev/null \
+                    | python3 -c 'import sys,json; print(json.load(sys.stdin)["partitiontable"]["partitions"][2]["start"])' \
+                    2>/dev/null || true)
+                if [ -n "$part_start" ]; then
+                    byte=$(( part_start * 512 + resume_pages * 4096 + 4086 ))
+                    sig=$(sudo dd if="$raw" bs=1 skip="$byte" count=10 status=none 2>/dev/null | tr -d '\0' || true)
+                    case "$sig" in
+                        S1SUSPEND) ok "the suspend-then-hibernate image is on the disk where resume_offset points" ;;
+                        *) bad "no hibernation image after suspend-then-hibernate: the swap header at resume_offset reads '${sig:-nothing}'" ;;
+                    esac
+                fi
+            fi
+
+            echo "   .. starting it again"
+            # A fresh mark: the console is one file across boots, and the
+            # S4 wake that answers the boot_id question below is in THIS
+            # boot's output, not the plain cycle's.
+            local s2h_console_mark
+            s2h_console_mark=$(( $(stat -c %s "$log" 2>/dev/null || echo 0) + 1 ))
+            boot_vm plain
+            await_healthy_boot "$qemu" "$log" \
+                "it came back up after suspend-then-hibernate" \
+                "greenboot still says this boot is healthy" \
+                " after the s2h resume"
+
+            local s2h_after_id s2h_after_uptime
+            s2h_after_id=$(guest cat /proc/sys/kernel/random/boot_id)
+            [ -n "$s2h_after_id" ] || bad "could not read the boot_id after the s2h resume"
+            if [ "$s2h_after_id" != "$s2h_boot_id" ]; then
+                # The same distinction the retry loop makes above: a
+                # resumed-then-reset guest is QEMU's artifact, a never-
+                # resumed one is the product's bug.
+                if tail -c "+$s2h_console_mark" "$log" 2>/dev/null \
+                    | grep -q "Waking up from system sleep state S4"; then
+                    warn "the s2h resume loaded the image and then the guest reset (same QEMU artifact as the plain cycle)"
+                else
+                    bad "the machine did not resume from suspend-then-hibernate: boot_id moved ${s2h_boot_id:0:8} -> ${s2h_after_id:0:8} with no S4 wake on the console. Console at $log"
+                fi
+            else
+                guest "test -f /run/kuma-resumed" || bad \
+                    "same boot_id after s2h but the tmpfs marker is gone; console at $log"
+                s2h_after_uptime=$(guest "cut -d' ' -f1 /proc/uptime" || true)
+                awk -v a="$s2h_uptime" -v b="$s2h_after_uptime" 'BEGIN { exit !(b + 0 >= a + 0) }' \
+                    || bad "uptime went backwards across the s2h cycle ($s2h_uptime -> $s2h_after_uptime)"
+                ok "resumed from suspend-then-hibernate: same boot_id, marker survived, uptime continued"
+            fi
         else
             warn "the guest resumed and then reset itself on all $reset_seen attempts (known QEMU artifact; hardware resumes and stays up, 2026-08-21)"
             echo "        Every attempt loaded the image and reached \`Waking up from"

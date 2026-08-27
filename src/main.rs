@@ -2489,6 +2489,7 @@ fn hibernate_cmd(size: Option<String>, off: bool, yes: bool, json: bool) -> Resu
         for karg in hibernate::kargs("<the root filesystem's UUID>", "<the file's offset>") {
             println!("  {karg}");
         }
+        println!("  the lid suspends, then hibernates before the battery dies");
         for warning in &warnings {
             println!("\n  {warning}");
         }
@@ -2541,6 +2542,26 @@ fn hibernate_cmd(size: Option<String>, off: bool, yes: bool, json: bool) -> Resu
         .trim()
         .to_string();
 
+    // The lid's half, on both paths, because only the create path runs
+    // the script above and a machine being repaired for drifted kargs
+    // is exactly the machine whose lid setting was lost with them.
+    // `install -D` makes the directory, and no logind restart is needed
+    // for the same reason the script does not issue one: the reboot the
+    // kernel arguments below demand is what puts this into effect.
+    note("Pointing the lid at suspend-then-hibernate...");
+    let lid = tempfile::tempdir().context("cannot create a working directory")?;
+    std::fs::write(lid.path().join("lid.conf"), hibernate::lid_dropin())
+        .context("cannot stage the lid setting")?;
+    run_host(&[
+        "sudo",
+        "install",
+        "-Dm",
+        "0644",
+        path_str(&lid.path().join("lid.conf"))?,
+        hibernate::LID_DROPIN,
+    ])
+    .context("cannot write the lid's suspend-then-hibernate setting")?;
+
     note("Setting the kernel arguments...");
     let args = hibernate::karg_arguments(&cmdline, &fs_uuid, &offset.to_string());
     let mut argv = vec!["sudo".to_string(), "rpm-ostree".to_string()];
@@ -2555,6 +2576,7 @@ fn hibernate_cmd(size: Option<String>, off: bool, yes: bool, json: bool) -> Resu
             "{}",
             serde_json::json!({
                 "ok": true, "enabled": true, "repairing": repairing,
+                "lid": "suspend-then-hibernate",
                 "swap_mib": size_mib, "resume_offset": offset, "resume": format!("UUID={fs_uuid}"),
                 "warnings": warnings,
                 "actions": [action_json(&reboot)],
@@ -2590,7 +2612,10 @@ fn hibernate_off(
     let stripped = hibernate::strip_fstab(&fstab);
     let kargs = hibernate::karg_removal(cmdline);
     let file = std::path::Path::new(hibernate::FILE).exists();
-    if !file && stripped == fstab && kargs.is_empty() {
+    // The lid setting goes with the rest: it is half of one feature, and
+    // leaving it behind is the stale state doctor names, not a choice.
+    let lid = std::path::Path::new(hibernate::LID_DROPIN).exists();
+    if !file && stripped == fstab && kargs.is_empty() && !lid {
         if json {
             println!(
                 "{}",
@@ -2609,7 +2634,7 @@ fn hibernate_off(
                 "{}",
                 serde_json::json!({
                     "ok": true, "dry_run": true, "swapfile": file,
-                    "fstab_lines": stripped != fstab, "kargs": !kargs.is_empty(),
+                    "fstab_lines": stripped != fstab, "kargs": !kargs.is_empty(), "lid": lid,
                     "actions": [action_json(&action)],
                 })
             );
@@ -2628,6 +2653,9 @@ fn hibernate_off(
         }
         if !kargs.is_empty() {
             println!("  resume= and resume_offset= removed from the kernel arguments");
+        }
+        if lid {
+            println!("  the lid back to plain suspend");
         }
         println!("\nNothing has been changed.");
         print_actions(&[action]);

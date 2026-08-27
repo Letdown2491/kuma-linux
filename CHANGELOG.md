@@ -8,6 +8,26 @@ differently. Why it changed belongs in the commit that made it.
 
 ### Added
 
+- **A machine with a swapfile closes its lid into suspend-then-hibernate.**
+  Hibernate stops being something only a menu can ask for: `kuma install
+  --swap` and `kuma hibernate` now also point the lid at
+  suspend-then-hibernate, so a laptop asleep in a bag hibernates before
+  the battery dies instead of draining out. On battery nothing times it:
+  the machine hibernates on the firmware's own low-battery alarm, which
+  knows the battery better than any setting could. Takes effect on the
+  reboot the resume kernel arguments already demand; `kuma hibernate
+  --off` takes it away with the rest. `kuma doctor` grades the lid
+  beside hibernate: a machine that can hibernate but whose lid only
+  suspends fails, and a lid setting with no swapfile behind it warns.
+
+- **A hung desktop shell no longer suspends into an unlocked session.**
+  The boot-time guard already ended a session whose shell had died; a
+  shell that hangs rather than exits passed it, because a process
+  existing is not a process locking. The guard now asks the shell, over
+  the session bus it owns from its first moment, and ends the session
+  when nothing answers twice: the machine sleeps showing a greeter
+  either way, but only one of them was showing your work.
+
 - **Every machine boots under a splash, and an encrypted one asks for its
   passphrase through it.** plymouth is base layer now, with a vendored
   spinner theme (spinner_alt, GPL-3.0, credited in `assets/CREDITS.md`):
