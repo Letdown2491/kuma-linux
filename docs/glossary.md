@@ -59,6 +59,17 @@ this. Not the same as **zram**, which is swap inside memory and therefore
 cannot hold a copy of it. Unavailable on a machine that booted with Secure
 Boot, because the kernel is then locked down; see **Lockdown**.
 
+**Suspend-then-hibernate.** Suspending first and hibernating only when the
+battery demands it, which is what closing the lid does on a kuma machine with
+a swapfile: the firmware's low-battery alarm wakes the machine just before it
+would die, and it hibernates then. The session survives either way, and the
+battery survives the bag.
+
+**Plymouth.** The program that owns the screen between the firmware and the
+login screen, so boot messages need not flash by in text. Kuma's image builds
+it into the initramfs and gives it a spinner theme, which is also what draws
+the encrypted disk's passphrase prompt.
+
 **Lockdown.** A kernel mode that blocks operations able to read or write kernel
 memory. Booting with Secure Boot turns it on in `integrity` mode, and one of
 the things it blocks is hibernation, since a hibernate image is a way to write

@@ -89,7 +89,8 @@ mounted on it, and without `--yes` it only prints the plan.
 
 Take the stick out and boot the machine. In order, you get:
 
-1. A passphrase prompt, if you chose encryption.
+1. A boot splash, and under it, if you chose encryption, a passphrase prompt
+   that names the disk it is asking about.
 2. A login screen, using the account and hostname you gave the installer.
 3. A desktop, and then several minutes of quiet work.
 
@@ -289,6 +290,14 @@ It defaults to the size of memory, which is the most a machine can ever have to
 save. The file is never resized in place: growing it would move it, and the
 kernel would then resume from the wrong place on the disk. To change the size,
 turn it off and on again.
+
+Setting hibernate up also points the lid at suspend-then-hibernate, so a
+laptop closed and left in a bag suspends first and hibernates before the
+battery dies, rather than draining out. On battery nothing times it: the
+machine wakes and hibernates on the firmware's own low-battery alarm. On a
+machine with no battery the delay is two hours. `kuma hibernate --off` takes
+the lid setting away with the rest, and `kuma doctor` grades the lid beside
+hibernate itself.
 
 **Secure Boot and hibernate do not go together.** A kernel that booted with
 Secure Boot on runs locked down, and a locked-down kernel refuses to hibernate,
