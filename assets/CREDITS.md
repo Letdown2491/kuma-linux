@@ -20,6 +20,26 @@ misty mountain peaks at sunrise, taken in Italy.
 The license forbids two things, neither of which kuma does: selling the image
 unmodified, and compiling Unsplash images into a competing image service.
 
+## spinner_alt/ (plymouth theme)
+
+Theme by **Aditya Shakya** ([@adi1090x](https://github.com/adi1090x)), from
+the [plymouth-themes](https://github.com/adi1090x/plymouth-themes)
+collection (`pack_4/spinner_alt`): a 60-frame grayscale boot spinner.
+
+- Source: <https://github.com/adi1090x/plymouth-themes/tree/master/pack_4/spinner_alt>
+- Vendored at upstream commit `5d8817458d764bff4ff9daae94cf1bbaabf16ede`
+  (master, 2026-08-26). Files are unchanged; future diffs should apply
+  against that commit.
+- License: [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html), whose full
+  text ships inside the theme directory (`spinner_alt/LICENSE`). kuma is
+  MIT and links nothing of the theme's code: the files are data copied
+  into images it builds, which keeps the two licenses side by side rather
+  than combined.
+- The directory ships into every image kuma builds at
+  `/usr/share/plymouth/themes/spinner_alt/` and is set as plymouth's
+  default theme, so it draws the early-boot splash and the LUKS unlock
+  prompt on encrypted machines.
+
 ## The rest
 
 `kitty.conf` is configuration written for kuma and carries the project's MIT
