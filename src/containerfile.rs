@@ -3804,9 +3804,21 @@ mod tests {
         assert_eq!(count, plymouth_theme::FILES.len(), "staged count drifted from embedded");
         assert_eq!(count, 63, "the vendored theme is not what upstream ships");
         assert!(staged.join("LICENSE").is_file(), "GPL terms must travel with the installed copy");
-        // The animation loops mod 60; the script literally names it.
+        // The animation loops mod 60; the script literally names it. And
+        // the modification CREDITS.md records: the password prompt must
+        // render the system-provided message (it names the disk being
+        // unlocked) rather than upstream's hardcoded "Enter Password",
+        // which tells nobody what the passphrase opens.
         let script = std::fs::read_to_string(staged.join("spinner_alt.script")).unwrap();
         assert!(script.contains("% 60"), "this is not the theme the .plymouth file promises");
+        assert!(
+            script.contains("Image.Text(prompt_text"),
+            "the LUKS prompt stopped using the system-provided message"
+        );
+        assert!(
+            !script.contains("Image.Text(\"Enter Password\""),
+            "the hardcoded prompt text came back with a theme refresh"
+        );
     }
 
     /// rhgb is what hands the console to plymouth for the graphical

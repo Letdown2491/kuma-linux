@@ -28,8 +28,11 @@ collection (`pack_4/spinner_alt`): a 60-frame grayscale boot spinner.
 
 - Source: <https://github.com/adi1090x/plymouth-themes/tree/master/pack_4/spinner_alt>
 - Vendored at upstream commit `5d8817458d764bff4ff9daae94cf1bbaabf16ede`
-  (master, 2026-08-26). Files are unchanged; future diffs should apply
-  against that commit.
+  (master, 2026-08-26). One file modified from that commit:
+  `spinner_alt.script` renders the system-provided password prompt text
+  ("Please enter passphrase for disk ...", naming the actual disk)
+  where upstream discarded it and hardcoded "Enter Password". Diff
+  future updates against that commit and re-apply this edit.
 - License: [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html), whose full
   text ships inside the theme directory (`spinner_alt/LICENSE`). kuma is
   MIT and links nothing of the theme's code: the files are data copied

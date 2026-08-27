@@ -67,12 +67,19 @@ fun DisplayQuestionCallback(prompt, entry) {
 Plymouth.SetDisplayQuestionFunction(DisplayQuestionCallback);
 
 //------------------------------------- Password prompt -------------------------------
-fun DisplayPasswordCallback(nil, bulletCount) {
+fun DisplayPasswordCallback(prompt_text, bulletCount) {
     state.status = "pause";
     totalWidth = bulletCount * bullet.image.GetWidth();
     startPos = screen.half.w - totalWidth / 2;
 
-    prompt.image = Image.Text("Enter Password", 1, 1, 1);
+    // The system already names what it wants unlocked ("Please enter
+    // passphrase for disk ..."); upstream discarded that and hardcoded
+    // "Enter Password". Keep the message, and fall back to something
+    // descriptive if an ask ever arrives without one.
+    if (prompt_text == "")
+        prompt_text = "Enter disk passphrase";
+
+    prompt.image = Image.Text(prompt_text, 1, 1, 1);
     prompt.sprite = Sprite(prompt.image);
     prompt.sprite.SetX(screen.half.w - prompt.image.GetWidth() / 2);
     prompt.sprite.SetY(screen.h - 4 * prompt.image.GetHeight());
