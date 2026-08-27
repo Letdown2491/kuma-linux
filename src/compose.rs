@@ -146,10 +146,12 @@ packages:
   # through plymouth when the module is present), so base layer, not desktop:
   # - plymouth: daemon, theme loader, dracut module
   # - plymouth-plugin-script: runs spinner_alt's .script; nothing pulls it in
+  # - plymouth-plugin-label: renders Image.Text(); a runtime-dlopened plugin
+  #   in its own package, absent it draws nothing while the machine waits
   # - dejavu-sans-fonts: Image.Text() needs a font; the base carries none,
   #   and a missing one means a BLANK password prompt
   # The theme files themselves are baked by the Containerfile (assets/CREDITS.md).
-  - plymouth plymouth-plugin-script dejavu-sans-fonts
+  - plymouth plymouth-plugin-script plymouth-plugin-label dejavu-sans-fonts
   - fwupd           # LVFS firmware updates; security maintenance on real
                     # hardware, and nothing else in the image can do it
 "#
@@ -289,21 +291,23 @@ mod tests {
         }
     }
 
-    /// The composed base must carry plymouth and its two enablers. The
-    /// whole line is asserted rather than each name searched for,
-    /// because the names share a manifest line and a bare
+    /// The composed base must carry plymouth, its two plugins, and a
+    /// font. The whole line is asserted rather than each name searched
+    /// for, because the names share a manifest line and a bare
     /// `contains("- plymouth")` would keep passing after `plymouth`
     /// itself was deleted, matched by the prefix of
-    /// `- plymouth-plugin-script`. The script plugin is the silent one:
-    /// nothing recommends it, a base without it composes fine, boots
-    /// fine, and falls back to plymouth's text plugin where spinner_alt
-    /// should be.
+    /// `- plymouth-plugin-script`. Each fails silently when missing:
+    /// nothing recommends either plugin, and a base without the script
+    /// one falls back to plymouth's text theme while a base without the
+    /// label one draws no prompt text at all.
     #[test]
     fn the_composed_base_carries_plymouth_for_the_luks_prompt() {
         let out = manifest(&config("schema_version = 1"));
         assert!(
-            out.contains("- plymouth plymouth-plugin-script dejavu-sans-fonts"),
-            "the plymouth triple left the base package set"
+            out.contains(
+                "- plymouth plymouth-plugin-script plymouth-plugin-label dejavu-sans-fonts"
+            ),
+            "the plymouth set left the base package list"
         );
     }
 

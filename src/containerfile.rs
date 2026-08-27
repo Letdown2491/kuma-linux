@@ -3131,14 +3131,20 @@ pub fn generate(config: &Config) -> String {
     // plymouth when the module is present), so "no splash please" is not
     // a thing an unencrypted machine gets to decline on another's behalf.
     //
-    // Three packages and what each is for:
+    // Four packages and what each is for:
     // - plymouth: the daemon, the theme loader, the dracut module.
     // - plymouth-plugin-script: runs .script themes like spinner_alt.
     //   Nothing pulls it in; without it the default theme fails to load
     //   and plymouth falls back to its text plugin at boot. Invisible in
     //   a build, obvious on tty0.
-    // - dejavu-sans-fonts: Image.Text() renders through pango/fontconfig,
-    //   and the base carries no fonts at all (kuma's terminal font is a
+    // - plymouth-plugin-label: renders Image.Text(). A separate Fedora
+    //   package, and a silent hole: the script plugin dlopens a label
+    //   plugin at runtime, finds none, and draws nothing. The first
+    //   eyes-on boot (2026-08-26) watched a machine hang on the LUKS
+    //   prompt it was not drawing: spinner animating, no text, no
+    //   bullets, every serial assertion green.
+    // - dejavu-sans-fonts: Image.Text() renders through a font, and the
+    //   base carries no fonts at all (kuma's terminal font is a
     //   desktop-layer flatpak-adjacent install). Without one, password
     //   prompts render blank: adi1090x's README warns about exactly this
     //   shape on Arch. Which font ends up in the initramfs is dracut's
@@ -3148,7 +3154,9 @@ pub fn generate(config: &Config) -> String {
     //   readable face exists at all, on even a minimal image; dejavu-sans
     //   is Fedora's boringest such default.
     out.push('\n');
-    out.push_str(&dnf_install("plymouth plymouth-plugin-script dejavu-sans-fonts"));
+    out.push_str(&dnf_install(
+        "plymouth plymouth-plugin-script plymouth-plugin-label dejavu-sans-fonts",
+    ));
     // The theme itself, staged by write_context() from build.rs's embedded
     // table; LICENSE travels so the installed copy carries its GPL terms.
     // COPY copies a directory's contents, so the destination names the
@@ -3714,20 +3722,23 @@ mod tests {
 
     /// Plymouth is base layer: on an encrypted machine the LUKS prompt is
     /// drawn through plymouth, so a headless machine cannot decline it on
-    /// behalf of an encrypted one. The three names ride one install line
+    /// behalf of an encrypted one. The four names ride one install line
     /// because each fails differently when missing: no daemon means no
     /// prompt at all, no script plugin means the theme silently falls
     /// back to plymouth's text plugin at boot (invisible in a build,
-    /// obvious only on tty0), and no font means Image.Text() renders
-    /// BLANK bullets, a password prompt that shows nothing where you are
-    /// typing. Deleting any one of the three must fail this assert.
+    /// obvious only on tty0), no label plugin means Image.Text() draws
+    /// NOTHING while the machine still waits for the passphrase (the
+    /// first eyes-on boot hung exactly there), and no font means the
+    /// label plugin has nothing to draw with. Deleting any one of the
+    /// four must fail this assert.
     #[test]
     fn every_image_carries_plymouth_and_its_two_quiets() {
         for toml in ["schema_version = 1", "schema_version = 1\n[system]\ndesktop = \"niri\""] {
             assert!(
-                generate(&config(toml))
-                    .contains(&dnf_install("plymouth plymouth-plugin-script dejavu-sans-fonts")),
-                "plymouth, its script plugin, or its prompt font left the base set"
+                generate(&config(toml)).contains(&dnf_install(
+                    "plymouth plymouth-plugin-script plymouth-plugin-label dejavu-sans-fonts"
+                )),
+                "plymouth, its script or label plugin, or its prompt font left the base set"
             );
         }
     }
@@ -3938,7 +3949,9 @@ mod tests {
         assert_eq!(out.matches("dnf -y install").count(), 3);
         assert!(out.contains(&dnf_install("greenboot")));
         assert!(out.contains(&dnf_install("fuse fuse-libs")));
-        assert!(out.contains(&dnf_install("plymouth plymouth-plugin-script dejavu-sans-fonts")));
+        assert!(out.contains(&dnf_install(
+            "plymouth plymouth-plugin-script plymouth-plugin-label dejavu-sans-fonts"
+        )));
         assert!(out.contains("bootc container lint"));
         // The lint runs unqualified first: the --skip is a fallback for
         // one upstream crash, never the path a healthy build takes, and
