@@ -355,14 +355,32 @@ dnf install -y --setopt=install_weak_deps=False \
 work=$(mktemp -d)
 mkdir -p "$work"/iso-root/{images/pxeboot,LiveOS} "$work"/EFI
 
+# Same single-kernel reasoning as the live Containerfile: two kernels
+# here would silently copy one image and boot the other's modules.
+# Resolved before mksquashfs because the exclude list below names the
+# kernel's files by version.
+kver="$(ls "$rootfs/usr/lib/modules")"
+[ "$(echo "$kver" | wc -l)" -eq 1 ] || { echo >&2 "expected exactly one kernel, got: $kver"; exit 1; }
+
 # The live root filesystem, in one file.
 #
 # sysroot and ostree are an installed machine's deployment machinery and
 # mean nothing to a live boot, which mounts this squashfs as / directly.
+# The kernel and initramfs are excluded for the same reason, one level
+# up: they are boot artifacts, and the copies this ISO actually loads
+# are the ones under images/pxeboot that GRUB names. The pair inside the
+# rootfs serves an installed machine's kernel-update machinery, which a
+# throwaway live root never runs. The initramfs is the expensive one —
+# 242 MB since v0.18 put plymouth in it, because a splash needs a
+# framebuffer and dracut's drm module then packs every GPU driver's
+# firmware into a --no-hostonly build — and it is already a zstd
+# stream, so squashfs stores it at full size. Carrying it twice took
+# the ISO from 1.80 GB to 2.11 GB and over the release-asset budget;
+# measured, not estimated, on the niri image of 2026-08-27.
 # zstd at 19 because this number is the ISO's size: the whole point of
 # the exercise is fitting under a 2 GB release asset cap.
 #
-# -e goes LAST and takes both patterns, because mksquashfs treats every
+# -e goes LAST and takes every pattern, because mksquashfs treats every
 # remaining argument as an exclude pattern once it sees -e. Writing it
 # in the middle does not error: it silently excludes files named "-comp"
 # and "19", and falls back to gzip. That cost 60 MB here and it is
@@ -380,12 +398,12 @@ mkdir -p "$work"/iso-root/{images/pxeboot,LiveOS} "$work"/EFI
 # boot on the writable overlay rather than baking one into the image.
 mksquashfs "$rootfs" "$work/iso-root/LiveOS/squashfs.img" \
     -noappend -comp zstd -Xcompression-level 19 \
-    -e sysroot ostree
+    -e sysroot ostree \
+       "usr/lib/modules/$kver/initramfs.img" \
+       "usr/lib/modules/$kver/vmlinuz"
 
-# Same single-kernel reasoning as the live Containerfile: two kernels
-# here would silently copy one image and boot the other's modules.
-kver="$(ls "$rootfs/usr/lib/modules")"
-[ "$(echo "$kver" | wc -l)" -eq 1 ] || { echo >&2 "expected exactly one kernel, got: $kver"; exit 1; }
+# The boot pair GRUB actually loads. Copied from the rootfs, not the
+# squashfs, so the excludes above do not touch this.
 cp "$rootfs/usr/lib/modules/$kver/vmlinuz" "$work/iso-root/images/pxeboot/vmlinuz"
 cp "$rootfs/usr/lib/modules/$kver/initramfs.img" "$work/iso-root/images/pxeboot/initrd.img"
 
@@ -804,6 +822,29 @@ mod tests {
         let comp = script.find("-comp zstd").unwrap();
         let exclude = script.find("-e sysroot").unwrap();
         assert!(comp < exclude, "-e must come last or it eats the compressor flags");
+    }
+
+    /// The kernel and initramfs ride the ISO once, under images/pxeboot,
+    /// because those are the copies GRUB loads. The same files inside
+    /// the squashfs serve an installed machine's kernel-update
+    /// machinery, which a throwaway live root never runs — and the
+    /// initramfs is a 242 MB zstd stream that squashfs cannot shrink, so
+    /// carrying it twice is what took the ISO from 1.80 GB to 2.11 GB
+    /// and over the release-asset budget in v0.18. The splash grew it;
+    /// the doubling made it fatal.
+    #[test]
+    fn the_squashfs_carries_no_boot_artifacts() {
+        let script = super::BUILD_ISO_SCRIPT;
+        assert!(
+            script.contains("\"usr/lib/modules/$kver/initramfs.img\""),
+            "the initramfs is the ISO's biggest file; it rides once, in pxeboot"
+        );
+        assert!(script.contains("\"usr/lib/modules/$kver/vmlinuz\""));
+        // The exclude list names the kernel's files by version, so the
+        // version has to be resolved before mksquashfs runs.
+        let kver = script.find("kver=\"$(ls").unwrap();
+        let exclude = script.find("usr/lib/modules/$kver/initramfs.img").unwrap();
+        assert!(kver < exclude, "kver must exist before the exclude list names it");
     }
 
     /// Found by booting: `-all-root` makes every file root-owned, and
