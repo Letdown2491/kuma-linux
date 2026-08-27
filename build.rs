@@ -10,7 +10,7 @@
 //! Both values degrade to "unknown" rather than failing the build. A
 //! release tarball has no `.git`, and a build from one is still valid.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
@@ -45,6 +45,50 @@ fn main() {
 
     println!("cargo:rustc-env=KUMA_BUILD_SHA={sha}");
     println!("cargo:rustc-env=KUMA_BUILD_DATE={date}");
+
+    plymouth_theme();
+}
+
+/// Embed the vendored plymouth theme into the binary.
+///
+/// The theme ships inside every kuma binary (house style: WALLPAPER and
+/// friends are include_bytes!/include_str! in containerfile.rs), because a
+/// released musl binary runs from ~/.cargo/bin with no checkout around it,
+/// so runtime reads of `assets/` would only work for a developer. The
+/// build script walks `assets/spinner_alt/` and emits one `(name, bytes)`
+/// pair per file as an OUT_DIR module; containerfile.rs includes it and
+/// stages the files into the build context verbatim.
+///
+/// The listing is sorted byte-wise, not os_read_dir order, so two builds
+/// of the same directory produce byte-identical source (os_read_dir makes
+/// no order guarantee; a per-build coin flip here would churn every
+/// downstream image digest).
+fn plymouth_theme() {
+    let dir = Path::new("assets/spinner_alt");
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+        .map(|entry| entry.expect("spinner_alt entry").path())
+        .filter(|path| path.is_file())
+        .collect();
+    files.sort();
+
+    let mut table = String::from("pub static FILES: &[(&str, &[u8])] = &[\n");
+    // Absolute via CARGO_MANIFEST_DIR: include_bytes! resolves relative
+    // paths against OUT_DIR, where this generated file lives.
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
+    for path in &files {
+        let name = path.file_name().and_then(|n| n.to_str()).expect("UTF-8 name");
+        assert!(!name.contains('"') && !name.contains('\\'), "odd filename {name}");
+        table.push_str(&format!(
+            "    ({name:?}, include_bytes!(\"{manifest}/assets/spinner_alt/{name}\")),\n"
+        ));
+    }
+    table.push_str("];\n");
+
+    let out_dir = std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR");
+    let out_path = Path::new(&out_dir).join("plymouth_theme.rs");
+    std::fs::write(&out_path, table)
+        .unwrap_or_else(|e| panic!("cannot write {}: {e}", out_path.display()));
 }
 
 /// Trimmed stdout of a successful `git`, or None if git is missing, this
