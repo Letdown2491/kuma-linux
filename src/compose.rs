@@ -142,6 +142,14 @@ packages:
                     # ncurses-libs the library, but the commands every
                     # interactive shell assumes live in neither
   - cryptsetup      # LUKS unlock at boot
+  # plymouth draws the LUKS prompt on encrypted machines (dracut renders it
+  # through plymouth when the module is present), so base layer, not desktop:
+  # - plymouth: daemon, theme loader, dracut module
+  # - plymouth-plugin-script: runs spinner_alt's .script; nothing pulls it in
+  # - dejavu-sans-fonts: Image.Text() needs a font; the base carries none,
+  #   and a missing one means a BLANK password prompt
+  # The theme files themselves are baked by the Containerfile (assets/CREDITS.md).
+  - plymouth plymouth-plugin-script dejavu-sans-fonts
   - fwupd           # LVFS firmware updates; security maintenance on real
                     # hardware, and nothing else in the image can do it
 "#
@@ -279,6 +287,24 @@ mod tests {
         ] {
             assert!(out.contains(&format!("- {pkg}")), "{pkg} left the default firmware set");
         }
+    }
+
+    /// The composed base must carry plymouth and its two enablers. The
+    /// whole line is asserted rather than each name searched for,
+    /// because the names share a manifest line and a bare
+    /// `contains("- plymouth")` would keep passing after `plymouth`
+    /// itself was deleted, matched by the prefix of
+    /// `- plymouth-plugin-script`. The script plugin is the silent one:
+    /// nothing recommends it, a base without it composes fine, boots
+    /// fine, and falls back to plymouth's text plugin where spinner_alt
+    /// should be.
+    #[test]
+    fn the_composed_base_carries_plymouth_for_the_luks_prompt() {
+        let out = manifest(&config("schema_version = 1"));
+        assert!(
+            out.contains("- plymouth plymouth-plugin-script dejavu-sans-fonts"),
+            "the plymouth triple left the base package set"
+        );
     }
 
     #[test]

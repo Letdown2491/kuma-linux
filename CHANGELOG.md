@@ -6,6 +6,18 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+### Added
+
+- **Every machine boots under a splash, and an encrypted one asks for its
+  passphrase through it.** plymouth is base layer now, with a vendored
+  spinner theme (spinner_alt, GPL-3.0, credited in `assets/CREDITS.md`):
+  desktop boots show a spinner instead of boot text, and the LUKS prompt
+  draws as a themed prompt with bullets instead of dracut's bare question.
+  Nothing to configure, and a machine that declares no desktop keeps its
+  textual boot. The image builds its initramfs with plymouth in it during
+  `kuma build`, so the splash arrives with the rebuild, not with the
+  machine's next kernel update.
+
 ## v0.17.0 (2026-08-22)
 
 ### Fixed

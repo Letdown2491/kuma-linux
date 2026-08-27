@@ -453,8 +453,12 @@ fn greetd_config(config: &Config) -> String {
 
 /// Desktop kernel args. The minimal base ships no auditd, so kernel audit
 /// records spray onto the console; `quiet` keeps the console clean without
-/// disabling auditing (records still reach the journal).
-const DESKTOP_KARGS: &str = "kargs = [\"quiet\"]\n";
+/// disabling auditing (records still reach the journal). `rhgb` hands the
+/// console to plymouth: with it, encrypted machines get the themed splash
+/// behind the LUKS prompt and plain machines a spinner instead of boot
+/// text. Plymouth is installed unconditionally (base layer), but the
+/// desktop is where a splash can be seen; headless keeps textual boots.
+const DESKTOP_KARGS: &str = "kargs = [\"quiet\", \"rhgb\"]\n";
 
 /// Declared flatpaks are baked into the image as a list; this oneshot
 /// converges the machine to it on boot. The declaration is atomic image
@@ -2430,6 +2434,17 @@ const FASTFETCH_CONFIG: &str = r#"{
 const WALLPAPER: &[u8] = include_bytes!("../assets/kuma-wallpaper.jpg");
 const KITTY_CONFIG: &str = include_str!("../assets/kitty.conf");
 
+/// The vendored plymouth theme (see assets/CREDITS.md), embedded by
+/// build.rs as `(filename, bytes)` pairs. Staged into the build context
+/// verbatim, installed to /usr/share/plymouth/themes/spinner_alt/, and set
+/// as plymouth's default so it draws early boot and the LUKS prompt.
+pub(crate) mod plymouth_theme {
+    include!(concat!(env!("OUT_DIR"), "/plymouth_theme.rs"));
+}
+
+/// The install root every theme file COPY lands under.
+const PLYMOUTH_THEME_DIR: &str = "spinner_alt";
+
 /// Rebrand the OS identity: Kuma, not Fedora. ID_LIKE=fedora keeps tools
 /// that sniff os-release (toolbox, distrobox, dnf COPR, …) working. Runs
 /// last so every dnf layer before it still sees stock Fedora metadata.
@@ -3109,6 +3124,96 @@ pub fn generate(config: &Config) -> String {
     // that happens to boot offline.
     out.push('\n');
     out.push_str(&dnf_install("greenboot"));
+
+    // Plymouth, in every image, for the same reason greenboot is: base
+    // behavior is not a per-declaration decision. On an encrypted machine
+    // the LUKS passphrase prompt IS plymouth's (dracut draws it through
+    // plymouth when the module is present), so "no splash please" is not
+    // a thing an unencrypted machine gets to decline on another's behalf.
+    //
+    // Three packages and what each is for:
+    // - plymouth: the daemon, the theme loader, the dracut module.
+    // - plymouth-plugin-script: runs .script themes like spinner_alt.
+    //   Nothing pulls it in; without it the default theme fails to load
+    //   and plymouth falls back to its text plugin at boot. Invisible in
+    //   a build, obvious on tty0.
+    // - dejavu-sans-fonts: Image.Text() renders through pango/fontconfig,
+    //   and the base carries no fonts at all (kuma's terminal font is a
+    //   desktop-layer flatpak-adjacent install). Without one, password
+    //   prompts render blank: adi1090x's README warns about exactly this
+    //   shape on Arch. Which font ends up in the initramfs is dracut's
+    //   fc-match call, not this name: it installs whatever fontconfig
+    //   calls the default sans (measured: Noto on a desktop image that
+    //   ships several families). The package's job is to guarantee a
+    //   readable face exists at all, on even a minimal image; dejavu-sans
+    //   is Fedora's boringest such default.
+    out.push('\n');
+    out.push_str(&dnf_install("plymouth plymouth-plugin-script dejavu-sans-fonts"));
+    // The theme itself, staged by write_context() from build.rs's embedded
+    // table; LICENSE travels so the installed copy carries its GPL terms.
+    // COPY copies a directory's contents, so the destination names the
+    // theme directory plymouth expects to find the files under.
+    let theme_root = format!("/usr/share/plymouth/themes/{PLYMOUTH_THEME_DIR}/");
+    out.push_str(&format!("COPY plymouth {theme_root}\n"));
+    // Setting the default theme has TWO surfaces, and the symlink alone
+    // loses. plymouth-populate-initrd (which decides initramfs contents)
+    // asks plymouth-set-default-theme, resolving in order: /etc/plymouth/
+    // plymouthd.conf [Daemon] Theme, THEN the packaged plymouthd.defaults
+    // (Fedora ships Theme=bgrt there), and only last the symlink. Measured
+    // 2026-08-26 on an installed disk: bgrt won, spinner_alt lost,
+    // populate exited 1 with stderr discarded, and the splash silently
+    // shipped broken behind five green encrypted boots because serial
+    // unlock never needs graphics. So name the theme in the conf file,
+    // and keep the symlink as belt-and-suspenders for anything reading it.
+    out.push_str(&format!(
+        "RUN printf '%s\\n' '[Daemon]' 'Theme={PLYMOUTH_THEME_DIR}' > /etc/plymouth/plymouthd.conf \\\n    && ln -sfn {PLYMOUTH_THEME_DIR}/{PLYMOUTH_THEME_DIR}.plymouth /usr/share/plymouth/themes/default.plymouth\n"
+    ));
+    // membership must not depend on magic: name the dracut module rather
+    // than hoping hostonly detection picks plymouth up. The space on BOTH
+    // sides of the value is dracut syntax, not decoration: without the
+    // trailing one every dracut run in every kuma image warns
+    // "<values> should have surrounding white spaces" (measured 2026-08-26
+    // by A/B-ing the conf out of an image).
+    out.push_str(
+        "RUN printf '%s\\n' 'add_dracutmodules+=\" plymouth \"' > /etc/dracut.conf.d/kuma-plymouth.conf\n",
+    );
+    // Regenerate the initramfs IN THE BUILD, with everything above in
+    // place. The one shipping in /usr/lib/modules was made during the
+    // BASE COMPOSE, before this Containerfile ran a single line: no conf,
+    // no theme, no font. Waiting for "bootc regenerates on kernel update"
+    // means the splash only appears after the machine's NEXT kernel bump.
+    // Measured 2026-08-26 on an installed disk: its initramfs byte-equal
+    // to the compose-time one, spinner_alt count 0. liveiso.rs ships this
+    // same pattern for dmsquash-live; the cost objection recorded there
+    // (a slow step in every build) does not apply here because podman
+    // caches the RUN layer: unchanged inputs skip the dracut minute, and
+    // the cost cannot be hidden in a throwaway derived image the way the
+    // ISO's can, because this image IS the one machines install from.
+    //
+    // Two container-only fixups the RUN does first, both measured
+    // 2026-08-26:
+    // - /var/roothome: dracut recreates the system's toplevel symlinks
+    //   inside the initramfs, and /root -> var/roothome dangles in any
+    //   bootc image because /var is empty until first boot. Without the
+    //   directory, every build dies on "ERROR: installing '/root'".
+    // - sysloglvl=0 through --add-confdir: Fedora's 01-dist.conf sets
+    //   sysloglvl=5 and a build container has no syslog socket, so an
+    //   otherwise clean run prints a fatal-LOOKING "No '/dev/log'" error
+    //   that means nothing. The 99- prefix sorts the drop-in after
+    //   01-dist.conf (drop-ins load by filename across directories), and
+    //   --add-confdir keeps the override scoped to this invocation:
+    //   nothing lands in /etc on machines, where syslog works and this
+    //   line would be wrong.
+    out.push_str("RUN set -eux; \\\n");
+    out.push_str("    kver=\"$(ls /usr/lib/modules)\"; \\\n");
+    out.push_str("    test \"$(echo \"$kver\" | wc -l)\" -eq 1; \\\n");
+    out.push_str("    mkdir -p /var/roothome; \\\n");
+    out.push_str("    dconf=\"$(mktemp -d)\"; \\\n");
+    out.push_str("    printf '%s\\n' 'sysloglvl=0' > \"$dconf/99-kuma-build.conf\"; \\\n");
+    out.push_str(
+        "    dracut --add-confdir \"$dconf\" --force --no-hostonly --add plymouth \"/usr/lib/modules/$kver/initramfs.img\" \"$kver\"\n",
+    );
+
     if config.system.desktop != Desktop::None {
         out.push_str(
             "COPY --chmod=755 kuma-greeter-check /usr/lib/greenboot/check/required.d/50-kuma-greeter.sh\n",
@@ -3412,6 +3517,17 @@ pub fn write_context(
     std::fs::write(dir.join("containers-policy.json"), signature_policy())?;
     std::fs::write(dir.join("kuma-sigstore.yaml"), registries_d())?;
     std::fs::write(dir.join("cosign.pub"), COSIGN_PUB)?;
+    // The plymouth theme, staged for the COPY line in generate(). Every
+    // image ships it: a headless machine never draws, but an encrypted
+    // one still unlocks through plymouth, and one theme to reason about
+    // beats two code paths. Flat under plymouth/, because COPY delivers
+    // a directory's CONTENTS, so the destination owns the directory name.
+    std::fs::create_dir_all(dir.join("plymouth"))?;
+    for (name, bytes) in plymouth_theme::FILES {
+        let path = dir.join("plymouth").join(name);
+        std::fs::write(&path, bytes)
+            .with_context(|| format!("staging {} into the build context", path.display()))?;
+    }
     // Identity, wallpaper, and kargs ship with every desktop; the rest
     // of the niri block is glue COSMIC provides natively.
     if config.system.desktop != Desktop::None {
@@ -3596,6 +3712,118 @@ mod tests {
         }
     }
 
+    /// Plymouth is base layer: on an encrypted machine the LUKS prompt is
+    /// drawn through plymouth, so a headless machine cannot decline it on
+    /// behalf of an encrypted one. The three names ride one install line
+    /// because each fails differently when missing: no daemon means no
+    /// prompt at all, no script plugin means the theme silently falls
+    /// back to plymouth's text plugin at boot (invisible in a build,
+    /// obvious only on tty0), and no font means Image.Text() renders
+    /// BLANK bullets, a password prompt that shows nothing where you are
+    /// typing. Deleting any one of the three must fail this assert.
+    #[test]
+    fn every_image_carries_plymouth_and_its_two_quiets() {
+        for toml in ["schema_version = 1", "schema_version = 1\n[system]\ndesktop = \"niri\""] {
+            assert!(
+                generate(&config(toml))
+                    .contains(&dnf_install("plymouth plymouth-plugin-script dejavu-sans-fonts")),
+                "plymouth, its script plugin, or its prompt font left the base set"
+            );
+        }
+    }
+
+    /// The theme lands in the image via COPY from staged context files;
+    /// these assertions pin the four halves of that journey so any one
+    /// breaking alone says which half it was:
+    /// stage (write_context) → copy → default-theme symlink → dracut
+    /// module named explicitly, and in ORDER, because the dracut drop-in
+    /// after the theme changes nothing but reads better in review.
+    #[test]
+    fn the_spinner_theme_is_installed_and_made_default() {
+        let out = generate(&config("schema_version = 1"));
+        assert!(
+            out.contains("COPY plymouth /usr/share/plymouth/themes/spinner_alt/"),
+            "theme never copied into the image"
+        );
+        assert!(
+            out.contains(
+                "ln -sfn spinner_alt/spinner_alt.plymouth /usr/share/plymouth/themes/default.plymouth"
+            ),
+            "spinner_alt not made the default theme"
+        );
+        assert!(
+            out.contains("'Theme=spinner_alt' > /etc/plymouth/plymouthd.conf"),
+            "plymouthd.conf must name the theme: the packaged plymouthd.defaults (Theme=bgrt) \
+             outranks the symlink, and populate-initrd resolves in that order"
+        );
+        assert!(
+            out.contains("add_dracutmodules+=\" plymouth \""),
+            "dracut would populate the initramfs by magic, not instruction"
+        );
+        // And the composition-time initramfs (which predates every conf
+        // and theme file here) must be REBUILT in the build, AFTER every
+        // input it consumes: the theme COPY and the symlink both. The
+        // invocation carries its two container-only fixups, so a trimmed
+        // version of it in a future edit fails here rather than at boot.
+        let copy_at = out.find("COPY plymouth ").unwrap();
+        let dracut_at = out
+            .find("dracut --add-confdir \"$dconf\" --force --no-hostonly --add plymouth")
+            .unwrap();
+        let link_at = out.find("/usr/share/plymouth/themes/default.plymouth").unwrap();
+        assert!(copy_at < dracut_at, "initramfs rebuilt before the theme exists");
+        assert!(copy_at < link_at, "symlink before its target exists");
+        assert!(
+            out.contains("mkdir -p /var/roothome"),
+            "without it, dracut dies recreating the dangling /root symlink"
+        );
+        assert!(
+            out.contains("'sysloglvl=0' > \"$dconf/99-kuma-build.conf\""),
+            "without it, every build prints a fatal-looking no-syslog error"
+        );
+
+        // Staging: build.rs embeds 63 files (60 frames + .plymouth +
+        // .script + LICENSE); write_context writes all of them under
+        // plymouth/. Counted exactly so a truncated vendoring (half the
+        // frames synced) fails loudly instead of shipping a spinner that
+        // spins three quarters of a turn.
+        let dir = tempfile::tempdir().unwrap();
+        context("schema_version = 1", dir.path());
+        let staged = dir.path().join("plymouth");
+        let count = std::fs::read_dir(&staged).unwrap().count();
+        assert_eq!(count, plymouth_theme::FILES.len(), "staged count drifted from embedded");
+        assert_eq!(count, 63, "the vendored theme is not what upstream ships");
+        assert!(staged.join("LICENSE").is_file(), "GPL terms must travel with the installed copy");
+        // The animation loops mod 60; the script literally names it.
+        let script = std::fs::read_to_string(staged.join("spinner_alt.script")).unwrap();
+        assert!(script.contains("% 60"), "this is not the theme the .plymouth file promises");
+    }
+
+    /// rhgb is what hands the console to plymouth for the graphical
+    /// splash; without it encrypted machines still unlock (serial asks
+    /// through systemd-ask-password-console), they just do it in text.
+    /// So the staged kargs file carries rhgb desktop-gated exactly as
+    /// quiet always was: headless keeps textual boots, a splash nobody
+    /// can see buys nothing there.
+    #[test]
+    fn desktop_kargs_hand_the_console_to_plymouth() {
+        let dir = tempfile::tempdir().unwrap();
+        context("schema_version = 1", dir.path());
+        assert!(
+            !dir.path().join("kargs-desktop.toml").exists(),
+            "a headless image grew a desktop karg"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        context("schema_version = 1\n[system]\ndesktop = \"niri\"", dir.path());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("kargs-desktop.toml")).unwrap(),
+            DESKTOP_KARGS
+        );
+        assert_eq!(DESKTOP_KARGS, "kargs = [\"quiet\", \"rhgb\"]\n");
+        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\""));
+        assert!(out.contains("COPY kargs-desktop.toml /usr/lib/bootc/kargs.d/10-kuma-desktop.toml"));
+    }
+
     /// Every file the Containerfile copies is a file the build context
     /// actually holds.
     ///
@@ -3700,14 +3928,17 @@ mod tests {
         // The default base is kuma's own composed one, content-addressed
         // so the FROM is deterministic before any compose has run.
         assert!(out.contains("FROM localhost/kuma-base:m"));
-        // Two dnf layers even in a minimal image, and both are promises
-        // rather than features: greenboot's never-worse-than-before
-        // rollback, and the FUSE 2 pair that lets a downloaded AppImage
-        // run without a declaration naming it. Everything else is
-        // opt-in, and the count is what keeps it that way.
-        assert_eq!(out.matches("dnf -y install").count(), 2);
+        // Three dnf layers even in a minimal image, and all three are
+        // promises rather than features: greenboot's never-worse-than-
+        // before rollback, the FUSE 2 pair that lets a downloaded
+        // AppImage run without a declaration naming it, and plymouth
+        // drawing the LUKS prompt on any encrypted machine this image
+        // ever becomes. Everything else is opt-in, and the count is what
+        // keeps it that way.
+        assert_eq!(out.matches("dnf -y install").count(), 3);
         assert!(out.contains(&dnf_install("greenboot")));
         assert!(out.contains(&dnf_install("fuse fuse-libs")));
+        assert!(out.contains(&dnf_install("plymouth plymouth-plugin-script dejavu-sans-fonts")));
         assert!(out.contains("bootc container lint"));
         // The lint runs unqualified first: the --skip is a fallback for
         // one upstream crash, never the path a healthy build takes, and
