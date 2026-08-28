@@ -60,14 +60,16 @@ and the image stage on every committed example, desktops included. That
 covers the compose and both desktop arms, so the build-time guards in them
 run on a push.
 
-The boot and install stages run there too, on niri, for pushes to main and
-on a daily schedule. They were local-only on the stated grounds that they
-need KVM and sudo, which turned out to be one udev rule: a hosted runner
-has `/dev/kvm` and the runner user is simply not in the `kvm` group. The
-daily run exists because the base kuma builds on moves without anyone
-pushing, so a boot can break on a tree that was green yesterday. COSMIC is
-built on every push and not booted; that is what calling it experimental
-means here.
+The `boot`, `install`, `hibernate`, `dead-disk`, and `iso` jobs run there
+too, for pushes to main and on a daily schedule. All of them ride the niri
+example except `dead-disk`, which builds a declaration of its own so the
+restore has a machine to bring back. They were local-only on the stated
+grounds that they need KVM and sudo, which turned out to be one udev rule:
+a hosted runner has `/dev/kvm` and the runner user is simply not in the
+`kvm` group. The daily run exists because the base kuma builds on moves
+without anyone pushing, so a boot can break on a tree that was green
+yesterday. COSMIC is built on every push and not booted; that is what
+calling it experimental means here.
 
 `published.yml` is separate: it installs and boots what is on the registry,
 upgrades an older published version to the current one, and boots an
