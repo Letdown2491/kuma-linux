@@ -1773,9 +1773,27 @@ smoke_published() {
             # battery makes the low-battery alarm a better trigger than
             # any number. Written into the machine rather than the
             # command line because systemd-sleep reads it at unit start.
+            #
+            # Staged in /tmp and installed by a sudo'd cat, never by a
+            # `sudo printf ... > /etc/...`: the remote shell opens the
+            # redirection as the unprivileged user, so the write is
+            # denied and the failure hides in guest's 2>/dev/null, with
+            # set -e off in this subshell to keep it quiet. The
+            # autologin block fell into that trap on 2026-08-22 and this
+            # cycle fell into it on its own first run, 2026-08-28: the
+            # section's one and only execution failed before the machine
+            # ever got to suspend, on a harness bug the autologin fix
+            # had already documented.
             echo "   .. suspend-then-hibernate"
-            gsudo "mkdir -p /etc/systemd/sleep.conf.d && printf '%s\\n' '[Sleep]' 'HibernateDelaySec=15' > /etc/systemd/sleep.conf.d/kuma-smoke.conf" \
-                || bad "cannot stage the harness's short hibernate delay"
+            guest "printf '%s\n' '[Sleep]' 'HibernateDelaySec=15' > /tmp/kuma-smoke-s2h.conf" \
+                || bad "could not stage the harness's short hibernate delay in the guest"
+            gsudo "mkdir -p /etc/systemd/sleep.conf.d"
+            gsudo "sh -c 'cat /tmp/kuma-smoke-s2h.conf > /etc/systemd/sleep.conf.d/kuma-smoke.conf'"
+            # Read back, because a delay that never landed is a 2h
+            # suspend: the 300s ceiling below would report "never
+            # hibernated" about a machine the harness never configured.
+            gsudo 'grep -q "^HibernateDelaySec=15$" /etc/systemd/sleep.conf.d/kuma-smoke.conf' \
+                || bad "the 15s hibernate delay never landed in the machine's sleep config"
 
             local s2h_boot_id s2h_uptime
             s2h_boot_id=$(guest cat /proc/sys/kernel/random/boot_id)
