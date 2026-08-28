@@ -6,18 +6,6 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
-- **The live ISO carries its kernel and initramfs once, not twice, and
-  fits a release asset again.** Both files shipped in two places: inside
-  the squashfs that becomes the live root, and under `images/pxeboot`,
-  which is the copy the boot actually loads. The boot splash grew the
-  initramfs by 156 MB (a splash needs a framebuffer, so dracut packs
-  every GPU driver's firmware into it), and the doubled copy took the
-  ISO from 1.80 GB to 2.11 GB — over the 1.9 GB budget for a GitHub
-  release asset, failing the `iso` job. The in-squashfs copies were
-  never read: a live boot loads the pxeboot pair, and installing pulls
-  its image from a registry. `kuma iso` now excludes both from the
-  squashfs; the ISO lands near 1.85 GB. Nothing for a reader to do.
-
 ## v0.18.0 (2026-08-27)
 
 ### Added
@@ -51,6 +39,20 @@ differently. Why it changed belongs in the commit that made it.
   textual boot. The image builds its initramfs with plymouth in it during
   `kuma build`, so the splash arrives with the rebuild, not with the
   machine's next kernel update.
+
+### Fixed
+
+- **The live ISO carries its kernel and initramfs once, not twice, and
+  fits a release asset again.** Both files shipped in two places: inside
+  the squashfs that becomes the live root, and under `images/pxeboot`,
+  which is the copy the boot actually loads. The boot splash grew the
+  initramfs by 156 MB (a splash needs a framebuffer, so dracut packs
+  every GPU driver's firmware into it), and the doubled copy took the
+  ISO from 1.80 GB to 2.11 GB — over the 1.9 GB budget for a GitHub
+  release asset, failing the `iso` job. The in-squashfs copies were
+  never read: a live boot loads the pxeboot pair, and installing pulls
+  its image from a registry. `kuma iso` now excludes both from the
+  squashfs; the ISO lands near 1.85 GB. Nothing for a reader to do.
 
 ## v0.17.0 (2026-08-22)
 
