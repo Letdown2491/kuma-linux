@@ -1755,40 +1755,100 @@ smoke_published() {
                 "doctor grades hibernate '$hib_grade' after a successful resume"
             ok "doctor still grades hibernate ok on the resumed machine"
 
-            # A reboot before this cycle, and the reason is the one thing
-            # a resumed kernel under KVM cannot provide: a clock it can
-            # wait on. The plain cycle's image was written by one qemu
-            # process and restored by another, and the restored kernel's
-            # sched_clock came back negative — printk timestamps read
-            # [18446743922.xxx], which is roughly -150s formatted as
-            # unsigned 2^64, while /proc/uptime stayed truthful, which is
-            # why every check above still passed. The first run of this
-            # cycle, 2026-08-28, hung on exactly that machine: the kernel
-            # printed "PM: suspend entry (deep)" and "Filesystems sync"
-            # and never reached "Freezing user space processes", the
-            # systemd-sleep call never returned, user.slice stayed
-            # frozen for the rest of the run, and the 300s ceiling below
-            # read it as "never hibernated" about a machine whose S3
-            # entry was spinning on a wrapped clock. A fresh boot resets
-            # the TSC with it, and no real machine resumes across
-            # hypervisor instances, so the reboot measures the machine a
-            # person actually has.
-            local old_boot new_boot reboot_deadline
+            # A fresh boot before this cycle, and the reason is the one
+            # thing a resumed kernel under KVM cannot provide: a clock
+            # it can wait on. The plain cycle's image was written by one
+            # qemu process and restored by another, and the restored
+            # kernel's sched_clock came back negative — printk timestamps
+            # read [18446743922.xxx], which is roughly -150s formatted
+            # as unsigned 2^64, while /proc/uptime stayed truthful,
+            # which is why every check above still passed. The first
+            # run of this cycle, 2026-08-28, hung the S3 entry on
+            # exactly that machine: the kernel printed "PM: suspend
+            # entry (deep)" and "Filesystems sync" and never reached
+            # "Freezing user space processes", the systemd-sleep call
+            # never returned, and user.slice stayed frozen for the rest
+            # of the run. A bounded wait that spins on local_clock()
+            # does not come back from a wrapped clock, and a fresh boot
+            # resets the TSC with it. No real machine resumes across
+            # hypervisor instances, so this measures the machine a person
+            # actually has.
+            #
+            # And the machine cannot be asked to REBOOT its way to that
+            # boot, measured later the same day: the reboot's shutdown
+            # ran to completion — every filesystem unmounted, every swap
+            # deactivated — and the guest hung after "Rebooting." with
+            # "clocksource: Watchdog remote CPU 1 read timed out" as
+            # the last console line, never reaching its firmware again.
+            # The transition that does work from a resumed boot is the
+            # one the Secure Boot half below has always used: ask for
+            # poweroff, and take whichever of the three outcomes arrives.
+            local old_boot
             old_boot=$(guest 'cat /proc/sys/kernel/random/boot_id')
-            gsudo "systemd-run --no-block systemctl reboot" || true
-            reboot_deadline=$((SECONDS + 300))
+            gsudo "systemd-run --no-block systemctl poweroff" >/dev/null 2>&1 || true
+            local s2h_off=0
+            while kill -0 "$qemu" 2>/dev/null && [ $s2h_off -lt 180 ]; do
+                sleep 5
+                s2h_off=$((s2h_off + 5))
+            done
+            if ! kill -0 "$qemu" 2>/dev/null; then
+                # It went off. The image the plain cycle left was
+                # invalidated by its own resume, so booting the disk
+                # again is a cold boot, not a second resume.
+                boot_vm plain
+            else
+                # It did not go off. Usually it reset, which is the
+                # artifact the Secure Boot half grades from the same
+                # transition, about one run in two — and the boot it
+                # reset into is itself a fresh kernel in the same qemu,
+                # which is exactly what this cycle needs, so wait for
+                # it to answer and ride it. It can also have gone off
+                # late, or wedged, as the hosted runner did on
+                # 2026-08-21; qemu's exit is checked every round so
+                # "late" is not read as "never".
+                local s2h_back=0
+                while :; do
+                    guest true && break
+                    kill -0 "$qemu" 2>/dev/null || break
+                    [ $s2h_back -lt 300 ] || break
+                    sleep 5
+                    s2h_back=$((s2h_back + 5))
+                done
+                if guest true; then
+                    echo "   .. it reset rather than powering off; riding the boot it reset into" >&2
+                elif ! kill -0 "$qemu" 2>/dev/null; then
+                    boot_vm plain
+                else
+                    # Wedged: neither off nor back. Take it down by
+                    # force; the console above shows every filesystem
+                    # unmounted when this hang happens, and the fresh
+                    # boot journals whatever a power loss leaves.
+                    echo "   .. it neither powered off nor came back; taking it down" >&2
+                    tail -40 "$log" >&2 || true
+                    kill -9 "$qemu" 2>/dev/null || true
+                    wait "$qemu" 2>/dev/null || true
+                    boot_vm plain
+                fi
+            fi
+
+            # However the fresh boot arrived, it is only usable as one:
+            # the boot_id must have moved, or the machine never went
+            # down and the cycle below would suspend the wrapped clock
+            # this whole block exists to get away from.
+            local new_boot s2h_fresh_deadline
+            s2h_fresh_deadline=$((SECONDS + 300))
             until new_boot=$(guest 'cat /proc/sys/kernel/random/boot_id') \
                 && [ -n "$new_boot" ] && [ "$new_boot" != "$old_boot" ]; do
                 kill -0 "$qemu" 2>/dev/null \
-                    || bad "qemu died under the reboot before suspend-then-hibernate; console at $log"
-                [ $SECONDS -lt $reboot_deadline ] \
-                    || bad "the machine did not come back from the reboot before suspend-then-hibernate"
+                    || bad "qemu died before suspend-then-hibernate; console at $log"
+                [ $SECONDS -lt $s2h_fresh_deadline ] \
+                    || bad "the machine did not come back up for suspend-then-hibernate"
                 sleep 5
             done
-            ok "rebooted onto a fresh clock before suspend-then-hibernate"
+            ok "cold-booted onto a fresh clock before suspend-then-hibernate"
 
             # The sleep guard refuses to suspend a session that has no
-            # shell in it, and the reboot just ended the session the
+            # shell in it, and the fresh boot just ended the session the
             # plain cycle hibernated from. The appended autologin block
             # is persistent, so the machine comes back into a session on
             # its own; wait for that before asking it to sleep.
@@ -1796,11 +1856,11 @@ smoke_published() {
             until guest "loginctl list-sessions --no-legend \
                 | grep -qE '^ *[a-z0-9]+ +[0-9]+ +$user +seat0( |$)'"; do
                 [ $SECONDS -lt $s2h_session_deadline ] \
-                    || bad "no graphical session for $user after the reboot before suspend-then-hibernate"
+                    || bad "no graphical session for $user after the fresh boot before suspend-then-hibernate"
                 sleep 5
             done
 
-            # The marker is tmpfs, so the reboot cleared the one the
+            # The marker is tmpfs, so no fresh boot carries the one the
             # plain cycle left; this cycle proves its own resume, so it
             # marks the boot it is about to suspend.
             gsudo "touch /run/kuma-resumed" >/dev/null 2>&1 || true
