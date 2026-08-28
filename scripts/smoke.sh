@@ -685,10 +685,12 @@ await_healthy_boot() {
 # executes, and `kuma-home-subvol` is the only thing standing between
 # `[snapshots]` and an hourly timer that snapshots nothing.
 #
-# Deliberately NOT encrypted, and this is a constraint rather than an
-# omission: an encrypted root stops at boot for a passphrase, and nothing
-# is there to type it. The encrypted path is covered by `smoke_install`,
-# which reads the disk through a loop device instead of booting it.
+# Unencrypted unless --encrypted asks, and the encrypted arm is why the
+# console below is a socket rather than a file: a LUKS root stops in the
+# initramfs for a passphrase, and this is the only stage with a console
+# to type one on, so it is the only place "boots from the prompt up" is
+# asked at all. `smoke_install` still covers the offline half, reading
+# the container through a loop device instead of booting it.
 smoke_published() {
     local image=$1 name=$2 port=$3
     local dir="vm-smoke/$name"
@@ -709,6 +711,13 @@ smoke_published() {
     # Run 10's log began with three firmware banners and a GPT UUID that
     # belonged to a disk that no longer existed.
     : >"$log"
+    # The unlock log appends across this run's boots for the same reason
+    # — the boot that first unlocked and the boot the autologin gate
+    # reboots into read side by side — so it is emptied once per run
+    # here, beside the console it answers. A failed run leaves its
+    # directory behind, and without this the next run's first-boot check
+    # would read the previous run's "typed the passphrase" as this one's.
+    : >"$dir/unlock.log"
 
     # --update-from only when the machine is meant to move somewhere else
     # later. It is the flag that says "install this, but track that", and
@@ -852,6 +861,25 @@ smoke_published() {
     local serial=(-chardev "socket,id=con,path=$sock,server=on,wait=off,logfile=$log,logappend=on"
                   -serial chardev:con)
 
+    # The passphrase typed at the console, factored out of boot_vm
+    # because the autologin gate below needs it a second time: its
+    # reboot stops an encrypted root for the passphrase exactly as the
+    # first boot does, and by then the unlocker that answered there has
+    # been killed once ssh came up. Appends rather than truncates, so
+    # every boot's answer sits in one artifact the way every boot's
+    # console sits in one log; the once-per-run emptying lives at the
+    # top of the stage, beside the console's.
+    # Sets `unlocker` for the caller, 0 when this stage never encrypted.
+    start_unlocker() {
+        unlocker=0
+        if [ $ENCRYPTED -eq 1 ]; then
+            echo "   .. answering the passphrase prompt on the console"
+            scripts/console-unlock.py "$sock" "$disk_pass" 420 \
+                >>"$dir/unlock.log" 2>&1 &
+            unlocker=$!
+        fi
+    }
+
     # A function rather than a command, because --hibernate boots this
     # same disk twice and the second boot has to be identical to the
     # first. Two copies of a fifteen-argument qemu line is two chances
@@ -891,18 +919,11 @@ smoke_published() {
         qemu=$!
 
         # Typed while the boot is still in the initramfs, so this runs
-        # beside the wait rather than before it. Inside this function
-        # because a resume from an encrypted disk stops for the
-        # passphrase exactly as a cold boot does: the initramfs has to
-        # open the container before it can read the swapfile it is
-        # resuming from.
-        unlocker=0
-        if [ $ENCRYPTED -eq 1 ]; then
-            echo "   .. answering the passphrase prompt on the console"
-            scripts/console-unlock.py "$sock" "$disk_pass" 420 \
-                >"$dir/unlock.log" 2>&1 &
-            unlocker=$!
-        fi
+        # beside the wait rather than before it. A resume from an
+        # encrypted disk stops for the passphrase exactly as a cold boot
+        # does: the initramfs has to open the container before it can
+        # read the swapfile it is resuming from.
+        start_unlocker
         # EXIT rather than RETURN, for the reason smoke_boot gives: a
         # failed assertion leaves this subshell without ever returning.
         # The unlocker goes with it, or a failed encrypted run leaves a
@@ -1271,8 +1292,34 @@ smoke_published() {
                 # into the session, so boot it. The wait keys on boot_id
                 # rather than ssh answering, because sshd keeps answering
                 # for the old boot for several seconds after the call.
-                local old_boot new_boot reboot_deadline
+                #
+                # An encrypted root stops for its passphrase on this
+                # boot too, and the first time this gate met one — the
+                # 0.18 publish, 2026-08-28 — nobody answered it: the
+                # unlocker that typed it on the first boot had been
+                # killed as soon as ssh came up, so the machine sat in
+                # the initramfs for all 300s and the run read "did not
+                # come back" when the truth was "nobody typed". A second
+                # unlocker now starts before the call, so it is watching
+                # the console before the prompt arrives; its window
+                # (420s) outlives the wait (300s), so it cannot give up
+                # on a boot this gate is still willing to take.
+                local old_boot new_boot reboot_deadline unlock_mark
                 old_boot=$(guest 'cat /proc/sys/kernel/random/boot_id')
+                # Where this reboot's half of the unlock log starts, so
+                # the readback below cannot be answered by the first
+                # boot's record. Same mark the console checks use.
+                unlock_mark=$(( $(stat -c %s "$dir/unlock.log" 2>/dev/null || echo 0) + 1 ))
+                start_unlocker
+                # Re-armed with the new unlocker's pid, for the reason
+                # boot_vm gives: a failed assertion has to take this
+                # unlocker with it, or the run leaves a python process
+                # holding a console socket in a directory the cleanup is
+                # about to delete.
+                # shellcheck disable=SC2064
+                if [ "$unlocker" != 0 ]; then
+                    trap "kill $qemu $unlocker 2>/dev/null || true" EXIT
+                fi
                 gsudo "systemd-run --no-block systemctl reboot" || true
                 reboot_deadline=$((SECONDS + 300))
                 until new_boot=$(guest 'cat /proc/sys/kernel/random/boot_id') \
@@ -1283,6 +1330,20 @@ smoke_published() {
                         || bad "the machine did not come back from its autologin reboot"
                     sleep 5
                 done
+                # The same readback the first boot does, bounded to this
+                # reboot's half of the log: reaching ssh proves the root
+                # unlocked, but only the log proves the passphrase did
+                # it, and a reboot that somehow stopped prompting is a
+                # different machine than the one this gate claims to
+                # reboot.
+                if [ "$unlocker" != 0 ]; then
+                    kill "$unlocker" 2>/dev/null || true
+                    wait "$unlocker" 2>/dev/null || true
+                    tail -c "+$unlock_mark" "$dir/unlock.log" 2>/dev/null \
+                        | grep -q 'typed the passphrase' \
+                        || bad "no passphrase was typed for the rebooted machine; console at $log"
+                    ok "the encrypted root unlocked again from a passphrase typed at the console"
+                fi
                 ok "rebooted into the boot the autologin belongs to"
             fi
 
