@@ -75,7 +75,9 @@ the config still validates and still exports the timeout. If the shell is not
 there at all when the machine is asked to
 sleep, the session ends instead of suspending: a session with no shell has no
 lock screen, and sleeping into one means an unlocked machine in a bag. A shell
-that hangs rather than exits is not covered by either.
+that hangs rather than exits is caught the same way: on the way into sleep,
+the guard asks it over the session bus it owns, and a shell that cannot
+answer twice has its session ended like a dead one.
 
 **The desktop's own look comes from the image.** Kuma bakes a noctalia config
 (bar layout, fonts, wallpaper, and the idle lock and night light that noctalia

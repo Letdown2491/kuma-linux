@@ -148,7 +148,7 @@ Those are the ones you type. The rest of the surface:
 | `kuma doctor` | grade every promise the machine relies on |
 | `kuma snapshot` | reach the local snapshots |
 | `kuma backup` | reach the offsite copies |
-| `kuma hibernate` | make a swapfile and the kernel arguments to resume from it |
+| `kuma hibernate` | make a swapfile, the kernel arguments to resume from it, and a lid that hibernates before the battery dies |
 | `kuma clean` | reclaim what old builds left |
 | `kuma completions` | shell completions, e.g. `kuma completions fish \| source` |
 
