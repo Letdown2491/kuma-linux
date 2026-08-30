@@ -12,7 +12,7 @@
 
 use crate::config::Config;
 use crate::host::{host_output, host_output_any};
-use crate::inspect::to_set;
+use crate::inventory::{short, to_set, List, Machine};
 use anyhow::Result;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -45,6 +45,7 @@ pub const BAKED_FLATPAKS: &str = "/usr/lib/kuma/flatpaks";
 pub const BAKED_BREWS: &str = "/usr/lib/kuma/brews";
 pub const BAKED_OVERRIDES: &str = "/usr/lib/kuma/overrides";
 
+#[derive(Clone)]
 pub struct Action {
     pub rel: &'static str,
     pub cmd: String,
@@ -347,11 +348,6 @@ fn observe_converging() -> Vec<&'static str> {
         .collect()
 }
 
-/// What convergence installed, and therefore all it may remove. The same
-/// file `kuma diff` reads; the brew half has always had its equivalent.
-/// Read by doctor too, so it is defined once and imported there.
-pub const FLATPAK_STATE: &str = "/var/lib/kuma/flatpaks-installed";
-
 fn observe_machine() -> MachineFact {
     if !Path::new("/run/ostree-booted").exists() {
         return MachineFact::NotBootc;
@@ -360,6 +356,7 @@ fn observe_machine() -> MachineFact {
         return MachineFact::BootcForeign;
     }
     let staged = Path::new("/run/ostree/staged-deployment").exists();
+    let machine = Machine::drift();
     let mut drift = Vec::new();
 
     // The baked lists are what convergence follows, so drift against them
@@ -373,36 +370,42 @@ fn observe_machine() -> MachineFact {
     // read as drifted here while `kuma diff` correctly called it yours,
     // and the summary an agent reads first was the pessimistic one.
     if let Ok(baked) = std::fs::read_to_string(BAKED_FLATPAKS) {
-        if let Ok(installed) =
-            host_output(&["flatpak", "list", "--system", "--app", "--columns=application"])
-        {
-            let baked = to_set(&baked);
-            let installed = to_set(&installed);
-            let ours = std::fs::read_to_string(FLATPAK_STATE).unwrap_or_default();
-            let ours = to_set(&ours);
-            count(&mut drift, baked.difference(&installed).count(), "flatpak(s) to install");
-            count(&mut drift, removals(&installed, &ours, &baked), "flatpak(s) to remove");
+        if let Some(installed) = &machine.flatpak_system {
+            let declared = to_set(&baked);
+            count(
+                &mut drift,
+                declared.iter().filter(|app| !installed.contains(**app)).count(),
+                "flatpak(s) to install",
+            );
+            count(
+                &mut drift,
+                installed
+                    .iter()
+                    .filter(|app| machine.convergence_removes(List::Flatpak, app, &declared))
+                    .count(),
+                "flatpak(s) to remove",
+            );
         }
     }
     // Installed brews are Cellar directory names — a filesystem read, not a
     // multi-second `brew list`. Only ever-declared formulae (the sync state
     // file) count as removals; ad-hoc installs are the owner's.
     if let Ok(baked) = std::fs::read_to_string(BAKED_BREWS) {
-        if let Ok(cellar) = std::fs::read_dir("/home/linuxbrew/.linuxbrew/Cellar") {
-            // tapped formulae ("owner/tap/tool") install under their last segment
-            let short = |f: &str| f.rsplit('/').next().unwrap_or(f).to_string();
-            let installed: BTreeSet<String> =
-                cellar.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-            let declared: BTreeSet<String> = to_set(&baked).iter().map(|f| short(f)).collect();
-            let state = std::fs::read_to_string("/home/linuxbrew/.linuxbrew/.kuma-brews")
-                .unwrap_or_default();
-            let ever: BTreeSet<String> = to_set(&state).iter().map(|f| short(f)).collect();
+        if let Some(installed) = &machine.brew_installed {
+            let declared: BTreeSet<&str> = to_set(&baked).iter().map(|f| short(f)).collect();
             count(
                 &mut drift,
-                declared.difference(&installed).count(),
+                declared.iter().filter(|f| !installed.contains(**f)).count(),
                 "brew formula(e) to install",
             );
-            count(&mut drift, removals(&installed, &ever, &declared), "brew formula(e) to remove");
+            count(
+                &mut drift,
+                installed
+                    .iter()
+                    .filter(|f| machine.convergence_removes(List::Brew, f, &declared))
+                    .count(),
+                "brew formula(e) to remove",
+            );
         }
     }
     let deployed_id = std::fs::read_to_string(DEPLOYED_ID_FILE)
@@ -410,18 +413,6 @@ fn observe_machine() -> MachineFact {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     MachineFact::Kuma { staged, drift, deployed_id }
-}
-
-/// What convergence would take back: it is installed, kuma is the one
-/// that installed it, and the declaration no longer names it.
-///
-/// The same rule for flatpaks and for brew formulae, in one place because
-/// they drifted apart once: the brew half consulted its record of what it
-/// had installed and the flatpak half counted every undeclared app, so a
-/// machine with an app from a store looked drifted to the summary and
-/// correct to `kuma diff`.
-fn removals<T: Ord>(installed: &BTreeSet<T>, ours: &BTreeSet<T>, declared: &BTreeSet<T>) -> usize {
-    installed.iter().filter(|item| ours.contains(*item) && !declared.contains(*item)).count()
 }
 
 fn count(drift: &mut Vec<String>, n: usize, what: &str) {
@@ -726,22 +717,41 @@ mod tests {
     /// store counted as one to remove, so bare `kuma` reported drift on a
     /// machine `kuma diff` called clean, and the two disagreed in the
     /// direction that makes somebody think their apps are about to go.
+    ///
+    /// Asked through the one rule now, the way the probe and the diff
+    /// both ask it, so the test pins the rule rather than a private
+    /// copy of it.
     #[test]
     fn only_what_kuma_installed_can_be_taken_back() {
-        let installed = BTreeSet::from(["org.gnome.Boxes", "org.mozilla.firefox", "io.mpv.Mpv"]);
-        let declared = BTreeSet::from(["org.mozilla.firefox"]);
+        use crate::inventory::{List, Machine};
+        let declared: BTreeSet<&str> = BTreeSet::from(["org.mozilla.firefox"]);
+        let machine_of = |ours: &[&str]| Machine {
+            rpm: None,
+            flatpak_system: None,
+            flatpak_user: BTreeSet::new(),
+            flatpak_state: ours.iter().map(|s| s.to_string()).collect(),
+            brew_installed: None,
+            brew_leaves: BTreeSet::new(),
+            brew_state: BTreeSet::new(),
+        };
         // Firefox and mpv arrived through kuma; Boxes is the owner's.
-        let ours = BTreeSet::from(["org.mozilla.firefox", "io.mpv.Mpv"]);
-        assert_eq!(removals(&installed, &ours, &declared), 1, "mpv only: Boxes is not kuma's");
+        let machine = machine_of(&["org.mozilla.firefox", "io.mpv.Mpv"]);
+        assert!(machine.convergence_removes(List::Flatpak, "io.mpv.Mpv", &declared));
+        assert!(
+            !machine.convergence_removes(List::Flatpak, "org.gnome.Boxes", &declared),
+            "Boxes is not kuma's to take"
+        );
+        assert!(!machine.convergence_removes(List::Flatpak, "org.mozilla.firefox", &declared));
 
         // Nothing kuma installed is undeclared, so nothing is pending
         // however much else is on the machine.
-        let ours = BTreeSet::from(["org.mozilla.firefox"]);
-        assert_eq!(removals(&installed, &ours, &declared), 0);
+        let machine = machine_of(&["org.mozilla.firefox"]);
+        assert!(!machine.convergence_removes(List::Flatpak, "io.mpv.Mpv", &declared));
 
         // And the record being absent (a machine that has never converged)
         // is not a licence to remove everything.
-        assert_eq!(removals(&installed, &BTreeSet::new(), &declared), 0);
+        let machine = machine_of(&[]);
+        assert!(!machine.convergence_removes(List::Flatpak, "io.mpv.Mpv", &declared));
     }
 
     /// What a stranger sees. Every fact a live session presents to the

@@ -5315,7 +5315,8 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
         // the generated shell, and read again by four Rust callers that
         // all treat absence as "nothing to do". A drift makes a machine
         // that looks converged and is not.
-        use crate::state::{BAKED_BREWS, BAKED_FLATPAKS, BAKED_OVERRIDES, FLATPAK_STATE};
+        use crate::inventory::FLATPAK_STATE;
+        use crate::state::{BAKED_BREWS, BAKED_FLATPAKS, BAKED_OVERRIDES};
         let niri = generate(&config(EVERYTHING_ON));
         for (path, script) in
             [(BAKED_FLATPAKS, FLATPAK_SYNC_SCRIPT), (BAKED_BREWS, BREW_SYNC_SCRIPT)]

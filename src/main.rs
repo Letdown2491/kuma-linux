@@ -4,11 +4,13 @@ mod capture;
 mod compose;
 mod config;
 mod containerfile;
+mod deployment;
 mod edit;
 mod hibernate;
 mod host;
 mod inspect;
 mod install;
+mod inventory;
 mod liveiso;
 mod lock;
 mod overrides;
@@ -466,6 +468,7 @@ fn main() -> Result<()> {
     // stdout — success or failure. Progress and subprocess output move to
     // stderr (host::note / run_host handle the routing). The read verbs
     // (diff, doctor, check) manage their own JSON and stay out of this.
+    //
     let mutating_json = root_json
         || match &command {
             Cmd::Build { json, .. }
@@ -493,12 +496,6 @@ fn main() -> Result<()> {
             | Cmd::Capture { .. }
             | Cmd::Remove { .. }
             | Cmd::Hibernate { .. }
-            // Install was in the list above and not in this one, so
-            // `json_mode` was false for the one verb that cannot be
-            // undone: progress and subprocess output stayed on stdout in
-            // the middle of the document, and a failed install emitted
-            // no JSON at all. Three comments in this file already
-            // described the behaviour this line is what provides.
             | Cmd::Install { .. }
     );
     let json_mode = mutating && mutating_json;
@@ -1249,8 +1246,10 @@ fn stage(tag: &str) -> Result<bool> {
             ]);
         }
     }
-    let status = host_output(&["sudo", "bootc", "status"])?;
-    Ok(status.lines().any(|l| l.trim_start().to_lowercase().starts_with("staged")))
+    let status = host_output(&["sudo", "bootc", "status", "--format", "json"])?;
+    let json: serde_json::Value =
+        serde_json::from_str(&status).context("cannot parse bootc status")?;
+    Ok(deployment::Deployments::from_status_json(&json).staged.is_some())
 }
 
 /// The full update loop. The pull is the point: `kuma build` alone reuses
@@ -1827,18 +1826,15 @@ fn rollback(yes: bool, json: bool) -> Result<()> {
 /// staged deployment would be discarded. None when there is no rollback
 /// deployment to land on.
 fn rollback_facts(json: &serde_json::Value) -> Option<(String, bool)> {
-    let slot = |name: &str| json.pointer(&format!("/status/{name}")).filter(|v| !v.is_null());
-    let rollback = slot("rollback")?;
-    let image = rollback
-        .pointer("/image/image/image")
-        .and_then(|v| v.as_str())
-        .unwrap_or("the previous deployment");
-    let digest = rollback.pointer("/image/imageDigest").and_then(|v| v.as_str()).unwrap_or("");
+    let deps = deployment::Deployments::from_status_json(json);
+    let rollback = deps.rollback.as_ref()?;
+    let image = rollback.image.as_deref().unwrap_or("the previous deployment");
+    let digest = rollback.digest.as_deref().unwrap_or("");
     let target = match digest.strip_prefix("sha256:") {
         Some(d) if d.len() >= 12 => format!("{image} ({})", &d[..12]),
         _ => image.to_string(),
     };
-    Some((target, slot("staged").is_some()))
+    Some((target, deps.staged.is_some()))
 }
 
 /// The systemctl calls a sync makes, in the order they must run, each
@@ -2109,6 +2105,9 @@ fn clean(config_path: &Path, json: bool) -> Result<()> {
         (Some(before), Some(after)) if after > before => Some(after - before),
         _ => None,
     };
+    // `say` holds the text back until the document is decided, so this
+    // prints after the gathering it describes rather than interleaved
+    // with it — the same discipline JSON mode gets from one document.
     if json {
         println!(
             "{}",
@@ -2127,9 +2126,9 @@ fn clean(config_path: &Path, json: bool) -> Result<()> {
         return Ok(());
     }
     if nothing {
-        say("Nothing to reclaim.".to_string());
+        println!("Nothing to reclaim.");
     } else if let Some(freed) = freed {
-        say(format!("Freed {}.", human_size(freed)));
+        println!("Freed {}.", human_size(freed));
     }
     Ok(())
 }
@@ -3963,11 +3962,6 @@ mod tests {
         assert!(checked > 15, "expected the docs to be full of kuma commands, found {checked}");
     }
 
-    /// Every verb that speaks --json has to be in both lists or in
-    /// neither. Install was in one, which made `--json` a flag that
-    /// parsed and did nothing on the only verb that cannot be undone: a
-    /// failed install emitted no document at all, while docs/agents.md
-    /// promised exactly one.
     #[test]
     fn every_mutating_verb_that_takes_json_actually_enters_json_mode() {
         use clap::CommandFactory;

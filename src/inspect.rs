@@ -8,19 +8,14 @@
 use crate::config::Config;
 use crate::hibernate;
 use crate::host::{host_output, host_output_any};
+use crate::inventory::{observe, to_set, List, Machine};
 use crate::snapshot;
-use crate::state::{action_json, print_actions, Action};
+use crate::state::{action_json, print_actions, Action, BAKED_BREWS, BAKED_CONFIG, BAKED_FLATPAKS};
 use anyhow::{bail, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const BREW: &str = "/home/linuxbrew/.linuxbrew/bin/brew";
-const BREW_CELLAR: &str = "/home/linuxbrew/.linuxbrew/Cellar";
-const BREW_STATE: &str = "/home/linuxbrew/.linuxbrew/.kuma-brews";
-/// Written by the flatpak sync: the apps the declaration installed, which
-/// are the only system apps convergence considers its own to remove.
-use crate::state::{BAKED_BREWS, BAKED_CONFIG, BAKED_FLATPAKS, FLATPAK_STATE};
 /// The declaration this image was built from, baked in at build time.
 /// Doctor reads it to learn what the machine was meant to do, which is a
 /// better question than what its unit files happen to say.
@@ -57,100 +52,6 @@ struct DiffSection {
 ///
 /// `None` means "couldn't look" (tool absent, brew not bootstrapped),
 /// which is not the same as "nothing there" and never reads as drift.
-pub(crate) struct Machine {
-    pub rpm: Option<BTreeSet<String>>,
-    pub flatpak_system: Option<BTreeSet<String>>,
-    /// `flatpak --user` installs: the documented imperative escape hatch.
-    /// Convergence never touches these, and capture only takes one when
-    /// it is named.
-    pub flatpak_user: BTreeSet<String>,
-    /// Apps the sync has ever installed (its state file): the only system
-    /// apps convergence considers its own to remove. A store installs
-    /// system-wide too, so scope alone can't tell whose an app is.
-    pub flatpak_state: BTreeSet<String>,
-    pub brew_installed: Option<BTreeSet<String>>,
-    /// Explicit installs only. A dependency is baggage that arrived with
-    /// a choice, not a choice.
-    pub brew_leaves: BTreeSet<String>,
-    /// Formulae the sync has ever installed (its state file): the only
-    /// ones convergence considers its own to remove.
-    pub brew_state: BTreeSet<String>,
-}
-
-/// Ask the machine what it has. Read-only, and every query is allowed to
-/// fail: an answer nobody could observe must never turn into a claim.
-pub(crate) fn observe(config: &Config) -> Machine {
-    // One rpm -qa beats a spawn per declared package, and rpm being
-    // absent reads as "nothing to check" rather than "everything is
-    // missing". Nothing declares rpm, nothing to ask.
-    let ask = |args: &[&str]| host_output(args).ok().map(|out| owned_set(&out));
-
-    let rpm = (!config.packages.rpm.is_empty())
-        .then(|| ask(&["rpm", "-qa", "--qf", "%{NAME}\n"]))
-        .flatten();
-    let flatpak_system = ask(&["flatpak", "list", "--system", "--app", "--columns=application"]);
-    let flatpak_user =
-        ask(&["flatpak", "list", "--user", "--app", "--columns=application"]).unwrap_or_default();
-
-    let ask_brew = !config.packages.brew.is_empty() || Path::new(BREW).exists();
-    let brew_installed = ask_brew.then(|| ask(&[BREW, "list", "--formula", "-1"])).flatten();
-    // Nothing installed, nothing to classify.
-    let brew_leaves = brew_installed
-        .as_ref()
-        .filter(|installed| !installed.is_empty())
-        .and_then(|installed| leaves_from_receipts(installed).or_else(|| ask(&[BREW, "leaves"])))
-        .unwrap_or_default();
-    let brew_state = owned_set(&std::fs::read_to_string(BREW_STATE).unwrap_or_default());
-    let flatpak_state = owned_set(&std::fs::read_to_string(FLATPAK_STATE).unwrap_or_default());
-
-    Machine {
-        rpm,
-        flatpak_system,
-        flatpak_user,
-        flatpak_state,
-        brew_installed,
-        brew_leaves,
-        brew_state,
-    }
-}
-
-/// Leaves without asking brew: the installed formulae nothing else
-/// depends on.
-///
-/// `brew leaves` resolves the dependency graph and costs about 1.2s,
-/// more than every other query in `observe` put together. The same graph
-/// is already on disk, one `runtime_dependencies` list per formula, and
-/// reading all of them takes about 30ms. Same definition, same answer,
-/// forty times faster. (`state.rs` already reads the Cellar rather than
-/// paying for `brew list`, so this is the established trade here.)
-///
-/// None whenever the receipts can't be trusted (a formula with no
-/// readable receipt, or a shape this doesn't recognise) and the caller
-/// falls back to asking brew. That fallback is the price of reading a
-/// format brew owns and could change.
-fn leaves_from_receipts(installed: &BTreeSet<String>) -> Option<BTreeSet<String>> {
-    let mut depended_on: BTreeSet<String> = BTreeSet::new();
-    for name in installed {
-        let mut read_one = false;
-        for version in std::fs::read_dir(Path::new(BREW_CELLAR).join(name)).ok()? {
-            let receipt = version.ok()?.path().join("INSTALL_RECEIPT.json");
-            let Ok(text) = std::fs::read_to_string(&receipt) else { continue };
-            let json: serde_json::Value = serde_json::from_str(&text).ok()?;
-            for dep in json.get("runtime_dependencies")?.as_array()? {
-                let full = dep.get("full_name")?.as_str()?;
-                // A tap-qualified dependency (owner/tap/tool) has to match
-                // the bare name `brew list` reports.
-                depended_on.insert(full.rsplit('/').next().unwrap_or(full).to_string());
-            }
-            read_one = true;
-        }
-        if !read_one {
-            return None;
-        }
-    }
-    Some(installed.difference(&depended_on).cloned().collect())
-}
-
 /// Something this machine has that the declaration does not name.
 pub(crate) struct Candidate {
     /// The [packages] list it would join. Only ever "flatpak" or "brew";
@@ -182,20 +83,17 @@ pub(crate) fn candidates(config: &Config, machine: &Machine) -> Vec<Candidate> {
 
     if let Some(installed) = &machine.flatpak_system {
         for app in installed.iter().filter(|a| !flatpak.contains(a.as_str())) {
-            // Same rule as brew: convergence takes back only what it
-            // installed. An app a store put here system-wide is the
-            // owner's, undeclared but in no danger.
-            let doomed = machine.flatpak_state.contains(app);
+            let doomed = machine.convergence_removes(List::Flatpak, app, &flatpak);
             out.push(Candidate { list: "flatpak", item: app.clone(), doomed, promotes: false });
         }
     }
 
     if let Some(installed) = &machine.brew_installed {
         for f in installed.iter().filter(|f| !brew.contains(f.as_str())) {
-            // Convergence takes back only what it installed; everything
-            // else on the machine is the owner's, declared or not. A
-            // dependency is neither, so it is never offered.
-            let doomed = machine.brew_state.contains(f);
+            // A dependency of a choice is neither the owner's nor a
+            // choice, so it is never offered; convergence taking back
+            // what it installed is the exception.
+            let doomed = machine.convergence_removes(List::Brew, f, &brew);
             if !doomed && !machine.brew_leaves.contains(f) {
                 continue;
             }
@@ -277,7 +175,7 @@ pub fn diff(config: &Config, config_path: &Path, json: bool) -> Result<()> {
     let declared: BTreeSet<&str> = config.packages.brew.iter().map(String::as_str).collect();
     let mut entries = Vec::new();
     let mut skipped = None;
-    if !declared.is_empty() || Path::new(BREW).exists() {
+    if !declared.is_empty() || Path::new(crate::inventory::BREW).exists() {
         match &machine.brew_installed {
             Some(installed) => {
                 for f in declared.iter().filter(|f| !installed.contains(**f)) {
@@ -479,16 +377,6 @@ fn diff_json(
         "adhoc_flatpaks": adhoc_flatpaks,
         "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
     })
-}
-
-pub(crate) fn to_set(text: &str) -> BTreeSet<&str> {
-    text.lines().map(str::trim).filter(|l| !l.is_empty()).collect()
-}
-
-/// The same, owned: an observation outlives the command output it was
-/// read from, because two verbs consume it.
-fn owned_set(text: &str) -> BTreeSet<String> {
-    to_set(text).into_iter().map(str::to_string).collect()
 }
 
 /// The baked copy at /usr/lib/kuma/<list> is what convergence follows;
@@ -1025,12 +913,7 @@ pub fn doctor(json: bool, as_report: bool) -> Result<()> {
 /// the question is what built this machine.
 fn report_json(findings: &[Finding], status: Option<&serde_json::Value>) -> serde_json::Value {
     let os = os_release_fields();
-    let image = |ptr: &str| {
-        status.and_then(|s| s.pointer(ptr)).and_then(|v| v.as_str()).map(str::to_string)
-    };
-    let slot_present = |name: &str| {
-        status.and_then(|s| s.pointer(&format!("/status/{name}"))).is_some_and(|v| !v.is_null())
-    };
+    let slots = status.map(crate::deployment::Deployments::from_status_json);
     // Built on top of the `--json` object rather than beside it, so
     // `checks` and `summary` sit at the top level in both and anything
     // that already reads `--json` reads a report unchanged.
@@ -1047,10 +930,10 @@ fn report_json(findings: &[Finding], status: Option<&serde_json::Value>) -> serd
             "id": os.get("ID"),
             "version_id": os.get("VERSION_ID"),
             "version_codename": os.get("VERSION_CODENAME"),
-            "booted_image": image("/status/booted/image/image/image"),
-            "booted_digest": image("/status/booted/image/imageDigest"),
-            "staged": slot_present("staged"),
-            "rollback": slot_present("rollback"),
+            "booted_image": slots.as_ref().and_then(|d| d.booted.image.clone()),
+            "booted_digest": slots.as_ref().and_then(|d| d.booted.digest.clone()),
+            "staged": slots.as_ref().is_some_and(|d| d.staged.is_some()),
+            "rollback": slots.as_ref().is_some_and(|d| d.rollback.is_some()),
             "live_media": live_media(),
             "booted_kuma_machine": booted_kuma_machine(),
         },
@@ -1320,18 +1203,8 @@ fn check_deployment(
             return;
         }
     };
-    let slot = |name: &str| json.get("status").and_then(|s| s.get(name));
-    let image_of = |slot: &serde_json::Value| {
-        slot.pointer("/image/image/image").and_then(|v| v.as_str()).map(str::to_string)
-    };
-    let digest_of = |slot: &serde_json::Value| {
-        slot.pointer("/image/imageDigest").and_then(|v| v.as_str()).map(str::to_string)
-    };
-
-    let booted = slot("booted").cloned().unwrap_or_default();
-    let staged = slot("staged").filter(|v| !v.is_null()).cloned();
-    let rollback = slot("rollback").filter(|v| !v.is_null()).cloned();
-    let mut detail = match image_of(&booted) {
+    let deps = crate::deployment::Deployments::from_status_json(&json);
+    let mut detail = match deps.booted.image.clone() {
         Some(image) => format!("booted on {image}"),
         None => {
             report(Grade::Warn, "deployment", "no booted bootc deployment".into(), None);
@@ -1339,11 +1212,11 @@ fn check_deployment(
         }
     };
     let mut fix = None;
-    if staged.is_some() {
+    if deps.staged.is_some() {
         detail.push_str("; a new deployment is staged");
         fix = Some(Action::new("reboot", "sudo systemctl reboot", "boot the staged deployment"));
     }
-    if rollback.is_some() {
+    if deps.rollback.is_some() {
         detail.push_str("; rollback available (kuma rollback)");
     }
     report(Grade::Ok, "deployment", detail, fix);
@@ -1354,13 +1227,11 @@ fn check_deployment(
     // kernel underneath them waits for a human. bootc carries the image's
     // creation time, and an image that never recorded one is no answer
     // rather than a wrong one.
-    if let Some(days) =
-        booted.pointer("/image/timestamp").and_then(|v| v.as_str()).and_then(days_since)
-    {
+    if let Some(days) = deps.booted.timestamp.as_deref().and_then(days_since) {
         // A staged deployment is a newer image already waiting and the
         // reboot that takes it is named above; a second alarm for a fire
         // already out is how a health check teaches people to skim it.
-        let stale = days >= STALE_IMAGE_DAYS && staged.is_none();
+        let stale = days >= STALE_IMAGE_DAYS && deps.staged.is_none();
         let detail = match days {
             0 => "booted image was built today".to_string(),
             1 => "booted image is 1 day old".to_string(),
@@ -1387,11 +1258,12 @@ fn check_deployment(
     // (an overridden build, a test image) must never be told the
     // unrelated default build is "newer" — following that suggestion
     // would switch the machine off the tag its admin chose.
-    let compared_tag = booted
-        .pointer("/image/image/transport")
-        .and_then(|v| v.as_str())
+    let compared_tag = deps
+        .booted
+        .transport
+        .as_deref()
         .filter(|transport| *transport == "containers-storage")
-        .and_then(|_| image_of(&booted))
+        .and_then(|_| deps.booted.image.clone())
         .unwrap_or_else(|| crate::DEFAULT_TAG.to_string());
     if let Ok(local_id) = crate::image_id(&compared_tag) {
         let root = host_output(&[
@@ -1405,10 +1277,12 @@ fn check_deployment(
         ])
         .unwrap_or_default();
         let (root_id, root_digest) = root.split_once(' ').unwrap_or(("", ""));
-        let deployed: Vec<String> =
-            [Some(&booted), staged.as_ref()].into_iter().flatten().filter_map(digest_of).collect();
-        let deployment_current =
-            !root_digest.is_empty() && deployed.iter().any(|d| d == root_digest);
+        let deployed: Vec<&str> = [Some(&deps.booted), deps.staged.as_ref()]
+            .into_iter()
+            .flatten()
+            .filter_map(|slot| slot.digest.as_deref())
+            .collect();
+        let deployment_current = !root_digest.is_empty() && deployed.contains(&root_digest);
         if local_id != root_id || (!deployed.is_empty() && !deployment_current) {
             let switch_cmd = if compared_tag == crate::DEFAULT_TAG {
                 "kuma switch".to_string()

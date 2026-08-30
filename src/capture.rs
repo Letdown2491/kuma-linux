@@ -18,7 +18,8 @@
 
 use crate::config::Config;
 use crate::edit;
-use crate::inspect::{candidates, observe, Candidate};
+use crate::inspect::{candidates, Candidate};
+use crate::inventory::observe;
 use crate::state::{action_json, print_actions, Action};
 use anyhow::{Context, Result};
 use std::path::Path;
