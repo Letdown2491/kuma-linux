@@ -988,6 +988,28 @@ smoke_published() {
     # built here as one argument rather than passed as words.
     gsudo() { guest "echo '$pass' | sudo -S -p '' $*"; }
 
+    # One ssh hop into a machine that has just booted or just resumed is
+    # this stage's one flaky thing. The plain hibernate cycle learned it
+    # as "Run 12" and retries its post-resume /proc/uptime read by hand;
+    # the suspend-then-hibernate cycle learned it as ci 33127646466
+    # (2026-08-27), which failed at "could not stage the harness's short
+    # hibernate delay" with every resume assertion already green, and a
+    # rerun of the same commit went green. Retry rather than trust the
+    # first packet after a wake, with a deadline rather than a bare loop
+    # so a machine that is genuinely unreachable still fails this stage
+    # on purpose instead of hanging CI. For reads and staging only: a
+    # command that changes what the machine is doing, like the suspend
+    # start, must not be retried, because the retry cannot tell a lost
+    # packet from an answer it did not want.
+    guest_retry() {
+        local deadline=$((SECONDS + 90)) out
+        until out=$(guest "$@"); do
+            [ $SECONDS -lt $deadline ] || return 1
+            sleep 5
+        done
+        printf '%s\n' "$out"
+    }
+
     # Parsed on this side, never in the guest: anything with quotes in it
     # loses them crossing ssh, and a python one-liner is all quotes.
     booted_digest() {
@@ -1909,21 +1931,41 @@ smoke_published() {
             # ever got to suspend, on a harness bug the autologin fix
             # had already documented.
             echo "   .. suspend-then-hibernate"
-            guest "printf '%s\n' '[Sleep]' 'HibernateDelaySec=15' > /tmp/kuma-smoke-s2h.conf" \
-                || bad "could not stage the harness's short hibernate delay in the guest"
-            gsudo "mkdir -p /etc/systemd/sleep.conf.d"
-            gsudo "sh -c 'cat /tmp/kuma-smoke-s2h.conf > /etc/systemd/sleep.conf.d/kuma-smoke.conf'"
-            # Read back, because a delay that never landed is a 2h
-            # suspend: the 300s ceiling below would report "never
-            # hibernated" about a machine the harness never configured.
-            gsudo 'grep -q "^HibernateDelaySec=15$" /etc/systemd/sleep.conf.d/kuma-smoke.conf' \
-                || bad "the 15s hibernate delay never landed in the machine's sleep config"
+            # Staged as one unit and retried as one unit, because the
+            # read-back below cannot tell a lost packet from a lost
+            # file: this block sits in the window where the plain
+            # cycle's Run 12 and this cycle's ci 33127646466 both lost
+            # ssh, and every step is idempotent, so re-running the
+            # whole block is safe where re-running one step of it would
+            # leave the halves disagreeing.
+            local staged=0 stage_deadline
+            stage_deadline=$((SECONDS + 90))
+            until [ "$staged" -eq 1 ]; do
+                guest "printf '%s\n' '[Sleep]' 'HibernateDelaySec=15' > /tmp/kuma-smoke-s2h.conf" \
+                    || true
+                gsudo "mkdir -p /etc/systemd/sleep.conf.d" || true
+                gsudo "sh -c 'cat /tmp/kuma-smoke-s2h.conf > /etc/systemd/sleep.conf.d/kuma-smoke.conf'" \
+                    || true
+                # Read back, because a delay that never landed is a 2h
+                # suspend: the 300s ceiling below would report "never
+                # hibernated" about a machine the harness never
+                # configured. The read-back is the retry condition: it
+                # is the only step whose success every other one exists
+                # to produce.
+                if gsudo 'grep -q "^HibernateDelaySec=15$" /etc/systemd/sleep.conf.d/kuma-smoke.conf'; then
+                    staged=1
+                elif [ $SECONDS -lt "$stage_deadline" ]; then
+                    sleep 5
+                else
+                    bad "could not stage the harness's short hibernate delay, over 90s of tries. The machine answered the session check moments before, so this is the harness losing ssh rather than a machine fault; console at $log"
+                fi
+            done
 
             local s2h_boot_id s2h_uptime
-            s2h_boot_id=$(guest cat /proc/sys/kernel/random/boot_id)
-            s2h_uptime=$(guest "cut -d' ' -f1 /proc/uptime")
-            [ -n "$s2h_boot_id" ] || bad "could not read the boot_id before suspend-then-hibernate"
-            [ -n "$s2h_uptime" ] || bad "could not read /proc/uptime before suspend-then-hibernate"
+            s2h_boot_id=$(guest_retry cat /proc/sys/kernel/random/boot_id)
+            s2h_uptime=$(guest_retry "cut -d' ' -f1 /proc/uptime")
+            [ -n "$s2h_boot_id" ] || bad "could not read the boot_id before suspend-then-hibernate, over 90s of tries; console at $log"
+            [ -n "$s2h_uptime" ] || bad "could not read /proc/uptime before suspend-then-hibernate, over 90s of tries; console at $log"
 
             # Same unit-starting trick as the plain cycle: logind's polkit
             # is not in the way of the manager, and --no-block because the
@@ -1976,8 +2018,8 @@ smoke_published() {
                 " after the s2h resume"
 
             local s2h_after_id s2h_after_uptime
-            s2h_after_id=$(guest cat /proc/sys/kernel/random/boot_id)
-            [ -n "$s2h_after_id" ] || bad "could not read the boot_id after the s2h resume"
+            s2h_after_id=$(guest_retry cat /proc/sys/kernel/random/boot_id)
+            [ -n "$s2h_after_id" ] || bad "could not read the boot_id after the s2h resume, over 90s of tries. The healthy-boot checks above passed, so this is the harness losing ssh rather than a machine verdict; console at $log"
             if [ "$s2h_after_id" != "$s2h_boot_id" ]; then
                 # The same distinction the retry loop makes above: a
                 # resumed-then-reset guest is QEMU's artifact, a never-
@@ -1991,7 +2033,9 @@ smoke_published() {
             else
                 guest "test -f /run/kuma-resumed" || bad \
                     "same boot_id after s2h but the tmpfs marker is gone; console at $log"
-                s2h_after_uptime=$(guest "cut -d' ' -f1 /proc/uptime" || true)
+                s2h_after_uptime=$(guest_retry "cut -d' ' -f1 /proc/uptime")
+                [ -n "$s2h_after_uptime" ] || bad \
+                    "could not read /proc/uptime after the s2h resume, over 90s of tries. The resume itself passed: boot_id is still ${s2h_boot_id:0:8} and the tmpfs marker survived. This is the harness losing ssh, not a fresh boot; console at $log"
                 awk -v a="$s2h_uptime" -v b="$s2h_after_uptime" 'BEGIN { exit !(b + 0 >= a + 0) }' \
                     || bad "uptime went backwards across the s2h cycle ($s2h_uptime -> $s2h_after_uptime)"
                 ok "resumed from suspend-then-hibernate: same boot_id, marker survived, uptime continued"
