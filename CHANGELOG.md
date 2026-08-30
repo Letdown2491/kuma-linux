@@ -11,7 +11,7 @@ differently. Why it changed belongs in the commit that made it.
 - **`kuma vm`'s disks carry the declaration's shell again when kuma runs
   inside a distrobox.** The one podman call in `vm` that spawned a private
   process did not escape the container kuma itself runs in, so inside one
-  it never found the tag it was asked about — and every failure of that
+  it never found the tag it was asked about, and every failure of that
   call is silent by design, so the fallback read as "no shell" and
   nothing could tell. It goes through the same escape every other podman
   call takes, which is where it always should have been.
@@ -91,7 +91,7 @@ differently. Why it changed belongs in the commit that made it.
   which is the copy the boot actually loads. The boot splash grew the
   initramfs by 156 MB (a splash needs a framebuffer, so dracut packs
   every GPU driver's firmware into it), and the doubled copy took the
-  ISO from 1.80 GB to 2.11 GB — over the 1.9 GB budget for a GitHub
+  ISO from 1.80 GB to 2.11 GB, over the 1.9 GB budget for a GitHub
   release asset, failing the `iso` job. The in-squashfs copies were
   never read: a live boot loads the pxeboot pair, and installing pulls
   its image from a registry. `kuma iso` now excludes both from the

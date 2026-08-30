@@ -97,7 +97,7 @@ A third thing the tests watch that you will meet the first time you change
 what an image carries: the generator is pinned by goldens. Four
 declarations' worth of Containerfile text and staged-file manifests live in
 `src/containerfile/goldens/`, and any change to what an image ships shows
-up as a diff against them. That diff is the review of your change — read
+up as a diff against them. That diff is the review of your change: read
 it, don't just regenerate past it. When the change is deliberate, run
 `UPDATE_GOLDENS=1 cargo test` and commit the result. The builder label
 carries `git describe`, so it is normalized out of the comparison; a golden
