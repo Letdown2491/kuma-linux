@@ -88,10 +88,20 @@ only delays the release. Everything else in `ci.yml` still runs on the tag.
 Two limits in that list worth knowing before you trust it. shellcheck reads
 `scripts/smoke.sh` and nothing else, so the shell that images actually run
 (the sync units and helpers, which live in Rust string literals in
-`containerfile.rs`) is unchecked; run it by hand against the generated file
-if you touch one. And the image stage proves an image builds, never that it
-works, so anything whose behaviour appears at runtime has no gate on a push
-at all.
+`containerfile/blocks.rs`) is unchecked; run it by hand against the
+generated file if you touch one. And the image stage proves an image builds,
+never that it works, so anything whose behaviour appears at runtime has no
+gate on a push at all.
+
+A third thing the tests watch that you will meet the first time you change
+what an image carries: the generator is pinned by goldens. Four
+declarations' worth of Containerfile text and staged-file manifests live in
+`src/containerfile/goldens/`, and any change to what an image ships shows
+up as a diff against them. That diff is the review of your change — read
+it, don't just regenerate past it. When the change is deliberate, run
+`UPDATE_GOLDENS=1 cargo test` and commit the result. The builder label
+carries `git describe`, so it is normalized out of the comparison; a golden
+that moves is moving something that ships.
 
 actionlint is there because a workflow can be valid YAML and still be
 rejected by Actions, which says so by running no job at all and leaving no

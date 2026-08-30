@@ -6,6 +6,29 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+### Fixed
+
+- **`kuma vm`'s disks carry the declaration's shell again when kuma runs
+  inside a distrobox.** The one podman call in `vm` that spawned a private
+  process did not escape the container kuma itself runs in, so inside one
+  it never found the tag it was asked about — and every failure of that
+  call is silent by design, so the fallback read as "no shell" and
+  nothing could tell. It goes through the same escape every other podman
+  call takes, which is where it always should have been.
+
+### Changed
+
+- **`kuma capture --json`'s dry run says `"dry_run": true`**, like every
+  other gated verb's. It shipped without the field since the verb was
+  born, so an agent reading the document had to infer a preview from
+  `"written": false`. The document is otherwise unchanged.
+- `kuma switch` and `kuma rollback` dry runs print the command they
+  preview in the same `→` form every other dry run uses, rather than
+  leaving it implicit in the prose.
+- `kuma diff` no longer runs `brew list` to see what is installed: the
+  Cellar directory says the same thing, and reading it saves the spawn
+  on every run. The bare `kuma` probe already read it that way.
+
 ## v0.19.0 (2026-08-30)
 
 ### Added
