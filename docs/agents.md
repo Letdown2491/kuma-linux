@@ -97,7 +97,9 @@ between runs, and nothing promises they will not gain detail.
   `capture`, `remove`, `clean`, and `install` accept `--json` and emit
   exactly one document on stdout: `{"ok": true, …}` with result fields and
   next `actions`, or `{"ok": false, "error": …}` with a non-zero exit.
-  Progress and subprocess output move to stderr.
+  A verb that ran as a preview because its `--yes` was missing marks its
+  document `"dry_run": true`, so a caller tells a preview from an effect
+  in the document alone. Progress and subprocess output move to stderr.
 - **Nothing changes what's running without a reboot.** `switch`, `update` and
   `rollback` gate on `--yes`, and even then only stage a deployment.
 
