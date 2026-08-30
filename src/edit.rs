@@ -5,7 +5,7 @@
 
 use crate::config::Config;
 use crate::overrides::Proposal;
-use crate::state::{action_json, print_actions, Action};
+use crate::state::{print_actions, Action};
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 use toml_edit::{value, Array, DocumentMut, Item, Table, Value};
@@ -119,14 +119,13 @@ pub fn add(path: &Path, list: &str, names: &[String], json: bool) -> Result<()> 
     let (actions, converge_note) =
         if added.is_empty() { (Vec::new(), None) } else { apply_edges(list == "rpm") };
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true, "list": list, "declared": added, "already_declared": already,
-                "note": converge_note,
-                "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
-            })
-        );
+        crate::response::Response::new()
+            .field("list", list)
+            .field("declared", added)
+            .field("already_declared", already)
+            .field("note", converge_note)
+            .actions(&actions)
+            .print(true, "");
         return Ok(());
     }
     for name in &already {
@@ -220,17 +219,17 @@ pub fn remove(path: &Path, names: &[String], json: bool) -> Result<()> {
     store(path, &doc)?;
     let (actions, converge_note) = apply_edges(removed.iter().any(|(_, list)| *list == "rpm"));
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true,
-                "removed": removed.iter().map(|(name, list)| serde_json::json!({
-                    "item": name, "list": list,
-                })).collect::<Vec<_>>(),
-                "note": converge_note,
-                "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
-            })
-        );
+        crate::response::Response::new()
+            .field(
+                "removed",
+                removed
+                    .iter()
+                    .map(|(name, list)| serde_json::json!({ "item": name, "list": list }))
+                    .collect::<Vec<_>>(),
+            )
+            .field("note", converge_note)
+            .actions(&actions)
+            .print(true, "");
         return Ok(());
     }
     for (name, list) in &removed {

@@ -20,7 +20,8 @@ use crate::config::Config;
 use crate::edit;
 use crate::inspect::{candidates, Candidate};
 use crate::inventory::observe;
-use crate::state::{action_json, print_actions, Action};
+use crate::response;
+use crate::state::{print_actions, Action};
 use anyhow::{Context, Result};
 use std::path::Path;
 
@@ -92,51 +93,51 @@ pub fn capture(
     let opt_in: Vec<&str> = found.iter().filter(|c| c.promotes).map(|c| c.item.as_str()).collect();
 
     if selected.is_empty() && proposals.is_empty() {
-        if json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "ok": true, "written": false, "captured": [],
-                    "candidates": candidates_json(&found), "actions": [],
-                })
+        response::Response::new()
+            .field("written", false)
+            .field("captured", Vec::<String>::new())
+            .field("candidates", candidates_json(&found))
+            .print(
+                json,
+                &format!(
+                    "Nothing to capture: this machine runs nothing {} doesn't name.",
+                    config_path.display()
+                ),
             );
-            return Ok(());
+        if !json {
+            if !opt_in.is_empty() {
+                print_opt_in(&opt_in);
+            }
+            print_ambiguous(&ambiguous);
         }
-        println!(
-            "Nothing to capture: this machine runs nothing {} doesn't name.",
-            config_path.display()
-        );
-        if !opt_in.is_empty() {
-            print_opt_in(&opt_in);
-        }
-        print_ambiguous(&ambiguous);
         return Ok(());
     }
 
     let items: Vec<(&str, &str)> = selected.iter().map(|c| (c.list, c.item.as_str())).collect();
 
     if !yes {
-        if json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "ok": true, "written": false, "captured": [],
-                    "candidates": candidates_json(&found),
-                    "overrides": overrides_json(&proposals),
-                    "actions": [action_json(&yes_action(names))],
-                })
-            );
-            return Ok(());
+        // dry_run like every other gate's dry run: an agent polling for
+        // effect must be able to tell "would have written" from "wrote"
+        // in the document, not by trying the command. This one shipped
+        // without the field since the verb was born; the contract is
+        // being made uniform rather than grandfathering the accident.
+        response::Response::new()
+            .dry_run()
+            .field("written", false)
+            .field("captured", Vec::<String>::new())
+            .field("candidates", candidates_json(&found))
+            .field("overrides", overrides_json(&proposals))
+            .action(yes_action(names))
+            .print(json, &format!("Would declare in {}:", config_path.display()));
+        if !json {
+            print_proposal(&selected);
+            print_override_proposal(&proposals);
+            println!();
+            if !opt_in.is_empty() {
+                print_opt_in(&opt_in);
+            }
+            print_ambiguous(&ambiguous);
         }
-        println!("Would declare in {}:", config_path.display());
-        print_proposal(&selected);
-        print_override_proposal(&proposals);
-        println!();
-        print_actions(&[yes_action(names)]);
-        if !opt_in.is_empty() {
-            print_opt_in(&opt_in);
-        }
-        print_ambiguous(&ambiguous);
         return Ok(());
     }
 
@@ -148,24 +149,26 @@ pub fn capture(
     // path is always the convergent one.
     let (actions, converge_note) = edit::apply_edges(false);
 
+    let document = response::Response::new()
+        .field("written", true)
+        .field(
+            "captured",
+            items
+                .iter()
+                .map(|(list, item)| serde_json::json!({ "list": list, "item": item }))
+                .collect::<Vec<_>>(),
+        )
+        .field("candidates", candidates_json(&found))
+        .field("overrides", overrides_json(&proposals))
+        .field("note", converge_note)
+        .actions(&actions);
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true,
-                "written": true,
-                "captured": items.iter().map(|(list, item)| serde_json::json!({
-                    "list": list, "item": item,
-                })).collect::<Vec<_>>(),
-                "candidates": candidates_json(&found),
-                "overrides": overrides_json(&proposals),
-                "note": converge_note,
-                "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
-            })
-        );
+        document.print(true, "");
         return Ok(());
     }
-
+    // The proposal tables print between the headline and the actions, so
+    // this half stays hand-rolled: the document is one shape, the person
+    // reads another.
     println!("Declared in {}:", config_path.display());
     print_proposal(&selected);
     print_override_proposal(&proposals);

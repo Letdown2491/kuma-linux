@@ -15,6 +15,7 @@ mod liveiso;
 mod lock;
 mod overrides;
 mod partition;
+mod response;
 mod seam;
 mod snapshot;
 mod state;
@@ -469,8 +470,16 @@ fn main() -> Result<()> {
     // stderr (host::note / run_host handle the routing). The read verbs
     // (diff, doctor, check) manage their own JSON and stay out of this.
     //
-    let mutating_json = root_json
-        || match &command {
+    // ONE list, in ONE or-pattern, answering both questions: a verb is
+    // mutating because it appears here, and its --json flag is the one
+    // this pattern binds. Before, the two were spelled as two matches,
+    // and Install was in one and not the other — so the one verb that
+    // cannot be undone printed progress into the middle of its document.
+    // The pattern cannot list a variant without a json field, so the
+    // list checks itself; the test that grepped this file's own source
+    // is retired.
+    let mutating_json = |command: &Cmd| -> Option<bool> {
+        match command {
             Cmd::Build { json, .. }
             | Cmd::Switch { json, .. }
             | Cmd::Update { json, .. }
@@ -481,24 +490,12 @@ fn main() -> Result<()> {
             | Cmd::Capture { json, .. }
             | Cmd::Remove { json, .. }
             | Cmd::Hibernate { json, .. }
-            | Cmd::Install { json, .. } => *json,
-            _ => false,
-        };
-    let mutating = matches!(
-        &command,
-        Cmd::Build { .. }
-            | Cmd::Switch { .. }
-            | Cmd::Update { .. }
-            | Cmd::Rollback { .. }
-            | Cmd::Sync { .. }
-            | Cmd::Clean { .. }
-            | Cmd::Add { .. }
-            | Cmd::Capture { .. }
-            | Cmd::Remove { .. }
-            | Cmd::Hibernate { .. }
-            | Cmd::Install { .. }
-    );
-    let json_mode = mutating && mutating_json;
+            | Cmd::Install { json, .. } => Some(*json),
+            _ => None,
+        }
+    };
+    let mutating = mutating_json(&command).is_some();
+    let json_mode = mutating && (root_json || mutating_json(&command) == Some(true));
     if json_mode {
         host::set_json_output();
     }
@@ -968,18 +965,11 @@ fn build(config_path: &Path, tag: &str, json: bool) -> Result<()> {
         ));
     }
     actions.push(Action::new("vm", "kuma vm", "boot it in a disposable VM"));
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true, "built": true, "tag": tag,
-                "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
-            })
-        );
-    } else {
-        println!("\nBuilt {tag}.");
-        print_actions(&actions);
-    }
+    response::Response::new()
+        .field("built", true)
+        .field("tag", tag)
+        .actions(&actions)
+        .print(json, &format!("\nBuilt {tag}."));
     Ok(())
 }
 
@@ -1171,44 +1161,30 @@ fn switch(tag: &str, yes: bool, json: bool) -> Result<()> {
         } else {
             vec![Action::new("build", "kuma build", "build the system image from the declaration")]
         };
-        if json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "ok": true, "dry_run": true, "tag": tag, "image_built": built,
-                    "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
-                })
-            );
-            return Ok(());
-        }
-        if !built {
-            println!("{tag} is not built; there is nothing to switch to yet.\n");
-            print_actions(&actions);
-            return Ok(());
-        }
-        println!(
-            "Would sync {tag} into root podman storage, then run (as root):\n\n  bootc switch --transport containers-storage {tag}\n"
-        );
-        println!("Re-run with --yes to apply. The change takes effect on next boot;");
-        println!("the previous deployment stays available for `kuma rollback`.");
+        let prose = if !built {
+            format!("{tag} is not built; there is nothing to switch to yet.\n")
+        } else {
+            format!(
+                "Would sync {tag} into root podman storage, then run (as root):\n\n  bootc switch --transport containers-storage {tag}\n\nRe-run with --yes to apply. The change takes effect on next boot;\nthe previous deployment stays available for `kuma rollback`.\n"
+            )
+        };
+        response::Response::new()
+            .dry_run()
+            .field("tag", tag)
+            .field("image_built", built)
+            .actions(&actions)
+            .print(json, &prose);
         return Ok(());
     }
     if !stage(tag)? {
         bail!("nothing staged; the system already runs this image (did `kuma build` succeed?)");
     }
     let reboot = reboot_action();
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true, "staged": true, "tag": tag,
-                "actions": [action_json(&reboot)],
-            })
-        );
-    } else {
-        println!("\nStaged.");
-        print_actions(&[reboot]);
-    }
+    response::Response::new()
+        .field("staged", true)
+        .field("tag", tag)
+        .action(reboot)
+        .print(json, "\nStaged.");
     Ok(())
 }
 
@@ -1315,13 +1291,15 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
             _ => vec![update],
         };
         if json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "ok": true, "composed": true, "locked": lock.is_some(),
-                    "base": base, "manifest_changed": manifest_changed,
-                    "fedora_release": release_move_json(None, &release_now),
-                    "updates": match &moved {
+            response::Response::new()
+                .field("composed", true)
+                .field("locked", lock.is_some())
+                .field("base", base.as_str())
+                .field("manifest_changed", manifest_changed)
+                .field("fedora_release", release_move_json(None, &release_now))
+                .field(
+                    "updates",
+                    match &moved {
                         Ok(moved) => serde_json::json!({
                             "checked": true, "source": source.name(),
                             "moved": updates::moves_json(moved),
@@ -1332,9 +1310,9 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
                             "error": err.to_string(),
                         }),
                     },
-                    "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
-                })
-            );
+                )
+                .actions(&actions)
+                .print(true, "");
             return Ok(());
         }
         if manifest_changed {
@@ -1367,14 +1345,12 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
             Action::new("build", "kuma build", "record what this declaration resolves to")
         };
         if json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "ok": true, "locked": false, "base": base,
-                    "fedora_release": release_move_json(None, &release_now),
-                    "actions": [action_json(&build)],
-                })
-            );
+            response::Response::new()
+                .field("locked", false)
+                .field("base", base.as_str())
+                .field("fedora_release", release_move_json(None, &release_now))
+                .action(build)
+                .print(true, "");
         } else {
             println!("Nothing pinned yet: {base} has no lock to have moved from.");
             print_actions(&[build]);
@@ -1387,15 +1363,14 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
     let actions: Vec<Action> = if moved { vec![update] } else { Vec::new() };
 
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true, "locked": true, "base": base, "moved": moved,
-                "digest": { "locked": lock.base.digest },
-                "fedora_release": release_move_json(None, &release_now),
-                "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
-            })
-        );
+        response::Response::new()
+            .field("locked", true)
+            .field("base", base.as_str())
+            .field("moved", moved)
+            .field("digest", serde_json::json!({ "locked": lock.base.digest }))
+            .field("fedora_release", release_move_json(None, &release_now))
+            .actions(&actions)
+            .print(true, "");
         return Ok(());
     }
     // Both kinds of base say where the machine is. This line used to sit
@@ -1449,46 +1424,36 @@ fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
         print_release_move(release_move.as_ref());
     }
     if !yes {
-        let stage_hint = Action::new(
-            "stage",
-            "kuma update --yes",
-            "stage it: applies on reboot; the previous deployment stays for kuma rollback",
-        );
-        if json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "ok": true, "built": true, "staged": false, "tag": tag,
-                    "changes": lock_diff_json(moved.as_ref()),
-                    "fedora_release": release_move_json(release_move.as_ref(), &after_release),
-                    "actions": [action_json(&stage_hint)],
-                })
-            );
-        } else {
-            println!("\nBuilt {tag}.");
-            print_actions(&[stage_hint]);
-        }
+        response::Response::new()
+            .dry_run()
+            .field("built", true)
+            .field("staged", false)
+            .field("tag", tag)
+            .field("changes", lock_diff_json(moved.as_ref()))
+            .field("fedora_release", release_move_json(release_move.as_ref(), &after_release))
+            .action(Action::new(
+                "stage",
+                "kuma update --yes",
+                "stage it: applies on reboot; the previous deployment stays for kuma rollback",
+            ))
+            .print(json, &format!("\nBuilt {tag}."));
         return Ok(());
     }
     let staged = stage(tag)?;
     let reboot = reboot_action();
-    if json {
-        let actions: Vec<_> = if staged { vec![action_json(&reboot)] } else { vec![] };
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true, "staged": staged, "up_to_date": !staged, "tag": tag,
-                "changes": lock_diff_json(moved.as_ref()),
-                "fedora_release": release_move_json(release_move.as_ref(), &after_release),
-                "actions": actions,
-            })
-        );
-    } else if staged {
-        println!("\nStaged.");
-        print_actions(&[reboot]);
+    let mut response = response::Response::new()
+        .field("staged", staged)
+        .field("up_to_date", !staged)
+        .field("tag", tag)
+        .field("changes", lock_diff_json(moved.as_ref()))
+        .field("fedora_release", release_move_json(release_move.as_ref(), &after_release));
+    let prose = if staged {
+        response = response.action(reboot);
+        "\nStaged."
     } else {
-        println!("\nAlready up to date; the system runs this image.");
-    }
+        "\nAlready up to date; the system runs this image."
+    };
+    response.print(json, prose);
     Ok(())
 }
 
@@ -1762,26 +1727,18 @@ fn flatpak_overrides(scope: config::Scope) -> Result<()> {
 /// never-booted deployment is discarded by the swap.
 fn rollback(yes: bool, json: bool) -> Result<()> {
     if !yes {
-        if json {
-            let apply = Action::new(
+        response::Response::new()
+            .dry_run()
+            .field("would_run", "bootc rollback")
+            .action(Action::new(
                 "apply",
                 "kuma rollback --yes",
                 "swap the boot order to the previous deployment (applies on reboot; discards any staged deployment)",
+            ))
+            .print(
+                json,
+                "Would run (as root):\n\n  bootc rollback\n\nRe-run with --yes to apply. The boot order swaps to the previous\ndeployment and takes effect on next boot; rolling back again before\nthat reboot swaps the order back. A staged (never booted) deployment,\nif present, is discarded.",
             );
-            println!(
-                "{}",
-                serde_json::json!({
-                    "ok": true, "dry_run": true, "would_run": "bootc rollback",
-                    "actions": [action_json(&apply)],
-                })
-            );
-            return Ok(());
-        }
-        println!("Would run (as root):\n\n  bootc rollback\n");
-        println!("Re-run with --yes to apply. The boot order swaps to the previous");
-        println!("deployment and takes effect on next boot; rolling back again before");
-        println!("that reboot swaps the order back. A staged (never booted) deployment,");
-        println!("if present, is discarded.");
         return Ok(());
     }
     let status = host_output(&["sudo", "bootc", "status", "--format", "json"])
@@ -1805,18 +1762,11 @@ fn rollback(yes: bool, json: bool) -> Result<()> {
         "sudo systemctl reboot",
         "boot the previous deployment now; kuma rollback again undoes the swap",
     );
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true, "target": target, "staged_discarded": staged,
-                "actions": [action_json(&reboot)],
-            })
-        );
-    } else {
-        println!("\nBoot order swapped; next boot lands on {target}.");
-        print_actions(&[reboot]);
-    }
+    response::Response::new()
+        .field("target", target.as_str())
+        .field("staged_discarded", staged)
+        .action(reboot)
+        .print(json, &format!("\nBoot order swapped; next boot lands on {target}."));
     Ok(())
 }
 
@@ -1880,11 +1830,10 @@ fn sync(declared: Option<&Config>, json: bool) -> Result<()> {
             // Nothing declared to converge is a terminal like in-sync: no
             // forward move, but the JSON still carries the actions key so
             // an agent sees the same shape every mutating verb promises.
-            if json {
-                println!("{}", serde_json::json!({ "ok": true, "converged": [], "actions": [] }));
-            } else {
-                println!("Nothing to converge: this image declares no flatpaks or brew formulae.");
-            }
+            response::Response::new().field("converged", Vec::<String>::new()).print(
+                json,
+                "Nothing to converge: this image declares no flatpaks or brew formulae.",
+            );
             return Ok(());
         }
         if Path::new("/run/ostree-booted").exists() {
@@ -1935,29 +1884,19 @@ fn sync(declared: Option<&Config>, json: bool) -> Result<()> {
             "confirm the machine now matches its declaration"
         },
     ));
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true,
-                "converged": converged,
-                "baked_declaration_behind": behind,
-                "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
-            })
+    let mut prose = format!("Converged: {}", converged.join(", "));
+    if behind {
+        prose.push_str(
+            "\n\nConverged to the declaration this image baked, which is behind yours: the edits it does not have cannot reach a converger until a build of them boots.",
         );
-    } else {
-        println!("Converged: {}", converged.join(", "));
-        if behind {
-            println!(
-                "\nConverged to the declaration this image baked, which is behind yours: \
-                 the edits it does not have cannot reach a converger until a build of them boots."
-            );
-        }
-        print_actions(&actions);
     }
+    response::Response::new()
+        .field("converged", converged)
+        .field("baked_declaration_behind", behind)
+        .actions(&actions)
+        .print(json, &prose);
     Ok(())
 }
-
 /// Two kinds of leftovers accumulate in podman storage. Every rebuild
 /// Where the removed menu kept its launch counts.
 ///
@@ -2109,23 +2048,16 @@ fn clean(config_path: &Path, json: bool) -> Result<()> {
     // prints after the gathering it describes rather than interleaved
     // with it — the same discipline JSON mode gets from one document.
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true,
-                "containers_removed": abandoned.len(),
-                "images_pruned": pruned,
-                "base_images_pruned": base_pruned,
-                "live_image_pruned": live_pruned,
-                "root_images_pruned": root_pruned,
-                "menu_cache_removed": menu_cache_removed,
-                "freed_bytes": freed,
-                "actions": [],
-            })
-        );
-        return Ok(());
-    }
-    if nothing {
+        response::Response::new()
+            .field("containers_removed", abandoned.len())
+            .field("images_pruned", pruned)
+            .field("base_images_pruned", base_pruned)
+            .field("live_image_pruned", live_pruned)
+            .field("root_images_pruned", root_pruned)
+            .field("menu_cache_removed", menu_cache_removed)
+            .field("freed_bytes", freed)
+            .print(json, "");
+    } else if nothing {
         println!("Nothing to reclaim.");
     } else if let Some(freed) = freed {
         println!("Freed {}.", human_size(freed));
@@ -2469,41 +2401,38 @@ fn hibernate_cmd(size: Option<String>, off: bool, yes: bool, json: bool) -> Resu
                 "make the swapfile and set the kernel arguments (takes effect on reboot)"
             },
         );
-        if json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "ok": true, "dry_run": true, "repairing": repairing,
-                    "swap_mib": size_mib, "device": device,
-                    "warnings": warnings,
-                    "actions": [action_json(&action)],
-                })
-            );
-            return Ok(());
-        }
-        if repairing {
-            println!(
-                "There is already a {} swapfile at {}.\n",
+        // The prose is the person's half of the dry run; the document is
+        // assembled from the same facts either way.
+        let mut prose = if repairing {
+            format!(
+                "There is already a {} swapfile at {}.\n\nWould leave the file exactly where it is and set:\n\n",
                 hibernate::size_text(size_mib),
                 hibernate::FILE
-            );
-            println!("Would leave the file exactly where it is and set:\n");
+            )
         } else {
-            println!("Would make a {} swapfile:\n", hibernate::size_text(size_mib));
-            println!("  {:<28} on its own btrfs subvolume, never snapshotted", hibernate::FILE);
-            println!("  {:<28} mounts it at boot, below zram", "/etc/fstab");
-            println!();
-            println!("and set:\n");
-        }
+            format!(
+                "Would make a {} swapfile:\n\n  {:<28} on its own btrfs subvolume, never snapshotted\n  {:<28} mounts it at boot, below zram\n\nand set:\n\n",
+                hibernate::size_text(size_mib),
+                hibernate::FILE,
+                "/etc/fstab"
+            )
+        };
         for karg in hibernate::kargs("<the root filesystem's UUID>", "<the file's offset>") {
-            println!("  {karg}");
+            prose.push_str(&format!("  {karg}\n"));
         }
-        println!("  the lid suspends, then hibernates before the battery dies");
+        prose.push_str("  the lid suspends, then hibernates before the battery dies\n");
         for warning in &warnings {
-            println!("\n  {warning}");
+            prose.push_str(&format!("\n  {warning}\n"));
         }
-        println!("\nNothing has been changed.");
-        print_actions(&[action]);
+        prose.push_str("\nNothing has been changed.");
+        response::Response::new()
+            .dry_run()
+            .field("repairing", repairing)
+            .field("swap_mib", size_mib)
+            .field("device", device)
+            .field("warnings", warnings)
+            .action(action)
+            .print(json, &prose);
         return Ok(());
     }
 
@@ -2572,28 +2501,23 @@ fn hibernate_cmd(size: Option<String>, off: bool, yes: bool, json: bool) -> Resu
     )?;
 
     let reboot = reboot_action();
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true, "enabled": true, "repairing": repairing,
-                "lid": "suspend-then-hibernate",
-                "swap_mib": size_mib, "resume_offset": offset, "resume": format!("UUID={fs_uuid}"),
-                "warnings": warnings,
-                "actions": [action_json(&reboot)],
-            })
-        );
-        return Ok(());
-    }
-    println!("\nDone. resume=UUID={fs_uuid} resume_offset={offset}");
+    let mut prose = format!("\nDone. resume=UUID={fs_uuid} resume_offset={offset}");
     for warning in &warnings {
-        println!("\n  {warning}");
+        prose.push_str(&format!("\n  {warning}\n"));
     }
-    println!(
-        "\nThe kernel arguments take effect on the next boot; until then this\n\
-         machine has the swapfile but cannot resume from it."
+    prose.push_str(
+        "\nThe kernel arguments take effect on the next boot; until then this\nmachine has the swapfile but cannot resume from it.",
     );
-    print_actions(&[reboot]);
+    response::Response::new()
+        .field("enabled", true)
+        .field("repairing", repairing)
+        .field("lid", "suspend-then-hibernate")
+        .field("swap_mib", size_mib)
+        .field("resume_offset", offset)
+        .field("resume", format!("UUID={fs_uuid}"))
+        .field("warnings", warnings)
+        .action(reboot)
+        .print(json, &prose);
     Ok(())
 }
 
@@ -2617,49 +2541,43 @@ fn hibernate_off(
     // leaving it behind is the stale state doctor names, not a choice.
     let lid = std::path::Path::new(hibernate::LID_DROPIN).exists();
     if !file && stripped == fstab && kargs.is_empty() && !lid {
-        if json {
-            println!(
-                "{}",
-                serde_json::json!({ "ok": true, "changed": false, "reason": "nothing set up" })
+        response::Response::new()
+            .field("changed", false)
+            .field("reason", "nothing set up")
+            .print(
+                json,
+                "This machine has no kuma swapfile, no fstab entry for one, and no\nresume kernel arguments. There is nothing to take away.",
             );
-        } else {
-            println!("This machine has no kuma swapfile, no fstab entry for one, and no");
-            println!("resume kernel arguments. There is nothing to take away.");
-        }
         return Ok(());
     }
     if !yes {
         let action = Action::new("apply", "kuma hibernate --off --yes", "take it away");
-        if json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "ok": true, "dry_run": true, "swapfile": file,
-                    "fstab_lines": stripped != fstab, "kargs": !kargs.is_empty(), "lid": lid,
-                    "actions": [action_json(&action)],
-                })
-            );
-            return Ok(());
-        }
-        println!("Would take hibernate away from this machine:\n");
+        let mut prose = String::from("Would take hibernate away from this machine:\n\n");
         if file {
-            println!(
-                "  swap off, {} deleted ({})",
+            prose.push_str(&format!(
+                "  swap off, {} deleted ({})\n",
                 hibernate::FILE,
                 hibernate::size_text(status.file_mib.unwrap_or(0))
-            );
+            ));
         }
         if stripped != fstab {
-            println!("  the two lines kuma added to /etc/fstab removed");
+            prose.push_str("  the two lines kuma added to /etc/fstab removed\n");
         }
         if !kargs.is_empty() {
-            println!("  resume= and resume_offset= removed from the kernel arguments");
+            prose.push_str("  resume= and resume_offset= removed from the kernel arguments\n");
         }
         if lid {
-            println!("  the lid back to plain suspend");
+            prose.push_str("  the lid back to plain suspend\n");
         }
-        println!("\nNothing has been changed.");
-        print_actions(&[action]);
+        prose.push_str("\nNothing has been changed.");
+        response::Response::new()
+            .dry_run()
+            .field("swapfile", file)
+            .field("fstab_lines", stripped != fstab)
+            .field("kargs", !kargs.is_empty())
+            .field("lid", lid)
+            .action(action)
+            .print(json, &prose);
         return Ok(());
     }
     let mut root = host::for_root()?;
@@ -2678,18 +2596,11 @@ fn hibernate_off(
         run_host(&argv).context("cannot remove the resume kernel arguments")?;
     }
     let reboot = reboot_action();
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true, "changed": true, "enabled": false,
-                "actions": [action_json(&reboot)],
-            })
-        );
-        return Ok(());
-    }
-    println!("\nDone. This machine no longer has a swapfile to hibernate into.");
-    print_actions(&[reboot]);
+    response::Response::new()
+        .field("changed", true)
+        .field("enabled", false)
+        .action(reboot)
+        .print(json, "\nDone. This machine no longer has a swapfile to hibernate into.");
     Ok(())
 }
 
@@ -3021,8 +2932,8 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
             confirm.clone(),
             "ask for an account and hostname, then write it",
         );
-        // Built before the document rather than inside it: json! takes
-        // values, not blocks, and the list is conditional twice over.
+        // Built before the document rather than inside it: the list is
+        // conditional twice over.
         let mut asks = Vec::new();
         // In the order the questions are asked: the sizes and the
         // swapfile are answered before the plan is printed, and only
@@ -3040,31 +2951,36 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
             asks.push("disk passphrase");
         }
         asks.extend(["account name", "password", "hostname"]);
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true, "installed": false, "dry_run": true,
-                "disk": disk_str, "image": image, "image_local": local,
-                // What `--encrypt` would make it, not what a person would
-                // be asked: an agent is not a terminal, so the flag is the
-                // whole of the answer it can give.
-                "encrypted": encrypt,
-                // The size a --swap would make, not one a person would
-                // be asked for: an agent is not a terminal, so the flag
-                // is the whole of the answer it can give.
-                "swap_mib": swap_mib,
-                "asks": asks,
-                // The one decision here that cannot be revised later, so
-                // an agent reading this resource can see it before
-                // agreeing to it rather than only in the prose plan.
-                "layout": layout.iter().map(|part| serde_json::json!({
-                    "label": part.label,
-                    "size": part.size_text(disk_mib, &sizes),
-                    "purpose": part.purpose,
-                })).collect::<Vec<_>>(),
-                "actions": [action_json(&action)],
-            })
-        );
+        // What `--encrypt` would make it, not what a person would be
+        // asked: an agent is not a terminal, so the flag is the whole
+        // of the answer it can give. Same for the swapfile size.
+        response::Response::new()
+            .dry_run()
+            .field("installed", false)
+            .field("disk", disk_str)
+            .field("image", image)
+            .field("image_local", local)
+            .field("encrypted", encrypt)
+            .field("swap_mib", swap_mib)
+            .field("asks", asks)
+            // The one decision here that cannot be revised later, so
+            // an agent reading this resource can see it before
+            // agreeing to it rather than only in the prose plan.
+            .field(
+                "layout",
+                layout
+                    .iter()
+                    .map(|part| {
+                        serde_json::json!({
+                            "label": part.label,
+                            "size": part.size_text(disk_mib, &sizes),
+                            "purpose": part.purpose,
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .action(action)
+            .print(true, "");
         return Ok(());
     }
     // Prose only for a person. `--json --yes` promised exactly one
@@ -3226,14 +3142,15 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         "boot the installed machine (remove the install media first)",
     );
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true, "installed": true, "disk": disk_str, "image": image,
-                "user": account.name, "hostname": hostname, "encrypted": encrypt,
-                "actions": [action_json(&reboot)],
-            })
-        );
+        response::Response::new()
+            .field("installed", true)
+            .field("disk", disk_str)
+            .field("image", image)
+            .field("user", account.name)
+            .field("hostname", hostname)
+            .field("encrypted", encrypt)
+            .action(reboot)
+            .print(true, "");
         return Ok(());
     }
     println!("\nInstalled {image} to {}.", disk.display());
@@ -3962,16 +3879,32 @@ mod tests {
         assert!(checked > 15, "expected the docs to be full of kuma commands, found {checked}");
     }
 
+    /// The verbs the one list names take a --json flag, and clap still
+    /// calls it that. The two-list drift this test used to police by
+    /// grepping this file's own source is retired: one or-pattern now
+    /// answers both "is this verb mutating" and "what did its --json
+    /// say", and a variant it listed without a json field would not
+    /// compile — Install being in one list and not the other was the
+    /// shipped shape of that drift. What remains outside the type
+    /// system is clap's side — a flag renamed there would silently
+    /// stop binding the pattern's field — so that is what is asserted.
     #[test]
-    fn every_mutating_verb_that_takes_json_actually_enters_json_mode() {
+    fn the_mutating_verbs_take_the_flag_the_one_list_binds() {
         use clap::CommandFactory;
-        // Read off the CLI rather than a hand-kept list, so a verb that
-        // gains --json later cannot be forgotten here.
-        let mutating_with_json = [
-            "build", "switch", "update", "rollback", "sync", "clean", "add", "capture", "remove",
+        let mutating = [
+            "build",
+            "switch",
+            "update",
+            "rollback",
+            "sync",
+            "clean",
+            "add",
+            "capture",
+            "remove",
+            "hibernate",
             "install",
         ];
-        for verb in mutating_with_json {
+        for verb in mutating {
             let sub = Cli::command()
                 .get_subcommands()
                 .find(|s| s.get_name() == verb)
@@ -3980,26 +3913,6 @@ mod tests {
             assert!(
                 sub.get_arguments().any(|a| a.get_id() == "json"),
                 "{verb} is treated as a json-mode verb and does not take --json"
-            );
-        }
-        // The pairing itself: both lists live in `main`, so this asserts
-        // the source says so rather than re-deriving it.
-        let src = include_str!("main.rs");
-        let json_list = src.split("let mutating_json").nth(1).expect("mutating_json exists");
-        let json_list = json_list.split("let mutating =").next().unwrap();
-        let mutating = src.split("let mutating = matches!").nth(1).expect("mutating exists");
-        let mutating = mutating.split("let json_mode").next().unwrap();
-        for verb in [
-            "Install", "Build", "Switch", "Update", "Rollback", "Sync", "Clean", "Add", "Capture",
-            "Remove",
-        ] {
-            assert!(
-                json_list.contains(&format!("Cmd::{verb}")),
-                "{verb} is missing from mutating_json"
-            );
-            assert!(
-                mutating.contains(&format!("Cmd::{verb}")),
-                "{verb} takes --json and is missing from `mutating`, so the flag does nothing"
             );
         }
     }
