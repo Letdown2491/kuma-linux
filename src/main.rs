@@ -105,6 +105,11 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+// Parsed once per process and then taken apart; the size difference
+// between this variant and the rest is memory that is allocated either
+// way, and boxing a field to satisfy the lint would put a `Box` between
+// a person and the flag they named for no gain at runtime.
+#[allow(clippy::large_enum_variant)]
 enum Cmd {
     /// Write a kuma.toml in the current directory (on a kuma machine: a
     /// copy of the machine's own baked declaration)
@@ -199,6 +204,18 @@ enum Cmd {
         /// `--swap none` declines without being asked.
         #[arg(long, value_name = "SIZE")]
         swap: Option<String>,
+        /// Size for the EFI system partition the firmware reads, e.g. 1G.
+        /// Asked for on a terminal when this is left off; 600M when it is
+        /// left off and nobody is there to ask. Refused below 256M, with
+        /// the reason in the refusal.
+        #[arg(long, value_name = "SIZE")]
+        esp: Option<String>,
+        /// Size for /boot, which holds a kernel per deployment, e.g. 4G.
+        /// Asked for on a terminal when this is left off; 2G when it is
+        /// left off and nobody is there to ask. Refused below 1G, with
+        /// the reason in the refusal.
+        #[arg(long, value_name = "SIZE")]
+        boot: Option<String>,
         /// Put this machine's home directory back from an offsite backup
         /// on its first boot. Takes a file setting RESTIC_REPOSITORY and
         /// the repository's credentials: the machine has no declaration
@@ -540,6 +557,8 @@ fn run(
             shell,
             encrypt,
             swap,
+            esp,
+            boot,
             restore,
             yes,
             json,
@@ -570,6 +589,8 @@ fn run(
                 shell,
                 encrypt,
                 swap,
+                esp,
+                boot,
                 restore,
                 yes,
                 json,
@@ -2276,6 +2297,7 @@ struct PlanView<'a> {
     /// and the hazard depends on encryption rather than on the number.
     swap: Option<(u64, Vec<String>)>,
     layout: &'a [partition::Partition],
+    sizes: &'a partition::Sizes,
     disk_mib: u64,
 }
 
@@ -2311,7 +2333,7 @@ fn print_install_plan(view: &PlanView) {
         println!(
             "             {:<10} {:>5}  {}",
             part.label,
-            part.size_text(view.disk_mib),
+            part.size_text(view.disk_mib, view.sizes),
             part.purpose
         );
     }
@@ -2714,6 +2736,8 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         shell,
         encrypt: encrypt_flag,
         swap: swap_flag,
+        esp: esp_flag,
+        boot: boot_flag,
         restore,
         yes,
         json,
@@ -2852,6 +2876,19 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
 
     let encrypt = if yes { install::ask_encrypt(encrypt_flag)? } else { encrypt_flag };
 
+    // Asked right after encryption and for the same reason: the answer
+    // changes the plan, which prints these sizes, and a layout shown
+    // before its sizes were known would be describing a disk nobody had
+    // decided on. Flags are parsed on every run, dry or not, so a bad
+    // --esp fails while it still costs nothing, like --swap; the
+    // interview re-asks rather than failing, and a pipe gets the
+    // defaults for whatever was not flagged.
+    let sizes = if yes {
+        install::ask_sizes(esp_flag.as_deref(), boot_flag.as_deref())?
+    } else {
+        partition::resolve_sizes(esp_flag.as_deref(), boot_flag.as_deref())?
+    };
+
     // With the objections, for the same reason they are: this is the
     // verb that cannot be undone, so everything that would stop it stops
     // it before anything is typed. `sgdisk` taught this the expensive
@@ -2887,7 +2924,7 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
             .with_context(|| format!("cannot read the size of {}", disk.display()))?
     };
     let disk_mib = disk_bytes / (1024 * 1024);
-    let layout = partition::plan(disk_bytes, encrypt)
+    let layout = partition::plan(disk_bytes, encrypt, &sizes)
         .with_context(|| format!("cannot install to {}", disk.display()))?;
 
     // After the layout, because what a swapfile can take is what the
@@ -2905,7 +2942,7 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         .flatten()
         .unwrap_or_default();
     let ram_mib = hibernate::ram_mib(&meminfo);
-    let spare_mib = partition::spare_mib(disk_mib);
+    let spare_mib = partition::spare_mib(disk_mib, &sizes);
     // The flag is parsed on every run, dry or not, so that `--swap 16`
     // is refused while it still costs nothing. Asked only under --yes,
     // like encryption: a dry run changes nothing and has no business
@@ -2991,6 +3028,15 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         if let Some(swap) = &swap_flag {
             flags.push_str(&format!(" --swap {swap}"));
         }
+        // Same rule as --swap: carried only when it was given, for the
+        // same reason. A size that reaches the next run only by being
+        // re-typed is a size two runs can disagree about.
+        if let Some(esp) = &esp_flag {
+            flags.push_str(&format!(" --esp {esp}"));
+        }
+        if let Some(boot) = &boot_flag {
+            flags.push_str(&format!(" --boot {boot}"));
+        }
         format!("kuma install {flags} --yes")
     };
     if json && !yes {
@@ -3002,11 +3048,20 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         // Built before the document rather than inside it: json! takes
         // values, not blocks, and the list is conditional twice over.
         let mut asks = Vec::new();
-        if encrypt {
-            asks.push("disk passphrase");
+        // In the order the questions are asked: the sizes and the
+        // swapfile are answered before the plan is printed, and only
+        // then is anything typed at a hidden prompt.
+        if esp_flag.is_none() {
+            asks.push("the ESP size, defaulting to 600M");
+        }
+        if boot_flag.is_none() {
+            asks.push("the /boot size, defaulting to 2G");
         }
         if swap_flag.is_none() {
             asks.push("whether to create a swapfile for hibernate");
+        }
+        if encrypt {
+            asks.push("disk passphrase");
         }
         asks.extend(["account name", "password", "hostname"]);
         println!(
@@ -3028,7 +3083,7 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
                 // agreeing to it rather than only in the prose plan.
                 "layout": layout.iter().map(|part| serde_json::json!({
                     "label": part.label,
-                    "size": part.size_text(disk_mib),
+                    "size": part.size_text(disk_mib, &sizes),
                     "purpose": part.purpose,
                 })).collect::<Vec<_>>(),
                 "actions": [action_json(&action)],
@@ -3048,6 +3103,7 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
             encrypt,
             swap: swap_view.clone(),
             layout: &layout,
+            sizes: &sizes,
             disk_mib,
         });
     }
@@ -3057,20 +3113,32 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         // away would be theatre: it would look like an install right up
         // until it silently was not one. Saying what --yes asks for costs
         // three lines and leaves nobody surprised by a prompt.
-        println!("\nNothing has been changed. Re-run with --yes and kuma will ask for:");
-        if encrypt {
-            println!("\n  a disk passphrase              typed at every boot to unlock the");
-            println!("                                 root, and not recoverable if lost");
-        } else {
-            println!("\n  whether to encrypt the disk    a passphrase typed at every boot;");
+        println!("\nNothing has been changed. Re-run with --yes and kuma will ask for:\n");
+        // In the order the questions are actually asked: the encryption
+        // question, then the partition sizes, then the swapfile, and only
+        // then the passphrase, because the first three decide a plan that
+        // is printed before anything is typed at a hidden prompt.
+        if !encrypt {
+            println!("  whether to encrypt the disk    a passphrase typed at every boot;");
             println!("                                 off unless you say so, and not a");
             println!("                                 thing that can be added afterwards");
             println!("                                 without installing again");
+        }
+        if esp_flag.is_none() || boot_flag.is_none() {
+            println!("  the partition sizes            the ESP and /boot sizes, for any not");
+            println!("                                 named on the command line, asked with");
+            println!("                                 their defaults shown; enter takes");
+            println!("                                 them, 600M and 2G unless you say");
+            println!("                                 otherwise");
         }
         if swap_flag.is_none() {
             println!("  whether to hibernate           a swapfile the size of memory, on the");
             println!("                                 root; off unless you say so, and it can");
             println!("                                 be added later with kuma hibernate");
+        }
+        if encrypt {
+            println!("  a disk passphrase              typed at every boot to unlock the");
+            println!("                                 root, and not recoverable if lost");
         }
         println!("  an account name and password   created on the first boot of the");
         println!("                                 installed machine, since a published");

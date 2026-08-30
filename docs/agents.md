@@ -116,6 +116,11 @@ to discard, no rollback slot. Three things make it drivable anyway:
   the disk passphrase first and the account password second, in the order a
   person is asked. Without the flag an install driven this way is never
   encrypted, because the question is only put to a terminal.
+- **Partition sizes are answerable from a program.** `--esp` and `--boot`
+  name the two sizes the layout will carry, and like `--encrypt` they are the
+  whole of the answer a non-terminal can give: an install driven this way
+  without them takes the defaults, 600M and 2G. The dry run's `layout` shows
+  what was resolved, and `asks` names each size that was not.
 
 Without `--config`, kuma reads `./kuma.toml`, falling back to
 `~/.config/kuma/kuma.toml`. Neither is ever created implicitly. With no

@@ -20,8 +20,9 @@
 //! therefore has an account and still tracks the public tag.
 //!
 //! Scope is deliberately whole-disk: kuma owns the partitioning (see
-//! `partition`), but not where the partitions go. A custom layout is a
-//! separate decision and a later one.
+//! `partition`) and asks for its two sizes, but not where the partitions
+//! go. Installing beside another system is a separate decision and a
+//! later one.
 //!
 //! Encryption is offered rather than assumed. It is asked for, not
 //! declared, because it is a property of a disk and not of an image: the
@@ -45,7 +46,7 @@ use crate::hibernate;
 
 /// What was asked for, before any of it is checked.
 ///
-/// A struct rather than eight positional parameters: this is the one
+/// A struct rather than ten positional parameters: this is the one
 /// verb here that cannot be undone, and a call whose arguments are told
 /// apart by position is a poor place to get one wrong.
 pub struct Request {
@@ -73,6 +74,13 @@ pub struct Request {
     /// unparsed so that a bad size is reported by the one place that
     /// knows how to explain it, rather than by clap.
     pub swap: Option<String>,
+    /// The ESP and /boot sizes as they were typed, or None each for
+    /// "ask on a terminal with the default shown; the default when
+    /// nobody is there to ask". Carried unparsed for the same reason
+    /// `swap` is, and there is no "none" for either: every install
+    /// writes both partitions.
+    pub esp: Option<String>,
+    pub boot: Option<String>,
     /// A file naming the repository and its credentials, written onto
     /// the target so its first boot puts the home directory back.
     pub restore: Option<std::path::PathBuf>,
@@ -731,6 +739,83 @@ pub fn ask_swap(
             None => return Ok(Some(mib)),
         }
     }
+}
+
+/// One size question, for `ask_sizes`.
+///
+/// Every install writes both partitions, so there is no yes or no in
+/// front, the shape `ask_swap` uses: the question shows the default and
+/// enter takes it, the shape `ask_hostname` uses. A bad answer is
+/// re-asked rather than fatal, the shape `ask_swap` uses, because the
+/// disk is standing right there to be measured against and a typo costs
+/// one retype.
+///
+/// A flag answers early and fatally, exactly like `ask_swap`'s flagged
+/// branch: a flag is not a conversation, and a bad one has to stop the
+/// install before anything else is asked rather than mid-interview.
+/// Nobody on the other end of a pipe gets the default, like both of
+/// those.
+fn ask_size(
+    given: Option<&str>,
+    which: crate::partition::Which,
+    label: &str,
+    default_mib: u64,
+) -> Result<u64> {
+    use std::io::{IsTerminal, Write};
+    if let Some(text) = given {
+        return crate::partition::resolve_size(text, which);
+    }
+    if !std::io::stdin().is_terminal() {
+        return Ok(default_mib);
+    }
+    loop {
+        // stderr, like every other prompt here: stdout is where
+        // `--json --yes` promises exactly one document.
+        eprint!("\n{label} [{}]? ", hibernate::size_text(default_mib));
+        std::io::stderr().flush()?;
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            return Ok(default_mib);
+        }
+        let answer = line.trim();
+        if answer.is_empty() {
+            return Ok(default_mib);
+        }
+        match crate::partition::resolve_size(answer, which) {
+            Ok(mib) => return Ok(mib),
+            Err(why) => eprintln!("{why}"),
+        }
+    }
+}
+
+/// The ESP and /boot sizes, asked one question at a time when nobody
+/// flagged either.
+///
+/// Both questions are asked with their defaults, because the sizes
+/// cannot be revised without reinstalling but the defaults are right
+/// for almost every disk: a person who does not care presses enter
+/// twice, and one who does is not asked to go edit a plan after the
+/// fact. Asking both even when one was flagged would re-ask an
+/// answered question, so each is asked only when its flag is absent.
+///
+/// Asked before the plan is computed, like encryption and for the same
+/// reason: the plan prints these sizes, and a layout shown before its
+/// sizes were known would be describing a disk nobody had decided on.
+pub fn ask_sizes(esp: Option<&str>, boot: Option<&str>) -> Result<crate::partition::Sizes> {
+    Ok(crate::partition::Sizes {
+        esp_mib: ask_size(
+            esp,
+            crate::partition::Which::Esp,
+            "ESP system partition size",
+            crate::partition::Sizes::DEFAULT.esp_mib,
+        )?,
+        boot_mib: ask_size(
+            boot,
+            crate::partition::Which::Boot,
+            "/boot size",
+            crate::partition::Sizes::DEFAULT.boot_mib,
+        )?,
+    })
 }
 
 /// The passphrase that unlocks the disk at every boot.

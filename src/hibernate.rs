@@ -110,14 +110,21 @@ pub fn lid_dropin() -> String {
 /// gibibyte of memory, so a smaller file can only be a typo.
 const MIN_MIB: u64 = 1024;
 
-/// A size as somebody types it, in MiB, or `None` for "no swapfile".
+/// A size as somebody types it, in MiB, or `None` for the words that
+/// decline whatever is being sized.
+///
+/// The spelling half of every size kuma asks for: the swapfile here, and
+/// the two partition sizes an install can name (see `partition`). One
+/// reader, because two would drift, and the floors are deliberately not
+/// here: a swapfile has a hibernate minimum and a partition has its own
+/// reasons, and each caller knows which it is asking for.
 ///
 /// The unit is required. `16` is ambiguous in a way that matters here:
 /// read as gibibytes it is a hibernate image, read as mebibytes it is a
 /// hundredth of one, and the difference would not surface until the
 /// machine was told to hibernate and could not. Refusing costs one
 /// retype; guessing costs a session.
-pub fn parse_size(text: &str) -> Result<Option<u64>> {
+pub fn parse_mib(text: &str, what: &str) -> Result<Option<u64>> {
     let text = text.trim();
     let lower = text.to_ascii_lowercase();
     if matches!(lower.as_str(), "none" | "no" | "off" | "0") {
@@ -129,13 +136,21 @@ pub fn parse_size(text: &str) -> Result<Option<u64>> {
         } else if let Some(rest) = lower.strip_suffix("mib").or_else(|| lower.strip_suffix('m')) {
             (rest, 1)
         } else {
-            bail!("swap size {text:?} has no unit: write it as 16G, or 16384M, or none");
+            bail!("{what} size {text:?} has no unit: write it as 16G, or 16384M");
         };
     let count: u64 = digits
         .trim()
         .parse()
-        .map_err(|_| anyhow::anyhow!("swap size {text:?} is not a number with a unit"))?;
-    let mib = count.saturating_mul(per_unit);
+        .map_err(|_| anyhow::anyhow!("{what} size {text:?} is not a number with a unit"))?;
+    Ok(Some(count.saturating_mul(per_unit)))
+}
+
+/// A swapfile size, or `None` for "no swapfile": the shared spelling
+/// plus the one floor that is hibernate's alone.
+pub fn parse_size(text: &str) -> Result<Option<u64>> {
+    let Some(mib) = parse_mib(text, "swap")? else {
+        return Ok(None);
+    };
     if mib < MIN_MIB {
         bail!(
             "swap size {text:?} is {mib}M, too small to hibernate into: \
@@ -1080,6 +1095,13 @@ mod tests {
         assert!(err.contains("16G"), "the error teaches the spelling: {err}");
         assert!(parse_size("16T").is_err(), "an unknown unit is not silently a number");
         assert!(parse_size("512M").is_err(), "half a gibibyte cannot be a hibernate image");
+        // The shared spelling half names what it is sizing, so an error
+        // about a partition size cannot read as one about a swapfile;
+        // and it keeps sizes the swap floor would refuse, because the
+        // floor belongs to the caller asking (see partition::resolve_size).
+        let err = parse_mib("16", "ESP").unwrap_err().to_string();
+        assert!(err.contains("ESP size"), "the error names what it was sizing: {err}");
+        assert_eq!(parse_mib("512M", "ESP").unwrap(), Some(512));
     }
 
     /// Sizes read as the unit they were typed in, and the fractional

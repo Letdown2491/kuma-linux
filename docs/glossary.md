@@ -40,6 +40,10 @@ way an existing machine moves to kuma without losing its home directory; see
 `:44`, which points at whatever was published most recently. `kuma.lock`
 pins a digest so a build is repeatable.
 
+**ESP.** The EFI system partition: the small FAT partition the firmware
+reads the bootloader from, before the operating system exists. The first
+of the three partitions an install writes, and the one `--esp` sizes.
+
 **Drift.** Anything the machine has that the declaration does not name. Kuma
 treats it as a proposal to consider rather than a fault to erase; see
 [how kuma behaves](concepts.md#what-happens-to-changes-you-make-by-hand).

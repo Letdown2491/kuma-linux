@@ -56,9 +56,11 @@ $ kuma install
 ```
 
 It lists the disks it found and asks which one to use, then asks: whether to
-encrypt the disk, a passphrase if you say yes, whether to create a swapfile so
-the machine can hibernate, an account name and password, and a hostname. It
-prints the partition layout it will write before it writes anything.
+encrypt the disk, how big the EFI system partition and `/boot` should be
+(enter takes the defaults, 600M and 2G), whether to create a swapfile so
+the machine can hibernate, a passphrase for the disk if you said yes to
+encryption, an account name and password, and a hostname. It prints the
+partition layout it will write before it writes anything.
 
 **Which image you get.** This media installs
 `ghcr.io/letdown2491/kuma:niri`, the desktop image this project publishes, and

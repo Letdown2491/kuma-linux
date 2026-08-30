@@ -6,6 +6,24 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+### Added
+
+- **`kuma install` can name the sizes it used to decide for you.**
+  `--esp 1G` and `--boot 4G` set how big the EFI system partition and
+  `/boot` are, and the interview asks for both with the defaults shown,
+  so a person who does not care presses enter twice. The shape does not
+  move: still three partitions, the root still takes what is left, and
+  encryption still changes what the root holds rather than the disk. A
+  size below what its partition is for is refused with the reason rather
+  than a number (256M for the ESP, 1G for `/boot`), and the swapfile
+  questions are measured against what the named sizes left over, so a
+  disk that fits the defaults can be too small for what was asked, and
+  the refusal says so with the arithmetic. The dry run prints the
+  resolved sizes in its layout, the JSON surface carries them the same
+  way, and the command it hands over keeps the flags it was given.
+  Naming nothing changes nothing: the defaults are the sizes every kuma
+  machine has been installed with so far.
+
 ## v0.18.0 (2026-08-27)
 
 ### Added

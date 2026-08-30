@@ -217,9 +217,11 @@ In order:
 
 ## Not yet
 
-- **No custom partition layout.** `kuma install` writes the same three
-  partitions on every disk. Anything else, including installing beside
-  another system, still has to be done by something else.
+- **No layout beyond the three partitions.** `kuma install` writes the
+  same three partitions on every disk, in sizes you can name: `--esp` and
+  `--boot` at install time. A fourth partition, and anything else
+  including installing beside another system, still has to be done by
+  something else.
 - **No proprietary NVIDIA driver.** Images carry `nvidia-gpu-firmware` and
   nouveau, which is what an NVIDIA machine boots on. Kuma enables RPM Fusion
   free, not nonfree, and builds no kernel modules, so declaring

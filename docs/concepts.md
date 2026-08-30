@@ -690,9 +690,14 @@ The disk itself is machine state too. Kuma writes the same three partitions
 every time: an EFI system partition, a `/boot` outside the root, and a root
 that takes the rest. `/boot` is separate even when nothing is encrypted, so
 that turning encryption on changes what the third partition holds rather than
-the shape of the disk. Whether it holds a LUKS container is asked at install
-and cannot be revised afterwards without installing again, which is why it is
-asked before the plan is printed rather than defaulted either way.
+the shape of the disk. How big the first two are is asked at install, with
+the defaults shown and enter accepting them, because sizes too are a
+property of this disk that cannot be revised without installing again; the
+shape of the disk is not asked, because a machine built from one image
+should not have to know how to boot from four kinds of one. Whether the root
+holds a LUKS container is asked at install too and cannot be revised
+afterwards without installing again, which is why both are asked before the
+plan is printed rather than defaulted either way.
 
 A swapfile is machine state for a sharper reason than the rest of it.
 Hibernating writes memory to a file and the kernel has to be told where that

@@ -14,13 +14,20 @@
 //! the layout is what buys the encrypted case, and the memory ceiling
 //! besides: partitions kuma made are partitions kuma can mount before
 //! pulling, so the image lands on the target disk rather than in RAM.
+//!
+//! The shape is kuma's and the sizes are the person's: an install can
+//! name how big the ESP and `/boot` are (`Sizes`), and nothing else. A
+//! fourth partition, or a disk shared with another system, is still not
+//! a thing an install can be asked for.
 
 use anyhow::{bail, Result};
 use std::path::Path;
 
-/// Fedora's own ESP size, and the one Anaconda gives a kuma machine
-/// today. Big enough for several vendors' shim and grub builds, small
-/// enough not to matter.
+use crate::hibernate;
+
+/// The ESP every install that named nothing gets: Fedora's own size,
+/// and the one Anaconda gives a kuma machine today. Big enough for
+/// several vendors' shim and grub builds, small enough not to matter.
 const ESP_MIB: u64 = 600;
 
 /// `/boot`, outside the encryption.
@@ -33,24 +40,141 @@ const ESP_MIB: u64 = 600;
 /// the last moment.
 const BOOT_MIB: u64 = 2048;
 
+/// The smallest ESP kuma will write. Shim, grub and their fonts are
+/// tens of megabytes before a single kernel's loader lands in it, and
+/// the machine that runs out is the one that cannot boot an update.
+const MIN_ESP_MIB: u64 = 256;
+
+/// Why the ESP floor is where it is, in the words the refusal uses, so
+/// the reason travels with the number rather than being paraphrased
+/// where it is checked.
+const ESP_FLOOR_WHY: &str =
+    "shim, grub and their fonts are tens of megabytes before a single kernel's \
+     loader lands in it, and the machine that runs out is the one that cannot \
+     boot an update";
+
+/// The smallest `/boot` kuma will write: Fedora's own size, and one
+/// deployment's kernel. The default above is twice it for the reason in
+/// its doc, and the floor is here because a full `/boot` is how an
+/// update fails at the last moment.
+const MIN_BOOT_MIB: u64 = 1024;
+
+/// Why the /boot floor is where it is, for the same reason as the ESP's.
+const BOOT_FLOOR_WHY: &str =
+    "an ostree machine keeps a kernel per deployment, and a full /boot is \
+     how an update fails at the last moment";
+
 /// Below this there is no room for a system after `/boot` and the ESP,
 /// and a person is better told that than left to find out when the
-/// install runs out of space partway through writing.
+/// install runs out of space partway through writing it.
+///
+/// With the default sizes this is 16 GiB; naming bigger partitions
+/// moves the minimum with them, because the floor is really on the root
+/// (see `MIN_ROOT_MIB`) and the disk has to clear it plus what the
+/// person asked for.
 const MIN_DISK_GIB: u64 = 16;
+
+/// The smallest root that still holds a system, in MiB: the 16 GiB
+/// disk below which nothing installs, minus the default pair that sits
+/// above the root. Custom sizes take the remainder away from the swap
+/// arithmetic rather than from this floor, so a system always gets the
+/// same room whatever else was named.
+const MIN_ROOT_MIB: u64 = MIN_DISK_GIB * 1024 - ESP_MIB - BOOT_MIB;
+
+/// The two sizes an install can name, in MiB.
+///
+/// A struct rather than two loose parameters: these travel together
+/// into every decision the layout makes, and a call that tells an
+/// ESP's size from a `/boot`'s by position is one swap away from a
+/// disk whose firmware cannot find its loader.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Sizes {
+    pub esp_mib: u64,
+    pub boot_mib: u64,
+}
+
+impl Sizes {
+    /// What an install that named nothing gets: the sizes every kuma
+    /// machine has been installed with so far.
+    pub const DEFAULT: Sizes = Sizes { esp_mib: ESP_MIB, boot_mib: BOOT_MIB };
+}
+
+/// One named size, parsed and floor-checked.
+///
+/// The spelling is taught by the one parser every size uses
+/// (`hibernate::parse_mib`); the floors are decided here, because this
+/// file is where the layout is decided, and each floor carries its own
+/// reason into the refusal rather than leaving a person to guess what
+/// "too small" was too small for.
+fn resolve_one(text: &str, what: &str, floor_mib: u64, why: &str) -> Result<u64> {
+    let Some(mib) = crate::hibernate::parse_mib(text, what)? else {
+        bail!("the {what} size cannot be none: every install writes one");
+    };
+    if mib < floor_mib {
+        bail!("the {what} cannot be smaller than {}: {why}", hibernate::size_text(floor_mib));
+    }
+    Ok(mib)
+}
+
+/// Which of the two named sizes a question is about. The interview asks
+/// them one at a time and re-asks a bad answer rather than failing the
+/// whole install, so it needs the per-size refusal rather than the
+/// pair-shaped `resolve_sizes`. Copy because a re-ask loop hands the
+/// same question to the resolver once per answer.
+#[derive(Clone, Copy)]
+pub enum Which {
+    Esp,
+    Boot,
+}
+
+/// One partition size as typed, parsed and floor-checked, fatal.
+///
+/// Public for `ask_sizes`, which validates one answer at a time; the
+/// floors and their reasons stay here, where the layout is decided,
+/// rather than where the question is asked.
+pub fn resolve_size(text: &str, which: Which) -> Result<u64> {
+    match which {
+        Which::Esp => resolve_one(text, "ESP", MIN_ESP_MIB, ESP_FLOOR_WHY),
+        Which::Boot => resolve_one(text, "/boot", MIN_BOOT_MIB, BOOT_FLOOR_WHY),
+    }
+}
+
+/// The sizes the layout will carry, from what the flags or the
+/// interview gave.
+///
+/// Each `None` takes the default for that partition, so naming one
+/// leaves the other alone. Each `Some` is parsed by the shared
+/// spelling and refused below its floor with the reason the floor
+/// exists, which is the one place a bad size is explained: not by
+/// clap, which cannot know the floors, and not by the interview, which
+/// re-asks rather than failing.
+pub fn resolve_sizes(esp: Option<&str>, boot: Option<&str>) -> Result<Sizes> {
+    Ok(Sizes {
+        esp_mib: match esp {
+            Some(text) => resolve_size(text, Which::Esp)?,
+            None => ESP_MIB,
+        },
+        boot_mib: match boot {
+            Some(text) => resolve_size(text, Which::Boot)?,
+            None => BOOT_MIB,
+        },
+    })
+}
 
 /// How much of this disk can become a swapfile and still leave a system.
 ///
 /// The root partition takes everything after the ESP and `/boot`, and
-/// `plan` already refuses a disk below `MIN_DISK_GIB` because under that
-/// there is nowhere to put a system. A swapfile comes out of that same
-/// root partition, so what it can take is whatever the disk has above
-/// the minimum: a 40 GiB disk can spare 24, and a 16 GiB one can spare
-/// nothing at all.
+/// `plan` refuses a disk that cannot hold a system under those sizes
+/// because under that there is nowhere to put one. A swapfile comes out
+/// of that same root partition, so what it can take is whatever the
+/// disk has above the minimum: with the default sizes a 40 GiB disk can
+/// spare 24, and a 16 GiB one can spare nothing at all. Naming bigger
+/// partitions takes the spare away, which is the honest arithmetic.
 ///
 /// Here rather than in `hibernate` because it is arithmetic over this
 /// layout, and this file is where the layout is decided.
-pub fn spare_mib(disk_mib: u64) -> u64 {
-    disk_mib.saturating_sub(MIN_DISK_GIB * 1024)
+pub fn spare_mib(disk_mib: u64, sizes: &Sizes) -> u64 {
+    disk_mib.saturating_sub(MIN_ROOT_MIB + sizes.esp_mib + sizes.boot_mib)
 }
 
 /// One partition, in the order it is created.
@@ -70,46 +194,54 @@ pub struct Partition {
 
 impl Partition {
     /// How the plan prints it: a size somebody can compare against the
-    /// disk they are about to lose.
-    pub fn size_text(&self, disk_mib: u64) -> String {
+    /// disk they are about to lose. The remainder needs the sizes, since
+    /// what the root gets is what the other two did not take.
+    pub fn size_text(&self, disk_mib: u64, sizes: &Sizes) -> String {
         match self.size_mib {
             Some(mib) if mib >= 1024 => format!("{:.0}G", mib as f64 / 1024.0),
             Some(mib) => format!("{mib}M"),
             None => {
-                let rest = disk_mib.saturating_sub(ESP_MIB + BOOT_MIB);
+                let rest = disk_mib.saturating_sub(sizes.esp_mib + sizes.boot_mib);
                 format!("{:.0}G", rest as f64 / 1024.0)
             }
         }
     }
 }
 
-/// The layout, for a disk of this size.
+/// The layout, for a disk of this size and the sizes asked for.
 ///
-/// Three partitions, always the same three. `encrypt` changes what goes
+/// Three partitions, always the same three, in the sizes the person
+/// named or the defaults (see `Sizes`). `encrypt` changes what goes
 /// *inside* the third one, not whether it exists, so that a machine
 /// installed with encryption and one without differ in one place rather
 /// than in their shape.
-pub fn plan(disk_bytes: u64, encrypt: bool) -> Result<Vec<Partition>> {
+pub fn plan(disk_bytes: u64, encrypt: bool, sizes: &Sizes) -> Result<Vec<Partition>> {
     let disk_mib = disk_bytes / (1024 * 1024);
-    if disk_mib < MIN_DISK_GIB * 1024 {
+    // The floor is on the root, so naming bigger partitions raises what
+    // the disk has to clear, and the refusal names the sizes it was
+    // computed from: an arithmetic error a person cannot check is an
+    // error they can only obey.
+    let minimum_mib = MIN_ROOT_MIB + sizes.esp_mib + sizes.boot_mib;
+    if disk_mib < minimum_mib {
         bail!(
             "{:.1}G is too small to install onto: {}M of ESP and {}M of /boot leave \
-             no room for a system. {MIN_DISK_GIB}G is the minimum.",
+             no room for a system. {} is the minimum with these sizes.",
             disk_bytes as f64 / 1e9,
-            ESP_MIB,
-            BOOT_MIB
+            sizes.esp_mib,
+            sizes.boot_mib,
+            hibernate::size_text(minimum_mib)
         );
     }
     Ok(vec![
         Partition {
             label: "EFI-SYSTEM",
-            size_mib: Some(ESP_MIB),
+            size_mib: Some(sizes.esp_mib),
             type_code: "uefi",
             purpose: "bootloader, read by the firmware",
         },
         Partition {
             label: "boot",
-            size_mib: Some(BOOT_MIB),
+            size_mib: Some(sizes.boot_mib),
             type_code: "linux",
             purpose: "kernels and initramfs, outside any encryption",
         },
@@ -750,7 +882,11 @@ mod tests {
     /// still be missing when the script ran.
     #[test]
     fn the_install_script_searches_exactly_what_the_preflight_checked() {
-        let script = install_script(&plan(40 * 1024 * 1024 * 1024, false).unwrap(), false, None);
+        let script = install_script(
+            &plan(40 * 1024 * 1024 * 1024, false, &Sizes::DEFAULT).unwrap(),
+            false,
+            None,
+        );
         assert!(script.contains(&format!("PATH={}", TOOL_DIRS.join(":"))));
         assert!(script.contains("export PATH"));
         for dir in TOOL_DIRS {
@@ -785,8 +921,8 @@ mod tests {
     /// encryption on is not a different disk shape.
     #[test]
     fn the_layout_does_not_change_with_encryption() {
-        let plain = plan(40 * 1_000_000_000, false).unwrap();
-        let crypt = plan(40 * 1_000_000_000, true).unwrap();
+        let plain = plan(40 * 1_000_000_000, false, &Sizes::DEFAULT).unwrap();
+        let crypt = plan(40 * 1_000_000_000, true, &Sizes::DEFAULT).unwrap();
         assert_eq!(plain.len(), 3);
         assert_eq!(
             plain.iter().map(|p| p.label).collect::<Vec<_>>(),
@@ -804,7 +940,7 @@ mod tests {
     /// into a different shape.
     #[test]
     fn boot_is_always_outside_the_root() {
-        let p = plan(40 * 1_000_000_000, false).unwrap();
+        let p = plan(40 * 1_000_000_000, false, &Sizes::DEFAULT).unwrap();
         assert_eq!(p[1].label, "boot");
         assert!(p[1].size_mib.is_some(), "/boot is sized, not the remainder");
         assert_eq!(p[2].size_mib, None, "root takes what is left");
@@ -815,10 +951,81 @@ mod tests {
     /// than being told before anything is touched.
     #[test]
     fn a_disk_too_small_is_refused_with_the_arithmetic() {
-        let err = plan(8 * 1_000_000_000, false).unwrap_err().to_string();
+        let err = plan(8 * 1_000_000_000, false, &Sizes::DEFAULT).unwrap_err().to_string();
         assert!(err.contains("too small"));
         assert!(err.contains("16G"), "says what would be enough");
-        assert!(plan(16 * 1024 * 1024 * 1024, false).is_ok());
+        assert!(plan(16 * 1024 * 1024 * 1024, false, &Sizes::DEFAULT).is_ok());
+    }
+
+    /// Naming sizes raises what the disk has to clear, because the floor
+    /// is on the root and the named partitions sit above it. A disk that
+    /// fits the defaults can therefore be too small for what was asked,
+    /// and the refusal has to name the arithmetic it was computed from
+    /// or a person can only obey it.
+    #[test]
+    fn naming_sizes_moves_the_minimum_the_disk_has_to_clear() {
+        let asked = Sizes { esp_mib: 1024, boot_mib: 4096 };
+        // 16 GiB fits the defaults and not this: the root floor plus a
+        // gigabyte of ESP and four of /boot comes to 18.4G.
+        let err = plan(16 * 1024 * 1024 * 1024, false, &asked).unwrap_err().to_string();
+        assert!(err.contains("1024M of ESP"), "names what was asked: {err}");
+        assert!(err.contains("4096M of /boot"), "names what was asked: {err}");
+        assert!(err.contains("18.4G is the minimum"), "the minimum follows the sizes: {err}");
+        assert!(plan(20 * 1024 * 1024 * 1024, false, &asked).is_ok());
+    }
+
+    /// The floors, with the reason each exists in the message: a size
+    /// too small to hold what the partition is for is refused while it
+    /// still costs nothing, and "none" is not a size an install can give
+    /// a partition it is about to write.
+    #[test]
+    fn sizes_below_their_floors_are_refused_with_the_reason() {
+        let err = resolve_sizes(Some("100M"), None).unwrap_err().to_string();
+        assert!(err.contains("the ESP cannot be smaller than 256M"), "{err}");
+        assert!(err.contains("shim, grub"), "the floor says why it is a floor: {err}");
+        let err = resolve_sizes(None, Some("512M")).unwrap_err().to_string();
+        assert!(err.contains("the /boot cannot be smaller than 1G"), "{err}");
+        assert!(err.contains("kernel per deployment"), "{err}");
+        let err = resolve_sizes(Some("none"), None).unwrap_err().to_string();
+        assert!(err.contains("cannot be none"), "{err}");
+        // Sizes the floors allow, including exactly a floor.
+        assert_eq!(
+            resolve_sizes(Some("256M"), Some("1G")).unwrap(),
+            Sizes { esp_mib: 256, boot_mib: 1024 }
+        );
+        // Naming one leaves the other at its default.
+        assert_eq!(
+            resolve_sizes(Some("1G"), None).unwrap(),
+            Sizes { esp_mib: 1024, boot_mib: Sizes::DEFAULT.boot_mib },
+        );
+        // Naming nothing is the default pair, which is what every install
+        // has been written with so far.
+        assert_eq!(resolve_sizes(None, None).unwrap(), Sizes::DEFAULT);
+    }
+
+    /// The sizes a person names are the sizes the table gets, and the
+    /// spare swapfile arithmetic follows them: a bigger /boot is taken
+    /// out of what a swapfile could have used, not out of the system.
+    #[test]
+    fn named_sizes_reach_the_table_and_the_spare_arithmetic() {
+        let asked = Sizes { esp_mib: 1024, boot_mib: 4096 };
+        let p = plan(40 * 1024 * 1024 * 1024, false, &asked).unwrap();
+        assert_eq!(p[0].size_mib, Some(1024));
+        assert_eq!(p[1].size_mib, Some(4096));
+        let script = format_script(&p, false, None);
+        assert!(script.contains(r#"size=1024MiB, type=uefi, name="EFI-SYSTEM""#));
+        assert!(script.contains(r#"size=4096MiB, type=linux, name="boot""#));
+        // 40 GiB: 24G spare with the defaults, and what naming bigger
+        // partitions takes away is exactly the extra that was named,
+        // not a share of it and not the system's.
+        let spare_default = spare_mib(40 * 1024, &Sizes::DEFAULT);
+        let spare_asked = spare_mib(40 * 1024, &asked);
+        assert_eq!(spare_default, 24 * 1024);
+        let named_extra =
+            (asked.esp_mib + asked.boot_mib) - (Sizes::DEFAULT.esp_mib + Sizes::DEFAULT.boot_mib);
+        assert_eq!(spare_default - spare_asked, named_extra);
+        // And the printed remainder is what is left after the named pair.
+        assert_eq!(p[2].size_text(40 * 1024, &asked), "35G");
     }
 
     /// /dev/sda numbers its partitions sda1; /dev/nvme0n1 numbers them
@@ -862,7 +1069,11 @@ mod tests {
     fn every_tool_the_script_calls_is_declared() {
         // The encrypted script, because it is the superset: it calls
         // everything the plain one does and cryptsetup besides.
-        let script = install_script(&plan(40 * 1024 * 1024 * 1024, true).unwrap(), true, None);
+        let script = install_script(
+            &plan(40 * 1024 * 1024 * 1024, true, &Sizes::DEFAULT).unwrap(),
+            true,
+            None,
+        );
         for (tool, _) in REQUIRED_TOOLS.iter().chain(ENCRYPT_TOOLS) {
             assert!(script.contains(tool), "{tool} is declared but never called");
         }
@@ -870,7 +1081,11 @@ mod tests {
         // install must not call cryptsetup, or the check that asks for it
         // would be inventing a requirement on machines that never
         // encrypt anything.
-        let plain = install_script(&plan(40 * 1024 * 1024 * 1024, false).unwrap(), false, None);
+        let plain = install_script(
+            &plan(40 * 1024 * 1024 * 1024, false, &Sizes::DEFAULT).unwrap(),
+            false,
+            None,
+        );
         assert!(!plain.contains("cryptsetup"));
         // The other direction cannot be checked by parsing shell without
         // writing a shell parser, so it is checked against the tools
@@ -890,8 +1105,11 @@ mod tests {
         // in five prose comments in this script and inside `findmnt`,
         // which is declared, so a substring check answers a different
         // question and fails on the right script.
-        let swap =
-            install_script(&plan(40 * 1024 * 1024 * 1024, false).unwrap(), false, Some(4096));
+        let swap = install_script(
+            &plan(40 * 1024 * 1024 * 1024, false, &Sizes::DEFAULT).unwrap(),
+            false,
+            Some(4096),
+        );
         let called: Vec<&str> = swap
             .lines()
             .map(str::trim_start)
@@ -912,7 +1130,7 @@ mod tests {
     /// a node the kernel has not created yet.
     #[test]
     fn the_writer_matches_the_plan_it_was_given() {
-        let p = plan(40 * 1024 * 1024 * 1024, false).unwrap();
+        let p = plan(40 * 1024 * 1024 * 1024, false, &Sizes::DEFAULT).unwrap();
         let script = format_script(&p, false, None);
         assert!(script.contains("wipefs --all"));
         // One table written in one call, so a failure leaves the old one
@@ -953,7 +1171,7 @@ mod tests {
             for (encrypt, swap) in
                 [(false, None), (true, None), (false, Some(16 * 1024)), (true, Some(16 * 1024))]
             {
-                let p = plan(40 * 1024 * 1024 * 1024, encrypt).unwrap();
+                let p = plan(40 * 1024 * 1024 * 1024, encrypt, &Sizes::DEFAULT).unwrap();
                 let mut name = path.clone();
                 if encrypt {
                     name.push_str(".encrypted");
@@ -972,7 +1190,11 @@ mod tests {
     /// install succeeds and the machine cannot find its root.
     #[test]
     fn the_root_subvolume_is_named_once() {
-        let script = format_script(&plan(40 * 1024 * 1024 * 1024, false).unwrap(), false, None);
+        let script = format_script(
+            &plan(40 * 1024 * 1024 * 1024, false, &Sizes::DEFAULT).unwrap(),
+            false,
+            None,
+        );
         assert!(script.contains(&format!("subvolume create \"$fsmnt/{ROOT_SUBVOL}\"")));
         assert!(script.contains(&format!("mount -o subvol={ROOT_SUBVOL}")));
         // The store is a sibling, never inside the target: bootc requires
@@ -985,7 +1207,11 @@ mod tests {
     /// steps, unwind on failure, and name the root the same way twice.
     #[test]
     fn the_install_script_is_whole() {
-        let script = install_script(&plan(40 * 1024 * 1024 * 1024, false).unwrap(), false, None);
+        let script = install_script(
+            &plan(40 * 1024 * 1024 * 1024, false, &Sizes::DEFAULT).unwrap(),
+            false,
+            None,
+        );
         // The formatting half is carried, not re-described.
         assert!(script.contains("wipefs --all"));
         assert!(script.contains("mkfs.btrfs"));
@@ -1055,7 +1281,11 @@ mod tests {
     /// `kuma-home-subvol` instead, before any account exists.
     #[test]
     fn the_install_leaves_var_home_to_the_machine() {
-        let script = install_script(&plan(40 * 1024 * 1024 * 1024, false).unwrap(), false, None);
+        let script = install_script(
+            &plan(40 * 1024 * 1024 * 1024, false, &Sizes::DEFAULT).unwrap(),
+            false,
+            None,
+        );
         assert!(!script.contains("/var/home"));
         assert!(!script.contains("$var/home"));
     }
@@ -1066,7 +1296,11 @@ mod tests {
     /// karg, and a mapper left open when it fails.
     #[test]
     fn the_encrypted_script_locks_the_root_and_says_so_to_the_initramfs() {
-        let script = install_script(&plan(40 * 1024 * 1024 * 1024, true).unwrap(), true, None);
+        let script = install_script(
+            &plan(40 * 1024 * 1024 * 1024, true, &Sizes::DEFAULT).unwrap(),
+            true,
+            None,
+        );
 
         // Read before the wipe. Afterwards, a passphrase that never
         // arrives is an interrupted install rather than a refused one.
@@ -1113,7 +1347,11 @@ mod tests {
     /// karg telling an initramfs to wait for a device that is not there.
     #[test]
     fn the_plain_script_is_untouched_by_the_encrypted_one() {
-        let script = install_script(&plan(40 * 1024 * 1024 * 1024, false).unwrap(), false, None);
+        let script = install_script(
+            &plan(40 * 1024 * 1024 * 1024, false, &Sizes::DEFAULT).unwrap(),
+            false,
+            None,
+        );
         assert!(!script.contains("passphrase"));
         assert!(!script.contains("rd.luks.uuid"));
         assert!(!script.contains(INSTALL_MAPPER));
@@ -1129,8 +1367,11 @@ mod tests {
     /// the image had been deployed and the disk was already committed.
     #[test]
     fn the_swap_fstab_is_found_in_the_deployment_and_never_at_the_root() {
-        let script =
-            install_script(&plan(40 * 1024 * 1024 * 1024, false).unwrap(), false, Some(4096));
+        let script = install_script(
+            &plan(40 * 1024 * 1024 * 1024, false, &Sizes::DEFAULT).unwrap(),
+            false,
+            Some(4096),
+        );
         assert!(
             !script.contains("$mnt/etc/fstab"),
             "the root subvolume has no /etc; an ostree deployment keeps it under a checksum"
@@ -1143,7 +1384,11 @@ mod tests {
         // swapfile nothing activates is the state doctor calls broken.
         assert!(script.contains("this install stops here"));
         // And nothing of the sort appears when no swapfile was asked for.
-        let plain = install_script(&plan(40 * 1024 * 1024 * 1024, false).unwrap(), false, None);
+        let plain = install_script(
+            &plan(40 * 1024 * 1024 * 1024, false, &Sizes::DEFAULT).unwrap(),
+            false,
+            None,
+        );
         assert!(!plain.contains("etc_fstab"), "no swapfile, no fstab surgery");
     }
 
@@ -1153,8 +1398,11 @@ mod tests {
     /// combination doctor calls NotSet and stays silent about.
     #[test]
     fn a_swapfile_install_points_the_lid_at_suspend_then_hibernate() {
-        let script =
-            install_script(&plan(40 * 1024 * 1024 * 1024, false).unwrap(), false, Some(4096));
+        let script = install_script(
+            &plan(40 * 1024 * 1024 * 1024, false, &Sizes::DEFAULT).unwrap(),
+            false,
+            Some(4096),
+        );
         let dropin = script
             .find("kuma-suspend-then-hibernate.conf")
             .expect("the install writes the lid setting");
@@ -1168,7 +1416,11 @@ mod tests {
             script.contains("$(dirname \"$etc_fstab\")/systemd/logind.conf.d"),
             "it lands in the deployment's /etc, not the root subvolume's"
         );
-        let plain = install_script(&plan(40 * 1024 * 1024 * 1024, false).unwrap(), false, None);
+        let plain = install_script(
+            &plan(40 * 1024 * 1024 * 1024, false, &Sizes::DEFAULT).unwrap(),
+            false,
+            None,
+        );
         assert!(
             !plain.contains("suspend-then-hibernate"),
             "no swapfile asked for, no lid setting installed"
@@ -1187,8 +1439,11 @@ mod tests {
         for (encrypt, swap) in
             [(false, None), (true, None), (false, Some(16 * 1024)), (true, Some(16 * 1024))]
         {
-            let script =
-                install_script(&plan(40 * 1024 * 1024 * 1024, encrypt).unwrap(), encrypt, swap);
+            let script = install_script(
+                &plan(40 * 1024 * 1024 * 1024, encrypt, &Sizes::DEFAULT).unwrap(),
+                encrypt,
+                swap,
+            );
             // Every combination, not just the plain one: a substitution
             // that leaves a blank line where a block was is how the
             // generated script drifts from the one anybody has read.
@@ -1217,11 +1472,11 @@ mod tests {
     #[test]
     fn sizes_read_the_way_a_person_would_write_them() {
         let disk_mib = 40 * 1024;
-        let p = plan(40 * 1024 * 1024 * 1024, false).unwrap();
-        assert_eq!(p[0].size_text(disk_mib), "600M");
-        assert_eq!(p[1].size_text(disk_mib), "2G");
+        let p = plan(40 * 1024 * 1024 * 1024, false, &Sizes::DEFAULT).unwrap();
+        assert_eq!(p[0].size_text(disk_mib, &Sizes::DEFAULT), "600M");
+        assert_eq!(p[1].size_text(disk_mib, &Sizes::DEFAULT), "2G");
         // The remainder is what is left after the other two, not the
         // whole disk, which is the number somebody is actually getting.
-        assert_eq!(p[2].size_text(disk_mib), "37G");
+        assert_eq!(p[2].size_text(disk_mib, &Sizes::DEFAULT), "37G");
     }
 }

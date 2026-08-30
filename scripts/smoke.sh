@@ -431,7 +431,9 @@ smoke_image() {
 # Encrypted only. The encrypted path is a superset: it writes the same
 # table, the same filesystems and the same account file, plus a container
 # and a karg. Running both would double the slowest stage here to check
-# the same partition table twice.
+# the same partition table twice. Custom partition sizes ride the same
+# install rather than a second one, for the same reason: they change what
+# the table says, and the table is read once.
 smoke_install() {
     local file=$1 tag=$2 name=$3
     local dir="vm-smoke/$name-install"
@@ -442,7 +444,8 @@ smoke_install() {
     mkdir -p "$dir"
     rm -f "$raw"
     # Sparse, so this costs no disk until the install fills it, and above
-    # the 16G floor partition::plan refuses below.
+    # the floor partition::plan refuses below: 17.4G for the sizes this
+    # stage asks for, 16G for the defaults.
     truncate -s 24G "$raw"
 
     # Two lines on stdin, in the order the interview asks: the disk
@@ -457,7 +460,7 @@ smoke_install() {
     printf '%s\n%s\n' "$pass" "$pass" \
         | "$KUMA" install --disk "$raw" --image "$tag" \
             --update-from ghcr.io/example/kuma:niri \
-            --user "$user" --encrypt --swap 1G --yes >/dev/null \
+            --user "$user" --encrypt --swap 1G --esp 1G --boot 3G --yes >/dev/null \
         || bad "install failed"
     ok "installed"
 
@@ -473,6 +476,17 @@ smoke_install() {
           sudo cryptsetup close '$mapper' 2>/dev/null || true
           sudo losetup -d '$loop' 2>/dev/null || true" EXIT
     mkdir -p "$mnt"
+
+    # The sizes the flags asked for, read back off the table. The
+    # defaults would also be a valid table, so what the assertions compare
+    # against is what was asked for: a layout that silently fell back to
+    # the defaults is the failure they are there to catch.
+    local esp_mib boot_mib
+    esp_mib=$(( $(lsblk -bno SIZE "${loop}p1") / 1048576 ))
+    boot_mib=$(( $(lsblk -bno SIZE "${loop}p2") / 1048576 ))
+    [ "$esp_mib" -eq 1024 ] || bad "the ESP is ${esp_mib}M, not the 1024M --esp asked for"
+    [ "$boot_mib" -eq 3072 ] || bad "/boot is ${boot_mib}M, not the 3072M --boot asked for"
+    ok "the ESP and /boot carry the sizes the flags asked for"
 
     sudo cryptsetup isLuks "${loop}p3" || bad "the root partition holds no LUKS container"
     printf '%s' "$pass" \
