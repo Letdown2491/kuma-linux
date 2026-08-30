@@ -17,6 +17,23 @@ differently. Why it changed belongs in the commit that made it.
   call is silent by design, so the fallback read as "no shell" and
   nothing could tell. It goes through the same escape every other podman
   call takes, which is where it always should have been.
+- **A name capture cannot declare is refused when it is named, before
+  it is echoed anywhere.** `kuma capture` narrows to names you type,
+  and its dry run repeats those names inside the suggested command,
+  the one action in the JSON document an agent is invited to run. A
+  name the declaration could never hold, one carrying shell
+  metacharacters for instance, rode into that suggestion as itself
+  and was refused only later, by the write it would have broken. The
+  names now pass the same alphabet the two lists capture writes
+  enforce, before anything runs.
+- The widen that opens a staged directory to root pruned its
+  credentials with a `-path` pattern, and a glob pattern is what that
+  is: a `*`, `?` or `[` in the path to a credential (TMPDIR is yours
+  to set) would not match the file it named, the prune would miss, and
+  the password hash or restore secret would be widened world-readable
+  for the length of the run. The pattern is now the escaped literal
+  path, and a test runs the real `find` against a directory named to
+  try it.
 
 ### Changed
 

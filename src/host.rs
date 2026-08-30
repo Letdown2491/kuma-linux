@@ -315,6 +315,27 @@ impl ForRoot {
     }
 }
 
+/// A `-path` operand as a pattern that can only mean this path.
+///
+/// find matches `-path` as a glob, so a `*`, `?` or `[` anywhere along
+/// the way — TMPDIR is the caller's to set — would make the pattern
+/// mean something other than the file it names: the prune would miss,
+/// and the widen behind it would hand the credential the one mode it
+/// exists to never have. Backslash-escaping the specials turns the
+/// pattern back into the literal path (find reads escapes in patterns;
+/// a path carrying none of them comes back unchanged), and the
+/// backslash goes first so an escaped path is not doubled.
+fn glob_literal(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for ch in path.chars() {
+        if matches!(ch, '\\' | '*' | '?' | '[') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// The command that widens a staged directory for root without ever
 /// touching a credential: each is pruned, so it holds no permission it
 /// did not arrive with. With nothing to protect, this is a plain
@@ -329,7 +350,7 @@ fn widen_argv(dir: &str, credentials: &[String]) -> Vec<String> {
                 out.push("-o".to_string());
             }
             out.push("-path".to_string());
-            out.push(credential.clone());
+            out.push(glob_literal(credential));
         }
         out.push(")".to_string());
         out.push("-prune".to_string());
@@ -419,6 +440,67 @@ mod tests {
             let tail = argv.len() - 5;
             assert_eq!(argv[tail..].join(" "), "-exec chmod a+rX {} +");
         }
+    }
+
+    /// tempfile builds names from safe alphanumerics, so the ordinary
+    /// path carries no glob specials and the pattern is the path, byte
+    /// for byte.
+    #[test]
+    fn a_plain_credential_path_escapes_to_itself() {
+        let argv = widen_argv("/tmp/xyz", &["/tmp/xyz/kuma-user".to_string()]);
+        assert!(
+            argv.windows(2).any(|w| w == ["-path".to_string(), "/tmp/xyz/kuma-user".to_string()]),
+            "{}",
+            argv.join(" ")
+        );
+    }
+
+    /// TMPDIR is the caller's to set, and nothing stops it spelling a
+    /// glob. Every special in the credential's path arrives backslashed,
+    /// so the pattern can only mean the one file it was built from.
+    #[test]
+    fn a_globby_credential_path_escapes_to_a_literal_pattern() {
+        let argv = widen_argv("/tmp/g*ob?te[st]", &["/tmp/g*ob?te[st]/kuma-user".to_string()]);
+        assert!(
+            argv.windows(2).any(|w| w == [
+                "-path".to_string(),
+                "/tmp/g\\*ob\\?te\\[st]/kuma-user".to_string()
+            ]),
+            "{}",
+            argv.join(" ")
+        );
+    }
+
+    /// The property the escaping exists for, checked against the real
+    /// find: under a directory named to defeat the pattern, the
+    /// credential keeps its mode through a widen and everything beside
+    /// it is widened. sudo is dropped because the test owns the files;
+    /// the argv is otherwise the one the verb runs.
+    #[test]
+    fn the_widen_skips_a_credential_under_a_globby_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = tempfile::tempdir().expect("a tempdir is all this needs");
+        let dir = base.path().join("g*ob?te[st]");
+        std::fs::create_dir(&dir).expect("a directory with a glob for a name");
+        let secret = dir.join("kuma-user");
+        std::fs::write(&secret, "KUMA_USER='x'\n").unwrap();
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let plain = dir.join("Containerfile");
+        std::fs::write(&plain, "FROM scratch\n").unwrap();
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let argv = widen_argv(
+            dir.to_str().expect("utf-8"),
+            &[secret.to_str().expect("utf-8").to_string()],
+        );
+        let status =
+            std::process::Command::new(&argv[1]).args(&argv[2..]).status().expect("find runs");
+        assert!(status.success());
+
+        let mode = std::fs::metadata(&secret).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the credential was widened: {mode:o}");
+        let widened = std::fs::metadata(&plain).unwrap().permissions().mode() & 0o777;
+        assert_eq!(widened, 0o644, "the widen did not widen: {widened:o}");
     }
 
     /// The staging half, testable without root because only the run

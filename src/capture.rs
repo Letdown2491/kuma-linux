@@ -48,6 +48,7 @@ pub fn capture(
     yes: bool,
     json: bool,
 ) -> Result<()> {
+    validate_capture_names(names)?;
     let machine = observe(config);
     let found = candidates(config, &machine);
     debug_assert!(found.iter().all(|c| CAPTURABLE.contains(&c.list)));
@@ -180,6 +181,26 @@ pub fn capture(
     Ok(())
 }
 
+/// The alphabet a captured name may spell, checked before anything runs.
+///
+/// Capture only ever writes [packages].flatpak and [packages].brew, so
+/// this is the union of the alphabets those two lists enforce at
+/// `kuma check` time. A name outside it cannot be declared: the
+/// all-or-nothing store() would refuse the write eventually — but until
+/// that refusal, a typed name had already been echoed into the dry
+/// run's suggested command, the one action in the JSON document an
+/// agent is invited to execute. Validating here means nothing reaches
+/// that suggestion, the proposal tables, or the machine observation
+/// below it without being a name the declaration could hold.
+const CAPTURE_NAME_CHARS: &[char] = &['.', '-', '_', '+', '@', '/'];
+
+fn validate_capture_names(names: &[String]) -> Result<()> {
+    for name in names {
+        crate::config::validate_name(name, "capture", CAPTURE_NAME_CHARS)?;
+    }
+    Ok(())
+}
+
 /// The dry run's one edge, carrying the names it was narrowed to so the
 /// printed command is the command that runs.
 fn yes_action(names: &[String]) -> Action {
@@ -276,6 +297,20 @@ mod tests {
             yes_action(&["ghostty".to_string(), "jq".to_string()]).cmd,
             "kuma capture ghostty jq --yes"
         );
+    }
+
+    /// The dry run repeats typed names as a command and `--yes` writes
+    /// them into the declaration, so a name the declaration could not
+    /// hold fails before it is echoed anywhere — not later, at the
+    /// store that would have refused the write. The accepted cases are
+    /// the union alphabet: a flatpak id, and a brew formula carrying
+    /// the characters brew allows.
+    #[test]
+    fn capture_refuses_names_the_declaration_would_refuse() {
+        for bad in ["fish; rm -rf /", "--nogpgcheck", "", "pkg flag", ".;.."] {
+            assert!(validate_capture_names(&[bad.to_string()]).is_err(), "{bad:?} was accepted");
+        }
+        assert!(validate_capture_names(&["org.mozilla.firefox".into(), "ripgrep@1".into()]).is_ok());
     }
 
     #[test]
