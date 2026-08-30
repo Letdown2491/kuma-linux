@@ -21,7 +21,7 @@ mod updates;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use config::Config;
-use host::{host_output, host_output_any, note, run_host, run_host_stdin};
+use host::{host_output, host_output_any, note, run_host};
 use state::{action_json, print_actions, reboot_action, Action};
 use std::path::{Path, PathBuf};
 
@@ -2268,18 +2268,6 @@ fn iso(config_path: &Path, tag: &str, output: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 0600, for a file that holds a credential.
-///
-/// Rust writes a new file 0644 minus the umask, which on an ordinary
-/// machine means every local account can read it. That is the wrong
-/// default for an account's password hash sitting in a temporary
-/// directory, and the right one costs one syscall.
-fn restrict_to_owner(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-        .with_context(|| format!("cannot restrict permissions on {}", path.display()))
-}
-
 /// What the plan prints, gathered rather than passed as eight
 /// positional arguments: this is a description of a disk about to be
 /// destroyed, and telling two `bool`s apart by position is a poor way to
@@ -2522,19 +2510,11 @@ fn hibernate_cmd(size: Option<String>, off: bool, yes: bool, json: bool) -> Resu
 
     if !repairing {
         note(&format!("Making a {} swapfile...", hibernate::size_text(size_mib)));
-        let dir = tempfile::tempdir().context("cannot create a working directory")?;
-        let script = dir.path().join("enable");
-        std::fs::write(&script, hibernate::enable_script())?;
-        run_host(&["sudo", "chmod", "a+rX", path_str(dir.path())?])?;
-        let out = host_output(&[
-            "sudo",
-            "bash",
-            path_str(&script)?,
-            &device,
-            &size_mib.to_string(),
-            "/etc/fstab",
-        ])
-        .context("cannot create the swapfile")?;
+        let mut root = host::for_root()?;
+        let script = root.file("enable", &hibernate::enable_script())?;
+        let out = root
+            .output(&script, &[&device, &size_mib.to_string(), "/etc/fstab"])
+            .context("cannot create the swapfile")?;
         // The script prints the offset on its last line and nothing else
         // on stdout, so this is the offset the kernel has to be told.
         let printed = out.lines().next_back().unwrap_or_default().trim().to_string();
@@ -2683,17 +2663,14 @@ fn hibernate_off(
         print_actions(&[action]);
         return Ok(());
     }
-    let dir = tempfile::tempdir().context("cannot create a working directory")?;
-    let script = dir.path().join("disable");
-    std::fs::write(&script, hibernate::disable_script())?;
+    let mut root = host::for_root()?;
+    let script = root.file("disable", &hibernate::disable_script())?;
     // The stripped fstab is handed over as a file rather than generated
     // in shell, so that what gets written is exactly what `strip_fstab`
     // produced and is covered by its tests.
-    let new_fstab = dir.path().join("fstab");
-    std::fs::write(&new_fstab, &stripped)?;
-    run_host(&["sudo", "chmod", "-R", "a+rX", path_str(dir.path())?])?;
+    let new_fstab = root.file("fstab", &stripped)?;
     note("Turning swap off and removing the swapfile...");
-    run_host(&["sudo", "bash", path_str(&script)?, device, "/etc/fstab", path_str(&new_fstab)?])
+    root.run(&script, &[device, "/etc/fstab", path_str(&new_fstab)?])
         .context("cannot remove the swapfile")?;
     if !kargs.is_empty() {
         note("Removing the kernel arguments...");
@@ -3170,11 +3147,9 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     let passphrase = if encrypt { Some(install::ask_passphrase()?) } else { None };
     let account = install::ask_account(user, groups, shell)?;
     let hostname = install::ask_hostname(hostname)?;
-    let dir = tempfile::tempdir().context("cannot create install directory")?;
-    let user_file = dir.path().join("kuma-user");
-    std::fs::write(&user_file, install::user_file(&account))?;
-    restrict_to_owner(&user_file)?;
-    std::fs::write(dir.path().join("kuma-hostname"), format!("{hostname}\n"))?;
+    let mut root = host::for_root()?;
+    root.credential("kuma-user", &install::user_file(&account))?;
+    root.file("kuma-hostname", &format!("{hostname}\n"))?;
     // The restore file is read and checked here, before anything is
     // written to a disk. A restore that cannot work is worth finding out
     // about while the old machine's data is still the only copy.
@@ -3184,14 +3159,12 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         if let Err(why) = install::restore_file_is_usable(&text) {
             bail!("refusing to install: {why}");
         }
-        let secret = dir.path().join("kuma-restore-secret");
-        std::fs::write(&secret, &text)?;
-        restrict_to_owner(&secret)?;
-        std::fs::write(dir.path().join("kuma-restore-request"), "requested by kuma install\n")?;
+        root.credential("kuma-restore-secret", &text)?;
+        root.file("kuma-restore-request", "requested by kuma install\n")?;
     }
-    std::fs::write(
-        dir.path().join("Containerfile"),
-        install::install_containerfile(image, &account, restore.is_some()),
+    root.file(
+        "Containerfile",
+        &install::install_containerfile(image, &account, restore.is_some()),
     )?;
 
     // Said before anything is written, and only when it can be known
@@ -3231,45 +3204,7 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         let scratch = tempfile::tempdir().context("cannot create scratch directory")?;
         sync_image_to_root(image, scratch.path())?;
     }
-    let script = dir.path().join("install");
-    std::fs::write(&script, partition::install_script(&layout, encrypt, swap_mib))?;
-
-    // The script runs as root and reads this directory, and a tempdir is
-    // 0700 for whoever created it.
-    //
-    // The credentials are SKIPPED rather than widened and put back.
-    // This was `chmod -R a+rX` over everything followed by two `chmod
-    // 600` calls, which made the account's password hash and the backup
-    // repository password readable by every local account on the machine
-    // for the two process spawns in between, and longer on a sudo
-    // configuration that re-prompts. The comment that shipped with it
-    // already named the right answer: root, which is what actually reads
-    // these, needs no permission at all. So they never get any.
-    //
-    // `-prune` rather than a second pass, so there is no window at all
-    // rather than a smaller one. The disk passphrase was never here: it
-    // goes to the script on stdin, because `ps` shows argv.
-    let mut credentials = vec![user_file.clone()];
-    if restore.is_some() {
-        credentials.push(dir.path().join("kuma-restore-secret"));
-    }
-    let mut widen = vec![
-        "sudo".to_string(),
-        "find".to_string(),
-        path_str(dir.path())?.to_string(),
-        "(".to_string(),
-    ];
-    for (i, credential) in credentials.iter().enumerate() {
-        if i > 0 {
-            widen.push("-o".to_string());
-        }
-        widen.push("-path".to_string());
-        widen.push(path_str(credential)?.to_string());
-    }
-    widen.extend(
-        [")", "-prune", "-o", "-exec", "chmod", "a+rX", "{}", "+"].iter().map(|s| s.to_string()),
-    );
-    run_host(&widen)?;
+    let script = root.file("install", &partition::install_script(&layout, encrypt, swap_mib))?;
 
     // Read before, compared after. Installing to a file leaves a boot
     // entry in this machine's firmware naming a partition inside that
@@ -3279,10 +3214,11 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     let efi_before = if to_file { host_output(&["efibootmgr"]).ok() } else { None };
 
     note("Partitioning, formatting and installing (this destroys the target)...");
-    let argv = ["sudo", "bash", path_str(&script)?, disk_str, path_str(dir.path())?, updates];
+    let ctx = path_str(root.path())?.to_string();
+    let args = [disk_str, ctx.as_str(), updates];
     match &passphrase {
-        Some(passphrase) => run_host_stdin(&argv, &format!("{passphrase}\n"))?,
-        None => run_host(&argv)?,
+        Some(passphrase) => root.run_stdin(&script, &args, &format!("{passphrase}\n"))?,
+        None => root.run(&script, &args)?,
     }
 
     let reboot = Action::new(
@@ -3676,14 +3612,23 @@ fn iso_config_toml(config: &Config) -> String {
 /// before this file existed, a declaration that declares no shell: all
 /// of them mean "say nothing to bib", which is what kuma did before.
 fn image_shell(tag: &str) -> Option<String> {
-    let out = std::process::Command::new("podman")
-        .args(["run", "--rm", "--entrypoint", "", tag, "cat", "/usr/lib/kuma/kuma.toml"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let parsed: Config = toml::from_str(&String::from_utf8(out.stdout).ok()?).ok()?;
+    // Through the seam rather than a private spawn: this is the one
+    // podman call that did not escape the container kuma itself runs
+    // in, so inside one it never found the tag and the shell fell back
+    // to silence — and its every failure being None is exactly why
+    // nobody could tell.
+    let baked = host_output(&[
+        "podman",
+        "run",
+        "--rm",
+        "--entrypoint",
+        "",
+        tag,
+        "cat",
+        "/usr/lib/kuma/kuma.toml",
+    ])
+    .ok()?;
+    let parsed: Config = toml::from_str(&baked).ok()?;
     // Validated, because `Config::load` is what normally does that and
     // this does not go through it. `--tag` can name an image kuma did
     // not build, so a declaration read here has been through no build
