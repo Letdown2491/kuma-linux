@@ -102,31 +102,10 @@ mount_program = \"/usr/bin/fuse-overlayfs\"
 /// installed machine.
 pub const LIVE_USER: &str = "liveuser";
 
-/// Everything a live session must not run, in one list so a test can read
-/// it rather than a comment asserting it.
-pub(crate) const LIVE_MASKED: &[&str] = &[
-    "kuma-user-sync.service",
-    "kuma-flatpak-sync.service",
-    "kuma-flatpak-sync.timer",
-    "kuma-brew-sync.service",
-    "kuma-brew-sync.timer",
-    // Joined the image in 0.13 and was never added here, which the
-    // accountability test found the first time it ran. It converges
-    // Flatpak permissions, and a live session converges nothing.
-    "kuma-flatpak-overrides.service",
-    // The timers, for the same reason the two above them are here:
-    // nothing in a live session should be armed on a schedule. Their
-    // scripts would exit 0 on media that has no btrfs subvolume and no
-    // credential, so this is about not arming them rather than about
-    // what they would do.
-    "kuma-snapshot.timer",
-    "kuma-backup.timer",
-    "greenboot-healthcheck.service",
-    "greenboot-set-rollback-trigger.service",
-    "greenboot-success.target",
-    "boot-complete.target",
-    "bootloader-update.service",
-];
+/// The bootc-preset units the live layer masks on its own behalf:
+/// every ostree deployment's presets boot them, so no kuma block is
+/// what enables them and their disposition is nobody else's to declare.
+const LIVE_PRESET_MASKS: &[&str] = &["boot-complete.target", "bootloader-update.service"];
 
 /// The Containerfile for the live root filesystem: kuma's own image plus
 /// the two things a live boot needs and an installed machine never does.
@@ -286,7 +265,12 @@ pub fn live_containerfile(config: &Config, base_tag: &str) -> String {
     // own doctor grades a machine on having no failed units, so the
     // media would hand a newcomer five red lines and a doctor that
     // agrees with them.
-    out.push_str(&format!("RUN systemctl mask {}\n\n", LIVE_MASKED.join(" ")));
+    // The kuma units the block tables declared Masked, plus the two
+    // presets this layer owns. One list the tables can't forget a unit
+    // in, because it is the same list that enables them.
+    let mut masked = crate::containerfile::live_masks();
+    masked.extend_from_slice(LIVE_PRESET_MASKS);
+    out.push_str(&format!("RUN systemctl mask {}\n\n", masked.join(" ")));
 
     // Autologin, by the same greetd initial_session mechanism the
     // declared-user path uses, into whichever greeter this desktop runs.
