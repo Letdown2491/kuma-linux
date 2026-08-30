@@ -921,6 +921,36 @@ pub(crate) mod tests {
         );
     }
 
+    /// docs/contract.md states what 1.0 promises, and a promise page
+    /// nobody links is a promise nobody can find. README's Documentation
+    /// list is the front door, SECURITY.md is named there as the other
+    /// half of the statement, and both directions are pinned here, along
+    /// with the page still being the promises rather than a stub.
+    #[test]
+    fn the_contract_doc_exists_and_both_pages_name_it() {
+        let contract =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/contract.md"))
+                .unwrap();
+        assert!(
+            contract.contains("## The two promises"),
+            "docs/contract.md should carry the promises themselves"
+        );
+
+        let readme =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")).unwrap();
+        assert!(
+            readme.contains("docs/contract.md"),
+            "README's Documentation list should link the contract"
+        );
+
+        let security =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/SECURITY.md")).unwrap();
+        assert!(
+            security.contains("docs/contract.md"),
+            "SECURITY.md should name the contract as the other half of the statement"
+        );
+    }
+
     /// SECURITY.md says every release asset is signed with Sigstore, and
     /// that sentence has already been false once: the ISO was wired up
     /// unsigned and it took a person reading the workflow to notice. A

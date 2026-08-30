@@ -206,6 +206,8 @@ In order:
   an error, what `kuma.lock` pins and what it only records, how `/etc` is
   merged rather than replaced, how a bad update rolls itself back, and what
   an install decides that a declaration cannot.
+- [The contract](docs/contract.md): what 1.0 promises, what it declines, and
+  the rules a 1.x release follows. Only a 2.0 ends a promise.
 - [What a desktop contains](docs/desktops.md): what `desktop = "niri"` or
   `"cosmic"` installs that you didn't name, why the surprising parts are
   there, and what you can change.

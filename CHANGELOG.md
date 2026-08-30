@@ -6,6 +6,16 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+### Added
+
+- **The contract.** docs/contract.md states what kuma 1.0 promises, what a
+  1.x release may do, and what 1.0 declines to do, with the reasons.
+  README links it and SECURITY.md names it as the other half of the
+  statement. SECURITY.md also now says what happens to the image signing
+  key: what losing it costs, how rotation reaches machines while the old
+  key is still held, and why a compromised key has no in-band path.
+  Nothing a reader has to do changes.
+
 ## v0.20.0 (2026-08-31)
 
 ### Fixed

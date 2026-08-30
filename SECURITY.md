@@ -179,9 +179,32 @@ before finishing, because a `cosign.pub` that does not match the signing
 secret fails silently: the image publishes and verification fails everywhere
 else.
 
+The private half of the key lives in GitHub's secret store; only the public
+half is committed, and the check above is what ties the two together. What
+happens to that key is worth saying plainly:
+
+**Losing it costs what is unpublished, nothing published.** Signatures live
+in the registry, so machines keep verifying and keep upgrading within what
+has already been published. Nothing new can be signed, and a machine whose
+policy names the lost key cannot receive a new policy by update, because
+the update is exactly what that policy refuses. Adopting a new key is a
+deliberate step on each machine, which is the design refusing to make key
+adoption silent.
+
+**Rotating while the key is held can ride an update.** Images can be signed
+with both keys while the policy names both, so the new policy reaches
+machines as an ordinary verified update, and the old key retires once no
+machine still requires it.
+
+**Rotating because the key is compromised has no in-band path, by design.**
+Any path that swapped a machine's key on its own is the path an attacker
+holding the key would use too, so a new key reaches machines the way the
+first one did: deliberately, by the person responsible for the machine.
+
 Images kuma builds for you are not signed. They're built on your machine, from
 your declaration, and stay in your local container storage unless you push
-them somewhere.
+them somewhere. What these guarantees promise and what a 2.0 may change is
+stated in docs/contract.md.
 
 ## Secrets in a declaration
 
