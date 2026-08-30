@@ -7,6 +7,8 @@ install it. From there:
   installing real hardware from the published media, then describing an image
   of your own, building it, and trying it in a VM. Start here if you want to
   use kuma.
+- **[Moving over](moving.md)** brings a machine you already have: rebase
+  onto kuma if it boots an image, back up and install if it does not.
 - **[How kuma behaves](concepts.md)** explains the reasoning: what a build
   pins, what happens to changes you make by hand, why a file you edited keeps
   winning over the image, how a bad update rolls itself back, what a backup

@@ -3932,7 +3932,7 @@ mod tests {
     fn every_documented_command_parses_against_this_cli() {
         use clap::Parser;
         let mut checked = 0;
-        for doc in ["docs/getting-started.md", "README.md"] {
+        for doc in ["docs/getting-started.md", "docs/moving.md", "README.md"] {
             for cmd in crate::config::documented_commands(doc) {
                 let mut words = cmd.split_whitespace();
                 // The docs also give curl, dd, chmod and cargo, which are

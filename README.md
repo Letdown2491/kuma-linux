@@ -170,7 +170,9 @@ formulae together, but `brew bundle` is a command you run rather than a loop
 that runs without you, and its cleanup decides what to remove from what is
 installed rather than from what it installed. Kuma converges at boot and on a
 daily timer, and records what it installed, so an application you added
-yourself stays yours and `kuma capture` offers to write it down.
+yourself stays yours and `kuma capture` offers to write it down. Already
+running one of those images? [Moving over](docs/moving.md) is the short
+path.
 
 **BlueBuild** builds an image from a recipe and stops at the image. The
 recipe never reaches the running machine. Kuma's keeps working after install:
@@ -198,6 +200,8 @@ In order:
 
 - [Getting started](docs/getting-started.md): the whole path once, from
   downloading the media to living with a machine you declared.
+- [Moving over](docs/moving.md): rebase a machine that boots an image,
+  or back up and install one that doesn't.
 - [How kuma behaves](docs/concepts.md): why drift is a proposal rather than
   an error, what `kuma.lock` pins and what it only records, how `/etc` is
   merged rather than replaced, how a bad update rolls itself back, and what

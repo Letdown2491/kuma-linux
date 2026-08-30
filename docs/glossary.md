@@ -31,6 +31,11 @@ a daily timer for applications and command line tools.
 more than one, which is what makes rollback instant: the previous deployment
 is still there.
 
+**Rebase.** Pointing a bootc machine at a different image, so the next boot
+runs that image's system while everything in `/var` stays where it was. The
+way an existing machine moves to kuma without losing its home directory; see
+[moving over](moving.md).
+
 **Digest.** A checksum that names an exact image, as opposed to a tag like
 `:44`, which points at whatever was published most recently. `kuma.lock`
 pins a digest so a build is repeatable.

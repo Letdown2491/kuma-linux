@@ -414,6 +414,8 @@ repository cannot be reached that day.
 - [How kuma behaves](concepts.md) explains the reasoning under all of this:
   what is pinned, what merges, how rollback works, and why drift is treated as
   a proposal.
+- [Moving over](moving.md) is the path for a machine that already runs
+  something: rebase if it boots an image, back up and install if it doesn't.
 - [What a desktop contains](desktops.md) lists what `desktop = "niri"` or
   `"cosmic"` installed that you never named.
 - [Glossary](glossary.md) for any word above that was new.
