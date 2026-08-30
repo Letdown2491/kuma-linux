@@ -94,10 +94,14 @@ never that it works, so anything whose behaviour appears at runtime has no
 gate on a push at all.
 
 A third thing the tests watch that you will meet the first time you change
-what an image carries: the generator is pinned by goldens. Four
+what an image carries: the generator is pinned by goldens. Five
 declarations' worth of Containerfile text and staged-file manifests live in
 `src/containerfile/goldens/`, and any change to what an image ships shows
-up as a diff against them. That diff is the review of your change: read
+up as a diff against them. The fifth of them, `secrets`, exists so the
+staging of the two values that get special handling — a password hash and
+a CA anchor, both public fixtures there — is pinned by bytes like the
+rest, not left to a unit test a refactor could outlive. That diff is the
+review of your change: read
 it, don't just regenerate past it. When the change is deliberate, run
 `UPDATE_GOLDENS=1 cargo test` and commit the result. The builder label
 carries `git describe`, so it is normalized out of the comparison; a golden

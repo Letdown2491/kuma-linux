@@ -35,7 +35,18 @@ impl Response {
 
     /// One field of the verb's own. Values are the JSON shapes the
     /// contract already uses; nothing here invents new ones.
+    ///
+    /// The contract keys are the document's, inserted by `document()`
+    /// after the fields land in the same map — so a field named like
+    /// one of them would silently clobber `ok`, `dry_run` or `actions`
+    /// and break the one promise every agent reads first. No current
+    /// call site does; the assertion is what keeps it that way when a
+    /// future one is written in a hurry.
     pub fn field(mut self, key: &'static str, value: impl Into<Value>) -> Response {
+        debug_assert!(
+            !matches!(key, "ok" | "dry_run" | "actions"),
+            "{key} is a contract key the document owns, not a verb field"
+        );
         self.fields.push((key, value.into()));
         self
     }
@@ -136,5 +147,16 @@ mod tests {
         assert_eq!(doc.get("ok"), Some(&Value::Bool(true)));
         assert!(doc.get("dry_run").is_none());
         assert_eq!(doc.get("actions"), Some(&Value::Array(vec![])));
+    }
+
+    /// The clobber the assertion in `field` exists for: a field with a
+    /// contract key would ride the same map in after the real one and
+    /// replace it. Debug-only, like the assertion — a release build has
+    /// no runtime cost, and a debug one fails here instead of shipping
+    /// a document that lies about `ok`.
+    #[test]
+    #[should_panic(expected = "contract key")]
+    fn a_field_cannot_take_a_contract_key() {
+        let _ = Response::new().field("ok", false);
     }
 }

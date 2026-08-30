@@ -198,6 +198,7 @@ mod tests {
         ("niri", "schema_version = 1\n[system]\ndesktop = \"niri\"\n"),
         ("cosmic", "schema_version = 1\n[system]\ndesktop = \"cosmic\"\n"),
         ("everything-on", EVERYTHING_ON),
+        ("secrets", SECRETS),
     ];
 
     #[test]
@@ -1823,6 +1824,47 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
          [backup]\nenable = true\nrepo = \"b2:kuma\"\nnetwork_connections = true\n\
          [overrides.\"org.mozilla.firefox\"]\nsockets = [\"wayland\"]\n\
          [user]\nname = \"probe\"\nssh_keys = [\"ssh-ed25519 AAAAC3Nz probe@example\"]\n";
+
+    /// The two declaration values that get special handling because a
+    /// careless one is a published secret, staged as files with modes
+    /// and destinations the ordinary COPY grammar does not reach:
+    /// user.password_hash and system.ca_certificates.
+    ///
+    /// The values are public by construction, so the fixture can carry
+    /// them without the tree holding a secret. The hash is the published
+    /// SHA-crypt test vector for the password "Hello world!" at salt
+    /// "saltstring"; the anchor is a self-signed throwaway certificate
+    /// whose key was destroyed the moment it was written, generated for
+    /// this fixture and pinned here byte for byte. The byte-pinning is
+    /// the point: the account file must ship `COPY --chmod=600`, the
+    /// anchor must land in the trust-store directory, and a refactor
+    /// that drops either back to the ordinary path is a golden diff
+    /// rather than a unit test somebody has to remember exists.
+    const SECRETS: &str = "schema_version = 1\n\
+         [user]\nname = \"probe\"\n\
+         password_hash = \"$6$saltstring$svn8UoSVapNtMuq1ukKS4tPQd8iKwSMHWjl/O817G3uBnIFNjnQJuesI68u4OTLiBFdcbYEdFCoEOfaS35inz1\"\n\
+         [system.ca_certificates]\n\
+         kuma-test = \"\"\"\n\
+         -----BEGIN CERTIFICATE-----\n\
+         MIIDPzCCAiegAwIBAgIUO8XtpDc29P521fge4xkHXnSBDbswDQYJKoZIhvcNAQEL\n\
+         BQAwLzEtMCsGA1UEAwwka3VtYSB0ZXN0IGFuY2hvciAoZml4dHVyZSwgbm90IGEg\n\
+         Q0EpMB4XDTI2MDgzMDE3MzUyN1oXDTM2MDgyNzE3MzUyN1owLzEtMCsGA1UEAwwk\n\
+         a3VtYSB0ZXN0IGFuY2hvciAoZml4dHVyZSwgbm90IGEgQ0EpMIIBIjANBgkqhkiG\n\
+         9w0BAQEFAAOCAQ8AMIIBCgKCAQEAiUKuW7rSYSXUTGzzUs9cGziy4WoLbUH0NhPD\n\
+         40kn0LIrD2F6+aGjsxljdmp9CgZov5DDsckUENR7Yom/OjQmNSJ23+bm471+7LDG\n\
+         4iurDCDLD1x+DtKRrwRgAst9mTICHPYqYE0VICDyqVgiUELzvfRF6v/th8H2SIk0\n\
+         tOwMTQkJ4HNkESHZKbh3RtGdlzT8BNPb0ltY43QRikHd8JoPaYSOJeBJ7IAxjv0E\n\
+         todO7BndH4yLEWXITONAv4eJF7lHYMLOex8eSB4QKJRQwg2FdMtSt9tj6RtXo5/r\n\
+         AGLqsQg/ykuilhY1NhLHkDou1oMzO5kC1Lz1038yMjY+jtcs9wIDAQABo1MwUTAd\n\
+         BgNVHQ4EFgQUnaAsUfUsj3GMjqJNSDk1NMSymYQwHwYDVR0jBBgwFoAUnaAsUfUs\n\
+         j3GMjqJNSDk1NMSymYQwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOC\n\
+         AQEAIRf92NGpczDyg3N9DURs4rWxQ6dXtwGBQEcyJ+FfIX0skOShl9Lc6BXGfBhT\n\
+         OkDp3RBGJEZjvKSg1xe/IJdtj36yF7XisfWNH2o2Zzf0XaM33Bm3g/ATLqN4pG04\n\
+         Yu9vy1Olw7p7RGjwUrMdctmImJw2k2OsZf7G9JXL5FacSsLlSd39eeehAU0PH+/q\n\
+         Gqsbg1zhoEKgU8W8Lwpd1WZhNuu2GyWM1FN64XSupZT0r+Rd1S/7nrKwL3WluBB8\n\
+         NUr2bTvXlbxJXHzyxtVfh38LwugHr0JL/3efLUUzf3rJoWv8RKgYbJr3TSR9hfpy\n\
+         649YhIBcU7ptnjU4gq1wTmwbMw==\n\
+         -----END CERTIFICATE-----\n\"\"\"\n";
 
     /// machine. This release has already produced that shape three
     /// times.
