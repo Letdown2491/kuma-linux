@@ -6,10 +6,6 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
-- Fedora 46 through 51 bases are named Ephraim, Grizzly, Helarctos, Iorek,
-  Jambavan and Kodiak, so the bear no longer waits on a kuma release after
-  a Fedora one. Nothing a reader has to do changes.
-
 ## v0.21.0 (2026-09-02)
 
 ### Added
@@ -23,6 +19,9 @@ differently. Why it changed belongs in the commit that made it.
   Not-yet list now states what is actually unsigned, an image built from
   your own declaration and the base, rather than all of it. Nothing a
   reader has to do changes.
+- Fedora 46 through 51 bases are named Ephraim, Grizzly, Helarctos, Iorek,
+  Jambavan and Kodiak, so the bear no longer waits on a kuma release after
+  a Fedora one. Nothing a reader has to do changes.
 
 ### Fixed
 
