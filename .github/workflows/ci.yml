@@ -45,7 +45,9 @@ jobs:
   # string. Changing the time in the `schedule:` block above would have
   # left all four matching nothing: both crons would run only the cheap
   # jobs, the daily boot heartbeat would stop, and the workflow would
-  # stay green, because a skipped job is a green job.
+  # stay green, because a skipped job is a green job. The hibernate job
+  # consumes this output too and deliberately gates differently, daily or
+  # dispatch and never a push; the reasons are in its own comment.
   #
   # A job rather than an `env:` value, because `env` is not available in
   # a job-level `if:` and actionlint says so. The cost is one runner
@@ -320,13 +322,25 @@ jobs:
   # this, kuma could tell exactly those machines that hibernate is ready
   # while logind refuses to do it. Asking both questions in one job is
   # cheap, because the expensive half is the install either way.
+  #
+  # It runs on the daily heartbeat and on a manual dispatch, and no longer
+  # on ordinary pushes. The fixture has accumulated documented QEMU
+  # artifact classes (a resume that resets instead of powering off, a
+  # second-firmware poweroff that dies 180ms in, and 2026-08-31's cycle
+  # that suspended, woke on the alarm, and then never hibernated with the
+  # guest alive), and a push gate that goes red for a fixture reason is
+  # one rerun away from being ignored. The nightly run keeps the coverage
+  # a moving Fedora demands, because resume is exactly what a base update
+  # breaks silently; the release flow dispatches this job on the exact
+  # commit before a tag, which CONTRIBUTING records. What it loses per
+  # push it keeps where the promise lives: this is the only automated
+  # check that a hibernated machine comes back.
   hibernate:
     runs-on: ubuntu-latest
     needs: when
     if: >-
-      github.event_name != 'pull_request' &&
-      !startsWith(github.ref, 'refs/tags/') &&
-      (github.event_name != 'schedule' || needs.when.outputs.daily == 'true')
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'schedule' && needs.when.outputs.daily == 'true')
     # Longer than the install job it is built from, because it pays for
     # two boots and a hibernation on top of the same install.
     timeout-minutes: 120

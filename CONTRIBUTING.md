@@ -83,7 +83,15 @@ previous release.
 The image stage is the one part that does not repeat on a tag. Cutting a
 release means tagging a commit that already went green on main, so the tag
 names a tree those images were already built from, and building them again
-only delays the release. Everything else in `ci.yml` still runs on the tag.
+only delays the release. Everything else in `ci.yml` still runs on the tag,
+with one exception: the hibernate job runs on the daily heartbeat and on a
+manual dispatch, never on a push. It is the slowest gate in the file, its
+fixture has accumulated documented QEMU artifact classes, and a push gate
+that goes red for a fixture reason is one rerun away from being ignored.
+So before tagging, dispatch `ci.yml` on the exact commit you intend to tag
+and wait for the hibernate job: it is the only automated check that a
+hibernated machine comes back, and a release is the thing claiming that
+promise.
 
 Two limits in that list worth knowing before you trust it. shellcheck reads
 `scripts/smoke.sh` and nothing else, so the shell that images actually run
