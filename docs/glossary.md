@@ -48,6 +48,12 @@ of the three partitions an install writes, and the one `--esp` sizes.
 treats it as a proposal to consider rather than a fault to erase; see
 [how kuma behaves](concepts.md#what-happens-to-changes-you-make-by-hand).
 
+**Capture.** The verb that acts on drift: `kuma capture` proposes declaring
+what the machine already runs, and writes nothing until `--yes`. It covers
+the whole mutable edge, flatpaks and brew leaves and the flatpak permissions
+the machine carries that the declaration does not name, and it never touches
+the machine, only the file.
+
 **Flatpak.** A packaged desktop application that carries its own
 dependencies and updates independently of the system. Kuma's `packages.flatpak`
 list installs these from Flathub, and they need no reboot.
@@ -146,3 +152,8 @@ reboot rather than an immediate effect. The opposite of **machine state**.
 **Tag.** A moving name for an image, like `fedora-bootc:44`. What it points
 at changes when a new one is published, which is why a build records the
 digest instead.
+
+**Contract.** What kuma 1.0 promises about every surface above: the
+declaration format, the verbs and flags, the `--json` documents, the
+published images. Additions arrive freely; a promise ends only at 2.0. See
+[the contract](contract.md).

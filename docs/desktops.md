@@ -87,8 +87,10 @@ comes up on noctalia's defaults: a different bar, no palette taken from the
 wallpaper, and a first-run wizard. Changing anything from the desktop's own
 settings writes `~/.local/state/noctalia/settings.toml`, which wins over the
 image. That file is yours and the image will not overwrite it. Kuma does not
-read it either, so `kuma diff` will not mention it: `noctalia config export
-merged` is what shows which settings are actually in effect.
+write it either, so `kuma diff` will not mention it: what kuma does is say
+where your desktop differs from the image, which `kuma doctor` names by key
+with `noctalia config export merged` as the command that answers for the
+values.
 
 **The terminal and GTK3 applications follow the shell's palette.** Noctalia
 derives that palette from the wallpaper by default, and whatever it is showing,
@@ -114,10 +116,10 @@ are on keys: `Mod+Ctrl+V` for clipboard history, `Mod+Ctrl+W` for the
 wallpaper picker. `Mod+Shift+/` lists every bind the session has.
 
 `Mod+D` opens the shell's launcher. Your applications are in it, and so are
-kuma's own verbs: edit the declaration, show drift, system health, check for
-updates, rebuild, roll back, snapshots. Those arrive as ordinary desktop
-entries rather than anything the shell knows about, so they are on the COSMIC
-desktop too. See [kuma in your launcher](concepts.md#kuma-in-your-launcher).
+kuma's own verbs: edit the declaration, show drift, review proposals, system
+health, check for updates, rebuild, roll back, snapshots. Those arrive as
+ordinary desktop entries rather than anything the shell knows about, so they
+are on the COSMIC desktop too. See [kuma in your launcher](concepts.md#kuma-in-your-launcher).
 
 ## COSMIC
 

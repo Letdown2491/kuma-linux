@@ -22,6 +22,8 @@ install it. From there:
   line each.
 - **[For agents](agents.md)** describes the JSON surface for driving kuma
   from a program.
+- **[The contract](contract.md)** states what 1.0 promises about all of
+  these surfaces, and what only a 2.0 may end.
 
 Two more live at the top of the repository: [SECURITY.md](../SECURITY.md) for
 what a declaration trusts, how to verify a release, and what disk encryption
