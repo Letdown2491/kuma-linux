@@ -6,12 +6,6 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
-- `kuma doctor`'s shell config line now reads "the desktop runs 1 of the
-  image's settings differently", which is correct at one key and scopes the
-  claim to the keys the image sets -- the rest of a person's desktop
-  settings were never the image's to report. The state-file sentence is one
-  clause shorter. Nothing a reader has to do changes.
-
 ## v0.21.0 (2026-09-02)
 
 ### Added
@@ -80,6 +74,12 @@ differently. Why it changed belongs in the commit that made it.
   -- this check is where that difference is named, and the shell's own
   settings are the way to accept a new default. The state file wins
   over the image's config exactly as before.
+- `kuma doctor`'s shell config line now reads "the desktop runs 1 of the
+  image's settings differently", which is correct at one key and scopes the
+  claim to the keys the image sets -- the rest of a person's desktop
+  settings were never the image's to report. The state-file sentence and
+  the compare action's description are one clause shorter each. Nothing a
+  reader has to do changes.
 
 ## v0.20.0 (2026-08-31)
 

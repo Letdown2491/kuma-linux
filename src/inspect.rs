@@ -1769,7 +1769,7 @@ fn check_shell_config(report: &mut impl FnMut(Grade, &str, String, Option<Action
         Some(Action::new(
             "compare",
             "noctalia config export merged",
-            "what the shell is actually running, which is the only honest answer",
+            "what the shell is actually running",
         )),
     );
 }
