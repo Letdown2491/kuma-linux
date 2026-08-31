@@ -59,6 +59,19 @@ differently. Why it changed belongs in the commit that made it.
   plain file cannot be staged over a credential's name, and a
   credential staged over an existing file is forced back to 0600
   rather than inheriting the wider mode.
+- **`kuma doctor` no longer grades the desktop's own settings as a
+  warning.** The shell config check compared what the desktop is
+  running against what the image baked, and everything it can find
+  comes from the shell's state file, the one thing that can make the
+  two differ, so a person who customized once carried a warning for
+  the life of the machine. The check still names the keys and the
+  exporter that answers for them; it grades ok now, because a
+  personalization is not a diagnosis. The state file is a full
+  snapshot, so a kuma release that changes the image's default for a
+  key it covers does not reach a machine whose state file predates it
+  -- this check is where that difference is named, and the shell's own
+  settings are the way to accept a new default. The state file wins
+  over the image's config exactly as before.
 
 ## v0.20.0 (2026-08-31)
 

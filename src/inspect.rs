@@ -1710,10 +1710,21 @@ pub fn shell_overrides(baked: &toml::Value, merged: &toml::Value) -> Vec<String>
 /// visibly something else. Measured on a booted machine, where an
 /// override that had rewritten the bar produced "No drift".
 ///
-/// Graded WARN rather than FAIL, and deliberately. A person changing
-/// their own desktop is not a fault, it is drift, and this project's
-/// stance is that drift is a proposal rather than an error to erase. The
-/// point is that it stops being invisible.
+/// The state file is a full snapshot rather than a list of changes, so
+/// once it exists it pins every key it covers: a kuma release that
+/// changes the baked default does not reach a machine whose state file
+/// predates it. That makes this delta the one place that difference is
+/// visible, and it is also why the wording names no author. The state
+/// file's values are whatever the desktop last accepted, whether a
+/// person's taste or defaults frozen at setup time; the check cannot
+/// tell and does not claim to.
+///
+/// **Graded OK, deliberately, and once warn.** A personalization is not
+/// a diagnosis, and a warning that fires for the life of the machine on
+/// a person who customized once cannot distinguish expected drift from
+/// anything else. The 0.16 point stands unchanged: it stops being
+/// invisible, by name, here in doctor's output, with the exporter named
+/// for the values.
 ///
 /// Asked through the shell's own exporter rather than by reading the
 /// state file, for the reason that file taught us: what is in effect is
@@ -1747,12 +1758,11 @@ fn check_shell_config(report: &mut impl FnMut(Grade, &str, String, Option<Action
         return;
     }
     report(
-        Grade::Warn,
+        Grade::Ok,
         "shell config",
         format!(
-            "the desktop is running {} differently from the image: {}. Settings you \
-             change belong to you and the image will not overwrite them, but nothing \
-             in kuma reads that file, so `kuma diff` cannot mention it",
+            "the desktop runs {} settings differently from the image: {}. The shell's \
+             own state file wins over the image's config, and nothing overwrites it",
             overridden.len(),
             overridden.join(", ")
         ),
