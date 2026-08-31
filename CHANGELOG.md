@@ -13,8 +13,10 @@ differently. Why it changed belongs in the commit that made it.
   README links it and SECURITY.md names it as the other half of the
   statement. SECURITY.md also now says what happens to the image signing
   key: what losing it costs, how rotation reaches machines while the old
-  key is still held, and why a compromised key has no in-band path.
-  Nothing a reader has to do changes.
+  key is still held, and why a compromised key has no in-band path. Its
+  Not-yet list now states what is actually unsigned, an image built from
+  your own declaration and the base, rather than all of it. Nothing a
+  reader has to do changes.
 
 ## v0.20.0 (2026-08-31)
 

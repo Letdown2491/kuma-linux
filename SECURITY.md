@@ -376,6 +376,8 @@ image, so it is not published by publishing the image.
   declaration produce identical bytes.
 - Kuma emits no SBOM. `kuma.lock` records resolved package versions, which is
   adjacent but not the same thing.
-- Images kuma builds are not signed, and kuma has no verification step for a
-  `system.base` beyond the digest pin in `kuma.lock`.
+- Images built from your own declaration are not signed and are not required
+  to be; they come from your own storage, which the policy leaves alone. The
+  base image is unsigned, and the policy deliberately leaves it alone too:
+  the digest pin in `kuma.lock` is the only check on it.
 - There is no security advisory history, because there have been no advisories.
