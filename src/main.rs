@@ -96,8 +96,8 @@ struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
-    /// Emit JSON on the read surface: the state map (no command), doctor
-    /// findings, or the diff
+    /// Emit JSON: the state map with no command, the read verbs'
+    /// documents, and the mutating verbs' one-document reports
     #[arg(long)]
     json: bool,
 
@@ -496,11 +496,26 @@ fn main() -> Result<()> {
     };
     let mutating = mutating_json(&command).is_some();
     let json_mode = mutating && (root_json || mutating_json(&command) == Some(true));
+    // The read verbs manage their own documents and stay out of the
+    // one-interface match above, but a failure has the same audience as
+    // a mutating failure: a caller parsing stdout. Diff against a
+    // broken declaration and snapshot restore with a path outside the
+    // target both used to answer with nothing at all on stdout, which
+    // is not a refusal an agent can read -- it is a silence it has to
+    // guess at.
+    let read_json = match &command {
+        Cmd::Diff { json }
+        | Cmd::Check { json }
+        | Cmd::Doctor { json, .. }
+        | Cmd::Snapshot { json, .. }
+        | Cmd::Backup { json, .. } => *json || root_json,
+        _ => false,
+    };
     if json_mode {
         host::set_json_output();
     }
     let result = run(command, &config_path, explicit, root_json, json_mode);
-    if json_mode {
+    if json_mode || read_json {
         if let Err(err) = &result {
             // even failure ends machine-readably; the Error: line still
             // rides stderr through main's Result
@@ -2321,7 +2336,17 @@ fn hibernate_cmd(size: Option<String>, off: bool, yes: bool, json: bool) -> Resu
     // offset that moved is the one failure mode worth all of this. So
     // the size is only asked about when there is nothing there.
     let existing = status.file_offset;
-    if existing.is_none() && std::path::Path::new(hibernate::FILE).exists() {
+    let present = std::path::Path::new(hibernate::FILE).exists();
+    // Whether the kernel accepts the file is the kernel's own answer,
+    // and /proc/swaps is world-readable: a file listed there as active
+    // swap is one the kernel took. So "the kernel would refuse it" can
+    // only be said of a file that is present and not active. Between
+    // those sits the unprivileged run, which could not ask map-swapfile
+    // where the file's header lives; grading its declined sudo as a
+    // refused file is the conflation probe's own comment documents
+    // fixing once in doctor, and it made `kuma hibernate --json` call a
+    // healthy 15G swapfile unusable.
+    if existing.is_none() && present && !status.active {
         bail!(
             "{} exists but the kernel would refuse it as swap.\n\n\
              Take it away with `kuma hibernate --off --yes` and make a new one; \n\
@@ -2329,6 +2354,13 @@ fn hibernate_cmd(size: Option<String>, off: bool, yes: bool, json: bool) -> Resu
             hibernate::FILE
         );
     }
+    // The unprivileged reading of an active file: the kernel says how
+    // big it is, and what is missing is only the header offset, which
+    // is the one reading that needs root. This is a repair rather than
+    // a fresh setup, whatever ran this, so the file is never proposed
+    // for making and the gap is named in the warnings the document
+    // carries.
+    let repairing = existing.is_some() || (present && status.active);
 
     // What the disk can spare, minus the room an update needs to stage a
     // whole second deployment before it discards the old one.
@@ -2351,6 +2383,9 @@ fn hibernate_cmd(size: Option<String>, off: bool, yes: bool, json: bool) -> Resu
             hibernate::size_text(status.file_mib.unwrap_or(0))
         ),
         (Some(_), None) => status.file_mib.unwrap_or(0),
+        (None, _) if repairing => status.swaps_file_mib.with_context(|| {
+            format!("cannot read the size of the swapfile at {}", hibernate::FILE)
+        })?,
         (None, Some(text)) => {
             let Some(mib) = hibernate::parse_size(text)? else {
                 bail!("--size none asks for no swapfile, which is what this machine already has")
@@ -2373,7 +2408,6 @@ fn hibernate_cmd(size: Option<String>, off: bool, yes: bool, json: bool) -> Resu
             mib
         }
     };
-    let repairing = existing.is_some();
     let mut warnings = if repairing {
         Vec::new()
     } else {
@@ -2383,6 +2417,17 @@ fn hibernate_cmd(size: Option<String>, off: bool, yes: bool, json: bool) -> Resu
         let encrypted = types.split_whitespace().any(|kind| kind == "crypt");
         hibernate::warnings(size_mib, hibernate::ram_mib(&meminfo), encrypted)
     };
+    // The unprivileged repair read the file's size from the kernel's
+    // own table, and what it could not read is the header offset the
+    // kernel arguments have to agree with. Saying so is what makes the
+    // report honest rather than merely not-an-error.
+    if repairing && existing.is_none() {
+        warnings.push(
+            "the swapfile's header offset needs root to read, so this run \
+             could not check the kernel arguments against it"
+                .to_string(),
+        );
+    }
     // Said even when repairing, because a machine whose kernel refuses
     // is one where the repair is correct and still changes nothing, and
     // that is worth hearing before the reboot rather than after it.

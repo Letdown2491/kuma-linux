@@ -714,6 +714,24 @@ pub fn swap_active(proc_swaps: &str) -> bool {
     proc_swaps.lines().skip(1).any(|line| line.split_whitespace().next() == Some(FILE))
 }
 
+/// The size the kernel's own swap table reports for the swapfile, in
+/// MiB, or None when it is not active swap.
+///
+/// `/proc/swaps` is world-readable, so this is the one reading about
+/// the file that an unprivileged run can still make: the columns are
+/// filename, type, size in KiB, used, priority.
+pub fn swap_size_mib(proc_swaps: &str) -> Option<u64> {
+    proc_swaps
+        .lines()
+        .skip(1)
+        .find_map(|line| {
+            let mut cols = line.split_whitespace();
+            (cols.next() == Some(FILE)).then(|| cols.nth(1)).flatten()
+        })
+        .and_then(|kib| kib.parse::<u64>().ok())
+        .map(|kib| kib / 1024)
+}
+
 /// Everything needed to say whether this machine can really hibernate.
 ///
 /// Gathered rather than asked for one at a time, so that the judgement
@@ -732,6 +750,11 @@ pub struct Status {
     pub file_mib: Option<u64>,
     /// Whether it is active swap right now.
     pub active: bool,
+    /// What the kernel's own swap table says the file holds, in MiB.
+    /// Needs no privilege to read, unlike `file_mib`, which is why it
+    /// exists: an unprivileged run can say how big the active swapfile
+    /// is even when it cannot ask where the file's header lives.
+    pub swaps_file_mib: Option<u64>,
     /// What this machine has to hibernate.
     pub ram_mib: Option<u64>,
     /// Whether the kernel will hibernate at all, which is a different
@@ -835,6 +858,7 @@ pub fn probe() -> Status {
         file_offset,
         file_mib,
         active: swap_active(&swaps),
+        swaps_file_mib: swap_size_mib(&swaps),
         ram_mib: ram_mib(&meminfo),
         kernel_allows: kernel_allows_hibernation(&power_state),
         lockdown: lockdown.as_deref().and_then(active_lockdown),
@@ -1042,6 +1066,25 @@ pub fn lid_verdict(hibernate: &Verdict, lid_dropin: bool) -> LidVerdict {
 mod tests {
     use super::*;
 
+    /// The kernel's own table is the unprivileged reading of an active
+    /// swapfile: the size from the row the file is mounted at, none
+    /// when it is not there. The columns are KiB, and /proc/swaps is
+    /// tab-separated in the wild.
+    #[test]
+    fn the_swap_table_answers_the_size_without_privilege() {
+        let table = "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n\
+                     /dev/zram0\t\t\t\tpartition\t8388604\t\t0\t\t100\n\
+                     /var/swap/swapfile\t\tfile\t\t15728636\t0\t\t-1\n";
+        assert_eq!(swap_size_mib(table), Some(15728636 / 1024));
+        assert_eq!(
+            swap_size_mib(
+                "Filename\tType\tSize\tUsed\tPriority\n/dev/zram0\tpartition\t8388604\t0\t100\n"
+            ),
+            None,
+            "another active swap is not the swapfile"
+        );
+    }
+
     /// A bare number is the one input that is dangerous to guess at, and
     /// both units have to survive both spellings.
     /// A machine whose swapfile could not be READ is not a machine whose
@@ -1056,6 +1099,7 @@ mod tests {
     #[test]
     fn a_swapfile_that_could_not_be_read_is_not_a_swapfile_that_is_gone() {
         let unreadable = Status {
+            swaps_file_mib: None,
             present: true,
             asked: false,
             resume: Some("UUID=x".into()),
@@ -1175,6 +1219,7 @@ mod tests {
     #[test]
     fn a_stale_resume_offset_is_broken_rather_than_merely_odd() {
         let status = Status {
+            swaps_file_mib: None,
             // A fixture is a machine whose privileged read succeeded.
             present: true,
             asked: true,
@@ -1206,6 +1251,7 @@ mod tests {
         assert_eq!(verdict(&Status::default()), Verdict::NotSet);
 
         let ready = Status {
+            swaps_file_mib: None,
             // A fixture is a machine whose privileged read succeeded.
             present: true,
             asked: true,
@@ -1227,6 +1273,7 @@ mod tests {
         assert!(matches!(verdict(&short), Verdict::Short(_)));
 
         let no_karg = Status {
+            swaps_file_mib: None,
             // A fixture is a machine whose privileged read succeeded.
             present: true,
             asked: true,
@@ -1245,6 +1292,7 @@ mod tests {
         assert!(matches!(verdict(&no_karg), Verdict::Broken(_)));
 
         let no_file = Status {
+            swaps_file_mib: None,
             // A fixture is a machine whose privileged read succeeded.
             present: true,
             asked: true,
@@ -1255,6 +1303,7 @@ mod tests {
         assert!(matches!(verdict(&no_file), Verdict::Broken(_)));
 
         let inactive = Status {
+            swaps_file_mib: None,
             // A fixture is a machine whose privileged read succeeded.
             present: true,
             asked: true,
@@ -1294,6 +1343,7 @@ mod tests {
         assert_eq!(active_lockdown("nothing bracketed here"), None);
 
         let perfect = Status {
+            swaps_file_mib: None,
             // A fixture is a machine whose privileged read succeeded.
             present: true,
             asked: true,
@@ -1339,6 +1389,7 @@ mod tests {
         assert_eq!(selinux_type("  "), None);
 
         let mislabelled = Status {
+            swaps_file_mib: None,
             // A fixture is a machine whose privileged read succeeded.
             present: true,
             asked: true,
@@ -1378,6 +1429,7 @@ mod tests {
         // A closure rather than one value reused, because Status owns
         // Strings and the three shapes below each need their own.
         let with_dir = |dir: Option<&str>| Status {
+            swaps_file_mib: None,
             // A fixture is a machine whose privileged read succeeded.
             present: true,
             asked: true,

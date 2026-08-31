@@ -14,7 +14,8 @@
 
 use crate::config::Config;
 use crate::host::{host_output, run_host};
-use crate::state::{action_json, print_actions, Action};
+use crate::response;
+use crate::state::{print_actions, Action};
 use anyhow::{bail, Result};
 use std::path::Path;
 
@@ -246,13 +247,11 @@ fn seed(config: &Config, json: bool) -> Result<()> {
         let said = format!("{e:#}").to_lowercase();
         if said.contains("already exists") || said.contains("already initialized") {
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "ok": true, "repo": repo, "seeded": false,
-                        "why": "the repository already exists",
-                    }))?
-                );
+                response::Response::new()
+                    .field("repo", repo.as_str())
+                    .field("seeded", false)
+                    .field("why", "the repository already exists")
+                    .print(true, "");
             } else {
                 say(&format!("{repo} already holds a repository; nothing to seed."));
                 say("The timer copies the difference from here on. \
@@ -267,12 +266,11 @@ fn seed(config: &Config, json: bool) -> Result<()> {
     say("the difference since yesterday, so it takes as long as it takes.");
     run_host(&["sudo", "systemctl", "start", "kuma-backup.service"])?;
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "ok": true, "repo": repo, "seeded": true, "stamp": STAMP,
-            }))?
-        );
+        response::Response::new()
+            .field("repo", repo.as_str())
+            .field("seeded", true)
+            .field("stamp", STAMP)
+            .print(true, "");
     } else {
         say("");
         say("Done. `kuma doctor` grades how fresh it stays from here.");
@@ -322,21 +320,18 @@ fn status(config: &Config, config_path: &Path, json: bool) -> Result<()> {
     }
 
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "declared": config.backup.enable,
-                "repo": config.backup.repo,
-                "secret": config.backup.secret,
-                "secret_path": secret,
-                "provisioned": provisioned,
-                "interval": config.backup.interval,
-                "last_completed": last,
-                "covers": config.snapshots.target,
-                "network_connections": config.backup.network_connections,
-                "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
-            }))?
-        );
+        response::Response::new()
+            .field("declared", config.backup.enable)
+            .field("repo", config.backup.repo.clone())
+            .field("secret", config.backup.secret.clone())
+            .field("secret_path", secret.as_str())
+            .field("provisioned", provisioned)
+            .field("interval", config.backup.interval.clone())
+            .field("last_completed", last)
+            .field("covers", config.snapshots.target.clone())
+            .field("network_connections", config.backup.network_connections)
+            .actions(&actions)
+            .print(true, "");
         return Ok(());
     }
 
@@ -444,16 +439,23 @@ fn restore_path(
     }
 
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "repo": repo,
-                "snapshot": snapshot,
-                "path": path,
-                "replaces_live_copy": live,
-                "dry_run": !yes,
-            }))?
-        );
+        let mut document = response::Response::new()
+            .field("repo", repo.as_str())
+            .field("snapshot", snapshot)
+            .field("path", path)
+            .field("replaces_live_copy", live);
+        if !yes {
+            // The contract's marker rather than a computed field, and
+            // the affordance the prose path prints: a preview that
+            // names no way to apply it leaves an agent at a dead end
+            // the document was supposed to prevent.
+            document = document.dry_run().action(Action::new(
+                "write",
+                format!("sudo kuma backup --restore {path} --yes"),
+                "actually write it back",
+            ));
+        }
+        document.print(true, "");
     } else if yes {
         // Present tense for something about to happen. The dry run says
         // "would" because it means it; saying "would" while writing is

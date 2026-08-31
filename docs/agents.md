@@ -94,12 +94,14 @@ between runs, and nothing promises they will not gain detail.
 - **Write.** `kuma schema` prints the JSON Schema for `kuma.toml`, generated
   from the same types that parse it, so it cannot drift from reality.
 - **Mutate.** `build`, `switch`, `update`, `rollback`, `sync`, `add`,
-  `capture`, `remove`, `clean`, and `install` accept `--json` and emit
-  exactly one document on stdout: `{"ok": true, …}` with result fields and
-  next `actions`, or `{"ok": false, "error": …}` with a non-zero exit.
-  A verb that ran as a preview because its `--yes` was missing marks its
-  document `"dry_run": true`, so a caller tells a preview from an effect
-  in the document alone. Progress and subprocess output move to stderr.
+  `capture`, `remove`, `clean`, `hibernate`, and `install` accept `--json`
+  and emit exactly one document on stdout: `{"ok": true, …}` with result
+  fields and next `actions`, or `{"ok": false, "error": …}` with a non-zero
+  exit. A verb that ran as a preview because its `--yes` was missing marks
+  its document `"dry_run": true`, so a caller tells a preview from an
+  effect in the document alone. Progress and subprocess output move to
+  stderr. The read verbs answer with the same failure document when they
+  fail: no `--json` run of kuma ends with an unparseable stdout.
 - **Nothing changes what's running without a reboot.** `switch`, `update` and
   `rollback` gate on `--yes`, and even then only stage a deployment.
 

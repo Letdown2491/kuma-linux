@@ -18,6 +18,31 @@ differently. Why it changed belongs in the commit that made it.
   your own declaration and the base, rather than all of it. Nothing a
   reader has to do changes.
 
+### Fixed
+
+- **Every `--json` verb now ends machine-readably, whatever the answer.**
+  `snapshot` and `backup` answered through hand-built documents that
+  predated the response contract, and four of the six were missing keys
+  every agent reads first: `backup --restore --json` carried neither `ok`
+  nor `actions`, the init documents and `snapshot --json` carried one but
+  not the other. All six now go through the one response interface, so
+  `ok` and `actions` cannot be forgotten, and a restore preview names the
+  command that applies it. The read verbs, which manage their own
+  documents, used to fail with empty stdout; a failure in `--json` mode
+  is now the same `{"ok": false, "error": …}` document the mutating verbs
+  print. agents.md lists hibernate among the mutating verbs, which it
+  always was.
+- **`kuma hibernate --json` no longer calls a healthy swapfile unusable
+  when run without root.** The file's offset lives behind one privileged
+  call, and a declined sudo graded identically to a file the kernel would
+  refuse: on a machine whose 15G swapfile was present, active and
+  correct, the dry run answered `{"ok": false}`. Whether the kernel
+  accepts the file is the kernel's own answer, and `/proc/swaps` is
+  world-readable, so the unprivileged run now reports the repair it can
+  see, with the file's size read from the kernel's table and the one
+  thing it could not check named in its warnings. The privileged run is
+  unchanged.
+
 ## v0.20.0 (2026-08-31)
 
 ### Fixed

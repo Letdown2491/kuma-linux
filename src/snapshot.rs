@@ -15,7 +15,8 @@
 
 use crate::config::Config;
 use crate::host::run_host;
-use crate::state::{action_json, print_actions, Action};
+use crate::response;
+use crate::state::{print_actions, Action};
 use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
 
@@ -160,20 +161,20 @@ fn list(
     }
 
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "declared": config.snapshots.enable,
-                "target": config.snapshots.target,
-                "store": store.display().to_string(),
-                "keep_recent": config.snapshots.keep_recent,
-                "keep_daily": config.snapshots.keep_daily,
-                "snapshots": ids.iter().map(|id| serde_json::json!({
-                    "id": id, "taken": humanize(id),
-                })).collect::<Vec<_>>(),
-                "actions": actions.iter().map(action_json).collect::<Vec<_>>(),
-            }))?
-        );
+        response::Response::new()
+            .field("declared", config.snapshots.enable)
+            .field("target", config.snapshots.target.clone())
+            .field("store", store.display().to_string())
+            .field("keep_recent", config.snapshots.keep_recent)
+            .field("keep_daily", config.snapshots.keep_daily)
+            .field(
+                "snapshots",
+                ids.iter()
+                    .map(|id| serde_json::json!({ "id": id, "taken": humanize(id) }))
+                    .collect::<Vec<_>>(),
+            )
+            .actions(&actions)
+            .print(true, "");
         return Ok(());
     }
 
@@ -268,17 +269,22 @@ fn restore_path(
     });
 
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "path": path,
-                "from": id,
-                "source": source.display().to_string(),
-                "overwrites": overwrites,
-                "applied": yes,
-                "actions": action.iter().map(action_json).collect::<Vec<_>>(),
-            }))?
-        );
+        let mut document = response::Response::new()
+            .field("path", path)
+            .field("from", id.as_str())
+            .field("source", source.display().to_string())
+            .field("overwrites", overwrites)
+            .field("applied", yes);
+        if !yes {
+            // The contract's marker, not a field the verb computes: an
+            // agent polling for effect reads it the same way it reads
+            // every other preview's document.
+            document = document.dry_run();
+        }
+        if let Some(a) = &action {
+            document = document.action(a.clone());
+        }
+        document.print(true, "");
     } else {
         println!("{path}");
         println!("  from  {} ({})", id, humanize(&id));
