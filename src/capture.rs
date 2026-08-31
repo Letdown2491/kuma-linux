@@ -41,6 +41,53 @@ use std::path::Path;
 /// TODO. They are the boundary.
 const CAPTURABLE: &[&str] = &["flatpak", "brew"];
 
+/// The documents `capture` prints. Assembled apart from the prints so
+/// the shape tests can hold their exact keys without a machine that
+/// runs anything: which of the three a run produces depends on what the
+/// machine runs, which is exactly what a test cannot stage.
+fn capture_nothing_response(found: &[Candidate]) -> response::Response {
+    response::Response::new()
+        .field("written", false)
+        .field("captured", Vec::<String>::new())
+        .field("candidates", candidates_json(found))
+}
+
+fn capture_preview_response(
+    found: &[Candidate],
+    proposals: &[crate::overrides::Proposal],
+    names: &[String],
+) -> response::Response {
+    response::Response::new()
+        .dry_run()
+        .field("written", false)
+        .field("captured", Vec::<String>::new())
+        .field("candidates", candidates_json(found))
+        .field("overrides", overrides_json(proposals))
+        .action(yes_action(names))
+}
+
+fn capture_written_response(
+    items: &[(&str, &str)],
+    found: &[Candidate],
+    proposals: &[crate::overrides::Proposal],
+    note: Option<&str>,
+    actions: &[Action],
+) -> response::Response {
+    response::Response::new()
+        .field("written", true)
+        .field(
+            "captured",
+            items
+                .iter()
+                .map(|(list, item)| serde_json::json!({ "list": list, "item": item }))
+                .collect::<Vec<_>>(),
+        )
+        .field("candidates", candidates_json(found))
+        .field("overrides", overrides_json(proposals))
+        .field("note", note)
+        .actions(actions)
+}
+
 pub fn capture(
     config_path: &Path,
     config: &Config,
@@ -94,17 +141,13 @@ pub fn capture(
     let opt_in: Vec<&str> = found.iter().filter(|c| c.promotes).map(|c| c.item.as_str()).collect();
 
     if selected.is_empty() && proposals.is_empty() {
-        response::Response::new()
-            .field("written", false)
-            .field("captured", Vec::<String>::new())
-            .field("candidates", candidates_json(&found))
-            .print(
-                json,
-                &format!(
-                    "Nothing to capture: this machine runs nothing {} doesn't name.",
-                    config_path.display()
-                ),
-            );
+        capture_nothing_response(&found).print(
+            json,
+            &format!(
+                "Nothing to capture: this machine runs nothing {} doesn't name.",
+                config_path.display()
+            ),
+        );
         if !json {
             if !opt_in.is_empty() {
                 print_opt_in(&opt_in);
@@ -122,13 +165,7 @@ pub fn capture(
         // in the document, not by trying the command. This one shipped
         // without the field since the verb was born; the contract is
         // being made uniform rather than grandfathering the accident.
-        response::Response::new()
-            .dry_run()
-            .field("written", false)
-            .field("captured", Vec::<String>::new())
-            .field("candidates", candidates_json(&found))
-            .field("overrides", overrides_json(&proposals))
-            .action(yes_action(names))
+        capture_preview_response(&found, &proposals, names)
             .print(json, &format!("Would declare in {}:", config_path.display()));
         if !json {
             print_proposal(&selected);
@@ -150,19 +187,7 @@ pub fn capture(
     // path is always the convergent one.
     let (actions, converge_note) = edit::apply_edges(false);
 
-    let document = response::Response::new()
-        .field("written", true)
-        .field(
-            "captured",
-            items
-                .iter()
-                .map(|(list, item)| serde_json::json!({ "list": list, "item": item }))
-                .collect::<Vec<_>>(),
-        )
-        .field("candidates", candidates_json(&found))
-        .field("overrides", overrides_json(&proposals))
-        .field("note", converge_note)
-        .actions(&actions);
+    let document = capture_written_response(&items, &found, &proposals, converge_note, &actions);
     if json {
         document.print(true, "");
         return Ok(());
@@ -287,6 +312,47 @@ fn candidates_json(found: &[Candidate]) -> Vec<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The three documents capture can print, held against their exact
+    /// keys: which one a run produces depends on what the machine runs,
+    /// so the end-to-end tests cannot stage all three and these hold
+    /// them instead.
+    #[test]
+    fn the_capture_documents_are_the_published_surface() {
+        let shape = |doc: &serde_json::Value, want: &[&str]| {
+            let mut got: Vec<&str> =
+                doc.as_object().expect("a JSON document").keys().map(String::as_str).collect();
+            got.sort_unstable();
+            let mut want = want.to_vec();
+            want.sort_unstable();
+            assert_eq!(got, want, "capture's keys changed; the contract reads them");
+        };
+
+        shape(
+            &capture_nothing_response(&[]).document(),
+            &["ok", "written", "captured", "candidates", "actions"],
+        );
+        shape(
+            &capture_preview_response(&[], &[], &[]).document(),
+            &["ok", "dry_run", "written", "captured", "candidates", "overrides", "actions"],
+        );
+        shape(
+            &capture_written_response(&[], &[], &[], None, &[]).document(),
+            &["ok", "written", "captured", "candidates", "overrides", "note", "actions"],
+        );
+
+        // The preview marker on the preview and nowhere else, the same
+        // rule every gated verb's document follows.
+        assert_eq!(
+            capture_preview_response(&[], &[], &[]).document().get("dry_run"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert_eq!(capture_nothing_response(&[]).document().get("dry_run"), None);
+        assert_eq!(
+            capture_written_response(&[], &[], &[], None, &[]).document().get("dry_run"),
+            None
+        );
+    }
 
     #[test]
     fn the_yes_edge_repeats_the_narrowing() {

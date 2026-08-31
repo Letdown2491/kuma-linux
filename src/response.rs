@@ -89,11 +89,15 @@ impl Response {
         }
     }
 
-    /// The document itself, for the tests that pin the contract's
-    /// shape. `ok` first because it is the field every consumer reads
+    /// The document itself. `pub(crate)` so the shape tests can hold a
+    /// verb's exact keys without running the verb: the extracted
+    /// builders return a `Response`, and the tests read the document it
+    /// would print.
+    ///
+    /// `ok` first because it is the field every consumer reads
     /// first, `actions` last because it is the one every consumer
     /// follows.
-    fn document(&self) -> Value {
+    pub(crate) fn document(&self) -> Value {
         let mut map = serde_json::Map::new();
         map.insert("ok".to_string(), Value::Bool(true));
         if self.dry_run {

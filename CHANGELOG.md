@@ -42,6 +42,10 @@ differently. Why it changed belongs in the commit that made it.
   see, with the file's size read from the kernel's table and the one
   thing it could not check named in its warnings. The privileged run is
   unchanged.
+- `sync --json`'s "nothing to converge" answer now carries
+  `baked_declaration_behind` and the same shape as every other sync
+  answer: an agent reading the surface could rely on it everywhere
+  except exactly the machine that had nothing to do.
 
 ## v0.20.0 (2026-08-31)
 

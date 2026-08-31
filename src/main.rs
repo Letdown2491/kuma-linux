@@ -25,6 +25,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use config::Config;
 use host::{host_output, host_output_any, note, run_host};
+use serde_json::Value;
 use state::{action_json, print_actions, reboot_action, Action};
 use std::path::{Path, PathBuf};
 
@@ -967,6 +968,12 @@ fn init(force: bool, starter: bool) -> Result<()> {
     Ok(())
 }
 
+/// The document `build` prints. Assembled apart from the print so the
+/// shape tests can hold its exact keys without building an image.
+fn build_response(tag: &str, actions: &[Action]) -> response::Response {
+    response::Response::new().field("built", true).field("tag", tag).actions(actions)
+}
+
 fn build(config_path: &Path, tag: &str, json: bool) -> Result<()> {
     build_image(config_path, tag)?;
     // The edges out of "built" depend on where we are: only a bootc
@@ -980,11 +987,7 @@ fn build(config_path: &Path, tag: &str, json: bool) -> Result<()> {
         ));
     }
     actions.push(Action::new("vm", "kuma vm", "boot it in a disposable VM"));
-    response::Response::new()
-        .field("built", true)
-        .field("tag", tag)
-        .actions(&actions)
-        .print(json, &format!("\nBuilt {tag}."));
+    build_response(tag, &actions).print(json, &format!("\nBuilt {tag}."));
     Ok(())
 }
 
@@ -1161,6 +1164,21 @@ fn has_no_tags(id: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The documents `switch` prints: the preview, and the staged answer.
+/// Assembled apart from the prints so the shape tests can hold their
+/// exact keys without root, bootc, or an image.
+fn switch_preview_response(tag: &str, built: bool, actions: &[Action]) -> response::Response {
+    response::Response::new()
+        .dry_run()
+        .field("tag", tag)
+        .field("image_built", built)
+        .actions(actions)
+}
+
+fn switch_staged_response(tag: &str, reboot: Action) -> response::Response {
+    response::Response::new().field("staged", true).field("tag", tag).action(reboot)
+}
+
 fn switch(tag: &str, yes: bool, json: bool) -> Result<()> {
     if !yes {
         // The dry run must tell the truth: with nothing built, the switch
@@ -1183,23 +1201,14 @@ fn switch(tag: &str, yes: bool, json: bool) -> Result<()> {
                 "Would sync {tag} into root podman storage, then run (as root):\n\n  bootc switch --transport containers-storage {tag}\n\nRe-run with --yes to apply. The change takes effect on next boot;\nthe previous deployment stays available for `kuma rollback`.\n"
             )
         };
-        response::Response::new()
-            .dry_run()
-            .field("tag", tag)
-            .field("image_built", built)
-            .actions(&actions)
-            .print(json, &prose);
+        switch_preview_response(tag, built, &actions).print(json, &prose);
         return Ok(());
     }
     if !stage(tag)? {
         bail!("nothing staged; the system already runs this image (did `kuma build` succeed?)");
     }
     let reboot = reboot_action();
-    response::Response::new()
-        .field("staged", true)
-        .field("tag", tag)
-        .action(reboot)
-        .print(json, "\nStaged.");
+    switch_staged_response(tag, reboot).print(json, "\nStaged.");
     Ok(())
 }
 
@@ -1269,6 +1278,53 @@ fn stage(tag: &str) -> Result<bool> {
 ///
 /// Note this is the *builder's* check. A machine running a published
 /// image asks bootc instead, and `bootc upgrade --check` already exists.
+/// The three documents `update --check` prints, one per state the check
+/// can find: a composed base with its repo answer, a declared base with
+/// no lock yet, and a declared base with a lock that may have moved.
+/// Assembled apart from the prints so the shape tests can hold their
+/// exact keys without a registry round trip.
+fn check_composed_response(
+    base: &str,
+    locked: bool,
+    manifest_changed: bool,
+    fedora_release: Value,
+    updates: Value,
+    actions: &[Action],
+) -> response::Response {
+    response::Response::new()
+        .field("composed", true)
+        .field("locked", locked)
+        .field("base", base)
+        .field("manifest_changed", manifest_changed)
+        .field("fedora_release", fedora_release)
+        .field("updates", updates)
+        .actions(actions)
+}
+
+fn check_unlocked_response(base: &str, fedora_release: Value, build: Action) -> response::Response {
+    response::Response::new()
+        .field("locked", false)
+        .field("base", base)
+        .field("fedora_release", fedora_release)
+        .action(build)
+}
+
+fn check_locked_response(
+    base: &str,
+    moved: bool,
+    digest: &str,
+    fedora_release: Value,
+    actions: &[Action],
+) -> response::Response {
+    response::Response::new()
+        .field("locked", true)
+        .field("base", base)
+        .field("moved", moved)
+        .field("digest", serde_json::json!({ "locked": digest }))
+        .field("fedora_release", fedora_release)
+        .actions(actions)
+}
+
 fn update_check(config_path: &Path, json: bool) -> Result<()> {
     let config = Config::load(config_path)?;
     let base = &config.base_ref();
@@ -1306,28 +1362,26 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
             _ => vec![update],
         };
         if json {
-            response::Response::new()
-                .field("composed", true)
-                .field("locked", lock.is_some())
-                .field("base", base.as_str())
-                .field("manifest_changed", manifest_changed)
-                .field("fedora_release", release_move_json(None, &release_now))
-                .field(
-                    "updates",
-                    match &moved {
-                        Ok(moved) => serde_json::json!({
-                            "checked": true, "source": source.name(),
-                            "moved": updates::moves_json(moved),
-                            "security": updates::security_count(moved),
-                        }),
-                        Err(err) => serde_json::json!({
-                            "checked": false, "source": source.name(),
-                            "error": err.to_string(),
-                        }),
-                    },
-                )
-                .actions(&actions)
-                .print(true, "");
+            let updates = match &moved {
+                Ok(moved) => serde_json::json!({
+                    "checked": true, "source": source.name(),
+                    "moved": updates::moves_json(moved),
+                    "security": updates::security_count(moved),
+                }),
+                Err(err) => serde_json::json!({
+                    "checked": false, "source": source.name(),
+                    "error": err.to_string(),
+                }),
+            };
+            check_composed_response(
+                base.as_str(),
+                lock.is_some(),
+                manifest_changed,
+                release_move_json(None, &release_now),
+                updates,
+                &actions,
+            )
+            .print(true, "");
             return Ok(());
         }
         if manifest_changed {
@@ -1360,11 +1414,7 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
             Action::new("build", "kuma build", "record what this declaration resolves to")
         };
         if json {
-            response::Response::new()
-                .field("locked", false)
-                .field("base", base.as_str())
-                .field("fedora_release", release_move_json(None, &release_now))
-                .action(build)
+            check_unlocked_response(base.as_str(), release_move_json(None, &release_now), build)
                 .print(true, "");
         } else {
             println!("Nothing pinned yet: {base} has no lock to have moved from.");
@@ -1378,14 +1428,14 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
     let actions: Vec<Action> = if moved { vec![update] } else { Vec::new() };
 
     if json {
-        response::Response::new()
-            .field("locked", true)
-            .field("base", base.as_str())
-            .field("moved", moved)
-            .field("digest", serde_json::json!({ "locked": lock.base.digest }))
-            .field("fedora_release", release_move_json(None, &release_now))
-            .actions(&actions)
-            .print(true, "");
+        check_locked_response(
+            base.as_str(),
+            moved,
+            &lock.base.digest,
+            release_move_json(None, &release_now),
+            &actions,
+        )
+        .print(true, "");
         return Ok(());
     }
     // Both kinds of base say where the machine is. This line used to sit
@@ -1406,6 +1456,44 @@ fn update_check(config_path: &Path, json: bool) -> Result<()> {
         println!("Only the base is pinned, so a rebuild can still move package versions.");
     }
     Ok(())
+}
+
+/// The documents `update` prints: the preview it prints without --yes
+/// (which still builds, so `built` is true), and the staged answer.
+/// Assembled apart from the prints so the shape tests can hold their
+/// exact keys without pulling a base or staging a deployment.
+fn update_preview_response(tag: &str, changes: Value, fedora_release: Value) -> response::Response {
+    response::Response::new()
+        .dry_run()
+        .field("built", true)
+        .field("staged", false)
+        .field("tag", tag)
+        .field("changes", changes)
+        .field("fedora_release", fedora_release)
+        .action(Action::new(
+            "stage",
+            "kuma update --yes",
+            "stage it: applies on reboot; the previous deployment stays for kuma rollback",
+        ))
+}
+
+fn update_staged_response(
+    tag: &str,
+    staged: bool,
+    changes: Value,
+    fedora_release: Value,
+) -> response::Response {
+    let response = response::Response::new()
+        .field("staged", staged)
+        .field("up_to_date", !staged)
+        .field("tag", tag)
+        .field("changes", changes)
+        .field("fedora_release", fedora_release);
+    if staged {
+        response.action(reboot_action())
+    } else {
+        response
+    }
 }
 
 fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
@@ -1439,35 +1527,23 @@ fn update(config_path: &Path, tag: &str, yes: bool, json: bool) -> Result<()> {
         print_release_move(release_move.as_ref());
     }
     if !yes {
-        response::Response::new()
-            .dry_run()
-            .field("built", true)
-            .field("staged", false)
-            .field("tag", tag)
-            .field("changes", lock_diff_json(moved.as_ref()))
-            .field("fedora_release", release_move_json(release_move.as_ref(), &after_release))
-            .action(Action::new(
-                "stage",
-                "kuma update --yes",
-                "stage it: applies on reboot; the previous deployment stays for kuma rollback",
-            ))
-            .print(json, &format!("\nBuilt {tag}."));
+        update_preview_response(
+            tag,
+            lock_diff_json(moved.as_ref()),
+            release_move_json(release_move.as_ref(), &after_release),
+        )
+        .print(json, &format!("\nBuilt {tag}."));
         return Ok(());
     }
     let staged = stage(tag)?;
-    let reboot = reboot_action();
-    let mut response = response::Response::new()
-        .field("staged", staged)
-        .field("up_to_date", !staged)
-        .field("tag", tag)
-        .field("changes", lock_diff_json(moved.as_ref()))
-        .field("fedora_release", release_move_json(release_move.as_ref(), &after_release));
-    let prose = if staged {
-        response = response.action(reboot);
-        "\nStaged."
-    } else {
-        "\nAlready up to date; the system runs this image."
-    };
+    let response = update_staged_response(
+        tag,
+        staged,
+        lock_diff_json(moved.as_ref()),
+        release_move_json(release_move.as_ref(), &after_release),
+    );
+    let prose =
+        if staged { "\nStaged." } else { "\nAlready up to date; the system runs this image." };
     response.print(json, prose);
     Ok(())
 }
@@ -1827,6 +1903,22 @@ fn convergence_calls(units: &[&str]) -> Vec<(Vec<String>, bool)> {
 /// On-demand convergence: start the same units boot and the daily timer
 /// run, so there stays exactly one convergence path. systemctl blocks
 /// until each oneshot finishes, so success here means converged.
+/// The document `sync` prints, both from the nothing-to-converge early
+/// return and from the full run. One builder rather than two, so the
+/// two paths cannot disagree about the shape: an agent reading either
+/// gets `converged`, whether the baked declaration is behind, and the
+/// actions.
+fn sync_response(
+    converged: Vec<String>,
+    baked_behind: bool,
+    actions: &[Action],
+) -> response::Response {
+    response::Response::new()
+        .field("converged", converged)
+        .field("baked_declaration_behind", baked_behind)
+        .actions(actions)
+}
+
 fn sync(declared: Option<&Config>, json: bool) -> Result<()> {
     let mut units: Vec<&str> = Vec::new();
     if Path::new(state::BAKED_FLATPAKS).exists() {
@@ -1844,8 +1936,13 @@ fn sync(declared: Option<&Config>, json: bool) -> Result<()> {
         if Path::new("/usr/lib/kuma").is_dir() {
             // Nothing declared to converge is a terminal like in-sync: no
             // forward move, but the JSON still carries the actions key so
-            // an agent sees the same shape every mutating verb promises.
-            response::Response::new().field("converged", Vec::<String>::new()).print(
+            // an agent sees the same shape every mutating verb promises,
+            // and `baked_declaration_behind` beside it, because a behind
+            // baked declaration is true here exactly as it is on a full
+            // run.
+            let behind =
+                declared.is_some_and(|c| crate::inspect::baked_is_behind(c, Path::new("/")));
+            sync_response(Vec::new(), behind, &[]).print(
                 json,
                 "Nothing to converge: this image declares no flatpaks or brew formulae.",
             );
@@ -1905,11 +2002,7 @@ fn sync(declared: Option<&Config>, json: bool) -> Result<()> {
             "\n\nConverged to the declaration this image baked, which is behind yours: the edits it does not have cannot reach a converger until a build of them boots.",
         );
     }
-    response::Response::new()
-        .field("converged", converged)
-        .field("baked_declaration_behind", behind)
-        .actions(&actions)
-        .print(json, &prose);
+    sync_response(converged, behind, &actions).print(json, &prose);
     Ok(())
 }
 /// Two kinds of leftovers accumulate in podman storage. Every rebuild
@@ -2063,15 +2156,16 @@ fn clean(config_path: &Path, json: bool) -> Result<()> {
     // prints after the gathering it describes rather than interleaved
     // with it — the same discipline JSON mode gets from one document.
     if json {
-        response::Response::new()
-            .field("containers_removed", abandoned.len())
-            .field("images_pruned", pruned)
-            .field("base_images_pruned", base_pruned)
-            .field("live_image_pruned", live_pruned)
-            .field("root_images_pruned", root_pruned)
-            .field("menu_cache_removed", menu_cache_removed)
-            .field("freed_bytes", freed)
-            .print(json, "");
+        clean_response(
+            abandoned.len(),
+            pruned,
+            base_pruned,
+            live_pruned,
+            root_pruned,
+            menu_cache_removed,
+            freed,
+        )
+        .print(json, "");
     } else if nothing {
         println!("Nothing to reclaim.");
     } else if let Some(freed) = freed {
@@ -2082,6 +2176,29 @@ fn clean(config_path: &Path, json: bool) -> Result<()> {
 
 fn prune_dangling(cmd: &[&str]) -> Result<usize> {
     Ok(host_output(cmd)?.lines().filter(|l| !l.trim().is_empty()).count())
+}
+
+/// The document `clean` prints. Assembled apart from the print so the
+/// shape tests can hold its exact keys without podman storage to
+/// reclaim.
+#[allow(clippy::too_many_arguments)]
+fn clean_response(
+    containers_removed: usize,
+    images_pruned: usize,
+    base_images_pruned: usize,
+    live_image_pruned: bool,
+    root_images_pruned: usize,
+    menu_cache_removed: bool,
+    freed_bytes: Option<u64>,
+) -> response::Response {
+    response::Response::new()
+        .field("containers_removed", containers_removed)
+        .field("images_pruned", images_pruned)
+        .field("base_images_pruned", base_images_pruned)
+        .field("live_image_pruned", live_image_pruned)
+        .field("root_images_pruned", root_images_pruned)
+        .field("menu_cache_removed", menu_cache_removed)
+        .field("freed_bytes", freed_bytes)
 }
 
 /// Which of podman's listed references are stale composed bases: shaped
@@ -2313,6 +2430,42 @@ fn lockdown_warning_here() -> Option<String> {
 /// running this on a machine that already has a usable file changes only
 /// the arguments: the file is left exactly where it is, because moving
 /// it is what created the problem.
+/// The documents `hibernate` prints for its two previews: enabling or
+/// repairing, and taking it away. Assembled apart from the prints so
+/// the shape tests can hold their exact keys without a swapfile to
+/// read, which is a machine's to have.
+fn hibernate_preview_response(
+    repairing: bool,
+    swap_mib: u64,
+    device: String,
+    warnings: Vec<String>,
+    action: Action,
+) -> response::Response {
+    response::Response::new()
+        .dry_run()
+        .field("repairing", repairing)
+        .field("swap_mib", swap_mib)
+        .field("device", device)
+        .field("warnings", warnings)
+        .action(action)
+}
+
+fn hibernate_off_response(
+    swapfile: bool,
+    fstab_lines: bool,
+    kargs: bool,
+    lid: bool,
+    action: Action,
+) -> response::Response {
+    response::Response::new()
+        .dry_run()
+        .field("swapfile", swapfile)
+        .field("fstab_lines", fstab_lines)
+        .field("kargs", kargs)
+        .field("lid", lid)
+        .action(action)
+}
+
 fn hibernate_cmd(size: Option<String>, off: bool, yes: bool, json: bool) -> Result<()> {
     let status = hibernate::probe();
     // /sysroot on a booted ostree deployment, / anywhere else, and the
@@ -2470,13 +2623,7 @@ fn hibernate_cmd(size: Option<String>, off: bool, yes: bool, json: bool) -> Resu
             prose.push_str(&format!("\n  {warning}\n"));
         }
         prose.push_str("\nNothing has been changed.");
-        response::Response::new()
-            .dry_run()
-            .field("repairing", repairing)
-            .field("swap_mib", size_mib)
-            .field("device", device)
-            .field("warnings", warnings)
-            .action(action)
+        hibernate_preview_response(repairing, size_mib, device, warnings, action)
             .print(json, &prose);
         return Ok(());
     }
@@ -2615,13 +2762,7 @@ fn hibernate_off(
             prose.push_str("  the lid back to plain suspend\n");
         }
         prose.push_str("\nNothing has been changed.");
-        response::Response::new()
-            .dry_run()
-            .field("swapfile", file)
-            .field("fstab_lines", stripped != fstab)
-            .field("kargs", !kargs.is_empty())
-            .field("lid", lid)
-            .action(action)
+        hibernate_off_response(file, stripped != fstab, !kargs.is_empty(), lid, action)
             .print(json, &prose);
         return Ok(());
     }
@@ -2657,6 +2798,52 @@ fn hibernate_off(
 /// staged deployment to discard and no rollback slot to return to. So
 /// the plan is printed in full, the objections are checked before
 /// anything is built, and `--yes` is the only thing that writes.
+/// The documents `install` prints: the dry run every agent drives it
+/// through, and the answer after the disk is written. Assembled apart
+/// from the prints so the shape tests can hold their exact keys without
+/// a disk to destroy.
+#[allow(clippy::too_many_arguments)]
+fn install_preview_response(
+    disk: &str,
+    image: &str,
+    local: bool,
+    encrypted: bool,
+    swap_mib: Option<u64>,
+    asks: &[&str],
+    layout: Vec<Value>,
+    action: Action,
+) -> response::Response {
+    response::Response::new()
+        .dry_run()
+        .field("installed", false)
+        .field("disk", disk)
+        .field("image", image)
+        .field("image_local", local)
+        .field("encrypted", encrypted)
+        .field("swap_mib", swap_mib)
+        .field("asks", asks)
+        .field("layout", layout)
+        .action(action)
+}
+
+fn install_done_response(
+    disk: &str,
+    image: &str,
+    user: &str,
+    hostname: &str,
+    encrypted: bool,
+    reboot: Action,
+) -> response::Response {
+    response::Response::new()
+        .field("installed", true)
+        .field("disk", disk)
+        .field("image", image)
+        .field("user", user)
+        .field("hostname", hostname)
+        .field("encrypted", encrypted)
+        .action(reboot)
+}
+
 fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     let install::Request {
         image: image_owned,
@@ -2999,33 +3186,26 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         // What `--encrypt` would make it, not what a person would be
         // asked: an agent is not a terminal, so the flag is the whole
         // of the answer it can give. Same for the swapfile size.
-        response::Response::new()
-            .dry_run()
-            .field("installed", false)
-            .field("disk", disk_str)
-            .field("image", image)
-            .field("image_local", local)
-            .field("encrypted", encrypt)
-            .field("swap_mib", swap_mib)
-            .field("asks", asks)
-            // The one decision here that cannot be revised later, so
-            // an agent reading this resource can see it before
-            // agreeing to it rather than only in the prose plan.
-            .field(
-                "layout",
-                layout
-                    .iter()
-                    .map(|part| {
-                        serde_json::json!({
-                            "label": part.label,
-                            "size": part.size_text(disk_mib, &sizes),
-                            "purpose": part.purpose,
-                        })
+        install_preview_response(
+            disk_str,
+            image,
+            local,
+            encrypt,
+            swap_mib,
+            &asks,
+            layout
+                .iter()
+                .map(|part| {
+                    serde_json::json!({
+                        "label": part.label,
+                        "size": part.size_text(disk_mib, &sizes),
+                        "purpose": part.purpose,
                     })
-                    .collect::<Vec<_>>(),
-            )
-            .action(action)
-            .print(true, "");
+                })
+                .collect::<Vec<_>>(),
+            action,
+        )
+        .print(true, "");
         return Ok(());
     }
     // Prose only for a person. `--json --yes` promised exactly one
@@ -3187,14 +3367,7 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         "boot the installed machine (remove the install media first)",
     );
     if json {
-        response::Response::new()
-            .field("installed", true)
-            .field("disk", disk_str)
-            .field("image", image)
-            .field("user", account.name)
-            .field("hostname", hostname)
-            .field("encrypted", encrypt)
-            .action(reboot)
+        install_done_response(disk_str, image, &account.name, &hostname, encrypt, reboot)
             .print(true, "");
         return Ok(());
     }
@@ -3818,6 +3991,286 @@ fn path_str(path: &Path) -> Result<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shape tests' ruler: the exact keys a document carries. The
+    /// map is a BTreeMap, so the order is the alphabet's; the set is
+    /// the promise, and a renamed or dropped key is exactly the break
+    /// docs/contract.md says it is.
+    fn shape(doc: &serde_json::Value, want: &[&str]) {
+        let mut got: Vec<&str> =
+            doc.as_object().expect("a JSON document").keys().map(String::as_str).collect();
+        got.sort_unstable();
+        let mut want = want.to_vec();
+        want.sort_unstable();
+        assert_eq!(got, want, "a verb's keys changed; the contract reads them");
+    }
+
+    /// Every document a mutating verb prints carries `ok` and
+    /// `actions`, whatever the path that produced it. The builders
+    /// covered one by one below hold each verb's own keys; this holds
+    /// the floor they all stand on.
+    #[test]
+    fn every_mutating_document_carries_the_contract_floor() {
+        let documents = vec![
+            build_response("localhost/kuma:latest", &[]).document(),
+            switch_preview_response("localhost/kuma:latest", false, &[]).document(),
+            switch_staged_response("localhost/kuma:latest", reboot_action()).document(),
+            sync_response(Vec::new(), false, &[]).document(),
+            clean_response(0, 0, 0, false, 0, false, None).document(),
+            update_preview_response("localhost/kuma:latest", Value::Null, Value::Null).document(),
+            update_staged_response("localhost/kuma:latest", true, Value::Null, Value::Null)
+                .document(),
+            check_composed_response(
+                "localhost/kuma-base:latest",
+                true,
+                false,
+                Value::Null,
+                Value::Null,
+                &[],
+            )
+            .document(),
+            check_unlocked_response(
+                "quay.io/fedora/fedora-bootc:44",
+                Value::Null,
+                Action::new("build", "kuma build", "record what this declaration resolves to"),
+            )
+            .document(),
+            check_locked_response(
+                "quay.io/fedora/fedora-bootc:44",
+                false,
+                "sha256:abc",
+                Value::Null,
+                &[],
+            )
+            .document(),
+            install_preview_response(
+                "/dev/vda",
+                "localhost/kuma:latest",
+                false,
+                false,
+                None,
+                &[],
+                Vec::new(),
+                Action::new("install", "kuma install --yes", "write it"),
+            )
+            .document(),
+            install_done_response(
+                "/dev/vda",
+                "localhost/kuma:latest",
+                "me",
+                "shape-test",
+                false,
+                reboot_action(),
+            )
+            .document(),
+            hibernate_preview_response(
+                false,
+                16384,
+                "/dev/vda".to_string(),
+                Vec::new(),
+                Action::new("apply", "kuma hibernate --yes", "make it"),
+            )
+            .document(),
+            hibernate_off_response(
+                true,
+                true,
+                true,
+                true,
+                Action::new("apply", "kuma hibernate --off --yes", "take it away"),
+            )
+            .document(),
+        ];
+        for doc in &documents {
+            assert_eq!(doc.get("ok"), Some(&serde_json::Value::Bool(true)));
+            assert!(
+                doc.get("actions").and_then(|a| a.as_array()).is_some(),
+                "actions ride every mutating document: {doc}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_document_shapes_are_the_published_surface() {
+        shape(&build_response("t", &[]).document(), &["ok", "built", "tag", "actions"]);
+        shape(
+            &switch_preview_response("t", false, &[]).document(),
+            &["ok", "dry_run", "tag", "image_built", "actions"],
+        );
+        shape(
+            &switch_staged_response("t", reboot_action()).document(),
+            &["ok", "staged", "tag", "actions"],
+        );
+        shape(
+            &sync_response(Vec::new(), false, &[]).document(),
+            &["ok", "converged", "baked_declaration_behind", "actions"],
+        );
+        shape(
+            &clean_response(1, 2, 3, true, 4, true, Some(5)).document(),
+            &[
+                "ok",
+                "containers_removed",
+                "images_pruned",
+                "base_images_pruned",
+                "live_image_pruned",
+                "root_images_pruned",
+                "menu_cache_removed",
+                "freed_bytes",
+                "actions",
+            ],
+        );
+        shape(
+            &update_preview_response("t", Value::Null, Value::Null).document(),
+            &["ok", "dry_run", "built", "staged", "tag", "changes", "fedora_release", "actions"],
+        );
+        shape(
+            &update_staged_response("t", true, Value::Null, Value::Null).document(),
+            &["ok", "staged", "up_to_date", "tag", "changes", "fedora_release", "actions"],
+        );
+        shape(
+            &update_staged_response("t", false, Value::Null, Value::Null).document(),
+            &["ok", "staged", "up_to_date", "tag", "changes", "fedora_release", "actions"],
+        );
+        shape(
+            &check_composed_response("b", true, false, Value::Null, Value::Null, &[]).document(),
+            &[
+                "ok",
+                "composed",
+                "locked",
+                "base",
+                "manifest_changed",
+                "fedora_release",
+                "updates",
+                "actions",
+            ],
+        );
+        shape(
+            &check_unlocked_response("b", Value::Null, Action::new("build", "kuma build", "w"))
+                .document(),
+            &["ok", "locked", "base", "fedora_release", "actions"],
+        );
+        shape(
+            &check_locked_response("b", false, "sha256:abc", Value::Null, &[]).document(),
+            &["ok", "locked", "base", "moved", "digest", "fedora_release", "actions"],
+        );
+        shape(
+            &install_preview_response(
+                "/dev/vda",
+                "i",
+                false,
+                false,
+                None,
+                &["account name"],
+                Vec::new(),
+                Action::new("install", "kuma install --yes", "write it"),
+            )
+            .document(),
+            &[
+                "ok",
+                "dry_run",
+                "installed",
+                "disk",
+                "image",
+                "image_local",
+                "encrypted",
+                "swap_mib",
+                "asks",
+                "layout",
+                "actions",
+            ],
+        );
+        shape(
+            &install_done_response("/dev/vda", "i", "me", "host", false, reboot_action())
+                .document(),
+            &["ok", "installed", "disk", "image", "user", "hostname", "encrypted", "actions"],
+        );
+        shape(
+            &hibernate_preview_response(
+                false,
+                16384,
+                "/dev/vda".to_string(),
+                Vec::new(),
+                Action::new("apply", "kuma hibernate --yes", "make it"),
+            )
+            .document(),
+            &["ok", "dry_run", "repairing", "swap_mib", "device", "warnings", "actions"],
+        );
+        shape(
+            &hibernate_off_response(
+                true,
+                true,
+                true,
+                true,
+                Action::new("apply", "kuma hibernate --off --yes", "take it away"),
+            )
+            .document(),
+            &["ok", "dry_run", "swapfile", "fstab_lines", "kargs", "lid", "actions"],
+        );
+    }
+
+    /// The one preview marker, on the paths that are previews and
+    /// nowhere else: `dry_run` present exactly when the verb did not
+    /// run, so a caller tells them apart in the document alone.
+    #[test]
+    fn dry_run_marks_previews_and_only_previews() {
+        assert_eq!(
+            switch_preview_response("t", false, &[]).document().get("dry_run"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert_eq!(switch_staged_response("t", reboot_action()).document().get("dry_run"), None);
+        assert_eq!(
+            update_preview_response("t", Value::Null, Value::Null).document().get("dry_run"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert_eq!(
+            update_staged_response("t", true, Value::Null, Value::Null).document().get("dry_run"),
+            None
+        );
+        assert_eq!(
+            install_preview_response(
+                "/dev/vda",
+                "i",
+                false,
+                false,
+                None,
+                &[],
+                Vec::new(),
+                Action::new("install", "kuma install --yes", "write it")
+            )
+            .document()
+            .get("dry_run"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert_eq!(
+            install_done_response("/dev/vda", "i", "me", "host", false, reboot_action())
+                .document()
+                .get("dry_run"),
+            None
+        );
+        assert_eq!(
+            hibernate_preview_response(
+                false,
+                16384,
+                "/dev/vda".to_string(),
+                Vec::new(),
+                Action::new("apply", "kuma hibernate --yes", "make it")
+            )
+            .document()
+            .get("dry_run"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert_eq!(
+            hibernate_off_response(
+                true,
+                true,
+                true,
+                true,
+                Action::new("apply", "kuma hibernate --off --yes", "take it away",)
+            )
+            .document()
+            .get("dry_run"),
+            Some(&serde_json::Value::Bool(true))
+        );
+    }
 
     /// Doctor prints `kuma sync` as the fix for a failed converger, and
     /// a converger fails often enough to spend StartLimitBurst, after
