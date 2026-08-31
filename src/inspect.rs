@@ -1761,8 +1761,8 @@ fn check_shell_config(report: &mut impl FnMut(Grade, &str, String, Option<Action
         Grade::Ok,
         "shell config",
         format!(
-            "the desktop runs {} settings differently from the image: {}. The shell's \
-             own state file wins over the image's config, and nothing overwrites it",
+            "the desktop runs {} of the image's settings differently: {}. The shell's \
+             own state file wins, and nothing overwrites it",
             overridden.len(),
             overridden.join(", ")
         ),
