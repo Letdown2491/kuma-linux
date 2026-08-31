@@ -158,6 +158,12 @@ RUN . /usr/lib/os-release \
     && case "${VERSION_ID}" in \
         44) CODENAME="Beorn" ;; \
         45) CODENAME="Callisto" ;; \
+        46) CODENAME="Ephraim" ;; \
+        47) CODENAME="Grizzly" ;; \
+        48) CODENAME="Helarctos" ;; \
+        49) CODENAME="Iorek" ;; \
+        50) CODENAME="Jambavan" ;; \
+        51) CODENAME="Kodiak" ;; \
         *) CODENAME="" ;; \
     esac \
     && sed -i \

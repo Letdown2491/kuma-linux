@@ -2512,8 +2512,7 @@ pub(crate) const PLYMOUTH_THEME_DIR: &str = "spinner_alt";
 /// Bear names go alphabetically where a letter has a name worth using;
 /// the pool is bears real, extinct, mythical and fictional. D and F are
 /// skipped deliberately (Deninger and Fozzie were the only candidates and
-/// neither earns a place). Planned: E Ephraim, G Grizzly, H Helarctos,
-/// I Iorek, J Jambavan, K Kodiak.
+/// neither earns a place). Assigned through K Kodiak, Fedora 51.
 ///
 /// An unlisted base falls back to no bear, keeping "Kuma <version>" so a
 /// machine still says what built it.
@@ -2522,6 +2521,12 @@ RUN . /usr/lib/os-release \
     && case "${VERSION_ID}" in \
         44) CODENAME="Beorn" ;; \
         45) CODENAME="Callisto" ;; \
+        46) CODENAME="Ephraim" ;; \
+        47) CODENAME="Grizzly" ;; \
+        48) CODENAME="Helarctos" ;; \
+        49) CODENAME="Iorek" ;; \
+        50) CODENAME="Jambavan" ;; \
+        51) CODENAME="Kodiak" ;; \
         *) CODENAME="" ;; \
     esac \
     && sed -i \
