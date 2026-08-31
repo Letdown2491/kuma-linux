@@ -200,28 +200,38 @@ pub fn host_output_any<S: AsRef<str>>(args: &[S]) -> Result<String> {
 ///
 /// Every privileged verb stages the same way: write a script and the
 /// files it reads into a fresh tempdir, then run the script as root.
-/// What kept going wrong was the step in between. A tempdir is 0700
-/// for whoever created it, and root reads through that without help,
-/// so widening it is defense in depth rather than a necessity — but
-/// the widen itself was the hazard: `chmod -R a+rX` over everything
-/// followed by `chmod 600` put-backs made an account's password hash
-/// and a backup repository password readable by every local account
-/// for the two process spawns in between, and longer on a sudo
-/// configuration that re-prompts.
+/// The discipline that kept going wrong lives here, once.
 ///
-/// So the discipline lives here, once. A credential is written 0600
-/// from the moment it exists — created with the mode rather than
-/// narrowed after — and the widen before a run skips them entirely
-/// rather than restoring them afterwards: a skip has no window at all,
-/// and a smaller window is not the same as none.
+/// The directory is 0700 for whoever created it, and root reads through
+/// that without help — the 2026-08-31 audit confirmed it against the
+/// code's own record: the widen this directory used to perform before a
+/// run (`chmod -R a+rX` over everything, credentials pruned) made the
+/// staged scripts and build context world-readable for the length of a
+/// run, and nothing that reads them needed it. The widen is gone; what
+/// protects a credential is the mode it is created with.
+///
+/// A credential is written 0600 from the moment it exists — created
+/// with the mode, and forced to it even over a file that is already
+/// there — and a plain file can never land on a credential's name,
+/// because a plain file's mode would silently widen the secret that
+/// name holds.
+///
+/// OPEN QUESTION, recorded 2026-08-31 and not yet measured: when kuma
+/// itself runs inside a container, `host_command` escapes to the host
+/// but this directory is created in the container's /tmp, so a
+/// host-side `sudo bash /tmp/…/enable` looks for the script in the
+/// host's /tmp. Either distrobox shares /tmp and this is fine, or the
+/// staging path breaks under distrobox and the escape seam needs to
+/// hand the host a directory the host can see. Needs one distrobox
+/// run to answer; correctness of the seam, not security.
 pub struct ForRoot {
     /// Held rather than borrowed so the directory lives exactly as
     /// long as the staging does and is removed when the verb ends.
     dir: tempfile::TempDir,
-    /// The files the widen must never touch, in the order they were
-    /// staged.
-    credentials: Vec<PathBuf>,
-    widened: bool,
+    /// The names already staged as credentials. `file` refuses them:
+    /// a plain file's mode would silently widen the secret such a
+    /// name holds.
+    credentials: Vec<String>,
 }
 
 /// Stage a working directory for a root-run script.
@@ -229,7 +239,6 @@ pub fn for_root() -> Result<ForRoot> {
     Ok(ForRoot {
         dir: tempfile::tempdir().context("cannot create a working directory")?,
         credentials: Vec::new(),
-        widened: false,
     })
 }
 
@@ -243,17 +252,22 @@ impl ForRoot {
     /// Write a file the script will read, and return where it landed.
     /// `name` is a basename; the directory is the adapter's to place.
     pub fn file(&self, name: &str, contents: &str) -> Result<PathBuf> {
+        if self.credentials.iter().any(|staged| staged == name) {
+            bail!("cannot stage {name} as a plain file: it is already a credential, and this would widen it");
+        }
         let path = self.dir.path().join(name);
         std::fs::write(&path, contents).with_context(|| format!("cannot stage {name}"))?;
         Ok(path)
     }
 
-    /// Write a credential: 0600 from the moment it exists, and never
-    /// widened. Tracked rather than merely marked, because the widen
-    /// is one command that must skip them all.
+    /// Write a credential: 0600 from the moment it exists, and kept
+    /// there even when a file of the same name already exists, whose
+    /// mode would otherwise survive the truncate. The mode is the whole
+    /// of the protection; nothing that reads these needs anything more
+    /// than root already has.
     pub fn credential(&mut self, name: &str, contents: &str) -> Result<PathBuf> {
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let path = self.dir.path().join(name);
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -263,101 +277,29 @@ impl ForRoot {
             .open(&path)
             .with_context(|| format!("cannot stage {name}"))?;
         file.write_all(contents.as_bytes()).with_context(|| format!("cannot stage {name}"))?;
-        self.credentials.push(path.clone());
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("cannot keep {name} private"))?;
+        self.credentials.push(name.to_string());
         Ok(path)
     }
 
     /// Run a staged script as root, discarding its output.
-    pub fn run<S: AsRef<str>>(&mut self, script: &Path, args: &[S]) -> Result<()> {
-        self.widen_once()?;
+    pub fn run<S: AsRef<str>>(&self, script: &Path, args: &[S]) -> Result<()> {
         run_host(&sudo_bash(script, args)?)
     }
 
     /// Run a staged script as root, feeding it `input` on stdin: the
     /// one channel for what must not appear in argv, which is why a
     /// disk passphrase travels this way.
-    pub fn run_stdin<S: AsRef<str>>(
-        &mut self,
-        script: &Path,
-        args: &[S],
-        input: &str,
-    ) -> Result<()> {
-        self.widen_once()?;
+    pub fn run_stdin<S: AsRef<str>>(&self, script: &Path, args: &[S], input: &str) -> Result<()> {
         run_host_stdin(&sudo_bash(script, args)?, input)
     }
 
     /// Run a staged script as root and capture its stdout, for the
     /// scripts that answer with a fact rather than an exit code.
-    pub fn output<S: AsRef<str>>(&mut self, script: &Path, args: &[S]) -> Result<String> {
-        self.widen_once()?;
+    pub fn output<S: AsRef<str>>(&self, script: &Path, args: &[S]) -> Result<String> {
         host_output(&sudo_bash(script, args)?)
     }
-
-    /// Widen before the first run and never again. A credential staged
-    /// after the widen is already 0600, so no order of calls leaves
-    /// one exposed: the mode is what protects it, and the prune is
-    /// what keeps the widen from unprotecting it.
-    fn widen_once(&mut self) -> Result<()> {
-        if self.widened {
-            return Ok(());
-        }
-        let dir = self.dir.path().to_str().context("non-UTF-8 working directory")?;
-        let credentials = self
-            .credentials
-            .iter()
-            .map(|c| c.to_str().map(str::to_string))
-            .collect::<Option<Vec<_>>>()
-            .context("non-UTF-8 credential path")?;
-        run_host(&widen_argv(dir, &credentials))
-            .context("cannot widen the working directory for root")?;
-        self.widened = true;
-        Ok(())
-    }
-}
-
-/// A `-path` operand as a pattern that can only mean this path.
-///
-/// find matches `-path` as a glob, so a `*`, `?` or `[` anywhere along
-/// the way — TMPDIR is the caller's to set — would make the pattern
-/// mean something other than the file it names: the prune would miss,
-/// and the widen behind it would hand the credential the one mode it
-/// exists to never have. Backslash-escaping the specials turns the
-/// pattern back into the literal path (find reads escapes in patterns;
-/// a path carrying none of them comes back unchanged), and the
-/// backslash goes first so an escaped path is not doubled.
-fn glob_literal(path: &str) -> String {
-    let mut out = String::with_capacity(path.len());
-    for ch in path.chars() {
-        if matches!(ch, '\\' | '*' | '?' | '[') {
-            out.push('\\');
-        }
-        out.push(ch);
-    }
-    out
-}
-
-/// The command that widens a staged directory for root without ever
-/// touching a credential: each is pruned, so it holds no permission it
-/// did not arrive with. With nothing to protect, this is a plain
-/// recursive widen, which is the shape every caller got before the
-/// credentials made it dangerous.
-fn widen_argv(dir: &str, credentials: &[String]) -> Vec<String> {
-    let mut out = vec!["sudo".to_string(), "find".to_string(), dir.to_string()];
-    if !credentials.is_empty() {
-        out.push("(".to_string());
-        for (i, credential) in credentials.iter().enumerate() {
-            if i > 0 {
-                out.push("-o".to_string());
-            }
-            out.push("-path".to_string());
-            out.push(glob_literal(credential));
-        }
-        out.push(")".to_string());
-        out.push("-prune".to_string());
-        out.push("-o".to_string());
-    }
-    out.extend(["-exec", "chmod", "a+rX", "{}", "+"].iter().map(|s| s.to_string()));
-    out
 }
 
 /// `sudo bash <script> <args…>`, gathered because that is the one
@@ -390,119 +332,6 @@ fn host_command<S: AsRef<str>>(args: &[S]) -> Result<Command> {
 mod tests {
     use super::*;
 
-    /// Nothing to protect, no prune clause: a plain recursive widen,
-    /// which is what the hibernate verbs' hand-rolled chmods did, minus
-    /// the three dialects they did it in.
-    #[test]
-    fn widen_without_credentials_prunes_nothing() {
-        let argv = widen_argv("/tmp/xyz", &[]);
-        assert_eq!(
-            argv.iter().map(String::as_str).collect::<Vec<_>>(),
-            vec!["sudo", "find", "/tmp/xyz", "-exec", "chmod", "a+rX", "{}", "+"],
-        );
-    }
-
-    /// Every credential is a `-path` operand of the find, joined with
-    /// `-o`, inside the parens that the prune applies to. One clause
-    /// per credential is the whole promise: a file the widen skips is
-    /// a file it cannot loosen.
-    #[test]
-    fn widen_prunes_every_credential() {
-        let argv = widen_argv(
-            "/tmp/xyz",
-            &["/tmp/xyz/kuma-user".to_string(), "/tmp/xyz/kuma-restore-secret".to_string()],
-        );
-        assert!(argv.contains(&"-path".to_string()), "no -path operand: {}", argv.join(" "));
-        assert!(
-            argv.windows(2).any(|w| w == ["-path".to_string(), "/tmp/xyz/kuma-user".to_string()]),
-            "the account file is not pruned: {}",
-            argv.join(" ")
-        );
-        assert!(
-            argv.windows(2)
-                .any(|w| w == ["-path".to_string(), "/tmp/xyz/kuma-restore-secret".to_string()]),
-            "the restore credential is not pruned: {}",
-            argv.join(" ")
-        );
-    }
-
-    /// The chmod is the tail, always: everything a credential could
-    /// possibly interact with sits before the `-prune`, and the
-    /// `-exec` names only `{}` — never a file of its own.
-    #[test]
-    fn the_widen_always_ends_in_the_chmod() {
-        for credentials in [
-            vec![],
-            vec!["/tmp/xyz/kuma-user".to_string()],
-            vec!["/tmp/xyz/kuma-user".to_string(), "/tmp/xyz/kuma-restore-secret".to_string()],
-        ] {
-            let argv = widen_argv("/tmp/xyz", &credentials);
-            let tail = argv.len() - 5;
-            assert_eq!(argv[tail..].join(" "), "-exec chmod a+rX {} +");
-        }
-    }
-
-    /// tempfile builds names from safe alphanumerics, so the ordinary
-    /// path carries no glob specials and the pattern is the path, byte
-    /// for byte.
-    #[test]
-    fn a_plain_credential_path_escapes_to_itself() {
-        let argv = widen_argv("/tmp/xyz", &["/tmp/xyz/kuma-user".to_string()]);
-        assert!(
-            argv.windows(2).any(|w| w == ["-path".to_string(), "/tmp/xyz/kuma-user".to_string()]),
-            "{}",
-            argv.join(" ")
-        );
-    }
-
-    /// TMPDIR is the caller's to set, and nothing stops it spelling a
-    /// glob. Every special in the credential's path arrives backslashed,
-    /// so the pattern can only mean the one file it was built from.
-    #[test]
-    fn a_globby_credential_path_escapes_to_a_literal_pattern() {
-        let argv = widen_argv("/tmp/g*ob?te[st]", &["/tmp/g*ob?te[st]/kuma-user".to_string()]);
-        assert!(
-            argv.windows(2).any(|w| w == [
-                "-path".to_string(),
-                "/tmp/g\\*ob\\?te\\[st]/kuma-user".to_string()
-            ]),
-            "{}",
-            argv.join(" ")
-        );
-    }
-
-    /// The property the escaping exists for, checked against the real
-    /// find: under a directory named to defeat the pattern, the
-    /// credential keeps its mode through a widen and everything beside
-    /// it is widened. sudo is dropped because the test owns the files;
-    /// the argv is otherwise the one the verb runs.
-    #[test]
-    fn the_widen_skips_a_credential_under_a_globby_path() {
-        use std::os::unix::fs::PermissionsExt;
-        let base = tempfile::tempdir().expect("a tempdir is all this needs");
-        let dir = base.path().join("g*ob?te[st]");
-        std::fs::create_dir(&dir).expect("a directory with a glob for a name");
-        let secret = dir.join("kuma-user");
-        std::fs::write(&secret, "KUMA_USER='x'\n").unwrap();
-        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let plain = dir.join("Containerfile");
-        std::fs::write(&plain, "FROM scratch\n").unwrap();
-        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o600)).unwrap();
-
-        let argv = widen_argv(
-            dir.to_str().expect("utf-8"),
-            &[secret.to_str().expect("utf-8").to_string()],
-        );
-        let status =
-            std::process::Command::new(&argv[1]).args(&argv[2..]).status().expect("find runs");
-        assert!(status.success());
-
-        let mode = std::fs::metadata(&secret).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "the credential was widened: {mode:o}");
-        let widened = std::fs::metadata(&plain).unwrap().permissions().mode() & 0o777;
-        assert_eq!(widened, 0o644, "the widen did not widen: {widened:o}");
-    }
-
     /// The staging half, testable without root because only the run
     /// half needs it: a plain file round-trips, and a credential is
     /// 0600 from the moment it exists rather than a write followed by
@@ -517,5 +346,38 @@ mod tests {
         let mode = std::fs::metadata(&secret).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
         assert!(root.path().join("kuma-user").exists());
+    }
+
+    /// A credential's protection is its mode, and a plain file's write
+    /// is 0644: staging one over a credential's name would widen the
+    /// secret that name holds. The adapter refuses rather than allows
+    /// the shape to exist.
+    #[test]
+    fn a_plain_file_cannot_land_on_a_credential() {
+        let mut root = for_root().expect("a tempdir is all this needs");
+        root.credential("kuma-user", "KUMA_USER='root'\n").expect("staged");
+        let attempted = root.file("kuma-user", "not a secret\n");
+        assert!(attempted.is_err(), "file() must refuse a credential's name");
+        let secret = root.path().join("kuma-user");
+        assert_eq!(
+            std::fs::read_to_string(&secret).unwrap(),
+            "KUMA_USER='root'\n",
+            "the refusal happened before the write"
+        );
+    }
+
+    /// The mode applies at create, so a credential staged over a file
+    /// that is already there would inherit its 0644. The adapter forces
+    /// the mode after the write instead of trusting it.
+    #[test]
+    fn a_credential_stays_private_over_an_existing_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut root = for_root().expect("a tempdir is all this needs");
+        let path = root.file("kuma-user", "placeholder\n").expect("staged wide");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "the fixture is the hazard: {mode:o}");
+        root.credential("kuma-user", "KUMA_USER='root'\n").expect("restaged as a credential");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the credential inherited the wider mode: {mode:o}");
     }
 }

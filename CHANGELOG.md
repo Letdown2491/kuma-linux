@@ -46,6 +46,19 @@ differently. Why it changed belongs in the commit that made it.
   `baked_declaration_behind` and the same shape as every other sync
   answer: an agent reading the surface could rely on it everywhere
   except exactly the machine that had nothing to do.
+- **The staged working directory is no longer widened to every local
+  account for the length of a run.** Every privileged verb stages its
+  script and the files it reads into a fresh 0700 tempdir, and until
+  now the first root-run chmod'd the whole directory `a+rX`: the
+  scripts, the install Containerfile, the fstab, readable by every
+  local account from the first run until the verb ended. Nothing that
+  reads them needs it, because root reads through a 0700 directory
+  without help. The widen is gone, and with it the machinery that
+  existed to keep it from touching a credential. A credential is still
+  0600 from the moment it exists, and two guards keep it that way: a
+  plain file cannot be staged over a credential's name, and a
+  credential staged over an existing file is forced back to 0600
+  rather than inheriting the wider mode.
 
 ## v0.20.0 (2026-08-31)
 

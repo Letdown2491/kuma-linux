@@ -2630,7 +2630,7 @@ fn hibernate_cmd(size: Option<String>, off: bool, yes: bool, json: bool) -> Resu
 
     if !repairing {
         note(&format!("Making a {} swapfile...", hibernate::size_text(size_mib)));
-        let mut root = host::for_root()?;
+        let root = host::for_root()?;
         let script = root.file("enable", &hibernate::enable_script())?;
         let out = root
             .output(&script, &[&device, &size_mib.to_string(), "/etc/fstab"])
@@ -2766,7 +2766,7 @@ fn hibernate_off(
             .print(json, &prose);
         return Ok(());
     }
-    let mut root = host::for_root()?;
+    let root = host::for_root()?;
     let script = root.file("disable", &hibernate::disable_script())?;
     // The stripped fstab is handed over as a file rather than generated
     // in shell, so that what gets written is exactly what `strip_fstab`
