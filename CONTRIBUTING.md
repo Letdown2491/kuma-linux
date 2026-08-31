@@ -49,10 +49,8 @@ it: that comes from your home directory, so a build inside the container
 shares `target/` and the registry cache with one outside it.
 
 ```console
-$ podman build -t kuma-dev-gcc -f scripts/Containerfile.dev .
-$ podman run --rm --userns=keep-id --security-opt label=disable \
-    -v "$HOME:$HOME" -w "$PWD" -e "HOME=$HOME" kuma-dev-gcc \
-    sh -c 'export PATH=$HOME/.cargo/bin:$PATH; cargo test'
+$ scripts/test.sh                   # the suite, in the container
+$ scripts/test.sh --test golden     # any cargo test filter
 ```
 
 CI runs formatting, tests, clippy at `-D warnings`, shellcheck, actionlint,
