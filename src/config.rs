@@ -325,8 +325,9 @@ pub enum Desktop {
 pub struct Packages {
     #[serde(default)]
     pub rpm: Vec<String>,
-    /// Flatpaks are runtime state, not image content. Accepted in the schema
-    /// now so configs don't break later; applied by a future `kuma sync`.
+    /// Flatpaks are runtime state, not image content: converged on boot and
+    /// by `kuma sync` — additions install, removals uninstall — with no
+    /// rebuild and no reboot.
     #[serde(default)]
     pub flatpak: Vec<String>,
     /// Homebrew formulae, converged like flatpaks: additions install,
