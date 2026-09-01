@@ -130,7 +130,7 @@ jobs:
   # Can a machine installed at one version reach a later one? Nothing has
   # ever asked. Every other check builds and boots a single image, so
   # "an existing machine survives moving forward" has been a promise
-  # rather than a result, and it is the promise 1.0 rests on.
+  # rather than a result, and it is the promise 44.0 rests on.
   #
   # Installs an older published tag while pointing its update origin at
   # the rolling one, so `bootc upgrade` inside the guest has somewhere

@@ -10,15 +10,20 @@ differently. Why it changed belongs in the commit that made it.
 
 ### Added
 
-- **The contract.** docs/contract.md states what kuma 1.0 promises, what a
-  1.x release may do, and what 1.0 declines to do, with the reasons.
-  README links it and SECURITY.md names it as the other half of the
-  statement. SECURITY.md also now says what happens to the image signing
-  key: what losing it costs, how rotation reaches machines while the old
-  key is still held, and why a compromised key has no in-band path. Its
-  Not-yet list now states what is actually unsigned, an image built from
-  your own declaration and the base, rather than all of it. Nothing a
-  reader has to do changes.
+- **The contract, and the version scheme it speaks.** docs/contract.md
+  states what kuma 44.0 promises, what later releases may add, and what
+  44.0 declines to do, with the reasons. Every 0.x release was an alpha or
+  a beta; from the next release the major version names the Fedora base a
+  release builds on -- 44.x tracks Fedora 44, 45.x will track Fedora 45 --
+  and the major is not a promise boundary: the promises carry through
+  every release, and one that ends a promise announces itself beforehand
+  through deprecations. README links the contract and SECURITY.md names it
+  as the other half of the statement. SECURITY.md also now says what
+  happens to the image signing key: what losing it costs, how rotation
+  reaches machines while the old key is still held, and why a compromised
+  key has no in-band path. Its Not-yet list now states what is actually
+  unsigned, an image built from your own declaration and the base, rather
+  than all of it. Nothing a reader has to do changes.
 - Fedora 46 through 51 bases are named Ephraim, Grizzly, Helarctos, Iorek,
   Jambavan and Kodiak, so the bear no longer waits on a kuma release after
   a Fedora one. Nothing a reader has to do changes.

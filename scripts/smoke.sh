@@ -2254,7 +2254,7 @@ smoke_published() {
     # Nothing has ever checked that a machine installed at one version can
     # reach a later one. Every other stage builds and boots a single
     # image, so "does an existing machine survive moving forward" has been
-    # a promise rather than a result, and it is the promise 1.0 rests on.
+    # a promise rather than a result, and it is the promise 44.0 rests on.
     #
     # bootc, not `kuma update`: kuma's own update_check says so in as many
     # words. `kuma update` is the builder's verb, which pulls a base and

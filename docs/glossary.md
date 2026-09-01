@@ -153,7 +153,7 @@ reboot rather than an immediate effect. The opposite of **machine state**.
 at changes when a new one is published, which is why a build records the
 digest instead.
 
-**Contract.** What kuma 1.0 promises about every surface above: the
+**Contract.** What kuma 44.0 promises about every surface above: the
 declaration format, the verbs and flags, the `--json` documents, the
-published images. Additions arrive freely; a promise ends only at 2.0. See
-[the contract](contract.md).
+published images. Additions arrive freely; the major version names the
+Fedora base and is not a promise boundary. See [the contract](contract.md).

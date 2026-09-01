@@ -203,8 +203,8 @@ first one did: deliberately, by the person responsible for the machine.
 
 Images kuma builds for you are not signed. They're built on your machine, from
 your declaration, and stay in your local container storage unless you push
-them somewhere. What these guarantees promise and what a 2.0 may change is
-stated in docs/contract.md.
+them somewhere. What these guarantees promise and what a release that ends
+a promise may change is stated in docs/contract.md.
 
 ## Secrets in a declaration
 

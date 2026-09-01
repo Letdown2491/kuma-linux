@@ -1,12 +1,16 @@
 # The contract
 
-Kuma 1.0 begins a set of promises. This page says what they are, what they
+Kuma 44.0 begins a set of promises. This page says what they are, what they
 cover, and what sits deliberately outside them. Every promise names the
 test or check that holds it: a promise whose enforcement is gone is a bug
 in kuma, not a change of policy.
 
-These promises carry through every 1.x release. Only a 2.0 can end one, and
-a 2.0 announces itself beforehand through the deprecations described below.
+The major version names the Fedora base a release builds on: 44.x tracks
+Fedora 44, 45.x will track Fedora 45, and the minor and patch carry kuma's
+own releases between bases. The major is not a promise boundary -- every
+0.x release was an alpha or a beta, and these promises carry through every
+release that follows. A promise ends only in a release that announced the
+ending beforehand, through the deprecations described below.
 
 ## The two promises
 
@@ -14,7 +18,7 @@ a 2.0 announces itself beforehand through the deprecations described below.
 has ever accepted parses on every later release. The declaration format
 only ever grows: new keys are optional, old keys keep working, and a key
 never changes what it means. A declaration that converged a machine on an
-early 0.x converges one on 1.x.
+early 0.x converges one today.
 
 Portability runs one way. A declaration written for a newer release may
 name keys an older release refuses, and kuma refuses loudly rather than
@@ -36,16 +40,16 @@ release and upgrades it in the guest on every publish.
 ## What is stable
 
 **The declaration format.** Backward-compatible forever, as above. The
-`schema_version` key has never moved and does not move in 1.x.
+`schema_version` key has never moved and does not move.
 
-**Verbs and flags.** Every verb and flag 1.0 accepts, every 1.x release
+**Verbs and flags.** Every verb and flag 44.0 accepts, every later release
 accepts with the same meaning. New verbs, new flags and new options arrive
 without ceremony.
 
 **`--json` responses.** Every response document keeps the keys it has and
-gains fields only. A caller that reads a 1.0 response reads a 1.x
-response. The verbs that produce a file or a stream rather than an answer,
-listed in docs/agents.md, are outside this promise, and the list of
+gains fields only. A caller that reads a 44.0 response reads a later
+release's response. The verbs that produce a file or a stream rather than an
+answer, listed in docs/agents.md, are outside this promise, and the list of
 exceptions is itself the promise.
 
 **Published images.** A version tag on kuma's registry is never deleted,
@@ -54,18 +58,20 @@ upgrades are tested against and the anchor machines stand on.
 
 ## The rules between releases
 
-**Additions are free.** A 1.x release may add verbs, flags, response
+**Additions are free.** Any release may add verbs, flags, response
 fields, optional declaration keys and doctor checks.
 
 **Deprecation is a note, not a removal.** A verb, flag or field headed for
 removal is named in the changelog, saying what to use instead, and may
-warn in its output. It keeps working until a 2.0.
+warn in its output. It keeps working until the release that removes it,
+which is never the release that first named the removal.
 
-**Breaking changes wait for 2.0.** Removing or renaming a verb, flag or
-response field, or changing what a declaration key means, is a 2.0 change.
-A 1.x machine offered such an update refuses it rather than guessing: an
-unparseable declaration stops the machine, which makes the failure a
-decision instead of a surprise.
+**Breaking changes are announced, then made.** Removing or renaming a
+verb, flag or response field, or changing what a declaration key means,
+ends a promise. A machine offered an update that made such a change
+refuses what it cannot parse rather than guessing: an unparseable
+declaration stops the machine, which makes the failure a decision instead
+of a surprise.
 
 **Not an interface.** None of these carry promises:
 
@@ -81,18 +87,18 @@ decision instead of a surprise.
 - `KUMA_TRACE` names. Diagnostics: stable enough to diff between runs,
   free to gain detail.
 
-## What 1.0 does not do
+## What 44.0 does not do
 
 README's Not-yet list states absences. These are decisions, which is why
 they carry reasons.
 
-**The proprietary NVIDIA driver.** 1.0 does not ship it. NVIDIA machines
+**The proprietary NVIDIA driver.** 44.0 does not ship it. NVIDIA machines
 boot on nouveau, and a declaration naming `akmod-nvidia` fails the build
 with the reason. Shipping it later has a trust cost either way: a prebuilt
 third-party module image would make an unsigned pipeline part of the
 supply chain of a project whose verification story is signatures, and
 building modules in kuma's own builds would couple every kernel update to
-an akmods run that can fail the build. The 1.0 promise is a machine that
+an akmods run that can fail the build. The promise is a machine that
 boots and converges, and nouveau delivers that.
 
 **The three-partition layout.** Installs write exactly three partitions:
