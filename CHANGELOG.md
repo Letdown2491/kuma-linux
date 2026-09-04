@@ -6,6 +6,8 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+## v44.0.0
+
 ### Fixed
 
 - **A `--json` verb that fails after printing its own document now ends
@@ -20,10 +22,6 @@ differently. Why it changed belongs in the commit that made it.
   `error` naming the failure; the summary still rides stderr and the
   exit stays non-zero. An agent reading either verb gains an `ok` key
   and changes nothing else.
-
-## v44.0.0
-
-### Fixed
 
 - **Rebuilding no longer poisons the dnf cache.** A cached copy of the
   RPM Fusion release RPM corrupted on any build that found one: librepo
