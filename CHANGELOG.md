@@ -6,6 +6,18 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+### Fixed
+
+- **Strings that reach a shell arrive as one word.** `vm --apply` pasted
+  the image tag into a host `sh -c` line and into the guest's root
+  `sh -c` unquoted, and `update --check` built its dnf cache paths from
+  `$HOME` the same way: a tag or a home directory carrying a quote or a
+  space spelled command execution where an argument was meant. All three
+  now quote through state's `shell_quote`, and the guest's switch takes
+  the tag as `"$1"` rather than as text inside the script. Doctor's
+  deployment-stamp heal quotes the image id it writes for the same
+  reason. Nothing a reader has to do changes.
+
 ## v44.0.0
 
 ### Fixed

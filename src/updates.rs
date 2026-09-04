@@ -23,6 +23,7 @@ use anyhow::{Context, Result};
 
 use crate::host::host_output;
 use crate::lock::parse_rpm_query;
+use crate::state::shell_quote;
 
 /// Which rpmdb the "what do I have" half of the comparison comes from.
 ///
@@ -110,8 +111,12 @@ fn cache_setopts() -> Result<String> {
         .with_context(|| format!("cannot create {}", cache.display()))?;
     std::fs::create_dir_all(&state)
         .with_context(|| format!("cannot create {}", state.display()))?;
-    let (cache, state) = (cache.display(), state.display());
-    Ok(format!("--setopt=cachedir={cache} --setopt=persistdir={state}"))
+    let (cache, state) = (cache.display().to_string(), state.display().to_string());
+    Ok(format!(
+        "--setopt=cachedir={} --setopt=persistdir={}",
+        shell_quote(&cache),
+        shell_quote(&state)
+    ))
 }
 
 /// Separates the query outputs inside one shell run. Six answers from one

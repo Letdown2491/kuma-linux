@@ -85,7 +85,9 @@ const CONFIG_VERBS: &[&str] = &[
 /// Called once from main with the `--config` path, or None when discovery
 /// found the declaration on its own.
 pub fn set_config_flag(explicit: Option<&Path>) {
-    let _ = CONFIG_FLAG.set(explicit.map(|path| format!(" --config {}", shell_quote(path))));
+    let _ = CONFIG_FLAG.set(
+        explicit.map(|path| format!(" --config {}", shell_quote(&path.display().to_string()))),
+    );
 }
 
 /// The pure half of the flag logic, so tests can exercise it without
@@ -101,15 +103,16 @@ fn apply_config_flag(cmd: String, flag: Option<&str>) -> String {
 
 /// Single-quote anything that isn't a bare word, so a declaration under a
 /// directory with a space in it survives the copy-paste it was printed
-/// for.
-fn shell_quote(path: &Path) -> String {
-    let shown = path.display().to_string();
-    let bare = !shown.is_empty()
-        && shown.chars().all(|c| c.is_ascii_alphanumeric() || "._/-@+:,=".contains(c));
+/// for. Every place a kuma-controlled string lands in one shell word —
+/// the printed affordances, the generated dnf script, the VM apply —
+/// quotes through this one function.
+pub(crate) fn shell_quote(text: &str) -> String {
+    let bare = !text.is_empty()
+        && text.chars().all(|c| c.is_ascii_alphanumeric() || "._/-@+:,=".contains(c));
     if bare {
-        shown
+        text.to_string()
     } else {
-        format!("'{}'", shown.replace('\'', r"'\''"))
+        format!("'{}'", text.replace('\'', r"'\''"))
     }
 }
 
@@ -863,9 +866,14 @@ mod tests {
 
     #[test]
     fn awkward_paths_survive_the_copy_paste() {
-        assert_eq!(shell_quote(Path::new("/home/x/kuma.toml")), "/home/x/kuma.toml");
-        assert_eq!(shell_quote(Path::new("/home/my box/kuma.toml")), "'/home/my box/kuma.toml'");
-        assert_eq!(shell_quote(Path::new("/tmp/it's.toml")), r"'/tmp/it'\''s.toml'");
+        assert_eq!(shell_quote("/home/x/kuma.toml"), "/home/x/kuma.toml");
+        assert_eq!(shell_quote("/home/my box/kuma.toml"), "'/home/my box/kuma.toml'");
+        assert_eq!(shell_quote("/tmp/it's.toml"), r"'/tmp/it'\''s.toml'");
+        assert_eq!(shell_quote(""), "''");
+        assert_eq!(
+            shell_quote("localhost/kuma-base:m0123456789a"),
+            "localhost/kuma-base:m0123456789a"
+        );
     }
     fn loaded() -> ConfigFact {
         ConfigFact::Loaded { rpm: 2, flatpak: 1, brew: 0 }

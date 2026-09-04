@@ -26,7 +26,7 @@ use clap::{Parser, Subcommand};
 use config::Config;
 use host::{host_output, host_output_any, note, run_host};
 use serde_json::Value;
-use state::{action_json, print_actions, reboot_action, Action};
+use state::{action_json, print_actions, reboot_action, shell_quote, Action};
 use std::path::{Path, PathBuf};
 
 pub(crate) const DEFAULT_TAG: &str = "localhost/kuma:latest";
@@ -3703,7 +3703,10 @@ fn vm_apply(tag: &str) -> Result<()> {
     run_host(&[
         "sh",
         "-c",
-        &format!("podman save {tag} | ssh -p 2222 {ssh_opts} kuma@localhost '{remote_load}'"),
+        &format!(
+            "podman save {} | ssh -p 2222 {ssh_opts} kuma@localhost '{remote_load}'",
+            shell_quote(tag)
+        ),
     ])?;
 
     println!("Switching the VM to the new image (staged; applies on reboot)...");
@@ -3716,7 +3719,8 @@ fn vm_apply(tag: &str) -> Result<()> {
     // success. rmi after: the ostree import is self-contained and the
     // podman copy is dead weight.
     let switch_cmd = format!(
-        "echo kuma | sudo -S sh -c 'bootc switch --transport containers-storage {tag} && bootc upgrade; podman rmi -f {tag} >/dev/null; bootc status | grep -qiE \"^  Staged|staged image\" || {{ echo \"kuma: nothing staged; the VM already runs this image\" >&2; exit 3; }}'"
+        "echo kuma | sudo -S sh -c 'bootc switch --transport containers-storage \"$1\" && bootc upgrade; podman rmi -f \"$1\" >/dev/null; bootc status | grep -qiE \"^  Staged|staged image\" || {{ echo \"kuma: nothing staged; the VM already runs this image\" >&2; exit 3; }}' switch {}",
+        shell_quote(tag)
     );
     switch.extend(["kuma@localhost", &switch_cmd]);
     run_host(&switch)?;

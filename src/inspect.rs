@@ -1340,7 +1340,8 @@ fn check_deployment(
             let current = stamp.as_deref().map(str::trim);
             (current != Some(root_id)).then(|| {
                 format!(
-                    "mkdir -p /var/lib/kuma && printf '%s\\n' {root_id} > {}",
+                    "mkdir -p /var/lib/kuma && printf '%s\\n' {} > {}",
+                    crate::state::shell_quote(root_id),
                     crate::state::DEPLOYED_ID_FILE
                 )
             })
