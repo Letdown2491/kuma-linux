@@ -57,6 +57,11 @@ runs:
       shell: bash
       run: |
         echo "podman resolves to: $(command -v podman)"
+        # Runner images move under the repo without anyone pushing: the
+        # 20260828 image broke the install's own build where 20260819
+        # booted. A version in the log is how the next drift is named
+        # the day it lands instead of a week of red installs later.
+        echo "podman version: $(podman --version)"
         for d in /usr/local/bin /usr/local/sbin /usr/bin /usr/sbin /bin /sbin; do
           [ -x "$d/podman" ] && echo "already at $d/podman" && exit 0
         done
