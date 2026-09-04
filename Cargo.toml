@@ -30,6 +30,16 @@ pkg-fmt = "bin"
 # artifacts are built, and enforced by scripts/publish-audit.sh, which
 # fails on any home path it finds in a baked binary.
 
+# The binary is baked into every image kuma builds and fetched bare by
+# cargo-binstall, so binary size and start-up outrank release-build time:
+# thin LTO over one codegen unit shrinks both, and stripping symbols keeps
+# what publish-audit.sh holds the artifact to — a binary that carries no
+# paths from the machine that built it.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

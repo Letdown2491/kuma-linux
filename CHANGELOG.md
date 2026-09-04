@@ -18,6 +18,15 @@ differently. Why it changed belongs in the commit that made it.
   deployment-stamp heal quotes the image id it writes for the same
   reason. Nothing a reader has to do changes.
 
+### Changed
+
+- **Release binaries are smaller, release builds a little slower.**
+  `[profile.release]` now builds with thin LTO over one codegen unit and
+  strips the symbol table. The binary is baked into every image kuma
+  builds and is what cargo-binstall fetches, so its size is image and
+  download size; the cost is minutes of release-build time nobody pays
+  but the publishing workflow. Nothing a reader has to do changes.
+
 ## v44.0.0
 
 ### Fixed
