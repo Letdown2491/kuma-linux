@@ -3536,10 +3536,28 @@ fn sync_image_to_root(tag: &str, scratch: &Path) -> Result<String> {
         //
         // `set -o pipefail` is load-bearing: without it a failed save is
         // masked by a load that succeeded at reading nothing.
+        //
+        // A load leaves the image as blobs: containers/storage unpacks
+        // layers when a container is created from them, not when they
+        // are loaded. The install's build mounts its working container
+        // with lowerdirs from THIS store (additionalimagestore,
+        // partition.rs), and a store that has never created a container
+        // has no layer directories to mount — the first COPY died with
+        // "no such file or directory" inside an overlay mount. Measured
+        // on 2026-09-04, where every install-bearing CI job on runner
+        // image 20260828 failed this way while the same job on
+        // 20260819 booted. Creating one container materializes the
+        // layer directories and costs seconds; it runs inside the sync
+        // so a store that already has them pays nothing extra.
         run_host(&[
             "bash",
             "-c",
-            &format!("set -o pipefail; podman save --format oci-archive {tag} | sudo podman load"),
+            &format!(
+                "set -o pipefail; podman save --format oci-archive {tag} | sudo podman load \
+                 && sudo podman rm -f kuma-sync-unpack \
+                 && sudo podman create --name kuma-sync-unpack {tag} true \
+                 && sudo podman rm -f kuma-sync-unpack"
+            ),
         ])?;
         let _ = scratch;
     }
