@@ -90,6 +90,19 @@ runs:
         HOMEBREW_NO_AUTO_UPDATE=1 brew install podman
         sudo ln -sf "$(command -v podman)" /usr/local/bin/podman
         echo "podman version now: $(podman --version)"
+        # The poured podman brings a matching crun, but linking podman
+        # alone left the repair running the apt crun: rootful podman
+        # resolves its runtime from a fixed path list that reads
+        # /usr/bin/crun before anywhere brew pours, and sudo's PATH never
+        # reaches the brew prefix either. The apt crun 0.17 rejects the
+        # OCI spec the new podman writes ("crun: unknown version
+        # specified", measured 2026-09-04), and the install would hit the
+        # same wall at its first rootful run. So the repair replaces the
+        # old crun where the list looks first, like the podman above.
+        [ -x "$(command -v crun)" ] \
+          || { echo "brew poured podman but no crun came with it" >&2; exit 1; }
+        sudo ln -sf "$(command -v crun)" /usr/bin/crun
+        echo "crun now at: $(readlink /usr/bin/crun)"
         # A new podman that cannot run as root would fail the install
         # twenty minutes in at the same COPY. Running a container as root
         # here costs seconds, exercises the store, the runtime and the
