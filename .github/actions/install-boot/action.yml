@@ -65,48 +65,64 @@ runs:
         major=$(podman --version | awk '{print $NF}' | cut -d. -f1)
         if [ "${major:-0}" -ge 5 ]; then
           for d in /usr/local/bin /usr/local/sbin /usr/bin /usr/sbin /bin /sbin; do
-            [ -x "$d/podman" ] && echo "already at $d/podman" && exit 0
+            # Found, not exited: the probes at the bottom gate a shipped
+            # podman the same as a repaired one, because a shipped one
+            # drifts too.
+            [ -x "$d/podman" ] && echo "already at $d/podman" && podman_ok=1 && break
           done
-          sudo ln -s "$(command -v podman)" /usr/bin/podman
-          echo "linked $(command -v podman) -> /usr/bin/podman"
-          exit 0
+          if [ -z "$podman_ok" ]; then
+            sudo ln -s "$(command -v podman)" /usr/bin/podman
+            echo "linked $(command -v podman) -> /usr/bin/podman"
+          fi
+        else
+          # Presence is not the whole gate. The install's own build mounts
+          # its working container with lowerdirs from the additional image
+          # store, and podman 4.9.3 cannot make that mount: the first COPY
+          # dies with "no such file or directory" whatever the sync
+          # unpacked first. Measured on 2026-09-04, where every job that
+          # drew apt's 4.9.3 at /usr/bin died there while the same commits
+          # on 5.8.4 installed and booted. So an old podman is repaired
+          # with a new one rather than accepted, into /usr/local/bin, which
+          # TOOL_DIRS orders ahead of /usr/bin and sudo's secure_path reads
+          # first as well. Homebrew is preinstalled on these images and
+          # bottles podman for linux, so the repair pours rather than
+          # builds; a runner without it fails here, naming the absence,
+          # instead of twenty minutes later at the COPY.
+          [ -x /home/linuxbrew/.linuxbrew/bin/brew ] \
+            || { echo "podman $major is too old for the install's build and there is no Homebrew to repair with" >&2; exit 1; }
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install podman
+          sudo ln -sf "$(command -v podman)" /usr/local/bin/podman
+          echo "podman version now: $(podman --version)"
+          # The poured podman brings matching helpers, but linking podman
+          # alone left the repair running the apt ones: podman resolves
+          # crun and pasta from fixed path lists that read /usr/bin before
+          # anywhere brew pours, and sudo's PATH never reaches the brew
+          # prefix either. The apt crun 0.17 rejected the OCI spec the new
+          # podman writes ("crun: unknown version specified") and the apt
+          # pasta rejected its --map-guest-addr ("pasta failed with exit
+          # code 1"), both measured 2026-09-04, each wall costing a run.
+          # So the repair replaces the old helpers where the lists look
+          # first, like the podman above. conmon is shadowed the same way
+          # but the apt one starts containers fine, so it is left alone.
+          for helper in crun pasta; do
+            [ -x "$(command -v "$helper")" ] \
+              || { echo "brew poured podman but no $helper came with it" >&2; exit 1; }
+            sudo ln -sf "$(command -v "$helper")" "/usr/bin/$helper"
+            echo "$helper now at: $(readlink "/usr/bin/$helper")"
+          done
         fi
-        # Presence is not the whole gate. The install's own build mounts
-        # its working container with lowerdirs from the additional image
-        # store, and podman 4.9.3 cannot make that mount: the first COPY
-        # dies with "no such file or directory" whatever the sync
-        # unpacked first. Measured on 2026-09-04, where every job that
-        # drew apt's 4.9.3 at /usr/bin died there while the same commits
-        # on 5.8.4 installed and booted. So an old podman is repaired
-        # with a new one rather than accepted, into /usr/local/bin, which
-        # TOOL_DIRS orders ahead of /usr/bin and sudo's secure_path reads
-        # first as well. Homebrew is preinstalled on these images and
-        # bottles podman for linux, so the repair pours rather than
-        # builds; a runner without it fails here, naming the absence,
-        # instead of twenty minutes later at the COPY.
-        [ -x /home/linuxbrew/.linuxbrew/bin/brew ] \
-          || { echo "podman $major is too old for the install's build and there is no Homebrew to repair with" >&2; exit 1; }
-        eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-        HOMEBREW_NO_AUTO_UPDATE=1 brew install podman
-        sudo ln -sf "$(command -v podman)" /usr/local/bin/podman
-        echo "podman version now: $(podman --version)"
-        # The poured podman brings matching helpers, but linking podman
-        # alone left the repair running the apt ones: podman resolves
-        # crun and pasta from fixed path lists that read /usr/bin before
-        # anywhere brew pours, and sudo's PATH never reaches the brew
-        # prefix either. The apt crun 0.17 rejected the OCI spec the new
-        # podman writes ("crun: unknown version specified") and the apt
-        # pasta rejected its --map-guest-addr ("pasta failed with exit
-        # code 1"), both measured 2026-09-04, each wall costing a run.
-        # So the repair replaces the old helpers where the lists look
-        # first, like the podman above. conmon is shadowed the same way
-        # but the apt one starts containers fine, so it is left alone.
-        for helper in crun pasta; do
-          [ -x "$(command -v "$helper")" ] \
-            || { echo "brew poured podman but no $helper came with it" >&2; exit 1; }
-          sudo ln -sf "$(command -v "$helper")" "/usr/bin/$helper"
-          echo "$helper now at: $(readlink "/usr/bin/$helper")"
-        done
+        # Rootless podman re-executes itself inside a fresh user namespace
+        # before it does anything else, and a 2026-09-04 runner image
+        # denied that exec ("failed to reexec: Permission denied") where
+        # the morning's image allowed it: the kernel gained AppArmor's
+        # unprivileged-userns restriction, under which an unprofiled
+        # binary can enter a userns but not exec inside one. Rootless
+        # containers cannot exist without unprivileged user namespaces,
+        # so the restriction is cleared rather than worked around. The
+        # old value is printed either way, to name the next drift.
+        echo "apparmor_restrict_unprivileged_userns: $(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 'no such knob on this kernel')"
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1 || true
         # A new podman that cannot run as root would fail the install
         # twenty minutes in at the same COPY. Running a container as root
         # here costs seconds, exercises the store, the runtime and the
