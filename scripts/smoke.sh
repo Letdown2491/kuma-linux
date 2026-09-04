@@ -222,7 +222,13 @@ bad()  {
     # matters: the shell, niri and every lock path log there.
     if declare -F guest >/dev/null && guest true; then
         printf '   --- the guest, asked before the trap takes it down ---\n'
-        guest 'systemctl --failed --no-pager --plain' || true
+        guest 'systemctl --failed --no-legend --plain' || true
+        # Each failed unit's own journal lines. The list above names a
+        # unit without saying why, and the severity and grep pulls below
+        # have both missed a converger's error before: unit stderr logs
+        # at info, and a mid-boot failure falls out of any tail once the
+        # later lines arrive.
+        guest 'systemctl --failed --no-legend --plain | while read -r unit _; do journalctl -b -u "$unit" --no-pager | tail -20; done' || true
         guest 'systemctl --user --failed --no-pager --plain' || true
         guest 'loginctl list-sessions --no-legend' || true
         # The harness's own polling opens an ssh connection every few
