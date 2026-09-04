@@ -62,11 +62,41 @@ runs:
         # booted. A version in the log is how the next drift is named
         # the day it lands instead of a week of red installs later.
         echo "podman version: $(podman --version)"
-        for d in /usr/local/bin /usr/local/sbin /usr/bin /usr/sbin /bin /sbin; do
-          [ -x "$d/podman" ] && echo "already at $d/podman" && exit 0
-        done
-        sudo ln -s "$(command -v podman)" /usr/bin/podman
-        echo "linked $(command -v podman) -> /usr/bin/podman"
+        major=$(podman --version | awk '{print $NF}' | cut -d. -f1)
+        if [ "${major:-0}" -ge 5 ]; then
+          for d in /usr/local/bin /usr/local/sbin /usr/bin /usr/sbin /bin /sbin; do
+            [ -x "$d/podman" ] && echo "already at $d/podman" && exit 0
+          done
+          sudo ln -s "$(command -v podman)" /usr/bin/podman
+          echo "linked $(command -v podman) -> /usr/bin/podman"
+          exit 0
+        fi
+        # Presence is not the whole gate. The install's own build mounts
+        # its working container with lowerdirs from the additional image
+        # store, and podman 4.9.3 cannot make that mount: the first COPY
+        # dies with "no such file or directory" whatever the sync
+        # unpacked first. Measured on 2026-09-04, where every job that
+        # drew apt's 4.9.3 at /usr/bin died there while the same commits
+        # on 5.8.4 installed and booted. So an old podman is repaired
+        # with a new one rather than accepted, into /usr/local/bin, which
+        # TOOL_DIRS orders ahead of /usr/bin and sudo's secure_path reads
+        # first as well. Homebrew is preinstalled on these images and
+        # bottles podman for linux, so the repair pours rather than
+        # builds; a runner without it fails here, naming the absence,
+        # instead of twenty minutes later at the COPY.
+        [ -x /home/linuxbrew/.linuxbrew/bin/brew ] \
+          || { echo "podman $major is too old for the install's build and there is no Homebrew to repair with" >&2; exit 1; }
+        eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+        HOMEBREW_NO_AUTO_UPDATE=1 brew install podman
+        sudo ln -sf "$(command -v podman)" /usr/local/bin/podman
+        echo "podman version now: $(podman --version)"
+        # A new podman that cannot run as root would fail the install
+        # twenty minutes in at the same COPY. Running a container as root
+        # here costs seconds, exercises the store, the runtime and the
+        # mount the build needs, and would name the real problem. Network
+        # is left out on purpose: the install's build has no RUN step,
+        # and the runner's own network stack is already known noise.
+        sudo "$(command -v podman)" run --rm --network none quay.io/podman/hello >/dev/null
 
     - uses: ./.github/actions/kvm
       with:
