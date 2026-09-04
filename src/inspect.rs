@@ -710,6 +710,14 @@ pub fn doctor(json: bool, as_report: bool) -> Result<()> {
     // Started first and collected last. These two podman calls were
     // ~60% of a doctor run and nothing else here waits on them, so they
     // run alongside everything that follows instead of after it.
+    //
+    // Measured on 44.0.0, a kuma 44 machine, warm caches, sudo declined
+    // so the root checks fail fast: `kuma doctor --json` answers in
+    // ~6.6 s ± 0.6 (15 runs) while the bare `kuma --json` probe answers
+    // in ~154 ms. kuma's own CPU is under 2 s of the 6.6 — the rest is
+    // waiting on the tools each check spawns, which is also why the
+    // release profile's LTO does not move this number. A faster doctor
+    // is fewer or more parallel probes, not faster Rust.
     let leftovers = build_leftovers_probe();
     let mut findings: Vec<Finding> = Vec::new();
     let mut report = |grade: Grade, name: &str, detail: String, fix: Option<Action>| {
