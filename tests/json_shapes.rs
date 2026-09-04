@@ -68,16 +68,36 @@ fn the_probe_is_the_root_resource() {
 fn check_json_carries_the_verdict() {
     let fixture = fixture();
     let doc = kuma(&["check", "--json", "--config", &fixture]);
-    shape(&doc, &["actions", "config", "declares", "valid"]);
+    shape(&doc, &["actions", "config", "declares", "ok", "valid"]);
+    assert_eq!(doc["ok"], true);
     for action in doc["actions"].as_array().expect("actions is an array") {
         shape(action, &["rel", "cmd", "why"]);
     }
 }
 
+/// The one-document promise under the answer that hides best: a failing
+/// verb that has already printed its own document. Two documents back
+/// to back is the one shape no caller can parse, and it is exactly what
+/// a `bail!` after a `println!` used to produce.
+#[test]
+fn a_broken_declaration_is_still_one_document() {
+    let dir = std::env::temp_dir().join(format!("kuma-shape-broken-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("the fixture directory is created");
+    let path = dir.join("kuma.toml");
+    std::fs::write(&path, "schema_version = 1\nno_such_key = true\n")
+        .expect("the broken fixture is written");
+    let doc = kuma(&["check", "--json", "--config", &path.display().to_string()]);
+    shape(&doc, &["actions", "config", "error", "ok", "valid"]);
+    assert_eq!(doc["ok"], false);
+    assert_eq!(doc["valid"], false);
+    assert!(doc["error"].is_string());
+}
+
 #[test]
 fn doctor_json_carries_findings_with_fixes() {
     let doc = kuma(&["doctor", "--json"]);
-    shape(&doc, &["checks", "summary"]);
+    shape(&doc, &["checks", "ok", "summary"]);
+    assert_eq!(doc["ok"], true);
     shape(&doc["summary"], &["fails", "warns"]);
     let checks = doc["checks"].as_array().expect("checks is an array");
     assert!(!checks.is_empty(), "doctor always grades something");

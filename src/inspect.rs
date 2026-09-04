@@ -9,6 +9,7 @@ use crate::config::Config;
 use crate::hibernate;
 use crate::host::{host_output, host_output_any};
 use crate::inventory::{observe, to_set, List, Machine};
+use crate::response;
 use crate::snapshot;
 use crate::state::{action_json, print_actions, Action, BAKED_BREWS, BAKED_CONFIG, BAKED_FLATPAKS};
 use anyhow::{bail, Result};
@@ -871,8 +872,24 @@ pub fn doctor(json: bool, as_report: bool) -> Result<()> {
     let warns = findings.iter().filter(|f| matches!(f.grade, Grade::Warn)).count();
     if as_report {
         println!("{}", serde_json::to_string_pretty(&report_json(&findings, status.as_ref()))?);
+        if fails > 0 {
+            // The report is the machine-readable ending: the verdict
+            // rides inside it as `ok` and `error`, and a second document
+            // here would make stdout two documents back to back.
+            return Err(
+                response::Emitted(format!("{fails} check(s) failed, {warns} warning(s)")).into()
+            );
+        }
     } else if json {
         println!("{}", serde_json::to_string_pretty(&doctor_json(&findings))?);
+        if fails > 0 {
+            // Same ending rule as the report: the document carries the
+            // verdict, and the marker below keeps main from appending a
+            // second one.
+            return Err(
+                response::Emitted(format!("{fails} check(s) failed, {warns} warning(s)")).into()
+            );
+        }
     } else {
         for f in &findings {
             let mark = match f.grade {
@@ -891,11 +908,11 @@ pub fn doctor(json: bool, as_report: bool) -> Result<()> {
             (0, _) => println!("{warns} warning(s)."),
             _ => {}
         }
-    }
-    // Non-zero exit on failed checks either way; the JSON stays on stdout
-    // and the summary rides the error, so scripts get both signals.
-    if fails > 0 {
-        bail!("{fails} check(s) failed, {warns} warning(s)");
+        // Non-zero exit on failed checks either way; in prose the
+        // summary rides the error, because stdout here is for people.
+        if fails > 0 {
+            bail!("{fails} check(s) failed, {warns} warning(s)");
+        }
     }
     Ok(())
 }
@@ -1056,7 +1073,13 @@ fn doctor_json(findings: &[Finding]) -> serde_json::Value {
         Grade::Warn => "warn",
         Grade::Fail => "fail",
     };
-    serde_json::json!({
+    let fails = findings.iter().filter(|f| matches!(f.grade, Grade::Fail)).count();
+    let warns = findings.iter().filter(|f| matches!(f.grade, Grade::Warn)).count();
+    let mut document = serde_json::json!({
+        // The verdict, first, the same key every other --json document
+        // carries: false when any check failed, and `error` below names
+        // the count.
+        "ok": fails == 0,
         "checks": findings.iter().map(|f| serde_json::json!({
             "grade": grade(&f.grade),
             "name": f.name,
@@ -1064,10 +1087,14 @@ fn doctor_json(findings: &[Finding]) -> serde_json::Value {
             "fix": f.fix.as_ref().map(action_json),
         })).collect::<Vec<_>>(),
         "summary": {
-            "fails": findings.iter().filter(|f| matches!(f.grade, Grade::Fail)).count(),
-            "warns": findings.iter().filter(|f| matches!(f.grade, Grade::Warn)).count(),
+            "fails": fails,
+            "warns": warns,
         },
-    })
+    });
+    if fails > 0 {
+        document["error"] = format!("{fails} check(s) failed, {warns} warning(s)").into();
+    }
+    document
 }
 
 /// When a booted image stops being merely old and starts being worth
@@ -3715,6 +3742,8 @@ mod tests {
             },
         ];
         let json = doctor_json(&findings);
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["error"], "1 check(s) failed, 0 warning(s)");
         assert_eq!(json["checks"][0]["grade"], "ok");
         assert_eq!(json["checks"][0]["fix"], serde_json::Value::Null);
         assert_eq!(json["checks"][1]["grade"], "fail");
@@ -3722,6 +3751,13 @@ mod tests {
         assert!(json["checks"][1]["fix"]["why"].is_string());
         assert_eq!(json["summary"]["fails"], 1);
         assert_eq!(json["summary"]["warns"], 0);
+
+        // A clean run reads the same shape with the verdict flipped and
+        // no error at all: an absent error key is how the document says
+        // there is nothing to read.
+        let clean = doctor_json(&[]);
+        assert_eq!(clean["ok"], true);
+        assert!(clean.get("error").is_none());
     }
 
     /// Doctor must read the policy kuma ships, and the two live in

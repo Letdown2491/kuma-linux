@@ -6,6 +6,21 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+### Fixed
+
+- **A `--json` verb that fails after printing its own document now ends
+  in one document, not two.** `doctor --json` on a machine with a failed
+  check printed its findings document and then the central
+  `{"ok": false, "error": …}` failure document after it, and
+  `kuma check --json` on an invalid declaration did the same: stdout was
+  two JSON documents back to back, which no caller can parse — the
+  cross-version job's first sight of an upgraded machine failed on
+  exactly that, reading a doctor answer that was neither document. Both
+  verbs now end in the one document, with `ok` carrying the verdict and
+  `error` naming the failure; the summary still rides stderr and the
+  exit stays non-zero. An agent reading either verb gains an `ok` key
+  and changes nothing else.
+
 ## v44.0.0
 
 ### Fixed

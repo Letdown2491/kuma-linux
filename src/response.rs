@@ -114,6 +114,25 @@ impl Response {
     }
 }
 
+/// The marker a `--json` verb returns when its own document has already
+/// ended stdout machine-readably with the failure carried inside it.
+/// Main's central failure document exists for verbs whose failure left
+/// stdout silent; appending one to a document that exists makes stdout
+/// two documents back to back, and two documents is the one shape no
+/// caller can parse. The summary still rides stderr through main's
+/// Result, so scripts keep both signals: one document on stdout, the
+/// verdict again on stderr, and a non-zero exit.
+#[derive(Debug)]
+pub struct Emitted(pub String);
+
+impl std::fmt::Display for Emitted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Emitted {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

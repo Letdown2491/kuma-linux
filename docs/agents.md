@@ -28,8 +28,10 @@ between runs, and nothing promises they will not gain detail.
 - **Probe.** `kuma --json` is the root resource: state, facts, and `actions`
   as `{rel, cmd, why}`. Execute an action's `cmd` verbatim, then re-probe.
   `doctor --json` and `diff --json` carry findings with their fixes in the
-  same shape. The `facts` keys are always `config`, `image` and `machine`,
-  whatever the state says.
+  same shape, and every document carries `ok` first: false on doctor means
+  a check failed, the counts sit in `summary`, and the whole answer is one
+  document whatever the verdict. The `facts` keys are always `config`,
+  `image` and `machine`, whatever the state says.
 - **A live session says so.** Booted from installer media, the state is
   `live` and the facts describe media rather than a machine. Nothing is
   converging there and nothing persists, so most of what `doctor` grades

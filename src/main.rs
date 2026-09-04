@@ -519,8 +519,14 @@ fn main() -> Result<()> {
     if json_mode || read_json {
         if let Err(err) = &result {
             // even failure ends machine-readably; the Error: line still
-            // rides stderr through main's Result
-            println!("{}", serde_json::json!({ "ok": false, "error": format!("{err:#}") }));
+            // rides stderr through main's Result. A verb that already
+            // ended its own document returns the Emitted marker instead,
+            // because a second document here would leave stdout two
+            // documents back to back, which is the one shape no caller
+            // can parse.
+            if err.downcast_ref::<response::Emitted>().is_none() {
+                println!("{}", serde_json::json!({ "ok": false, "error": format!("{err:#}") }));
+            }
         }
     }
     result
@@ -736,6 +742,7 @@ fn check(config_path: &Path, json: bool) -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
+                        "ok": true,
                         "valid": true,
                         "config": shown,
                         "declares": {
@@ -773,6 +780,7 @@ fn check(config_path: &Path, json: bool) -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
+                        "ok": false,
                         "valid": false,
                         "config": shown,
                         "error": format!("{err:#}"),
@@ -783,8 +791,10 @@ fn check(config_path: &Path, json: bool) -> Result<()> {
                 println!("{shown} is not a valid declaration.\n");
                 print_actions(&[action]);
             }
-            // non-zero exit either way; details are already on stdout
-            bail!("declaration invalid")
+            // non-zero exit either way; details are already on stdout,
+            // and the marker keeps main from appending its failure
+            // document after this one
+            Err(response::Emitted("declaration invalid".into()).into())
         }
     }
 }
