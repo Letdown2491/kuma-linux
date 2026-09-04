@@ -86,7 +86,7 @@ Kuma builds, boots, and updates real hardware, and it has not been run
 widely. That is the honest limit: `bootc` will roll a bad image back, but
 try a declaration in `kuma vm` before a machine you depend on.
 
-The promises start at 1.0, and [the contract](docs/contract.md) is where
+The promises start at 44.0, and [the contract](docs/contract.md) is where
 they are written. Schema version 1 is permanent, and so are the verbs, the
 flags, the `--json` documents agents read, and every published image. What
 can still move is announced in [`CHANGELOG.md`](CHANGELOG.md), which says

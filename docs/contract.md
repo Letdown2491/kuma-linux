@@ -106,7 +106,7 @@ the ESP, /boot, and root taking the remainder, the first two sized at
 install time. Dual-boot, extra partitions, RAID and LVM, and installing
 beside another system are other tools' jobs. This is the shape the
 swapfile hibernate machinery assumes, which is why it is the design rather
-than a missing feature. It names what 1.0 does, not what may never exist.
+than a missing feature. It names what 44.0 does, not what may never exist.
 
 **Reproducible builds, and an SBOM.** Kuma makes no claim that two builds
 of one declaration produce identical bytes, and emits no SBOM. The

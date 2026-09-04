@@ -922,7 +922,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// docs/contract.md states what 1.0 promises, and a promise page
+    /// docs/contract.md states what 44.0 promises, and a promise page
     /// nobody links is a promise nobody can find. README's Documentation
     /// list is the front door, SECURITY.md is named there as the other
     /// half of the statement, and both directions are pinned here, along
