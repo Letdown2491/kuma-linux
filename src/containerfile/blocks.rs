@@ -294,9 +294,21 @@ pub(crate) fn registries_d() -> String {
 /// stripped (patents), so video silently falls back to CPU. RPM
 /// Fusion's freeworld build restores it; --allowerasing swaps out
 /// the gutted driver if a dependency dragged it in.
+///
+/// The release RPM arrives by URL, and a URL package carries no repo
+/// checksum to be graded against once cached. Measured 2026-09-04,
+/// locally and in CI: when a later build finds a cached copy, librepo's
+/// resume path appends the re-download beside it under a zero-filled
+/// stretch, dnf5 refuses the result ("not a rpm") and then keeps
+/// refusing — a file larger than it expects is never re-downloaded —
+/// so every build through a shared cache mount after a successful one
+/// failed here. Clearing the @commandline cache first costs one
+/// 11.5 KiB download per build and keeps the step off the resume path
+/// entirely. The repo packages the second dnf installs are checksummed
+/// and stay cached as before.
 pub(crate) fn mesa_freeworld() -> String {
     dnf_layer(
-        "dnf -y install --setopt=keepcache=1 \"https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm\" \\\n    && dnf -y install --setopt=keepcache=1 --allowerasing mesa-va-drivers-freeworld",
+        "rm -rf /var/cache/libdnf5/@commandline-* \\\n    && dnf -y install --setopt=keepcache=1 \"https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm\" \\\n    && dnf -y install --setopt=keepcache=1 --allowerasing mesa-va-drivers-freeworld",
     )
 }
 

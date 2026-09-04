@@ -6,6 +6,24 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+### Fixed
+
+- **Rebuilding no longer poisons the dnf cache.** A cached copy of the
+  RPM Fusion release RPM corrupted on any build that found one: librepo
+  appended the re-download beside the cached bytes, dnf5 refused the
+  result ("not a rpm") and then never re-downloaded it, so every build
+  through a shared cache mount after a successful one failed at the mesa
+  step — `kuma update`, and the CI image job on the same cache. The mesa
+  step clears the commandline cache before the URL install now, at the
+  cost of re-downloading 11.5 KiB per build. Nothing a reader has to do
+  changes.
+- `kuma install` no longer dies inside its own one-layer build when
+  root's podman storage has only ever loaded the image — a fresh CI
+  runner, mostly. The sync that hands the image to root's store now
+  materializes its layer directories, where the first COPY used to fail
+  inside an overlay mount ("no such file or directory"). Nothing a
+  reader has to do changes.
+
 ## v0.21.0 (2026-09-04)
 
 ### Added

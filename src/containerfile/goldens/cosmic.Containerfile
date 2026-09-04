@@ -4,7 +4,8 @@ FROM localhost/kuma-base:m5b1f3da61dcf
 RUN --mount=type=cache,target=/var/cache/libdnf5 \
     dnf -y install --setopt=keepcache=1 cosmic-session cosmic-edit flatpak fastfetch gnome-keyring gnome-keyring-pam pipewire pipewire-pulseaudio wireplumber mesa-dri-drivers mesa-vulkan-drivers vulkan-loader glibc-langpack-en NetworkManager-wifi wpa_supplicant power-profiles-daemon bluez firewalld zram-generator-defaults avahi nss-mdns cups system-config-printer spice-vdagent udisks2 default-fonts-core-emoji google-noto-sans-cjk-vf-fonts adwaita-icon-theme desktop-file-utils
 RUN --mount=type=cache,target=/var/cache/libdnf5 \
-    dnf -y install --setopt=keepcache=1 "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm" \
+    rm -rf /var/cache/libdnf5/@commandline-* \
+    && dnf -y install --setopt=keepcache=1 "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm" \
     && dnf -y install --setopt=keepcache=1 --allowerasing mesa-va-drivers-freeworld
 RUN rm /etc/xdg/autostart/com.system76.CosmicInitialSetup.desktop
 RUN printf 'COSMIC_DISABLE_OVERLAY_SCANOUT=1\nCOSMIC_DISABLE_DIRECT_SCANOUT=1\n' >> /etc/environment

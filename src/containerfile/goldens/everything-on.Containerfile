@@ -4,7 +4,8 @@ FROM localhost/kuma-base:m5b1f3da61dcf
 RUN --mount=type=cache,target=/var/cache/libdnf5 \
     dnf -y install --setopt=keepcache=1 --exclude=alacritty --exclude=waybar --exclude=swaylock --exclude=fuzzel flatpak niri xwayland-satellite greetd tuigreet noctalia kitty pipewire pipewire-pulseaudio wireplumber xdg-desktop-portal-gtk xdg-desktop-portal-gnome dconf gnome-keyring gnome-keyring-pam polkit mesa-dri-drivers mesa-vulkan-drivers vulkan-loader default-fonts-core-sans default-fonts-core-mono fontawesome-fonts-all glibc-langpack-en NetworkManager-wifi adwaita-icon-theme adw-gtk3-theme desktop-file-utils NetworkManager-tui wpa_supplicant brightnessctl power-profiles-daemon pavucontrol nm-connection-editor bluez blueman thunar thunar-archive-plugin file-roller gvfs gvfs-mtp wf-recorder zram-generator-defaults avahi nss-mdns libnotify cups system-config-printer wl-clipboard xsettingsd spice-vdagent xdg-user-dirs default-fonts-core-emoji mate-polkit firewalld grim slurp swappy playerctl udiskie 7zip unar google-noto-sans-cjk-vf-fonts fastfetch
 RUN --mount=type=cache,target=/var/cache/libdnf5 \
-    dnf -y install --setopt=keepcache=1 "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm" \
+    rm -rf /var/cache/libdnf5/@commandline-* \
+    && dnf -y install --setopt=keepcache=1 "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm" \
     && dnf -y install --setopt=keepcache=1 --allowerasing mesa-va-drivers-freeworld
 RUN test -d /usr/share/themes/adw-gtk3-dark
 COPY greetd-config.toml /etc/greetd/config.toml
