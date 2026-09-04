@@ -6,6 +6,8 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+## v44.0.0
+
 ### Fixed
 
 - **Strings that reach a shell arrive as one word.** `vm --apply` pasted
@@ -17,19 +19,6 @@ differently. Why it changed belongs in the commit that made it.
   the tag as `"$1"` rather than as text inside the script. Doctor's
   deployment-stamp heal quotes the image id it writes for the same
   reason. Nothing a reader has to do changes.
-
-### Changed
-
-- **Release binaries are smaller, release builds a little slower.**
-  `[profile.release]` now builds with thin LTO over one codegen unit and
-  strips the symbol table. The binary is baked into every image kuma
-  builds and is what cargo-binstall fetches, so its size is image and
-  download size; the cost is minutes of release-build time nobody pays
-  but the publishing workflow. Nothing a reader has to do changes.
-
-## v44.0.0
-
-### Fixed
 
 - **A `--json` verb that fails after printing its own document now ends
   in one document, not two.** `doctor --json` on a machine with a failed
@@ -59,6 +48,15 @@ differently. Why it changed belongs in the commit that made it.
   materializes its layer directories, where the first COPY used to fail
   inside an overlay mount ("no such file or directory"). Nothing a
   reader has to do changes.
+
+### Changed
+
+- **Release binaries are smaller, release builds a little slower.**
+  `[profile.release]` now builds with thin LTO over one codegen unit and
+  strips the symbol table. The binary is baked into every image kuma
+  builds and is what cargo-binstall fetches, so its size is image and
+  download size; the cost is minutes of release-build time nobody pays
+  but the publishing workflow. Nothing a reader has to do changes.
 
 ## v0.21.0 (2026-09-04)
 
