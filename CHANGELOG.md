@@ -6,7 +6,7 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
-## v44.0.0
+## v44.0.0 (2026-09-08)
 
 ### Fixed
 
