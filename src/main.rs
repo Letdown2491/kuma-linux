@@ -74,7 +74,21 @@ pub(crate) fn published_repo() -> &'static str {
 /// can't mount", surfacing as a Python traceback out of osbuild. ext4
 /// permits duplicates, so the collision can no longer fail a build.
 const BIB_ROOTFS: &str = "ext4";
-const BIB_IMAGE: &str = "quay.io/centos-bootc/bootc-image-builder:latest";
+/// Pinned by digest, and this is trust machinery rather than tidiness.
+/// The osbuild/bootc-image-builder repository was archived on 2026-06-18
+/// (merged into osbuild/image-builder), and its quay `:latest` has been
+/// frozen at that date ever since: digest sha256:2b52843e..., verified
+/// 2026-09-22 via `skopeo inspect --raw` (Created 2026-06-18T11:31Z,
+/// the multi-arch index, so the pin holds on any host architecture).
+/// A frozen tag that still answers pulls is a moving pin in waiting --
+/// the tag could be pushed over, and every later build would silently
+/// take whatever arrived. The digest cannot move. The successor
+/// (osbuild/image-builder) carries the BIB container and the
+/// `anaconda-iso` type forward; migrating to it, and re-verifying the
+/// def-file path this pin feeds (see the extraction below), is recorded
+/// in notes/fedora-45-rebase.md.
+const BIB_IMAGE: &str =
+    "quay.io/centos-bootc/bootc-image-builder@sha256:2b52843ea2bfda73b0a08d97e76b734393b1d3a804681b9fabb26723bd3a2f0b";
 
 /// What `--version` prints. The number alone cannot answer "is this
 /// binary the one that has my last change in it", which is the question

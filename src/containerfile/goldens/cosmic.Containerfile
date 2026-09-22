@@ -10,7 +10,7 @@ RUN --mount=type=cache,target=/var/cache/libdnf5 \
 RUN rm /etc/xdg/autostart/com.system76.CosmicInitialSetup.desktop
 RUN printf 'COSMIC_DISABLE_OVERLAY_SCANOUT=1\nCOSMIC_DISABLE_DIRECT_SCANOUT=1\n' >> /etc/environment
 RUN test -f /usr/lib64/security/pam_gnome_keyring.so \
-    && grep -q pam_gnome_keyring /etc/pam.d/cosmic-greeter
+    && grep -q pam_gnome_keyring /etc/pam.d/cosmic-greeter /usr/lib/pam.d/cosmic-greeter 2>/dev/null
 COPY kargs-desktop.toml /usr/lib/bootc/kargs.d/10-kuma-desktop.toml
 COPY fastfetch-config.jsonc /etc/xdg/fastfetch/config.jsonc
 COPY fastfetch-logo.txt /usr/lib/kuma/fastfetch-logo.txt
@@ -116,8 +116,8 @@ RUN . /usr/lib/os-release \
     esac \
     && sed -i \
         -e 's|^NAME=.*|NAME="Kuma"|' \
-        -e "s|^PRETTY_NAME=.*|PRETTY_NAME=\"Kuma 44.0.0${CODENAME:+ ($CODENAME)}\"|" \
-        -e "s|^VERSION=.*|VERSION=\"44.0.0${CODENAME:+ ($CODENAME)}\"|" \
+        -e "s|^PRETTY_NAME=.*|PRETTY_NAME=\"Kuma 44.0.1${CODENAME:+ ($CODENAME)}\"|" \
+        -e "s|^VERSION=.*|VERSION=\"44.0.1${CODENAME:+ ($CODENAME)}\"|" \
         -e 's|^ID=.*|ID=kuma|' \
         -e 's|^DEFAULT_HOSTNAME=.*|DEFAULT_HOSTNAME="kuma"|' \
         -e 's|^ANSI_COLOR=.*|ANSI_COLOR="0;38;2;126;224;168"|' \

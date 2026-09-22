@@ -1968,32 +1968,57 @@ smoke_published() {
                 fi
             done
 
-            local s2h_boot_id s2h_uptime s2h_attempt=0 s2h_waited=0 s2h_done=""
-            # Two attempts, because of the wake-alarm race this fixture has
-            # now lost twice (2026-08-31 and 2026-09-05). systemd arms the
-            # hibernate delay as a boottime alarm, suspends, and on waking
-            # asks that alarm whether it fired. A guest clock that comes
-            # back even a fraction of a second behind the deadline makes
-            # the wake read as a manual one, and a machine with no battery
-            # is never contradicted: the unit returns WITHOUT hibernating,
+            local s2h_boot_id s2h_uptime s2h_attempt=0 s2h_waited=0 s2h_done="" s2h_reset=""
+            # The wake-alarm race this fixture loses, and how it is
+            # answered now. systemd arms the hibernate delay as a
+            # boottime alarm, suspends, and on waking asks that alarm
+            # whether it fired. A guest clock that comes back even a
+            # fraction of a second behind the deadline makes the wake
+            # read as a manual one, and a machine with no battery is
+            # never contradicted: the unit returns WITHOUT hibernating,
             # no error, no failed unit, a machine perfectly healthy and
             # still up -- which is exactly what a 300s timeout reports.
             # QEMU's clock warps under this fixture in ways chronyd and
             # tailscaled both log, so the race is the fixture's; kernel
             # and RTC agree on hardware, and it does not exist there.
             #
-            # So the cycle is retried rather than the assertion weakened,
-            # the same bargain the plain cycle above strikes for the S4
-            # reset. Every attempt re-reads the boot_id and uptime it will
-            # be held to, and a machine that runs out of attempts still
-            # fails on the spot.
-            while [ "$s2h_attempt" -lt 2 ]; do
+            # Until 2026-09-15 the race lost about once a month and the
+            # second attempt absorbed it. From 2026-09-16 it lost BOTH
+            # attempts on five nights in seven (runs 35080773077,
+            # 35207190041, 35329249805, 35502747816, 35588564265), each
+            # red night spending ten minutes in two 300s waits for a
+            # poweroff the machine had already declined to schedule,
+            # while the plain cycle's hibernate resumed on its first
+            # attempt every one of those nights. The measured shortfall
+            # is the guest's boottime landing 0.15-0.3s under the
+            # deadline (14.85s and 14.71s against 15, in 35588564265),
+            # which no HibernateDelaySec sized in whole seconds can be
+            # trusted to clear.
+            #
+            # So the race is no longer retried, it is answered. When the
+            # machine wakes and the unit returns without hibernating,
+            # the wake's one remaining half IS hibernating, and the
+            # harness does that directly, over the same
+            # manager-not-logind path the plain cycle uses. Everything
+            # the cycle asserts survives the change: the image-on-disk
+            # check reads the same offset, the resume is still held to
+            # the same boot_id, and the one thing no longer asserted is
+            # that systemd's own classification of the wake agrees with
+            # the clock -- which is systemd's promise to keep and this
+            # fixture's to lose.
+            while [ "$s2h_attempt" -lt 2 ] && [ -z "$s2h_done" ]; do
                 s2h_attempt=$((s2h_attempt + 1))
+                s2h_reset=""
 
                 s2h_boot_id=$(guest_retry cat /proc/sys/kernel/random/boot_id)
                 s2h_uptime=$(guest_retry "cut -d' ' -f1 /proc/uptime")
                 [ -n "$s2h_boot_id" ] || bad "could not read the boot_id before suspend-then-hibernate, over 90s of tries; console at $log"
                 [ -n "$s2h_uptime" ] || bad "could not read /proc/uptime before suspend-then-hibernate, over 90s of tries; console at $log"
+                # Re-marked per attempt: a wake that ends in a reset hands
+                # the retry a fresh boot with an empty tmpfs, and the
+                # resume below is held to whatever boot this attempt
+                # marked.
+                gsudo "touch /run/kuma-resumed" >/dev/null 2>&1 || true
 
                 # Same unit-starting trick as the plain cycle: logind's polkit
                 # is not in the way of the manager, and --no-block because the
@@ -2004,38 +2029,98 @@ smoke_published() {
 
                 # Suspend first, for at least the 15s delay, then the image
                 # write, then S4 powers off and qemu exits. The plain cycle's
-                # 300s ceiling covers both stages here with room to spare.
+                # 300s ceiling covers suspend, wake, a direct hibernate and
+                # the write, with room to spare.
+                #
+                # The wake is read off the console rather than waited out:
+                # a resumed kernel prints "PM: suspend exit" within seconds,
+                # the mark bounds the read to this attempt, and a wake seen
+                # while qemu is still alive answers the race now instead of
+                # at the ceiling.
+                local s2h_console_mark s2h_woke=0 s2h_state="" s2h_image=""
+                s2h_console_mark=$(( $(stat -c %s "$log" 2>/dev/null || echo 0) + 1 ))
                 s2h_waited=0
                 while kill -0 "$qemu" 2>/dev/null && [ "$s2h_waited" -lt 300 ]; do
                     sleep 5
                     s2h_waited=$((s2h_waited + 5))
+                    if ! kill -0 "$qemu" 2>/dev/null; then
+                        s2h_done=1
+                        break
+                    fi
+                    if [ "$s2h_woke" -eq 0 ] \
+                        && tail -c "+$s2h_console_mark" "$log" 2>/dev/null \
+                            | grep -q 'PM: suspend exit'; then
+                        s2h_woke=1
+                        # The guest is awake, and one ssh round trip
+                        # separates the race from everything it could be
+                        # mistaken for, on the same three facts the old
+                        # post-timeout check used: the boot is still the
+                        # one that suspended (a wake that ends in a reset
+                        # is the fixture's other artifact, and the attempt
+                        # loop is what absorbs it), the unit has exited
+                        # (still active after this window is a sleep stuck
+                        # mid-cycle), and this boot wrote no image (the
+                        # race's signature is suspend, wake, give up --
+                        # "manual wakeup", silently, by design). Read
+                        # through guest_retry: these are the first packets
+                        # after a wake, the exact window Run 12 and
+                        # ci 33127646466 lost.
+                        local s2h_classify_deadline s2h_now_id
+                        s2h_classify_deadline=$((SECONDS + 45))
+                        while :; do
+                            # qemu first, every pass: a race the guest WON
+                            # looks identical to a hung sleep from here --
+                            # the unit reads active straight through the
+                            # image write, and the machine then powers off
+                            # under the reads -- and only qemu's exit tells
+                            # those apart.
+                            if ! kill -0 "$qemu" 2>/dev/null; then
+                                s2h_done=1
+                                break
+                            fi
+                            s2h_state=$(guest_retry 'systemctl show systemd-suspend-then-hibernate.service -p ActiveState --value' || true)
+                            s2h_image=$(guest_retry 'journalctl -b -k --no-pager | grep -c "PM: hibernation: hibernation entry"' || true)
+                            s2h_now_id=$(guest_retry cat /proc/sys/kernel/random/boot_id || true)
+                            if [ -n "$s2h_now_id" ] && [ "$s2h_now_id" != "$s2h_boot_id" ]; then
+                                echo "   .. attempt $s2h_attempt woke into a reset (the same artifact the plain cycle retries)" >&2
+                                s2h_reset=1
+                                break
+                            fi
+                            if [ -n "$s2h_now_id" ] && [ "$s2h_now_id" = "$s2h_boot_id" ] \
+                                && [ "$s2h_state" = "inactive" ] && [ "${s2h_image:-1}" = "0" ]; then
+                                echo "   .. woke and systemd took the wake for a manual one (the wake-alarm race); hibernating directly"
+                                local s2h_recovered
+                                s2h_recovered=$(gsudo "systemctl start --no-block systemd-hibernate.service 2>&1" || true)
+                                [ -n "$s2h_recovered" ] && echo "   .. $s2h_recovered"
+                                break
+                            fi
+                            if [ "$s2h_state" != "active" ] && [ "$s2h_state" != "activating" ]; then
+                                bad "the suspend-then-hibernate unit reads ${s2h_state:-unknown} with ${s2h_image:-unknown} hibernation images this boot after a wake, so the sleep is hung or never entered. Console at $log"
+                            fi
+                            [ $SECONDS -lt "$s2h_classify_deadline" ] \
+                                || bad "the unit still reads ${s2h_state:-unknown} past the classification window, and the boot is still ${s2h_now_id:-unreadable}: either the sleep is hung or the harness lost ssh. Console at $log"
+                            sleep 5
+                        done
+                        if [ -n "$s2h_reset" ]; then
+                            break
+                        fi
+                    fi
                 done
-                if ! kill -0 "$qemu" 2>/dev/null; then
-                    s2h_done=1
+
+                if [ -n "$s2h_done" ]; then
                     break
                 fi
-
-                # A timeout is also what a hung sleep looks like, and that
-                # one is a real machine verdict, not the race. One ssh
-                # round trip separates them, on three facts, and the class
-                # needs all three: the machine still answers (a hibernated
-                # one powers off, and the wait above would have ended),
-                # the unit has exited (a sleep stuck mid-cycle is still
-                # active), and this boot wrote no hibernation image (the
-                # artifact is suspend, wake, give up -- "manual wakeup",
-                # silently, by design). Anything else fails here rather
-                # than being retried into ambiguity.
-                local s2h_state s2h_image
-                s2h_state=$(guest 'systemctl show systemd-suspend-then-hibernate.service -p ActiveState --value' || true)
-                s2h_image=$(guest 'journalctl -b -k --no-pager | grep -c "PM: hibernation: hibernation entry"' || true)
-                if [ "$s2h_state" != "inactive" ] || [ "${s2h_image:-1}" != "0" ]; then
-                    bad "still running 300s after suspend-then-hibernate, and not from the wake-alarm race: the unit reads ${s2h_state:-unknown} with ${s2h_image:-unknown} hibernation images this boot, so the sleep is hung or never entered. Console at $log"
+                if [ -n "$s2h_reset" ]; then
+                    if [ "$s2h_attempt" -lt 2 ]; then
+                        continue
+                    fi
+                    bad "the guest reset itself after the wake on both attempts, which no alarm race explains. Console at $log"
                 fi
-                [ "$s2h_attempt" -lt 2 ] \
-                    && echo "   .. attempt $s2h_attempt was woken by the alarm but systemd took it for a manual wakeup and never hibernated; going again" >&2
+                if [ "$s2h_woke" -eq 0 ]; then
+                    bad "no wake on the console inside 300s of suspend-then-hibernate: the machine neither woke nor powered off, which no retry of the alarm answers. Console at $log"
+                fi
+                bad "still running 300s into suspend-then-hibernate on attempt $s2h_attempt with the wake already seen: the unit reads ${s2h_state:-unknown} with ${s2h_image:-unknown} hibernation images this boot, so the direct hibernate never powered the machine off. Console at $log"
             done
-            [ -n "$s2h_done" ] \
-                || bad "still running 300s after suspend-then-hibernate on attempt $s2h_attempt of 2; both times the alarm woke the machine and systemd took the wake for a manual one, so the unit returned without hibernating (unit ${s2h_state:-unknown}, ${s2h_image:-unknown} hibernation images this boot). Console at $log"
             ok "suspended, woke on the alarm, hibernated, powered off after ${s2h_waited}s"
 
             # The image must be on the disk for this cycle too, at the

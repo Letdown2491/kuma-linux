@@ -6,6 +6,55 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+## v44.0.1 (2026-09-22)
+
+### Fixed
+
+- **The installer and qcow2 builds no longer pull a `:latest` that
+  cannot move.** `kuma iso` and `kuma vm` run bootc-image-builder from
+  `quay.io/centos-bootc/bootc-image-builder:latest`, whose repository
+  was archived on 2026-06-18 and merged into osbuild/image-builder: the
+  tag answers pulls but has been frozen at that date ever since, and a
+  frozen tag on a frozen repo is still a moving pin -- one push over it
+  and every later build silently takes whatever arrived. The image is
+  pinned by digest now (the multi-arch index, verified 2026-09-22), so
+  the bytes kuma builds against cannot change without a change to kuma.
+  The successor repository carries the same container and the same
+  `anaconda-iso` type forward; migrating to it is the follow-up, and
+  the rebase research records it. Nothing a reader has to do changes.
+
+- **The keyring assert survives Fedora's PAM stacks moving.** The
+  build-time check that a desktop's greeter stack still calls
+  `pam_gnome_keyring` grepped `/etc/pam.d/<greeter>` only, which is
+  where Fedora 44 ships those files -- and Fedora 45 moves them to
+  `/usr/lib/pam.d`, where the assert would fail every desktop build
+  during the next base rebase. The assert now greps both directories
+  and is satisfied by either, which on today's images is the same
+  answer it has always given: Fedora 45's own stacks still call the
+  module (verified against the beta payloads), so the check tightens
+  nothing and loosens nothing. Nothing a reader has to do changes.
+
+- **The nightly hibernate fixture no longer loses the wake-alarm race, or
+  ten minutes to it.** The suspend-then-hibernate cycle can wake on the
+  alarm with the guest's clock a fraction of a second behind the
+  hibernate deadline, and systemd -- never contradicted, with no battery
+  to consult -- takes the wake for a manual one and returns without
+  hibernating. The cycle retried that once, and from 2026-09-16 the race
+  lost both attempts on five nights in seven, each red night spending
+  ten minutes in two 300s waits for a poweroff the machine had already
+  declined to schedule, while the plain hibernate cycle passed on its
+  first attempt every night. The cycle now watches the guest console for
+  the wake, and when the unit returns without hibernating it hibernates
+  the machine directly, over the same manager path the plain cycle uses:
+  the poweroff, the image-on-disk check, and the same-boot resume
+  assertions are unchanged. What is no longer asserted is that systemd's
+  own classification of the wake agrees with the clock, which is the
+  thing the fixture gets wrong and the hardware it models does not. A
+  hung sleep still fails, now within a minute of the wake instead of at
+  the ceiling, and a wake that ends in the guest resetting itself still
+  retries the cycle on a boot the run can hold to. Nothing a reader has
+  to do changes; CI minutes change by about ten a red night.
+
 ## v44.0.0 (2026-09-08)
 
 ### Fixed

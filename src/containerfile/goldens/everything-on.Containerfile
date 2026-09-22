@@ -52,7 +52,7 @@ COPY gtk4-settings.ini /etc/gtk-4.0/settings.ini
 COPY mimeapps.list /etc/xdg/mimeapps.list
 COPY dconf-profile /etc/dconf/profile/user
 RUN test -f /usr/lib64/security/pam_gnome_keyring.so \
-    && grep -q pam_gnome_keyring /etc/pam.d/greetd
+    && grep -q pam_gnome_keyring /etc/pam.d/greetd /usr/lib/pam.d/greetd 2>/dev/null
 COPY dconf-kuma-dark /etc/dconf/db/local.d/10-kuma-dark
 COPY dconf-kuma-blueman /etc/dconf/db/local.d/10-kuma-blueman
 RUN dconf update
@@ -205,8 +205,8 @@ RUN . /usr/lib/os-release \
     esac \
     && sed -i \
         -e 's|^NAME=.*|NAME="Kuma"|' \
-        -e "s|^PRETTY_NAME=.*|PRETTY_NAME=\"Kuma 44.0.0${CODENAME:+ ($CODENAME)}\"|" \
-        -e "s|^VERSION=.*|VERSION=\"44.0.0${CODENAME:+ ($CODENAME)}\"|" \
+        -e "s|^PRETTY_NAME=.*|PRETTY_NAME=\"Kuma 44.0.1${CODENAME:+ ($CODENAME)}\"|" \
+        -e "s|^VERSION=.*|VERSION=\"44.0.1${CODENAME:+ ($CODENAME)}\"|" \
         -e 's|^ID=.*|ID=kuma|' \
         -e 's|^DEFAULT_HOSTNAME=.*|DEFAULT_HOSTNAME="kuma"|' \
         -e 's|^ANSI_COLOR=.*|ANSI_COLOR="0;38;2;126;224;168"|' \

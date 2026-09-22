@@ -353,12 +353,23 @@ pub(crate) fn dnf_install(packages: &str) -> String {
 /// succeeds, nothing is logged, and the keyring is simply never
 /// unlocked (which is exactly how it shipped until 2026-08-07).
 ///
-/// `service` is the /etc/pam.d file the greeter authenticates against:
-/// greetd's own for niri, cosmic-greeter's for COSMIC. They are not
-/// interchangeable; asserting the wrong one proves nothing.
+/// `service` is the greeter's own PAM stack file: greetd's own for
+/// niri, cosmic-greeter's for COSMIC. They are not interchangeable;
+/// asserting the wrong one proves nothing. Which directory the file
+/// lives in is the release's business, and it moved: Fedora 45 ships
+/// vendor stacks in /usr/lib/pam.d (greetd-0.10.3-10.fc45 owns
+/// /usr/lib/pam.d/greetd and nothing in /etc), where Fedora 44 shipped
+/// them in /etc/pam.d. The assert names both, and grep exits 0 if
+/// either matches -- a match in the vendor stack is as good as one in
+/// /etc, because that is the stack PAM reads when /etc has no file of
+/// its own (Linux-PAM falls back to the vendor directory). Verified
+/// against the Fedora 45 Beta payloads that both directories' greetd
+/// stacks still call pam_gnome_keyring; see notes/fedora-45-rebase.md.
+/// A missing file under 2>/dev/null keeps the always-absent directory
+/// from printing noise on every build.
 pub(crate) fn keyring_pam(service: &str) -> String {
     format!(
-        "RUN test -f /usr/lib64/security/pam_gnome_keyring.so \\\n    && grep -q pam_gnome_keyring /etc/pam.d/{service}\n"
+        "RUN test -f /usr/lib64/security/pam_gnome_keyring.so \\\n    && grep -q pam_gnome_keyring /etc/pam.d/{service} /usr/lib/pam.d/{service} 2>/dev/null\n"
     )
 }
 

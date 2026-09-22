@@ -3049,10 +3049,17 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
             assert!(out.contains("test -f /usr/lib64/security/pam_gnome_keyring.so"));
         }
         // each greeter authenticates against its own PAM service, and
-        // asserting the other one would pass while proving nothing
-        assert!(niri.contains("grep -q pam_gnome_keyring /etc/pam.d/greetd\n"));
+        // asserting the other one would pass while proving nothing. The
+        // stack is asserted in either directory, because Fedora 45 moved
+        // vendor stacks to /usr/lib/pam.d and the assert reads both
+        // (see keyring_pam)
+        assert!(niri.contains(
+            "grep -q pam_gnome_keyring /etc/pam.d/greetd /usr/lib/pam.d/greetd 2>/dev/null\n"
+        ));
         assert!(!niri.contains("/etc/pam.d/cosmic-greeter"));
-        assert!(cosmic.contains("grep -q pam_gnome_keyring /etc/pam.d/cosmic-greeter\n"));
+        assert!(cosmic.contains(
+            "grep -q pam_gnome_keyring /etc/pam.d/cosmic-greeter /usr/lib/pam.d/cosmic-greeter 2>/dev/null\n"
+        ));
         // greetd's file exists in the COSMIC image too (cosmic-greeter
         // pulls greetd in), so a stale assert there would look healthy
         assert!(!cosmic.contains("pam_gnome_keyring /etc/pam.d/greetd\n"));
