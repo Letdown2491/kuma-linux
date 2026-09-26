@@ -18,6 +18,10 @@ pub(crate) use blocks::{
 pub(crate) use blocks::{
     COSIGN_PUB_PATH, COSMIC_GREETER_CONF, COSMIC_SESSION, FLATHUB_URL, GREETD_CONF, NIRI_SESSION,
 };
+// Read by inspect's doctor check, which grades what a niri config that
+// shadows the image's one can still run.
+#[cfg(test)]
+pub(crate) use blocks::{NIRI_MEDIA_BINDS, NIRI_MENU_BIND};
 
 /// Every /etc path this image owns the *contents* of.
 ///

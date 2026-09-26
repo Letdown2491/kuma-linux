@@ -6,6 +6,25 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+### Added
+
+- **`kuma doctor` grades a niri config that shadows the image's.** niri
+  takes `~/.config/niri/config.kdl` instead of `/etc/niri/config.kdl`
+  rather than merging, so one copied file unpins every bind, startup
+  service and window rule the image ships, and the copy goes stale the
+  moment an image update rewrites the config it was copied from —
+  measured on a machine whose media keys still spawned the binary from
+  before the last rename, where doctor had nothing to say while the keys
+  did nothing. The check reads each account's shadow only to resolve the
+  absolute paths its binds spawn: one naming a program the image does
+  not ship is a Fail that names it, a shadow whose every spawn resolves
+  is a Warn, and a machine running the image's config is Ok. Bare-name
+  spawns and `spawn-sh` lines are deliberately unreadable from doctor —
+  its PATH is not the session's — so the check misses those rather than
+  cry wolf about keys that work. The fix it suggests moves the copy
+  aside, which is enough because the image's config ends with an include
+  of the account's `local.kdl`: the machine's own deltas survive.
+
 ## v44.0.1 (2026-09-22)
 
 ### Fixed

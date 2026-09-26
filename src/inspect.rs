@@ -633,6 +633,7 @@ fn unit_states(units: &[&str]) -> BTreeMap<String, String> {
     out
 }
 
+#[derive(Debug, PartialEq)]
 enum Grade {
     Ok,
     Warn,
@@ -816,6 +817,7 @@ pub fn doctor(json: bool, as_report: bool) -> Result<()> {
         check_snapshots(&mut report);
         check_shell(&mut report);
         check_shell_config(&mut report);
+        check_niri_shadow(&mut report);
         check_backup(&mut report);
         check_boot_health(&mut report);
         check_boot_titles(Path::new(crate::bootentries::ENTRIES), Path::new("/"), &mut report);
@@ -1808,6 +1810,141 @@ fn check_shell_config(report: &mut impl FnMut(Grade, &str, String, Option<Action
             "what the shell is actually running",
         )),
     );
+}
+
+/// Absolute-path programs a niri config's binds and startup list spawn,
+/// in order of appearance, deduplicated.
+///
+/// Deliberately narrower than everything niri can run, because doctor's
+/// PATH is not the session's: a bare `spawn "wpctl"` resolves through the
+/// session's PATH, which carries brew and the user's own bins, and a
+/// `spawn-sh` line is a whole shell line rather than a program, so
+/// neither can be checked from here without risking a false alarm about
+/// a key that works. Absolute paths carry their own answer, and every
+/// program the image's binds spawn is one — so the class that goes
+/// stale, a config copied out of an older image, is exactly the class
+/// this sees.
+///
+/// Line comments are skipped; a `/-` node comment that folds a spawn
+/// into its block would still be seen, which errs toward reporting a key
+/// as dead that is commented out — the survivable direction, since the
+/// opposite is how a dead key hides from the one check that reads every
+/// bind.
+fn niri_spawn_targets(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") {
+            continue;
+        }
+        let rest = match trimmed.find("spawn-at-startup \"") {
+            Some(i) => &trimmed[i + "spawn-at-startup \"".len()..],
+            None => match trimmed.find("spawn \"") {
+                Some(i) => &trimmed[i + "spawn \"".len()..],
+                None => continue,
+            },
+        };
+        let Some(arg) = rest.split('"').next() else { continue };
+        if arg.starts_with('/') && !out.iter().any(|seen| seen == arg) {
+            out.push(arg.to_string());
+        }
+    }
+    out
+}
+
+/// Whether a machine's own niri config shadows the image's, and what
+/// that costs.
+///
+/// niri takes `~/.config/niri/config.kdl` INSTEAD of /etc/niri/config.kdl
+/// rather than merging the two, so one copied file silently unpins every
+/// bind, startup service and window rule the image ships — and the copy
+/// goes stale the moment an image update rewrites the config it was
+/// copied from, which is the machine this check was written on: its
+/// media keys spawned a binary from the image before the last rename.
+/// The image's config ends with `include optional=true` on
+/// `.config/niri/local.kdl` precisely so a full copy is never needed;
+/// that file's deltas survive either way.
+///
+/// A shadow with every absolute spawn resolvable is a Warn: nothing it
+/// binds is dead today, but the same staleness applies and nothing here
+/// can see bare-name spawns to say otherwise. Dead absolute paths are a
+/// Fail naming them, because a bind that spawns a missing program is a
+/// key that does nothing.
+///
+/// Takes the sysroot so the branches are testable; on a machine the
+/// argument is `/`.
+fn check_niri_shadow_at(
+    sysroot: &Path,
+    report: &mut impl FnMut(Grade, &str, String, Option<Action>),
+) {
+    // Only where the image ships a niri config. A headless or COSMIC
+    // machine has no session config to shadow.
+    if !sysroot.join("etc/niri/config.kdl").exists() {
+        return;
+    }
+    let homes = match std::fs::read_dir(sysroot.join("var/home")) {
+        Ok(entries) => entries,
+        // No home root to shadow from (a container of the image): nothing
+        // to report and nothing to be right about.
+        Err(_) => return,
+    };
+    let mut homes: Vec<PathBuf> =
+        homes.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.is_dir()).collect();
+    homes.sort();
+    let mut shadowed = false;
+    for home in homes {
+        let shadow = home.join(".config/niri/config.kdl");
+        if !shadow.exists() {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&shadow) else { continue };
+        let user = home.file_name().and_then(|n| n.to_str()).unwrap_or("an account").to_string();
+        shadowed = true;
+        let dead: Vec<String> = niri_spawn_targets(&text)
+            .into_iter()
+            .filter(|t| !sysroot.join(t.trim_start_matches('/')).exists())
+            .collect();
+        let aside = format!("{}.bak", shadow.display());
+        if dead.is_empty() {
+            report(
+                Grade::Warn,
+                "niri config",
+                format!(
+                    "{user}'s niri config shadows the image's, so image updates to the \
+                     session — new binds, startup services, window rules — do not reach \
+                     this desktop"
+                ),
+                Some(Action::new(
+                    "move",
+                    format!("mv {} {aside}", shadow.display()),
+                    "the image's config includes local.kdl, so the machine's own deltas survive",
+                )),
+            );
+        } else {
+            report(
+                Grade::Fail,
+                "niri config",
+                format!(
+                    "{user}'s niri config shadows the image's, and its binds spawn \
+                     programs this image does not have ({}): those keys do nothing",
+                    dead.join(", ")
+                ),
+                Some(Action::new(
+                    "move",
+                    format!("mv {} {aside}", shadow.display()),
+                    "let the image's config run again, then log out and back in; \
+                     local.kdl deltas still apply",
+                )),
+            );
+        }
+    }
+    if !shadowed {
+        report(Grade::Ok, "niri config", "the session runs the image's niri config".into(), None);
+    }
+}
+
+fn check_niri_shadow(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
+    check_niri_shadow_at(Path::new("/"), report);
 }
 
 /// The one process every lock on this desktop goes through.
@@ -3990,6 +4127,111 @@ mod tests {
         assert_eq!(json["sections"][0]["entries"][0]["item"], "org.gnome.Loupe");
         assert!(json["sections"][1]["skipped"].is_string());
         assert_eq!(json["actions"][0]["cmd"], "kuma sync");
+    }
+
+    /// The check run against a sysroot, with its findings held so each
+    /// phase of a test can assert and then move on.
+    fn run_niri_shadow_check(root: &Path) -> Vec<(Grade, String, String)> {
+        let mut found: Vec<(Grade, String, String)> = Vec::new();
+        {
+            let mut report = |grade: Grade, name: &str, detail: String, _: Option<Action>| {
+                found.push((grade, name.to_string(), detail));
+            };
+            check_niri_shadow_at(root, &mut report);
+        }
+        found
+    }
+
+    /// The extract has to see the binds the image actually ships, and to
+    /// skip everything doctor cannot judge: bare names resolve through
+    /// the session's PATH, `spawn-sh` lines are shell rather than a
+    /// program, and commented lines name nothing.
+    #[test]
+    fn niri_spawn_targets_find_absolute_programs_only() {
+        use crate::containerfile::{NIRI_MEDIA_BINDS, NIRI_MENU_BIND};
+
+        // Every absolute program the image's media binds name must come
+        // through, deduplicated across the volume keys that share a
+        // script; the bare `wpctl`/`playerctl`/`noctalia` spawns are
+        // doctor's blind spot by design and must not pretend otherwise.
+        assert_eq!(
+            niri_spawn_targets(NIRI_MEDIA_BINDS),
+            ["/usr/libexec/kuma-osd".to_string(), "/usr/libexec/kuma-record".to_string()]
+        );
+        assert!(niri_spawn_targets(NIRI_MENU_BIND).is_empty());
+
+        let text = "\
+            // spawn \"/commented-out/lines/are-invisible\"\n\
+            spawn-at-startup \"blueman-applet\"\n\
+            spawn-at-startup \"/usr/libexec/kuma-clipboard-bridge\"\n\
+            Mod+T hotkey-overlay-title=null { spawn \"kitty\"; }\n\
+            Mod+X { spawn-sh \"/usr/bin/true && echo done\"; }\n\
+            XF86AudioMute { spawn \"/usr/libexec/kuma-osd\" \"mute\"; }\n";
+        assert_eq!(
+            niri_spawn_targets(text),
+            ["/usr/libexec/kuma-clipboard-bridge".to_string(), "/usr/libexec/kuma-osd".to_string()]
+        );
+    }
+
+    /// The four states the check can meet. The dead-bind case is the one
+    /// that wrote this check: a config copied out of the image before
+    /// the last rename, whose volume keys spawned a binary the current
+    /// image does not ship, and doctor said nothing while the keys did
+    /// nothing.
+    #[test]
+    fn a_shadowing_niri_config_is_graded_by_what_its_binds_can_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let put = |rel: &str, body: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        };
+
+        // Not a niri machine: the check has nothing to grade and says
+        // nothing.
+        let found = run_niri_shadow_check(root);
+        assert!(found.is_empty());
+
+        put("etc/niri/config.kdl", "the image's config\n");
+        put("var/home/me/.config/niri/local.kdl", "");
+
+        // A niri machine with no shadow: the good state, named.
+        let found = run_niri_shadow_check(root);
+        assert_eq!(
+            found,
+            vec![(
+                Grade::Ok,
+                "niri config".into(),
+                "the session runs the image's niri config".into()
+            )]
+        );
+
+        // The image's config running again under a shadow whose every
+        // spawn resolves: staleness, not breakage.
+        put("usr/bin/blue", "");
+        put("var/home/me/.config/niri/config.kdl", "spawn-at-startup \"/usr/bin/blue\"\n");
+        let found = run_niri_shadow_check(root);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, Grade::Warn, "{:?}", found[0].2);
+        assert!(found[0].2.contains("me's niri config shadows the image's"));
+
+        // The case that matters: a stale copy binding keys to programs
+        // this image does not ship.
+        put(
+            "var/home/me/.config/niri/config.kdl",
+            "XF86AudioRaiseVolume { spawn \"/usr/libexec/lares-osd\" \"volume-up\"; }\n",
+        );
+        let found = run_niri_shadow_check(root);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, Grade::Fail, "{:?}", found[0].2);
+        assert!(found[0].2.contains("/usr/libexec/lares-osd"), "{:?}", found[0].2);
+
+        // A second account with no shadow of its own changes nothing:
+        // the check is per account, the grading is per shadow.
+        put("var/home/other/.config/niri/local.kdl", "output \"eDP-1\" { scale 1 }\n");
+        let found = run_niri_shadow_check(root);
+        assert_eq!(found.len(), 1, "only the shadowing account is graded");
     }
 }
 
