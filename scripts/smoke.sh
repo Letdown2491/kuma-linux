@@ -3168,90 +3168,82 @@ smoke_boot() {
     # account from a shell it already has.
     local want_user
     want_user=$(declared "$file" user.name)
-    if [ -z "$want_user" ]; then
-        ok "no [user] declared, so nothing to converge"
+
+    # The disk's account is the installer's answer. `kuma vm` builds a
+    # disk by installing the image, and the installer's user file
+    # deliberately shadows the declaration's: the sync clears the baked
+    # keys before sourcing the installer's, so one machine has one
+    # account, and the appliance account is the one `kuma vm --apply`
+    # reaches through. Under bib the blueprint made kuma beside the
+    # declared one; kuma's own installer answers for the disk instead.
+    # So the booted checks are about kuma, and the declared user's
+    # absence is the precedence working — pinned here so a sync-script
+    # change cannot quietly resurrect an account nothing on this disk
+    # answers for.
+    guest getent passwd kuma >/dev/null \
+        || bad "kuma-user-sync never created the installer's account"
+    ok "the installer's account exists (kuma)"
+
+    if [ -n "$want_user" ] && guest getent passwd "$want_user" >/dev/null; then
+        bad "the declared $want_user exists; the installer's file answers for a disk"
     else
-        guest getent passwd "$want_user" >/dev/null \
-            || bad "kuma-user-sync never created $want_user"
-        ok "declared user exists"
+        ok "the declared user yields to the installer's answer"
+    fi
 
-        local want_shell got_shell
-        want_shell=$(declared "$file" user.shell)
-        if [ -n "$want_shell" ]; then
-            got_shell=$(guest getent passwd "$want_user" | cut -d: -f7)
-            [ "$got_shell" = "/usr/bin/$want_shell" ] \
-                || bad "declared shell /usr/bin/$want_shell, account has ${got_shell:-none}"
-            ok "declared shell is the account's shell"
-        fi
+    local want_shell got_shell
+    want_shell=$(declared "$file" system.shell)
+    if [ -n "$want_shell" ]; then
+        got_shell=$(guest getent passwd kuma | cut -d: -f7)
+        [ "$got_shell" = "/usr/bin/$want_shell" ] \
+            || bad "the image's shell /usr/bin/$want_shell, the account has ${got_shell:-none}"
+        ok "the account carries the image's shell"
+    fi
 
-        # Groups are read from the image's own /usr/lib/kuma/user, not from
-        # the declaration, because an absent `groups` key means the schema
-        # default (wheel) while `groups = []` means none, and TOML gives
-        # this script no way to tell those apart: both read as empty.
-        # Re-deriving the default here would also put a second copy of it
-        # in a file whose whole point is not holding copies. kuma-user is
-        # what kuma-user-sync actually consumes, so this asks whether the
-        # account matches what the machine was told, and leaves
-        # declaration-to-kuma-user to the unit tests that own it.
+    got_shell=$(guest id -nG kuma)
+    case " $got_shell " in
+        *" wheel "*) ok "the appliance account is in wheel" ;;
+        *) bad "kuma is not in wheel (has: $got_shell)" ;;
+    esac
+
+    # The key that lets this machine reach the disk it built rides the
+    # installer's user file (KUMA_SSH_KEY), and the converger serves it
+    # from the same directory the declared keys use. Everything this
+    # stage does next depends on it: without it the ssh below is a
+    # password prompt.
+    guest test -f /etc/kuma/keys/kuma \
+        || bad "the vm's ssh key never reached /etc/kuma/keys/kuma"
+    ok "the vm's ssh key is served"
+
+    if [ -n "$(declared "$file" user.ssh_keys)" ]; then
+        guest test -f "/etc/kuma/keys/$want_user" \
+            || bad "declared ssh keys never reached /etc/kuma/keys/$want_user"
+        ok "declared ssh keys are served"
+    fi
+
+    if [ -n "$(declared "$file" user.autologin)" ]; then
+        # Two separate claims, and only the second one is the feature.
+        # A greeter can be configured for autologin and still not
+        # perform it: the COSMIC arm once wrote initial_session into a
+        # file that greeter does not read, and asserting the config
+        # alone would have called that a pass.
         #
-        # Parsed here rather than sourced over ssh: ssh joins its argv into
-        # one string for a remote shell to re-parse, so quotes meant for
-        # that shell are gone before it sees them. Every `guest` call in
-        # this block keeps its metacharacters on the near side for that
-        # reason.
-        #
-        # The file's existence is asserted first because `set -e` is off
-        # for this whole stage (see bad()): an unreadable file would leave
-        # the parse empty, the loop would run zero times, and this would
-        # report success having checked nothing.
-        guest test -f /usr/lib/kuma/user \
-            || bad "no /usr/lib/kuma/user in the image for kuma-user-sync to read"
-        local want_groups got_groups
-        want_groups=$(guest cat /usr/lib/kuma/user | sed -n "s/^KUMA_GROUPS='\(.*\)'\$/\1/p")
-        if [ -z "$want_groups" ]; then
-            ok "no groups declared, so none to grant"
-        else
-            got_groups=$(guest id -nG "$want_user")
-            for group in $want_groups; do
-                case " $got_groups " in
-                    *" $group "*) ;;
-                    *) bad "$want_user is not in declared group $group (has: $got_groups)" ;;
-                esac
-            done
-            ok "declared groups are granted"
-        fi
+        # Both greetd files are named because the arms write different
+        # ones: niri generates config.toml wholesale, COSMIC appends to
+        # the one cosmic-greeter.service reads. cat tolerates the
+        # absent one.
+        guest cat /etc/greetd/config.toml /etc/greetd/cosmic-greeter.toml \
+            | grep -q "user = \"$want_user\"" \
+            || bad "no greetd initial_session names $want_user"
+        ok "greetd is configured to autologin $want_user"
 
-        if [ -n "$(declared "$file" user.ssh_keys)" ]; then
-            guest test -f "/etc/kuma/keys/$want_user" \
-                || bad "declared ssh keys never reached /etc/kuma/keys/$want_user"
-            ok "declared ssh keys are served"
-        fi
-
-        if [ -n "$(declared "$file" user.autologin)" ]; then
-            # Two separate claims, and only the second one is the feature.
-            # A greeter can be configured for autologin and still not
-            # perform it: the COSMIC arm once wrote initial_session into a
-            # file that greeter does not read, and asserting the config
-            # alone would have called that a pass.
-            #
-            # Both greetd files are named because the arms write different
-            # ones: niri generates config.toml wholesale, COSMIC appends to
-            # the one cosmic-greeter.service reads. cat tolerates the
-            # absent one.
-            guest cat /etc/greetd/config.toml /etc/greetd/cosmic-greeter.toml \
-                | grep -q "user = \"$want_user\"" \
-                || bad "no greetd initial_session names $want_user"
-            ok "greetd is configured to autologin $want_user"
-
-            guest loginctl list-sessions --no-legend | awk '{print $3}' \
-                | grep -qx "$want_user" \
-                || bad "$want_user has no session, so autologin did not happen"
-            ok "autologin put $want_user in a session"
-        elif grep -q '^desktop' "$file"; then
-            # Not silence: no committed example turns autologin on, so the
-            # greetd path above is unexecuted rather than passing.
-            ok "autologin not declared here, so that path is unchecked"
-        fi
+        guest loginctl list-sessions --no-legend | awk '{print $3}' \
+            | grep -qx "$want_user" \
+            || bad "$want_user has no session, so autologin did not happen"
+        ok "autologin put $want_user in a session"
+    elif grep -q '^desktop' "$file"; then
+        # Not silence: no committed example turns autologin on, so the
+        # greetd path above is unexecuted rather than passing.
+        ok "autologin not declared here, so that path is unchecked"
     fi
 
     # Every other check in this file drives kuma from the host, which is
