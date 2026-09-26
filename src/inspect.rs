@@ -4155,10 +4155,7 @@ mod tests {
         // shell's bare-name `noctalia msg` interface — doctor's blind
         // spot by design — so the record helper is the only absolute
         // path left in the set, and this pins that.
-        assert_eq!(
-            niri_spawn_targets(NIRI_MEDIA_BINDS),
-            ["/usr/libexec/kuma-record".to_string()]
-        );
+        assert_eq!(niri_spawn_targets(NIRI_MEDIA_BINDS), ["/usr/libexec/kuma-record".to_string()]);
         assert!(niri_spawn_targets(NIRI_MENU_BIND).is_empty());
 
         let text = "\
@@ -4230,7 +4227,7 @@ mod tests {
 
         // A second account with no shadow of its own changes nothing:
         // the check is per account, the grading is per shadow.
-        put("var/home/other/.config/niri/local.kdl", "output \"eDP-1\" { scale 1 }\n");
+        put("var/home/x/.config/niri/local.kdl", "output \"eDP-1\" { scale 1 }\n");
         let found = run_niri_shadow_check(root);
         assert_eq!(found.len(), 1, "only the shadowing account is graded");
     }
