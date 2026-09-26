@@ -1637,6 +1637,35 @@ fn check_convergence(report: &mut impl FnMut(Grade, &str, String, Option<Action>
             }
         }
     }
+
+    // Convergence the daily timer deferred is a decision the machine
+    // made, and the gate's stamp is where the machine said so. Doctor is
+    // where that answer is surfaced, because the alternative is a machine
+    // whose browser silently stops updating while the timer stays green.
+    // Informational only — skipping a run on a dying battery is the gate
+    // working, never a fault — and silence is the common case: a machine
+    // that never skips is the default, not an achievement to grade.
+    if let Ok(text) = std::fs::read_to_string("/var/lib/kuma/convergence-skipped") {
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        if !lines.is_empty() {
+            // Each stamp line is "<UTC timestamp> <reason>"; the reasons
+            // are what a reader acts on, the count is how often.
+            let mut reasons: Vec<&str> =
+                lines.iter().filter_map(|l| l.split_once(' ')).map(|(_, r)| r).collect();
+            reasons.sort_unstable();
+            reasons.dedup();
+            report(
+                Grade::Ok,
+                "convergence",
+                format!(
+                    "the daily run was skipped {} time(s) since it last ran: {}",
+                    lines.len(),
+                    reasons.join("; ")
+                ),
+                None,
+            );
+        }
+    }
 }
 
 /// Whether a `stat -c %i` answer names the root of a btrfs subvolume.

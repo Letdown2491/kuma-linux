@@ -562,6 +562,11 @@ WantedBy=multi-user.target
 /// Boot-only convergence goes stale on machines that stay up: a
 /// two-week uptime means a two-week-old browser. Daily, with catch-up
 /// for machines that were asleep at the appointed hour.
+///
+/// The name is load-bearing: the timer shipped enabled as
+/// `kuma-flatpak-sync.timer`, and a machine updated into the gated daily
+/// unit keeps that enabled timer and gains the gate with it, through the
+/// `Unit=` line below retargeting what the timer fires.
 pub(crate) const FLATPAK_SYNC_TIMER: &str = r#"[Unit]
 Description=Daily Flatpak convergence
 
@@ -569,9 +574,32 @@ Description=Daily Flatpak convergence
 OnCalendar=daily
 Persistent=true
 RandomizedDelaySec=1h
+Unit=kuma-flatpak-sync-daily.service
 
 [Install]
 WantedBy=timers.target
+"#;
+
+/// The unit the daily timer fires. Deliberately not the boot service:
+/// the boot run is the convergence promise and never asks permission,
+/// and `kuma sync` starts the boot unit for the same reason. Only the
+/// timer's run passes the gate, whose skip marker its ExecStart honours.
+pub(crate) const FLATPAK_SYNC_DAILY_SERVICE: &str = r#"[Unit]
+Description=Daily Flatpak convergence, skipped on battery or a metered connection
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=1h
+StartLimitBurst=6
+
+[Service]
+Type=oneshot
+RuntimeDirectory=kuma-converge-gate
+ExecStartPre=/usr/libexec/kuma-converge-gate
+ExecStart=/usr/libexec/kuma-flatpak-sync
+Restart=on-failure
+RestartSec=2min
+CPUWeight=25
+IOWeight=25
 "#;
 
 /// Read-only btrfs snapshots of the declared subvolume, pruned to the
@@ -1074,6 +1102,15 @@ fi
 /// update line would have left the failure exactly where it was.
 pub(crate) const FLATPAK_SYNC_SCRIPT: &str = r#"#!/usr/bin/bash
 set -euo pipefail
+# The daily timer's unit runs the gate as its ExecStartPre; when the gate
+# decided to skip, it left the marker, and this run ends green having
+# done nothing. The boot unit and `kuma sync` never run the gate, and
+# the marker lives in a runtime directory systemd removes when the daily
+# unit deactivates, so for every other caller it does not exist: the
+# gate is the timer's, never the verb's.
+if [ -e /run/kuma-converge-gate/skip ]; then
+    exit 0
+fi
 declared=/usr/lib/kuma/flatpaks
 state=/var/lib/kuma/flatpaks-installed
 mkdir -p /var/lib/kuma
@@ -1090,6 +1127,70 @@ cp "$declared" "$state"
 flatpak update --system --assumeyes --noninteractive \
     || flatpak update --system --assumeyes --noninteractive --no-static-deltas
 flatpak uninstall --system --unused --assumeyes --noninteractive
+"#;
+
+/// The daily timer's gate. Decides whether NOW is a time the machine
+/// should converge, by two reads: the battery's own sysfs files and
+/// NetworkManager's Metered property. It runs as the ExecStartPre of
+/// the daily units the timers trigger — never of the boot units, and
+/// never of `kuma sync`, which starts the boot unit. The decision needs
+/// live power and network state, which is why it is not in the timer:
+/// the service is also where the retries already live.
+///
+/// Skipping is a decision, not a failure, so a skip is answered green:
+/// the gate appends the reason to the stamp (`kuma doctor` grades it as
+/// information), leaves the skip marker its unit's ExecStart checks, and
+/// exits 0. A proceed clears stale skips, because convergence is about
+/// to happen.
+///
+/// The battery threshold is kuma's own, not a knob: 20%, where uupd's
+/// measurement settled too. A declaration key would be promise surface
+/// for a number nobody asked to change.
+///
+/// Both roots are arguments so the decision table is runnable in tests:
+/// `[sysfs] [stamp] [marker]`, defaulting to the real paths.
+pub(crate) const CONVERGE_GATE_SCRIPT: &str = r#"#!/usr/bin/bash
+set -euo pipefail
+sysfs=${1:-/sys/class/power_supply}
+stamp=${2:-/var/lib/kuma/convergence-skipped}
+marker=${3:-/run/kuma-converge-gate/skip}
+mkdir -p "$(dirname "$marker")"
+rm -f "$marker"
+
+reasons=""
+for supply in "$sysfs"/*/; do
+    [ "$(cat "${supply}type" 2>/dev/null)" = "Battery" ] || continue
+    status=$(cat "${supply}status" 2>/dev/null || true)
+    capacity=$(cat "${supply}capacity" 2>/dev/null || echo 100)
+    # A machine is on battery when a battery is discharging, and its
+    # charge is that battery's own reading. Charging, full and absent
+    # supplies all mean the wall is there.
+    if [ "$status" = "Discharging" ] && [ "$capacity" -lt 20 ]; then
+        reasons="on battery (${capacity}%)"
+        break
+    fi
+done
+
+# NetworkManager's own property, not a desktop setting: kuma is
+# desktop-agnostic and NM is on every kuma image, so the same GNOME
+# toggle that pauses uupd pauses this, and niri and COSMIC machines get
+# it for free. 1 and 3 are "yes" and "guessed yes". A failed read or an
+# unknown answers no: the gate may starve a run on a bad guess, but not
+# on a missing answer.
+metered=$(busctl get-property org.freedesktop.NetworkManager \
+    /org/freedesktop/NetworkManager org.freedesktop.NetworkManager Metered 2>/dev/null \
+    | tr -dc '0-9' || true)
+case "$metered" in
+    1 | 3) reasons="${reasons:+$reasons; }on a metered connection" ;;
+esac
+
+if [ -n "$reasons" ]; then
+    mkdir -p "$(dirname "$stamp")"
+    echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') ${reasons}" >> "$stamp"
+    : > "$marker"
+    exit 0
+fi
+rm -f "$stamp"
 "#;
 
 /// Doctor prints a `remote-add` for the same address, so a move here
@@ -2710,6 +2811,11 @@ WantedBy=multi-user.target
 /// brew auto-updates its taps before upgrading.
 pub(crate) const BREW_SYNC_SCRIPT: &str = r#"#!/usr/bin/bash
 set -euo pipefail
+# The flatpak sync's marker check, word for word: the gate is the
+# timer's, never the verb's. See CONVERGE_GATE_SCRIPT.
+if [ -e /run/kuma-converge-gate/skip ]; then
+    exit 0
+fi
 brew=/home/linuxbrew/.linuxbrew/bin/brew
 [ -x "$brew" ] || exit 0
 declared=/usr/lib/kuma/brews
@@ -2754,7 +2860,8 @@ WantedBy=multi-user.target
 "#;
 
 /// Same rationale as the flatpak timer: boot-only convergence goes
-/// stale on machines that stay up.
+/// stale on machines that stay up. Same name-keeps-the-enablement
+/// trick too, retargeting the timer at the gated daily unit.
 pub(crate) const BREW_SYNC_TIMER: &str = r#"[Unit]
 Description=Daily Homebrew convergence
 
@@ -2762,9 +2869,34 @@ Description=Daily Homebrew convergence
 OnCalendar=daily
 Persistent=true
 RandomizedDelaySec=1h
+Unit=kuma-brew-sync-daily.service
 
 [Install]
 WantedBy=timers.target
+"#;
+
+/// The unit the daily brew timer fires. The gate runs as root (`+`
+/// prefix: ExecStartPre runs as User= otherwise), because the skip
+/// stamp it writes is machine state in /var/lib/kuma; the sync itself
+/// stays uid 1000 — brew refuses root, and the prefix is owned by it.
+pub(crate) const BREW_SYNC_DAILY_SERVICE: &str = r#"[Unit]
+Description=Daily Homebrew convergence, skipped on battery or a metered connection
+Wants=network-online.target
+After=network-online.target kuma-brew-setup.service
+StartLimitIntervalSec=1h
+StartLimitBurst=6
+
+[Service]
+Type=oneshot
+User=1000
+Environment=HOME=/home/linuxbrew
+RuntimeDirectory=kuma-converge-gate
+ExecStartPre=+/usr/libexec/kuma-converge-gate
+ExecStart=/usr/libexec/kuma-brew-sync
+Restart=on-failure
+RestartSec=2min
+CPUWeight=25
+IOWeight=25
 "#;
 
 pub(crate) const BREW_PROFILE_SH: &str = r#"[ -x /home/linuxbrew/.linuxbrew/bin/brew ] \
@@ -3117,6 +3249,8 @@ fn flatpak_sync(e: &mut Emitter<'_>) {
     let sync = e.stage("kuma-flatpak-sync", FLATPAK_SYNC_SCRIPT);
     let sync_service = e.stage("kuma-flatpak-sync.service", FLATPAK_SYNC_SERVICE);
     let sync_timer = e.stage("kuma-flatpak-sync.timer", FLATPAK_SYNC_TIMER);
+    let gate = e.stage("kuma-converge-gate", CONVERGE_GATE_SCRIPT);
+    let daily_service = e.stage("kuma-flatpak-sync-daily.service", FLATPAK_SYNC_DAILY_SERVICE);
     // Both stores, always present: the overrides converger treats
     // absence as "nothing to do", and an image with no declared
     // overrides is exactly the image that must take the last ones back.
@@ -3140,6 +3274,8 @@ fn flatpak_sync(e: &mut Emitter<'_>) {
     e.copy_exec(&sync, "/usr/libexec/kuma-flatpak-sync");
     e.copy(&sync_service, "/usr/lib/systemd/system/kuma-flatpak-sync.service");
     e.copy(&sync_timer, "/usr/lib/systemd/system/kuma-flatpak-sync.timer");
+    e.copy_exec(&gate, "/usr/libexec/kuma-converge-gate");
+    e.copy(&daily_service, "/usr/lib/systemd/system/kuma-flatpak-sync-daily.service");
     e.enable(&["kuma-flatpak-sync.service", "kuma-flatpak-sync.timer"]);
     // Overrides ride the same gate rather than their own. An
     // emptied [overrides] table has keys to take back, and gating
@@ -3174,6 +3310,8 @@ fn brew(e: &mut Emitter<'_>) {
     let sync = e.stage("kuma-brew-sync", BREW_SYNC_SCRIPT);
     let sync_service = e.stage("kuma-brew-sync.service", BREW_SYNC_SERVICE);
     let sync_timer = e.stage("kuma-brew-sync.timer", BREW_SYNC_TIMER);
+    let gate = e.stage("kuma-converge-gate", CONVERGE_GATE_SCRIPT);
+    let daily_service = e.stage("kuma-brew-sync-daily.service", BREW_SYNC_DAILY_SERVICE);
 
     // git-core: brew needs git at runtime to update itself.
     // tar: the setup script unpacks brew's tarball with it. fedora-bootc
@@ -3191,6 +3329,8 @@ fn brew(e: &mut Emitter<'_>) {
     e.copy_exec(&sync, "/usr/libexec/kuma-brew-sync");
     e.copy(&sync_service, "/usr/lib/systemd/system/kuma-brew-sync.service");
     e.copy(&sync_timer, "/usr/lib/systemd/system/kuma-brew-sync.timer");
+    e.copy_exec(&gate, "/usr/libexec/kuma-converge-gate");
+    e.copy(&daily_service, "/usr/lib/systemd/system/kuma-brew-sync-daily.service");
     e.enable(&["kuma-brew-setup.service", "kuma-brew-sync.service", "kuma-brew-sync.timer"]);
 }
 

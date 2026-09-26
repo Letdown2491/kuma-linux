@@ -30,6 +30,19 @@ differently. Why it changed belongs in the commit that made it.
 
 ### Added
 
+- **The daily convergence timer waits for power and a real connection.**
+  The timer that carries flatpak and brew installs fired on a sleeping
+  laptop's catch-up whether the machine was on battery or paying by the
+  megabyte on a metered connection; its run now passes a gate that reads
+  the battery's own sysfs files and NetworkManager's `Metered` property
+  (the same toggle the GNOME settings pause honours, so niri and COSMIC
+  machines get it for free) and waits below 20% battery. A skipped run
+  is a decision the machine reports, not a failure: the day's timer
+  stays green, nothing installs, and `kuma doctor` says how many runs
+  were skipped and why. Nothing to do differently — and the gate belongs
+  to the timer only: converging at boot is the promise, and `kuma sync`
+  always runs when asked.
+
 - **`kuma doctor` grades a niri config that shadows the image's.** niri
   takes `~/.config/niri/config.kdl` instead of `/etc/niri/config.kdl`
   rather than merging, so one copied file unpins every bind, startup

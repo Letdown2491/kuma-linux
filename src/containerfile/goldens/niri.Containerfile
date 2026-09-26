@@ -80,6 +80,8 @@ COPY flatpaks /usr/lib/kuma/flatpaks
 COPY --chmod=755 kuma-flatpak-sync /usr/libexec/kuma-flatpak-sync
 COPY kuma-flatpak-sync.service /usr/lib/systemd/system/kuma-flatpak-sync.service
 COPY kuma-flatpak-sync.timer /usr/lib/systemd/system/kuma-flatpak-sync.timer
+COPY --chmod=755 kuma-converge-gate /usr/libexec/kuma-converge-gate
+COPY kuma-flatpak-sync-daily.service /usr/lib/systemd/system/kuma-flatpak-sync-daily.service
 RUN systemctl enable kuma-flatpak-sync.service kuma-flatpak-sync.timer
 COPY overrides /usr/lib/kuma/overrides
 COPY kuma-flatpak-overrides.service /usr/lib/systemd/system/kuma-flatpak-overrides.service

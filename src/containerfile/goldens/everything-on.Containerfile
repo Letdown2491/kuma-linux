@@ -80,6 +80,8 @@ COPY flatpaks /usr/lib/kuma/flatpaks
 COPY --chmod=755 kuma-flatpak-sync /usr/libexec/kuma-flatpak-sync
 COPY kuma-flatpak-sync.service /usr/lib/systemd/system/kuma-flatpak-sync.service
 COPY kuma-flatpak-sync.timer /usr/lib/systemd/system/kuma-flatpak-sync.timer
+COPY --chmod=755 kuma-converge-gate /usr/libexec/kuma-converge-gate
+COPY kuma-flatpak-sync-daily.service /usr/lib/systemd/system/kuma-flatpak-sync-daily.service
 RUN systemctl enable kuma-flatpak-sync.service kuma-flatpak-sync.timer
 COPY overrides /usr/lib/kuma/overrides
 COPY kuma-flatpak-overrides.service /usr/lib/systemd/system/kuma-flatpak-overrides.service
@@ -97,6 +99,8 @@ COPY brews /usr/lib/kuma/brews
 COPY --chmod=755 kuma-brew-sync /usr/libexec/kuma-brew-sync
 COPY kuma-brew-sync.service /usr/lib/systemd/system/kuma-brew-sync.service
 COPY kuma-brew-sync.timer /usr/lib/systemd/system/kuma-brew-sync.timer
+COPY --chmod=755 kuma-converge-gate /usr/libexec/kuma-converge-gate
+COPY kuma-brew-sync-daily.service /usr/lib/systemd/system/kuma-brew-sync-daily.service
 RUN systemctl enable kuma-brew-setup.service kuma-brew-sync.service kuma-brew-sync.timer
 
 RUN systemctl enable sshd.service

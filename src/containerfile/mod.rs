@@ -2977,6 +2977,156 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
         assert!(!out.contains("brew"));
     }
 
+    /// The gate's whole decision table, run for real: a stub sysfs tree
+    /// and a stub busctl on PATH answer each case, and the stamp and
+    /// marker land in a tempdir. The table is the test plan's AC/battery/
+    /// metered matrix; each row is a machine state a laptop actually
+    /// reaches.
+    #[test]
+    fn the_convergence_gate_skips_exactly_the_states_it_should() {
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let gate = dir.path().join("kuma-converge-gate");
+        std::fs::write(&gate, CONVERGE_GATE_SCRIPT).unwrap();
+        std::fs::set_permissions(&gate, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+
+        // A stub busctl whose answer the case writes: the only thing the
+        // real one is asked for is the Metered property's value.
+        let stubs = dir.path().join("bin");
+        std::fs::create_dir(&stubs).unwrap();
+        std::fs::write(stubs.join("busctl"), "#!/bin/sh\ncat \"$STUB_ANSWER\"\n").unwrap();
+        std::fs::set_permissions(
+            stubs.join("busctl"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        let answer = dir.path().join("answer");
+        std::fs::write(&answer, "u 0").unwrap();
+
+        let battery = |status: &str, capacity: &str| -> std::path::PathBuf {
+            let sysfs = dir.path().join("sys").join(format!("{status}-{capacity}"));
+            let bat = sysfs.join("BAT1");
+            std::fs::create_dir_all(&bat).unwrap();
+            std::fs::write(bat.join("type"), "Battery").unwrap();
+            std::fs::write(bat.join("status"), status).unwrap();
+            std::fs::write(bat.join("capacity"), capacity).unwrap();
+            sysfs
+        };
+
+        let run = |sysfs: &std::path::Path| {
+            let stamp =
+                dir.path().join(format!("stamp-{}", sysfs.file_name().unwrap().to_str().unwrap()));
+            let out = Command::new(&gate)
+                .arg(sysfs)
+                .arg(&stamp)
+                .arg(
+                    dir.path()
+                        .join(format!("marker-{}", sysfs.file_name().unwrap().to_str().unwrap())),
+                )
+                .env("PATH", format!("{}:{}", stubs.display(), std::env::var("PATH").unwrap()))
+                .env("STUB_ANSWER", &answer)
+                .output()
+                .unwrap();
+            let stamped = std::fs::read_to_string(&stamp).unwrap_or_default();
+            (out.status.code().unwrap_or(-1), stamped)
+        };
+
+        // A desktop with no power_supply directory at all proceeds, and
+        // stamps nothing: the wall is the only power state it has.
+        let none = dir.path().join("sys").join("none");
+        std::fs::create_dir_all(&none).unwrap();
+        assert_eq!(run(&none), (0, String::new()));
+
+        // Discharging below the threshold: the one battery state that
+        // waits, with the reading in the reason.
+        let (code, stamped) = run(&battery("Discharging", "15"));
+        assert_eq!(code, 0, "a skip is a decision, answered green");
+        assert!(stamped.contains("on battery (15%)"), "{stamped}");
+
+        // The same battery above it runs.
+        assert_eq!(run(&battery("Discharging", "45")), (0, String::new()));
+
+        // Charging, full and unknown statuses are all the wall's answer,
+        // whatever the capacity says.
+        assert_eq!(run(&battery("Charging", "15")), (0, String::new()));
+        assert_eq!(run(&battery("Full", "80")), (0, String::new()));
+        assert_eq!(run(&battery("Unknown", "3")), (0, String::new()));
+
+        // A metered connection waits, whatever the power state.
+        std::fs::write(&answer, "u 1").unwrap();
+        let (code, stamped) = run(&battery("Full", "80"));
+        assert_eq!(code, 0);
+        assert!(stamped.contains("on a metered connection"), "{stamped}");
+        // A guessed yes is a yes; unknown (0) and a failed read are not.
+        std::fs::write(&answer, "u 3").unwrap();
+        assert!(run(&battery("Full", "80")).1.contains("metered"));
+        std::fs::write(&answer, "u 0").unwrap();
+        assert_eq!(run(&battery("Full", "80")), (0, String::new()));
+        let stamp = dir.path().join("stamp-nobusctl");
+        let nobusctl_path = "/usr/bin:/bin"; // coreutils, no stub: busctl is absent
+        let out = Command::new(&gate)
+            .arg(battery("Full", "80"))
+            .arg(&stamp)
+            .arg(dir.path().join("marker-nobusctl"))
+            .env("PATH", nobusctl_path)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code().unwrap(), 0, "a missing busctl is not a skip");
+        assert!(!stamp.exists(), "and it stamps nothing");
+
+        // Both at once: one line, both reasons.
+        std::fs::write(&answer, "u 1").unwrap();
+        let (_, stamped) = run(&battery("Discharging", "10"));
+        assert!(stamped.contains("on battery (10%)"), "{stamped}");
+        assert!(stamped.contains("on a metered connection"), "{stamped}");
+
+        // A proceed clears the skips it is about to answer.
+        let stale = dir.path().join("stale-stamp");
+        std::fs::write(&stale, "2026-09-01T00:00:00Z on battery (5%)").unwrap();
+        std::fs::write(&answer, "u 0").unwrap();
+        let _ = Command::new(&gate)
+            .arg(battery("Full", "80"))
+            .arg(&stale)
+            .arg(dir.path().join("marker-stale"))
+            .env("PATH", format!("{}:{}", stubs.display(), std::env::var("PATH").unwrap()))
+            .env("STUB_ANSWER", &answer)
+            .output()
+            .unwrap();
+        assert!(!stale.exists(), "convergence happening makes old skips stale");
+    }
+
+    /// The gate is the timer's and never the verb's: structurally, not
+    /// by convention. The timers keep their names — a machine updated
+    /// into this release keeps its enabled timer and gains the gate with
+    /// it — and fire the daily units, which are the only ones that run
+    /// the gate. The boot services and the scripts they share with
+    /// `kuma sync` carry the marker check alone, which answers nothing
+    /// when the gate never ran.
+    #[test]
+    fn the_convergence_gate_rides_the_daily_units_only() {
+        let toml = "schema_version = 1\n[packages]\nflatpak = [\"org.foo.Bar\"]\n";
+        let out = generate(&config(toml));
+        assert!(out.contains("COPY --chmod=755 kuma-converge-gate /usr/libexec/kuma-converge-gate"));
+        assert!(out.contains("COPY kuma-flatpak-sync-daily.service /usr/lib/systemd/system/"));
+        assert!(out.contains("kuma-flatpak-sync.service kuma-flatpak-sync.timer"));
+
+        // The timer keeps its name and name its new target.
+        assert!(FLATPAK_SYNC_TIMER.contains("Unit=kuma-flatpak-sync-daily.service"));
+        assert!(BREW_SYNC_TIMER.contains("Unit=kuma-brew-sync-daily.service"));
+        // The daily unit gates; the boot unit does not.
+        assert!(FLATPAK_SYNC_DAILY_SERVICE.contains("ExecStartPre=/usr/libexec/kuma-converge-gate"));
+        assert!(!FLATPAK_SYNC_SERVICE.contains("ExecStartPre"));
+        // The brew gate runs as root for the stamp's sake, though the
+        // sync itself is uid 1000.
+        assert!(BREW_SYNC_DAILY_SERVICE.contains("ExecStartPre=+/usr/libexec/kuma-converge-gate"));
+        // And both sync scripts honour the marker, so a skipped day ends
+        // green having installed nothing.
+        assert!(FLATPAK_SYNC_SCRIPT.contains("/run/kuma-converge-gate/skip"));
+        assert!(BREW_SYNC_SCRIPT.contains("/run/kuma-converge-gate/skip"));
+    }
+
     #[test]
     fn context_includes_greetd_config_for_niri() {
         let dir = tempfile::tempdir().unwrap();
