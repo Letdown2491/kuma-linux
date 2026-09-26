@@ -2079,7 +2079,21 @@ smoke_published() {
                                 break
                             fi
                             s2h_state=$(guest_retry 'systemctl show systemd-suspend-then-hibernate.service -p ActiveState --value' || true)
-                            s2h_image=$(guest_retry 'journalctl -b -k --no-pager | grep -c "PM: hibernation: hibernation entry"' || true)
+                            # The count's zero answer has to survive its
+                            # exit code: grep -c prints 0 and FAILS when
+                            # nothing matched, and the lost race this
+                            # recovery exists to answer is exactly that
+                            # -- a wake with no hibernation entry yet.
+                            # Fed through guest_retry, whose retry is
+                            # exit-code-driven, the honest zero burned
+                            # its whole 90s and came back empty, the
+                            # "0" branch below never matched, and the
+                            # recovery could not recover: every lost
+                            # race landed on the fail instead. `|| true`
+                            # inside the guest makes zero a successful
+                            # answer; a lost ssh still exits nonzero
+                            # and still retries.
+                            s2h_image=$(guest_retry 'journalctl -b -k --no-pager | grep -c "PM: hibernation: hibernation entry" || true' || true)
                             s2h_now_id=$(guest_retry cat /proc/sys/kernel/random/boot_id || true)
                             if [ -n "$s2h_now_id" ] && [ "$s2h_now_id" != "$s2h_boot_id" ]; then
                                 echo "   .. attempt $s2h_attempt woke into a reset (the same artifact the plain cycle retries)" >&2
@@ -2525,32 +2539,81 @@ smoke_published() {
 #
 # The guest reaches the runner at 10.0.2.2, which is what qemu's user
 # networking calls the host, so nothing here needs a bridge or root.
-MINIO_PORT=19000
-MINIO_KEY=kumasmoke
-MINIO_SECRET=kumasmokesecret
+# The S3 the dead-disk stage copies into and restores from. MinIO's
+# community registries stopped answering on 2026-09-23 -- unauthorized on
+# every tag and digest, on all three registries, measured -- so the
+# fixture's S3 is Garage now, pinned by digest: the v2.4.1 multi-arch
+# index, verified 2026-09-26. Garage needs its bucket made by its own CLI
+# rather than by restic's MakeBucket, so start_s3 does that dance and the
+# key it creates is an OUTPUT: the guest signs with whatever these hold,
+# which is why they are exported here instead of named as constants.
+S3_PORT=19000
 RESTIC_PASS=smoke-restic-password
+S3_IMAGE=docker.io/dxflrs/garage@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020
+S3_KEY_ID=""
+S3_SECRET=""
 
-start_minio() {
-    podman rm -f kuma-smoke-minio >/dev/null 2>&1 || true
-    podman run -d --name kuma-smoke-minio \
-        -p "127.0.0.1:$MINIO_PORT:9000" \
-        -e "MINIO_ROOT_USER=$MINIO_KEY" \
-        -e "MINIO_ROOT_PASSWORD=$MINIO_SECRET" \
-        quay.io/minio/minio server /data >/dev/null \
-        || bad "cannot start the MinIO the backup copies into"
-    # The bucket is restic's to create on init; this only waits for the
-    # server to answer at all.
+start_s3() {
+    podman rm -f kuma-smoke-s3 >/dev/null 2>&1 || true
+    local conf
+    conf=$(mktemp -d)
+    # The two secrets here are fixture material, deliberately not
+    # anybody's, the same way the smoke account's password is. The rpc
+    # one has a shape Garage enforces: 32 bytes of hex.
+    printf '%s\n' \
+        'metadata_dir = "/tmp/garage-meta"' \
+        'data_dir = "/tmp/garage-data"' \
+        'replication_factor = 1' \
+        'rpc_bind_addr = "[::]:3901"' \
+        'rpc_secret = "1111111111111111111111111111111111111111111111111111111111111111"' \
+        '[s3_api]' \
+        's3_region = "kuma"' \
+        'api_bind_addr = "[::]:3900"' \
+        'root_domain = ".s3.garage.localhost"' \
+        '[admin]' \
+        'api_bind_addr = "[::]:3909"' \
+        "admin_token = \"kumasmoke-admin\"" \
+        > "$conf/garage.toml"
+    podman run -d --name kuma-smoke-s3 \
+        -p "127.0.0.1:$S3_PORT:3900" \
+        -v "$conf/garage.toml:/etc/garage.toml:ro,Z" \
+        "$S3_IMAGE" /garage -c /etc/garage.toml server >/dev/null \
+        || bad "cannot start the S3 the backup copies into"
+    # No -f: an anonymous GET answers 403, which is still the server
+    # speaking, and that is all this wait is for.
     local waited=0
-    until curl -sf "http://127.0.0.1:$MINIO_PORT/minio/health/live" >/dev/null 2>&1; do
+    until curl -s -o /dev/null "http://127.0.0.1:$S3_PORT/" 2>/dev/null; do
         sleep 1
         waited=$((waited + 1))
-        [ $waited -lt 60 ] || bad "MinIO never came up on $MINIO_PORT"
+        [ $waited -lt 60 ] || bad "the S3 never came up on $S3_PORT"
     done
-    ok "MinIO is up on $MINIO_PORT"
+    # A fresh node serves nothing until it has a role: one zone, 2 GB of
+    # pretend disk, applied as the first layout version of a container
+    # that is always new.
+    local node
+    node=$(podman exec kuma-smoke-s3 /garage -c /etc/garage.toml status 2>/dev/null \
+        | awk '/^[0-9a-f]{16}/ {print $1; exit}')
+    [ -n "$node" ] || bad "the S3 reported no node id"
+    podman exec kuma-smoke-s3 /garage -c /etc/garage.toml layout assign -z kuma -c 2000M "$node" >/dev/null \
+        || bad "cannot stage the S3 layout"
+    podman exec kuma-smoke-s3 /garage -c /etc/garage.toml layout apply --version 1 >/dev/null \
+        || bad "cannot apply the S3 layout"
+    podman exec kuma-smoke-s3 /garage -c /etc/garage.toml bucket create kuma >/dev/null \
+        || bad "cannot create the backup bucket"
+    podman exec kuma-smoke-s3 /garage -c /etc/garage.toml key create kumasmoke >/dev/null \
+        || bad "cannot create the backup key"
+    podman exec kuma-smoke-s3 /garage -c /etc/garage.toml bucket allow --read --write --owner kuma --key kumasmoke >/dev/null \
+        || bad "cannot grant the bucket to the key"
+    S3_KEY_ID=$(podman exec kuma-smoke-s3 /garage -c /etc/garage.toml key info kumasmoke 2>/dev/null \
+        | awk '/Key ID:/ {print $3}')
+    S3_SECRET=$(podman exec kuma-smoke-s3 /garage -c /etc/garage.toml key info kumasmoke --show-secret 2>/dev/null \
+        | awk '/Secret key:/ {print $3}')
+    [ -n "$S3_KEY_ID" ] && [ -n "$S3_SECRET" ] || bad "cannot read the S3 key back"
+    ok "the S3 is up on $S3_PORT"
 }
 
-stop_minio() {
-    podman rm -f kuma-smoke-minio >/dev/null 2>&1 || true
+stop_s3() {
+    podman rm -f kuma-smoke-s3 >/dev/null 2>&1 || true
 }
 
 # A declaration that backs up, derived from the committed one rather than
@@ -2563,7 +2626,7 @@ dead_disk_declaration() {
 
 [backup]
 enable = true
-repo = "s3:http://10.0.2.2:$MINIO_PORT/kuma"
+repo = "s3:http://10.0.2.2:$S3_PORT/kuma"
 secret = "backup"
 interval = "daily"
 network_connections = true
@@ -2594,8 +2657,8 @@ smoke_dead_disk() {
     local secret="$dir/restore.env"
 
     mkdir -p "$dir"
-    start_minio
-    trap 'stop_minio' EXIT
+    start_s3
+    trap 'stop_s3' EXIT
 
     dead_disk_declaration "$decl"
     echo "   .. building an image that declares a backup"
@@ -2607,10 +2670,10 @@ smoke_dead_disk() {
     # is given. It names the repository because a machine being restored
     # has no declaration yet.
     cat > "$secret" <<ENV
-RESTIC_REPOSITORY=s3:http://10.0.2.2:$MINIO_PORT/kuma
+RESTIC_REPOSITORY=s3:http://10.0.2.2:$S3_PORT/kuma
 RESTIC_PASSWORD=$RESTIC_PASS
-AWS_ACCESS_KEY_ID=$MINIO_KEY
-AWS_SECRET_ACCESS_KEY=$MINIO_SECRET
+AWS_ACCESS_KEY_ID=$S3_KEY_ID
+AWS_SECRET_ACCESS_KEY=$S3_SECRET
 ENV
 
     dead_disk_install "$tag" "$dir" "$raw" "$user" "$pass" "" || return 1
@@ -2625,7 +2688,7 @@ ENV
     dead_disk_install "$tag" "$dir" "$raw" "$user" "$pass" "$secret" || return 1
     dead_disk_run "$dir" "$raw" "$log" "$port" "$user" "$pass" verify || return 1
 
-    stop_minio
+    stop_s3
     trap - EXIT
     [ $KEEP -eq 1 ] || sudo rm -rf "$dir"
 }
@@ -2701,7 +2764,7 @@ dead_disk_run() {
         -serial "file:$log" &
     local qemu=$!
     # shellcheck disable=SC2064
-    trap "kill $qemu 2>/dev/null || true; stop_minio" EXIT
+    trap "kill $qemu 2>/dev/null || true; stop_s3" EXIT
 
     #
     # ServerAlive*, because this stage now asks a machine to disappear on
@@ -2755,8 +2818,8 @@ dead_disk_run() {
         sudoq "install -d -m 0700 /var/lib/kuma/secrets" || bad "cannot make the secrets directory"
         guest "cat > /tmp/backup.env" <<ENV || bad "cannot stage the credential"
 RESTIC_PASSWORD=$RESTIC_PASS
-AWS_ACCESS_KEY_ID=$MINIO_KEY
-AWS_SECRET_ACCESS_KEY=$MINIO_SECRET
+AWS_ACCESS_KEY_ID=$S3_KEY_ID
+AWS_SECRET_ACCESS_KEY=$S3_SECRET
 ENV
         sudoq "install -m 0600 /tmp/backup.env /var/lib/kuma/secrets/backup.env" \
             || bad "cannot install the credential"
@@ -3229,7 +3292,7 @@ if [ $DEAD_DISK -eq 1 ]; then
         printf '\n   a dead disk is recoverable\n'
         exit 0
     fi
-    stop_minio
+    stop_s3
     note "summary"
     show_warnings
     printf '\n   FAIL: a dead disk is NOT recoverable\n'
