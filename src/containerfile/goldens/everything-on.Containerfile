@@ -19,7 +19,9 @@ RUN out=$(HOME=/tmp NOCTALIA_CONFIG_HOME=/usr/lib/kuma noctalia config export me
                  printf '%s\n' "$out"; \
                  printf '%s' "$out" | grep -q '/usr/share/backgrounds/kuma' \
                  && printf '%s' "$out" | grep -q 'timeout = 900' \
-                 && printf '%s' "$out" | grep -q 'builtin_ids = \[ "kitty"'
+                 && printf '%s' "$out" | grep -q 'builtin_ids = \[ "kitty"' \
+                 && printf '%s' "$out" | grep -A1 '^\[weather\]' | grep -q 'enabled = false' \
+                 && printf '%s' "$out" | grep -A1 '^\[plugins\]' | grep -q 'auto_update = "none"'
 COPY kitty.conf /etc/xdg/kitty/kitty.conf
 RUN rc=0; kitty +runpy "import sys; from kitty.config import load_config; bad = []; load_config('/etc/xdg/kitty/kitty.conf', accumulate_bad_lines=bad); sys.exit('malformed kitty.conf lines: %s' % bad if bad else 0)" 2>/tmp/kitty.err || rc=$?; \
     cat /tmp/kitty.err >&2; \

@@ -25,6 +25,26 @@ differently. Why it changed belongs in the commit that made it.
   aside, which is enough because the image's config ends with an include
   of the account's `local.kdl`: the machine's own deltas survive.
 
+### Changed
+
+- **A machine that said nothing about weather stops calling weather
+  vendors.** The shell's baked config now ships `[weather] enabled =
+  false`, `[location] auto_locate = false` and `[plugins] auto_update =
+  "none"`: a machine whose person never mentioned weather still
+  geolocated itself by IP, called api.open-meteo.com on every login and
+  retried every thirty seconds while the network was still coming up,
+  and git-fetched two plugin repositories from github.com at startup —
+  eight warnings in the first minute of a fresh offline session,
+  measured. This is the same argument the community-template setting
+  already makes, applied to the shell's other startup calls: a desktop
+  that works offline should not call a vendor to render nothing, and an
+  image-declared desktop does not auto-run third-party git repos without
+  being asked. Everything disabled here is one settings toggle away per
+  machine, and a machine that turns weather on is right to. The build's
+  merged-export assert carries the two new values. Nothing a reader has
+  to do changes; the weather and location warnings leave the journal of
+  a machine that never asked for them.
+
 ## v44.0.1 (2026-09-22)
 
 ### Fixed

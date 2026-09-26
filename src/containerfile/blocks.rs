@@ -2138,6 +2138,25 @@ builtin_ids = [ "kitty", "gtk3", "gtk4" ]
 # works offline should not call a vendor to render nothing.
 enable_community_templates = false
 
+# The same argument, for the shell's other startup calls to the network.
+# A machine whose person never mentioned weather still geolocated itself
+# and called a weather vendor on every login, and retried the call every
+# thirty seconds whenever the answer was no network yet — measured in the
+# journal of a fresh session, eight warnings in the first minute. The
+# plugin repos are git fetches to github.com at startup besides; on an
+# image-declared desktop, auto-running third-party git repos is not
+# kuma's call to make silently. Turning these off is the image stating
+# its default and the settings UI re-enabling any of them per machine,
+# the same shape as every other line in this file.
+[weather]
+enabled = false
+
+[location]
+auto_locate = false
+
+[plugins]
+auto_update = "none"
+
 [shell]
 font_family = "Noto Sans"
 
@@ -2859,7 +2878,7 @@ fn desktop_niri(e: &mut Emitter<'_>) {
     // failing anywhere. This asks the binary what it merged and
     // greps for two things kuma put there.
     e.raw(
-        "RUN out=$(HOME=/tmp NOCTALIA_CONFIG_HOME=/usr/lib/kuma noctalia config export merged); \\\n                 printf '%s\\n' \"$out\"; \\\n                 printf '%s' \"$out\" | grep -q '/usr/share/backgrounds/kuma' \\\n                 && printf '%s' \"$out\" | grep -q 'timeout = 900' \\\n                 && printf '%s' \"$out\" | grep -q 'builtin_ids = \\[ \"kitty\"'\n",
+        "RUN out=$(HOME=/tmp NOCTALIA_CONFIG_HOME=/usr/lib/kuma noctalia config export merged); \\\n                 printf '%s\\n' \"$out\"; \\\n                 printf '%s' \"$out\" | grep -q '/usr/share/backgrounds/kuma' \\\n                 && printf '%s' \"$out\" | grep -q 'timeout = 900' \\\n                 && printf '%s' \"$out\" | grep -q 'builtin_ids = \\[ \"kitty\"' \\\n                 && printf '%s' \"$out\" | grep -A1 '^\\[weather\\]' | grep -q 'enabled = false' \\\n                 && printf '%s' \"$out\" | grep -A1 '^\\[plugins\\]' | grep -q 'auto_update = \"none\"'\n",
     );
     e.copy(&kitty, "/etc/xdg/kitty/kitty.conf");
     // kitty skips settings it doesn't recognise and starts anyway, so a

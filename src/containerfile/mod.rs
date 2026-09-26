@@ -2613,6 +2613,15 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
             3,
             "lock, screen-off, nightlight"
         );
+        // The offline defaults: a machine nobody said anything about
+        // still geolocated itself, called a weather vendor, and git
+        // fetched two plugin repos from github on every login, all
+        // failing while the network came up. The keys are ones the
+        // shell's own validator accepts, and the build's merged-export
+        // assert re-checks both against the real binary.
+        assert!(KUMA_NOCTALIA.contains("[weather]\nenabled = false"));
+        assert!(KUMA_NOCTALIA.contains("[plugins]\nauto_update = \"none\""));
+        assert!(KUMA_NOCTALIA.contains("[location]\nauto_locate = false"));
         // `enabled = true` was not enough, and a booted machine is how
         // that was found: both behaviors were dropped at registration
         // for want of an `action`, on an image whose config validated
