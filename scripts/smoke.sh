@@ -3052,9 +3052,25 @@ smoke_boot() {
         || bad "disk build failed"
     ok "disk built"
 
+    # UEFI, because the disk is a kuma install: bootc images are
+    # UEFI-only, and a plain qemu invocation boots SeaBIOS, which sat
+    # there silent for 420s while the disk was fine. The published stage
+    # boots the same kind of disk with this firmware pair; the find and
+    # the split are its, so there is one account of where firmware
+    # lives.
+    local ovmf ovmf_code ovmf_vars
+    ovmf=$(find_ovmf) \
+        || bad "no OVMF firmware; an installed disk is UEFI and will not boot on SeaBIOS"
+    ovmf_code=${ovmf%% *}
+    ovmf_vars=${ovmf##* }
+    cp "$ovmf_vars" "$dir/OVMF_VARS.fd" || bad "cannot stage the OVMF vars"
+
     env LIBGL_ALWAYS_SOFTWARE=1 qemu-system-x86_64 \
         -enable-kvm -cpu host -smp 4 -m 4096 \
-        -drive "file=$disk,if=virtio" \
+        -machine q35 \
+        -drive "if=pflash,format=raw,readonly=on,file=$ovmf_code" \
+        -drive "if=pflash,format=raw,file=$dir/OVMF_VARS.fd" \
+        -drive "file=$disk,if=virtio,format=qcow2" \
         -device "$QEMU_VGA" -display "$QEMU_DISPLAY" \
         -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$port-:22" \
         -serial "file:$log" &
