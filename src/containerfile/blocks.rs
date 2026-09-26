@@ -2049,6 +2049,17 @@ read -r _
 /// whole life of that script the keys adjusted silently — the change a
 /// person can see was missing, which is the only part of a volume key
 /// there is.
+///
+/// Titles are not decoration here. niri shows EVERY bind on the
+/// Important Hotkeys overlay and generates the label from the action, so
+/// an untitled `spawn` advertises itself as its own command line: the
+/// clipboard bind read as its whole `sh -c` pipeline
+/// on the first screen of a new machine. The four worth naming are
+/// named, and the media keys are hidden outright — they are printed on
+/// the keyboard, and ten of them crowd out everything worth reading.
+/// The binds are spliced INTO the stock `binds {}` section during the
+/// merge (niri rejects a second binds node) while the stock
+/// wpctl/brightnessctl lines are sed-stripped.
 pub(crate) const NIRI_MEDIA_BINDS: &str = r#"    XF86AudioRaiseVolume allow-when-locked=true hotkey-overlay-title=null { spawn "noctalia" "msg" "volume-up"; }
 
     XF86AudioLowerVolume allow-when-locked=true hotkey-overlay-title=null { spawn "noctalia" "msg" "volume-down"; }
@@ -2386,14 +2397,6 @@ pub(crate) const NIRI_STOCK_ORCA: &str = r#"Super+Alt+S allow-when-locked=true h
 pub(crate) const NIRI_STOCK_LOCK: &str =
     r#"Super+Alt+L hotkey-overlay-title="Lock the Screen: swaylock" { spawn "swaylock"; }"#;
 pub(crate) const NIRI_LOCK_BIND: &str = r#"Super+Alt+L hotkey-overlay-title="Lock the Screen" { spawn "noctalia" "msg" "session" "lock"; }"#;
-
-/// Titles are not decoration here. niri shows EVERY bind on the
-/// Important Hotkeys overlay and generates the label from the action, so
-/// an untitled `spawn` advertises itself as its own command line: the
-/// clipboard bind read as its whole `sh -c` pipeline
-/// on the first screen of a new machine. The four worth naming are
-/// named, and the media keys are hidden outright — they are printed on
-/// the keyboard, and ten of them crowd out everything worth reading.
 
 /// GTK theme settings travel two roads: Wayland-native apps read
 /// gsettings (the dconf defaults cover those), but X11/XWayland GTK apps
