@@ -2286,16 +2286,109 @@ fn vm(tag: &str, output: &Path, no_run: bool, rebuild: bool, apply: bool) -> Res
 
 fn build_disk(tag: &str, output: &Path) -> Result<()> {
     let local_id = sync_image_to_root(tag, output)?;
-    let bib_config = output.join("config.toml");
-    std::fs::write(
-        &bib_config,
-        bib_config_toml(vm_ssh_key(output).as_deref(), image_shell(tag).as_deref()),
+    // What bib used to bake and the installer now answers for: a
+    // convenience account on the console — name and password kuma,
+    // wheel so it can escalate, the image's shell so a declaration
+    // saying fish gets fish — and the key that lets this machine reach
+    // the disk it built. The declared [user] is a hardware story and
+    // stays out of it: disks are not published artifacts, and the smoke
+    // test and `kuma vm --run` both speak to this account by name.
+    let account = install::Account {
+        name: "kuma".to_string(),
+        password_hash: hash_password("kuma")?,
+        groups: vec!["wheel".to_string()],
+        shell: image_shell(tag),
+    };
+    let ssh_key = vm_ssh_key(output);
+    let mut required = partition::REQUIRED_TOOLS.to_vec();
+    required.push(("qemu-img", "qemu-img"));
+    let missing = partition::missing_tools(&required, partition::TOOL_DIRS);
+    if !missing.is_empty() {
+        bail!(
+            "cannot build a disk: {} missing\n  {}\n\n\
+             Building partitions and formats the image, and these are what does it.",
+            if missing.len() == 1 { "a tool is" } else { "tools are" },
+            missing.join("\n  ")
+        );
+    }
+    // Sparse, so the host pays nothing up front — the same deal the bib
+    // qcow2 had. 20 GiB is the headroom bib's [customizations.filesystem]
+    // named: image updates transiently need a few GB in the guest, and
+    // the root takes what the disk has left over.
+    let raw = output.join("disk.raw");
+    std::fs::File::create(&raw)
+        .with_context(|| format!("cannot create {}", raw.display()))?
+        .set_len(20 * 1024 * 1024 * 1024)
+        .with_context(|| format!("cannot size {}", raw.display()))?;
+    let mut root = host::for_root()?;
+    run_install(
+        &mut root,
+        &raw,
+        tag,
+        tag,
+        &account,
+        install::DEFAULT_HOSTNAME,
+        ssh_key.as_deref(),
+        false,
+        None,
+        None,
+        &partition::Sizes::DEFAULT,
+        false,
     )?;
-    println!("Building qcow2 with bootc-image-builder (this takes a few minutes)...");
-    run_bib(output, &bib_config, "qcow2", tag, &[])?;
+    println!("Converting to qcow2 (this takes a minute)...");
+    let qcow2_dir = output.join("qcow2");
+    std::fs::create_dir_all(&qcow2_dir)
+        .with_context(|| format!("cannot create {}", qcow2_dir.display()))?;
+    let disk = qcow2_dir.join("disk.qcow2");
+    host_output(&["qemu-img", "convert", "-O", "qcow2", path_str(&raw)?, path_str(&disk)?])
+        .with_context(|| format!("cannot convert {} to qcow2", raw.display()))?;
+    // The raw intermediate has the whole system in it and the qcow2 now
+    // does too; keeping both doubles the output directory for nothing.
+    std::fs::remove_file(&raw).ok();
     // Stamp which image this disk came from, so a later `kuma vm` can
     // warn when the image has moved on and the disk is silently stale.
     std::fs::write(output.join("image-id"), &local_id)?;
+    Ok(())
+}
+
+/// The shared half of every install: the account, hostname and install
+/// script written through the root runner, and the script run against
+/// the target. `kuma install` wraps this with its interview and its
+/// objections; `kuma vm` calls it directly with the fixed answers a
+/// disk for this machine implies — no encryption, no swapfile, the
+/// default partition sizes, no restore.
+#[allow(clippy::too_many_arguments)]
+fn run_install(
+    root: &mut host::ForRoot,
+    disk: &Path,
+    image: &str,
+    updates: &str,
+    account: &install::Account,
+    hostname: &str,
+    ssh_key: Option<&str>,
+    encrypt: bool,
+    passphrase: Option<&str>,
+    swap_mib: Option<u64>,
+    sizes: &partition::Sizes,
+    restore: bool,
+) -> Result<()> {
+    let disk_bytes = std::fs::metadata(disk)
+        .map(|meta| meta.len())
+        .with_context(|| format!("cannot size the target {}", disk.display()))?;
+    let layout = partition::plan(disk_bytes, encrypt, sizes)
+        .with_context(|| format!("cannot install to {}", disk.display()))?;
+    root.credential("kuma-user", &install::user_file(account, ssh_key))?;
+    root.file("kuma-hostname", &format!("{hostname}\n"))?;
+    root.file("Containerfile", &install::install_containerfile(image, account, restore))?;
+    let script = root.file("install", &partition::install_script(&layout, encrypt, swap_mib))?;
+    note("Partitioning, formatting and installing (this destroys the target)...");
+    let disk_str = path_str(disk)?;
+    let ctx = path_str(root.path())?;
+    let args = [disk_str, ctx, updates];
+    match passphrase {
+        Some(passphrase) => root.run_stdin(&script, &args, &format!("{passphrase}\n"))?,
+        None => root.run(&script, &args)?,
+    }
     Ok(())
 }
 
@@ -3312,8 +3405,6 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     let account = install::ask_account(user, groups, shell)?;
     let hostname = install::ask_hostname(hostname)?;
     let mut root = host::for_root()?;
-    root.credential("kuma-user", &install::user_file(&account))?;
-    root.file("kuma-hostname", &format!("{hostname}\n"))?;
     // The restore file is read and checked here, before anything is
     // written to a disk. A restore that cannot work is worth finding out
     // about while the old machine's data is still the only copy.
@@ -3326,10 +3417,6 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         root.credential("kuma-restore-secret", &text)?;
         root.file("kuma-restore-request", "requested by kuma install\n")?;
     }
-    root.file(
-        "Containerfile",
-        &install::install_containerfile(image, &account, restore.is_some()),
-    )?;
 
     // Said before anything is written, and only when it can be known
     // for free: reading the baked declaration means running the image,
@@ -3368,7 +3455,6 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         let scratch = tempfile::tempdir().context("cannot create scratch directory")?;
         sync_image_to_root(image, scratch.path())?;
     }
-    let script = root.file("install", &partition::install_script(&layout, encrypt, swap_mib))?;
 
     // Read before, compared after. Installing to a file leaves a boot
     // entry in this machine's firmware naming a partition inside that
@@ -3377,13 +3463,20 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     // the target is a real disk, where the entry is the point.
     let efi_before = if to_file { host_output(&["efibootmgr"]).ok() } else { None };
 
-    note("Partitioning, formatting and installing (this destroys the target)...");
-    let ctx = path_str(root.path())?.to_string();
-    let args = [disk_str, ctx.as_str(), updates];
-    match &passphrase {
-        Some(passphrase) => root.run_stdin(&script, &args, &format!("{passphrase}\n"))?,
-        None => root.run(&script, &args)?,
-    }
+    run_install(
+        &mut root,
+        disk,
+        image,
+        updates,
+        &account,
+        &hostname,
+        None,
+        encrypt,
+        passphrase.as_deref(),
+        swap_mib,
+        &sizes,
+        restore.is_some(),
+    )?;
 
     let reboot = Action::new(
         "reboot",
@@ -3819,57 +3912,6 @@ fn image_shell(tag: &str) -> Option<String> {
 
 /// `pubkey` and `shell` are both optional and both omitted entirely when
 /// absent, never emitted empty.
-fn bib_config_toml(pubkey: Option<&str>, shell: Option<&str>) -> String {
-    // Only what bib actually supports for qcow2. It rejects anything else
-    // with "blueprint validation failed for image type qcow2: <key>: not
-    // supported" and then builds the disk regardless, so an unsupported
-    // key does nothing but print an alarming line into every VM build,
-    // and it reports one key at a time, so they hid behind each other.
-    //
-    // Both keys that used to be here already had working replacements
-    // elsewhere, which is why nobody noticed they were inert:
-    //   hostname  the image writes /etc/hostname itself, which is what
-    //             beats the initrd's early hostname (the ISO is a
-    //             different path and keeps its kickstart `network
-    //             --hostname=`, which Anaconda does honor).
-    //   timezone  boot_disk passes it through -fw_cfg and
-    //             kuma-vm-timezone adopts it at boot, which exists
-    //             precisely because bib ignores the blueprint key.
-    let mut out = String::from(
-        "[customizations]\n\n[[customizations.user]]\nname = \"kuma\"\npassword = \"kuma\"\ngroups = [\"wheel\"]\n",
-    );
-    if let Some(key) = pubkey {
-        // Escaped rather than interpolated: a public key's trailing
-        // comment is free text from whenever it was generated, and one
-        // quote in it would otherwise produce a blueprint bib cannot
-        // parse.
-        let value = toml::Value::String(key.trim().to_string());
-        out.push_str(&format!("key = {value}\n"));
-    }
-    // What the image says accounts on it should get. `[system].shell`
-    // exists precisely for the image that declares no [user] — which is
-    // every published one and every committed example — so a disk built
-    // from a declaration saying `shell = "fish"` handing back a bash
-    // login is the one case the field was invented to cover, failing.
-    //
-    // `kuma install` already honors it, through the converger sourcing
-    // the baked /usr/lib/kuma/user. The bib-made convenience account
-    // never went near that path, so it needs telling directly.
-    //
-    // The name is validated by `image_shell`, which is where that has to
-    // happen: `--tag` can name an image kuma did not build, so "the
-    // build already ran `test -x /usr/bin/<shell>`" is true of kuma's
-    // own images and of nothing else.
-    if let Some(shell) = shell {
-        let value = toml::Value::String(format!("/usr/bin/{shell}"));
-        out.push_str(&format!("shell = {value}\n"));
-    }
-    // Headroom for `kuma vm --apply`: image updates transiently need a few
-    // GB in the guest. Sparse qcow2, so the host pays nothing up front.
-    out.push_str("\n[[customizations.filesystem]]\nmountpoint = \"/\"\nminsize = \"20 GiB\"\n");
-    out
-}
-
 /// The host's IANA timezone, from the /etc/localtime symlink. None when
 /// the link is absent (host on UTC) or oddly shaped — the guest then just
 /// stays on UTC, which is also what a wrong guess would deserve.
@@ -4617,45 +4659,6 @@ mod tests {
         assert_eq!(super::short("sha256:abc"), "sha256:abc");
     }
 
-    /// bib rejects unsupported blueprint keys for qcow2 and then builds
-    /// the disk anyway, so an inert key costs nothing but a "blueprint
-    /// validation failed" line in every VM build. It reports one key at a
-    /// time, which is how hostname and timezone hid behind each other
-    /// until the smoke tests started reading the output. Both look
-    /// obviously correct and would be re-added on sight, and both already
-    /// have working replacements (/etc/hostname in the image; -fw_cfg and
-    /// A disk built from an image that declares a shell logs you into it.
-    ///
-    /// `[system].shell` exists for the image with no `[user]`, which is
-    /// every published image and every committed example. `kuma install`
-    /// honored it and `kuma vm` did not, so `examples/niri.toml` says
-    /// `shell = "fish"` and its VM handed back bash — the exact case the
-    /// field was added for.
-    #[test]
-    fn a_vm_disk_honors_the_shell_its_image_declares() {
-        let out = super::bib_config_toml(None, Some("fish"));
-        assert!(out.contains("shell = \"/usr/bin/fish\""), "{out}");
-        // Omitted, never empty: bib treats an empty shell as a shell.
-        assert!(!super::bib_config_toml(None, None).contains("shell ="));
-        // And it is the account's key, so it has to sit inside the user
-        // table rather than after the filesystem block that follows it.
-        let at = out.find("shell =").unwrap();
-        assert!(at < out.find("[[customizations.filesystem]]").unwrap(), "{out}");
-    }
-
-    /// kuma-vm-timezone at boot), so the absence is pinned here.
-    #[test]
-    fn vm_config_asks_bib_for_nothing_it_refuses() {
-        let out = super::bib_config_toml(None, None);
-        assert!(!out.contains("hostname"), "bib rejects it for qcow2");
-        assert!(!out.contains("timezone"), "bib rejects it for qcow2");
-        // and still carries what bib does support
-        assert!(out.contains("[[customizations.user]]"));
-        assert!(out.contains("minsize = \"20 GiB\""));
-        // no key to inject means no key line at all, not an empty one
-        assert!(!out.contains("key ="));
-    }
-
     /// XFS refuses a duplicate UUID and osbuild pins UUIDs, so the two
     /// together made one automounted disk poison every later build. The
     /// choice is pinned here because it reads like a preference and is
@@ -4683,19 +4686,6 @@ mod tests {
             super::loop_mounts_in(mountinfo),
             ["/run/media/mira/root", "/run/media/mira/boot"]
         );
-    }
-
-    /// A public key's trailing comment is free text fixed at the moment
-    /// the key was generated, so it can hold anything a hostname or a
-    /// `-C` once held, quotes included. Interpolating it into the
-    /// blueprint would hand bib a file it cannot parse, and the failure
-    /// would surface as a disk build dying rather than as a bad comment.
-    #[test]
-    fn a_pubkey_comment_cannot_break_the_blueprint() {
-        let hostile = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 a \"quoted\\name\"\n";
-        let out = super::bib_config_toml(Some(hostile), None);
-        let parsed: toml::Value = toml::from_str(&out).expect("blueprint stays valid TOML");
-        assert_eq!(parsed["customizations"]["user"][0]["key"].as_str().unwrap(), hostile.trim());
     }
 
     #[test]

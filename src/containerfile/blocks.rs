@@ -1317,6 +1317,21 @@ if [ -f /var/lib/kuma/hostname ]; then
 fi
 
 [ -n "${KUMA_USER:-}" ] || exit 0
+
+# Written by the installs `kuma vm` performs: the key that lets the
+# machine running the build reach the disk it built. It lands in
+# /etc/kuma/keys/$KUMA_USER — the directory AuthorizedKeysFile already
+# serves (see SSHD_KUMA_KEYS below) — rather than in the account's own
+# authorized_keys, which stays the user's to edit or delete. A file
+# written here at boot is a local modification, which is what survives
+# the merge: the same rule the hostname block above runs on. Rewritten
+# every boot rather than only at account creation, so it repairs itself
+# the way the hostname does.
+if [ -n "${KUMA_SSH_KEY:-}" ]; then
+    mkdir -p /etc/kuma/keys
+    echo "$KUMA_SSH_KEY" > "/etc/kuma/keys/$KUMA_USER"
+fi
+
 if ! id -u "$KUMA_USER" &>/dev/null; then
     args=(-m)
     [ -n "${KUMA_SHELL:-}" ] && args+=(-s "$KUMA_SHELL")

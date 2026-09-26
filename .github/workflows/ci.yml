@@ -265,12 +265,13 @@ jobs:
   #
   # That makes it the only place an unreleased change to install-time or
   # first-boot behaviour can be tested at all. The published jobs test an
-  # artifact that by definition cannot contain it, and the boot job above
-  # uses bootc-image-builder disks, which are ext4: every path that only
-  # runs on a btrfs root does nothing there, so a broken converger and a
-  # working one look identical. It is also where the ordering-cycle
-  # assertion runs, and systemd resolves a cycle by deleting a job, which
-  # on an ext4 disk would go unnoticed.
+  # artifact that by definition cannot contain it. The boot job used to be
+  # the weaker sibling here: its disks came out of bootc-image-builder and
+  # were ext4, so every path that only runs on a btrfs root did nothing
+  # and a broken converger looked identical to a working one. Since the
+  # qcow2 exit, `kuma vm` builds its disks with kuma's own installer, so
+  # the boot job's disks are btrfs-root like a real machine and the
+  # assertions below run for real there too.
   #
   # It lived in published.yml until 0.14 and was called `fix-verification`
   # there, a name from the one fix it was written for. Being in that file

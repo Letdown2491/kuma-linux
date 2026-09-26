@@ -6,6 +6,26 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+### Changed
+
+- **`kuma vm` disks are built by kuma's own installer, and boot a btrfs
+  root.** The disk half of `kuma vm` stopped handing the image to the
+  frozen bootc-image-builder container (archived upstream 2026-06-18) and
+  instead installs it the way `kuma install` installs a machine: the same
+  partition layout, the same script, against a sparse raw file reached
+  through a loop device, converted to qcow2 at the same
+  `qcow2/disk.qcow2` path as before. Nothing to do differently — the
+  verb, its flags and the output location are unchanged. What a reader
+  gets: a VM disk that is laid out like the machine `kuma install` writes
+  instead of an ext4 image, so the daily boot checks exercise the same
+  snapshot, subvolume and converger paths real machines run; and the
+  last load-bearing use of the frozen container is gone from disk builds
+  (its pinned image still builds the deprecated `kuma iso` default, which
+  flips to `--live` in 45.0.0). The convenience account on the console is
+  unchanged — name and password `kuma`, wheel — and still trusts the
+  host's ssh key, now delivered through the account file the first-boot
+  converger reads rather than a bib blueprint.
+
 ## v44.1.0 (2026-09-25)
 
 ### Added

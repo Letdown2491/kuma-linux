@@ -104,7 +104,7 @@ pub struct Account {
 /// than a new one: the converger gains a second source, not a second
 /// parser, and a machine installed this way is indistinguishable at boot
 /// from one whose declaration named the account.
-pub fn user_file(account: &Account) -> String {
+pub fn user_file(account: &Account, ssh_key: Option<&str>) -> String {
     let mut out = format!("KUMA_USER='{}'\n", account.name);
     // Same key the baked declaration writes, so the converger cannot
     // tell the two apart. Absent rather than empty when unset: the sync
@@ -117,6 +117,20 @@ pub fn user_file(account: &Account) -> String {
         out.push_str(&format!("KUMA_GROUPS='{}'\n", account.groups.join(" ")));
     }
     out.push_str(&format!("KUMA_PASSWORD_HASH='{}'\n", account.password_hash));
+    // The one answer a VM disk needs that the image cannot carry: the
+    // key that lets the machine running the build reach the disk it
+    // built. Real installs never name one — a person installs from a
+    // terminal and keeps their own keys — so the field stays empty
+    // everywhere else and the converger's handler never fires.
+    //
+    // A public key's comment is free text, and this file is sourced by
+    // bash: a raw quote would end the value and swallow the rest of the
+    // file. The standard single-quote escape keeps the key byte-for-byte
+    // what sshd should see.
+    if let Some(key) = ssh_key {
+        let escaped = key.trim().replace('\'', "'\\''");
+        out.push_str(&format!("KUMA_SSH_KEY='{escaped}'\n"));
+    }
     out
 }
 
@@ -928,7 +942,7 @@ mod tests {
     /// which is the exact failure this verb exists to prevent.
     #[test]
     fn the_written_file_is_what_user_sync_sources() {
-        let text = user_file(&account());
+        let text = user_file(&account(), None);
         assert!(text.contains("KUMA_USER='mira'"));
         assert!(text.contains("KUMA_GROUPS='wheel'"));
         assert!(text.contains("KUMA_PASSWORD_HASH='$6$abc$def'"));
@@ -936,11 +950,31 @@ mod tests {
         // Unset means absent, not empty: the sync script treats an empty
         // KUMA_SHELL as set and would pass useradd nothing.
         let bare = Account { shell: None, ..account() };
-        assert!(!user_file(&bare).contains("KUMA_SHELL"));
+        assert!(!user_file(&bare, None).contains("KUMA_SHELL"));
         // Shell-sourceable: one KEY='value' per line, nothing else.
         for line in text.lines() {
             assert!(line.contains("='"), "not a shell assignment: {line}");
         }
+    }
+
+    /// A public key's trailing comment is free text fixed at the moment
+    /// the key was generated, so it can hold anything a hostname or a
+    /// `-C` once held, quotes included. The user file is sourced by the
+    /// converger with set -euo pipefail, so a raw quote does not stop at
+    /// looking wrong — it swallows the rest of the file, and the machine
+    /// comes up with no account. (The old bib path had the same test
+    /// against TOML; the guarantee moved here with the file.)
+    #[test]
+    fn a_pubkey_comment_cannot_break_the_user_file() {
+        let hostile = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 a 'quoted\\name'";
+        let text = user_file(&account(), Some(hostile));
+        // Escaped, not raw: the value survives sourcing with its quote.
+        let sourced = format!("{}\necho \"$KUMA_SSH_KEY\"\n", text);
+        let got = std::process::Command::new("bash").arg("-c").arg(&sourced).output().unwrap();
+        assert!(got.status.success());
+        assert_eq!(String::from_utf8(got.stdout).unwrap().trim(), hostile);
+        // And a VM that names no key writes no line at all.
+        assert!(!user_file(&account(), None).contains("KUMA_SSH_KEY"));
     }
 
     /// A mounted partition of the target is the one thing between this

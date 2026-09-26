@@ -17,9 +17,10 @@ test passed.
 `--published` is the only stage that reads the registry rather than the
 tree, so it can go red without anyone having committed anything, and it
 lives in its own workflow for that reason. It is also the only one that
-boots a disk `kuma install` wrote: every other disk here comes from
-bootc-image-builder with an ext4 root, so anything that only happens on
-btrfs does nothing in them. Add `--upgrade-to <image>` and it installs one
+boots a disk `kuma install` wrote interactively: every other disk here is
+written by the same installer non-interactively, so the boot stage
+exercises the same btrfs-root layout a real machine gets. Add
+`--upgrade-to <image>` and it installs one
 version, upgrades to another, and asks whether the machine survived;
 `--encrypted` types the passphrase at the guest's serial console.
 
