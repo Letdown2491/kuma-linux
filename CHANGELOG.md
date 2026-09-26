@@ -64,6 +64,23 @@ differently. Why it changed belongs in the commit that made it.
   to do changes; a machine that updates sees the OSD on the next
   keypress.
 
+- **The nightly's S3 stopped being MinIO, and the wake-race recovery
+  can finally recover.** Two nightly failures, three nights running,
+  neither from a change on main. First, MinIO locked its community
+  registries — quay, docker.io and ghcr answer unauthorized on every
+  tag and digest now, measured — so the dead-disk stage's S3 is Garage,
+  pinned by digest (the v2.4.1 multi-arch index), with the fixture
+  staging the layout, bucket and key itself and the generated key
+  becoming what the guest signs with. Second, the suspend-then-hibernate
+  recovery shipped in 44.0.1 could never have fired: it keys on the
+  guest reporting zero hibernation images after a wake, but it read that
+  count through a retry that judges by exit code, and `grep -c` answers
+  zero by printing 0 and exiting 1 — so the honest zero burned the whole
+  retry budget, came back empty, and every lost race landed on the fail
+  line instead. The zero is a successful answer now; a lost ssh still
+  retries. Nothing a reader has to do changes; the nightly is where both
+  are answered.
+
 ## v44.0.1 (2026-09-22)
 
 ### Fixed
