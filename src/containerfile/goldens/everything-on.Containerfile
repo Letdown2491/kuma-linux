@@ -48,7 +48,6 @@ COPY kuma-sleep-guard.service /usr/lib/systemd/system/kuma-sleep-guard.service
 COPY --chmod=755 kuma-sleep-guard /usr/libexec/kuma-sleep-guard
 RUN systemctl --global enable kuma-shell.service \
     && systemctl enable kuma-sleep-guard.service
-COPY --chmod=755 kuma-osd /usr/libexec/kuma-osd
 COPY gtk3-settings.ini /etc/gtk-3.0/settings.ini
 COPY gtk4-settings.ini /etc/gtk-4.0/settings.ini
 COPY mimeapps.list /etc/xdg/mimeapps.list

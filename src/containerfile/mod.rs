@@ -2655,8 +2655,10 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
             assert!(script.contains("systemctl --user show-environment"), "{script}");
             assert!(script.trim_end().ends_with("-x") || script.contains("exec xsettingsd"));
         }
-        // media keys route through the OSD helper, spliced into stock binds
-        assert!(NIRI_MEDIA_BINDS.contains("kuma-osd"));
+        // media keys go through the shell's own msg interface, which
+        // adjusts and draws the OSD in one step
+        assert!(NIRI_MEDIA_BINDS.contains("spawn \"noctalia\" \"msg\" \"volume-up\""));
+        assert!(!NIRI_MEDIA_BINDS.contains("kuma-osd"));
         let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
         assert!(out.contains("-e '/XF86Audio/d'"));
         assert!(out.contains("r /usr/lib/kuma/niri-binds.kdl"));
@@ -3336,7 +3338,6 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
         assert!(dir.path().join("flatpaks").exists());
         // the niri glue stays home: COSMIC provides all of it natively
         assert!(!dir.path().join("greetd-config.toml").exists());
-        assert!(!dir.path().join("kuma-osd").exists());
         assert!(!dir.path().join("mako.conf").exists());
         assert!(!dir.path().join("xsettingsd.conf").exists());
     }

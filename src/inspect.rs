@@ -4151,12 +4151,13 @@ mod tests {
         use crate::containerfile::{NIRI_MEDIA_BINDS, NIRI_MENU_BIND};
 
         // Every absolute program the image's media binds name must come
-        // through, deduplicated across the volume keys that share a
-        // script; the bare `wpctl`/`playerctl`/`noctalia` spawns are
-        // doctor's blind spot by design and must not pretend otherwise.
+        // through, deduplicated. The media binds now go through the
+        // shell's bare-name `noctalia msg` interface — doctor's blind
+        // spot by design — so the record helper is the only absolute
+        // path left in the set, and this pins that.
         assert_eq!(
             niri_spawn_targets(NIRI_MEDIA_BINDS),
-            ["/usr/libexec/kuma-osd".to_string(), "/usr/libexec/kuma-record".to_string()]
+            ["/usr/libexec/kuma-record".to_string()]
         );
         assert!(niri_spawn_targets(NIRI_MENU_BIND).is_empty());
 

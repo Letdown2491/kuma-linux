@@ -45,6 +45,21 @@ differently. Why it changed belongs in the commit that made it.
   to do changes; the weather and location warnings leave the journal of
   a machine that never asked for them.
 
+### Fixed
+
+- **The volume and brightness keys draw the OSD again.** The binds used
+  to spawn a `kuma-osd` script that adjusted with `wpctl` and
+  `brightnessctl`, on a comment's claim that the shell watched the
+  changes and drew its own OSD from a `[osd.kinds]` config key — and no
+  noctalia has ever had the key or the watcher. Nothing called the OSD,
+  so for the whole life of that script the keys adjusted silently, and
+  the visible half of a volume key was missing. The binds go through the
+  shell's own `msg` interface now — `noctalia msg volume-up` and friends
+  adjust and draw in one step — `kuma-osd` leaves the image, and the
+  mute and mic-mute keys ride the same interface. Nothing a reader has
+  to do changes; a machine that updates sees the OSD on the next
+  keypress.
+
 ## v44.0.1 (2026-09-22)
 
 ### Fixed

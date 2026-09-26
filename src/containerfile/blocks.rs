@@ -125,9 +125,9 @@ pub(crate) const NIRI_PACKAGES: &[&str] = &[
     "slurp",
     // Mod+Print: annotate before sharing (satty is COPR-only)
     "swappy",
-    // the XF86Audio sed that makes room for kuma-osd also drops niri's
-    // stock playerctl binds; kuma re-adds them, and nothing else pulls
-    // playerctl in now that waybar has left the set
+    // the XF86Audio sed that makes room for the shell's media binds also
+    // drops niri's stock playerctl binds; kuma re-adds them, and nothing
+    // else pulls playerctl in now that waybar has left the set
     "playerctl",
     // plug-in automount: thunar only mounts on click, and thunar-volman
     // needs the thunar daemon plus xfconf toggles to do its job
@@ -2037,22 +2037,45 @@ read -r _
 ' kuma-launch kuma "$@"
 "#;
 
-/// The media keys, bound in place of niri's stock wpctl binds.
+/// The media keys. The shell owns volume and brightness natively —
+/// `noctalia msg volume-up` adjusts and draws the OSD in one step — so
+/// the binds go through it directly and the kuma-osd helper that used to
+/// sit here is gone.
 ///
-/// It used to feed the resulting level to a wob overlay; the shell draws
-/// its own OSD from the change now (`[osd.kinds]` covers volume and
-/// brightness), so this only makes the adjustment. Still a script rather
-/// than the stock binds, because mute has to re-read the level and
-/// brightness is `brightnessctl` rather than `wpctl`.
-pub(crate) const OSD_SCRIPT: &str = r#"#!/usr/bin/bash
-set -euo pipefail
-case "$1" in
-    volume-up)       wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+ ;;
-    volume-down)     wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%- ;;
-    mute)            wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle ;;
-    brightness-up)   brightnessctl -q set +5% ;;
-    brightness-down) brightnessctl -q set 5%- ;;
-esac
+/// The helper was a script that adjusted with `wpctl` and
+/// `brightnessctl` and drew nothing: a comment claimed the shell watched
+/// the changes and drew its own OSD from a `[osd.kinds]` config key, and
+/// no noctalia has ever had either. Nothing called the OSD, so for the
+/// whole life of that script the keys adjusted silently — the change a
+/// person can see was missing, which is the only part of a volume key
+/// there is.
+pub(crate) const NIRI_MEDIA_BINDS: &str = r#"    XF86AudioRaiseVolume allow-when-locked=true hotkey-overlay-title=null { spawn "noctalia" "msg" "volume-up"; }
+
+    XF86AudioLowerVolume allow-when-locked=true hotkey-overlay-title=null { spawn "noctalia" "msg" "volume-down"; }
+
+    XF86AudioMute allow-when-locked=true hotkey-overlay-title=null { spawn "noctalia" "msg" "volume-mute"; }
+
+    XF86AudioMicMute allow-when-locked=true hotkey-overlay-title=null { spawn "noctalia" "msg" "mic-mute"; }
+
+    XF86MonBrightnessUp allow-when-locked=true hotkey-overlay-title=null { spawn "noctalia" "msg" "brightness-up"; }
+
+    XF86MonBrightnessDown allow-when-locked=true hotkey-overlay-title=null { spawn "noctalia" "msg" "brightness-down"; }
+
+    XF86AudioPlay allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "play-pause"; }
+
+    XF86AudioStop allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "stop"; }
+
+    XF86AudioNext allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "next"; }
+
+    XF86AudioPrev allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "previous"; }
+
+    Mod+Ctrl+V hotkey-overlay-title="Clipboard History" { spawn "noctalia" "msg" "panel-toggle" "clipboard"; }
+
+    Mod+Ctrl+W hotkey-overlay-title="Wallpaper" { spawn "noctalia" "msg" "panel-toggle" "wallpaper"; }
+
+    Mod+Alt+R hotkey-overlay-title="Record the Screen" { spawn "/usr/libexec/kuma-record"; }
+
+    Mod+Print hotkey-overlay-title="Screenshot a Region, then Annotate" { spawn "sh" "-c" "grim -g \"$(slurp)\" - | swappy -f -"; }
 "#;
 
 /// kuma's noctalia configuration, baked into the image.
@@ -2371,25 +2394,6 @@ pub(crate) const NIRI_LOCK_BIND: &str = r#"Super+Alt+L hotkey-overlay-title="Loc
 /// on the first screen of a new machine. The four worth naming are
 /// named, and the media keys are hidden outright — they are printed on
 /// the keyboard, and ten of them crowd out everything worth reading.
-///
-/// Media-key binds routed through kuma-osd, spliced INTO the stock
-/// `binds {}` section during the merge (niri rejects a second binds
-/// node) while the stock wpctl/brightnessctl lines are sed-stripped.
-pub(crate) const NIRI_MEDIA_BINDS: &str = r#"    XF86AudioRaiseVolume allow-when-locked=true hotkey-overlay-title=null { spawn "/usr/libexec/kuma-osd" "volume-up"; }
-    XF86AudioLowerVolume allow-when-locked=true hotkey-overlay-title=null { spawn "/usr/libexec/kuma-osd" "volume-down"; }
-    XF86AudioMute allow-when-locked=true hotkey-overlay-title=null { spawn "/usr/libexec/kuma-osd" "mute"; }
-    XF86AudioMicMute allow-when-locked=true hotkey-overlay-title=null { spawn "wpctl" "set-mute" "@DEFAULT_AUDIO_SOURCE@" "toggle"; }
-    XF86MonBrightnessUp allow-when-locked=true hotkey-overlay-title=null { spawn "/usr/libexec/kuma-osd" "brightness-up"; }
-    XF86MonBrightnessDown allow-when-locked=true hotkey-overlay-title=null { spawn "/usr/libexec/kuma-osd" "brightness-down"; }
-    XF86AudioPlay allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "play-pause"; }
-    XF86AudioStop allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "stop"; }
-    XF86AudioNext allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "next"; }
-    XF86AudioPrev allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "previous"; }
-    Mod+Ctrl+V hotkey-overlay-title="Clipboard History" { spawn "noctalia" "msg" "panel-toggle" "clipboard"; }
-    Mod+Ctrl+W hotkey-overlay-title="Wallpaper" { spawn "noctalia" "msg" "panel-toggle" "wallpaper"; }
-    Mod+Alt+R hotkey-overlay-title="Record the Screen" { spawn "/usr/libexec/kuma-record"; }
-    Mod+Print hotkey-overlay-title="Screenshot a Region, then Annotate" { spawn "sh" "-c" "grim -g \"$(slurp)\" - | swappy -f -"; }
-"#;
 
 /// GTK theme settings travel two roads: Wayland-native apps read
 /// gsettings (the dconf defaults cover those), but X11/XWayland GTK apps
@@ -2813,7 +2817,6 @@ fn desktop_niri(e: &mut Emitter<'_>) {
     let shell = e.stage("kuma-shell.service", SHELL_SERVICE);
     let guard_service = e.stage("kuma-sleep-guard.service", SLEEP_GUARD_SERVICE);
     let guard = e.stage("kuma-sleep-guard", SLEEP_GUARD);
-    let osd = e.stage("kuma-osd", OSD_SCRIPT);
     let gtk3 = e.stage("gtk3-settings.ini", GTK3_SETTINGS_INI);
     let gtk4 = e.stage("gtk4-settings.ini", GTK4_SETTINGS_INI);
     let dconf_profile = e.stage("dconf-profile", DCONF_PROFILE);
@@ -2918,7 +2921,6 @@ fn desktop_niri(e: &mut Emitter<'_>) {
     e.copy(&guard_service, "/usr/lib/systemd/system/kuma-sleep-guard.service");
     e.copy_exec(&guard, "/usr/libexec/kuma-sleep-guard");
     e.enable_global_then_system(&["kuma-shell.service"], &["kuma-sleep-guard.service"]);
-    e.copy_exec(&osd, "/usr/libexec/kuma-osd");
     e.copy(&gtk3, "/etc/gtk-3.0/settings.ini");
     e.copy(&gtk4, "/etc/gtk-4.0/settings.ini");
     e.copy(&mimeapps, "/etc/xdg/mimeapps.list");
