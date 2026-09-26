@@ -43,9 +43,11 @@ differently. Why it changed belongs in the commit that made it.
   image-declared desktop does not auto-run third-party git repos without
   being asked. Everything disabled here is one settings toggle away per
   machine, and a machine that turns weather on is right to. The build's
-  merged-export assert carries the two new values. Nothing a reader has
-  to do changes; the weather and location warnings leave the journal of
-  a machine that never asked for them.
+  merged-export assert carries the two new values. One limit, the same
+  everywhere else in kuma: a machine whose own settings file already
+  pins these keys keeps what it pinned, and the image does not reach
+  past it. Nothing a reader has to do changes; the weather and location
+  warnings leave the journal of a machine that never asked for them.
 
 ### Fixed
 

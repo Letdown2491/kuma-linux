@@ -81,7 +81,11 @@ answer twice has its session ended like a dead one.
 
 **The desktop's own look comes from the image.** Kuma bakes a noctalia config
 (bar layout, fonts, wallpaper, and the idle lock and night light that noctalia
-ships turned off) and the shell reads it from there. The path reaches the
+ships turned off) and the shell reads it from there. The baked config also
+ships the shell quiet: no weather lookups, no IP geolocation, and no plugin
+repository fetches at startup, because a desktop that was never told about
+weather should not call a weather vendor to render nothing. Every one of
+those is a settings toggle away. The path reaches the
 shell through the service that starts it, so a shell started any other way
 comes up on noctalia's defaults: a different bar, no palette taken from the
 wallpaper, and a first-run wizard. Changing anything from the desktop's own
