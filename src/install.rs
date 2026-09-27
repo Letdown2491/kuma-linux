@@ -458,6 +458,30 @@ pub fn disk_objections(
     out
 }
 
+/// Objections to a disk that is a member of a volume living beyond it.
+///
+/// A physical volume or a raid member is data's door into a volume whose
+/// other members sit on other disks, and nothing has to be mounted for
+/// either to be true — that is exactly why the mount checks above see
+/// nothing. Wiping one member can break a VG or an array that still
+/// holds the only copy of something. `crypto_LUKS` is deliberately
+/// absent: an old install's encrypted root is the ordinary reinstall
+/// case, and an unopened container endangers only itself.
+///
+/// Pure over `lsblk -no FSTYPE <disk>`'s output (one row per node in the
+/// device's tree, disk included), so the caller can tolerate an absent
+/// lsblk the same way it does for the mount checks.
+pub fn membership_objections(fstypes: &str) -> Vec<String> {
+    fstypes
+        .lines()
+        .map(str::trim)
+        .filter(|t| matches!(*t, "LVM2_member" | "linux_raid_member"))
+        .map(|t| {
+            format!("{t} signature: this disk is a member of a volume elsewhere, and wiping it breaks that volume")
+        })
+        .collect()
+}
+
 /// Why this reference cannot be what a machine updates from.
 ///
 /// `localhost/...` is not a registry anybody else can reach: on the
@@ -1084,6 +1108,24 @@ tmpfs /tmp tmpfs rw 0 0
         let mounts = "/dev/sda1 /boot ext4 rw 0 0\n";
         let objections = disk_objections("/dev/sda", mounts, "/boot\n", false);
         assert_eq!(objections.len(), 1);
+    }
+
+    /// A member of a volume beyond this disk is refused with nothing
+    /// mounted: that is the case the mount checks cannot see. A plain
+    /// filesystem, an unopened LUKS container and an absent lsblk are
+    /// the ordinary reinstall, and objecting to any of them would break
+    /// it.
+    #[test]
+    fn a_member_of_another_volume_is_refused_without_being_mounted() {
+        let tree = "btrfs\nLVM2_member\nlinux_raid_member\n";
+        let objections = membership_objections(tree);
+        assert_eq!(objections.len(), 2, "{objections:?}");
+        assert!(objections[0].contains("LVM2_member"));
+        assert!(objections[1].contains("linux_raid_member"));
+
+        let reinstall = "crypto_LUKS\nbtrfs\nvfat\nswap\n\n";
+        assert!(membership_objections(reinstall).is_empty());
+        assert!(membership_objections("").is_empty(), "no lsblk objects to nothing");
     }
 
     /// zram reports `type: "disk"` and would otherwise appear in a list

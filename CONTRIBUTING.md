@@ -118,6 +118,12 @@ actionlint is there because a workflow can be valid YAML and still be
 rejected by Actions, which says so by running no job at all and leaving no
 log to read.
 
+Third-party actions are pinned by commit SHA, version in a comment, for the
+same reason the actionlint container is pinned by digest: a tag is a
+mutable name, and these steps hold the workflow token and the signing
+identity. Dependabot raises the bumps; reviewing the diff between two SHAs
+is the review.
+
 A separate job runs `cargo audit` against the committed `Cargo.lock`, on every
 push and again weekly, because a dependency becomes vulnerable when the
 advisory lands rather than when someone next touches the tree.

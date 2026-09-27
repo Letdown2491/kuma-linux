@@ -745,8 +745,12 @@ fn validate_password_hash(hash: &str) -> Result<()> {
     let well_formed =
         hash.starts_with('$') && fields.len() >= 3 && fields.iter().all(|f| !f.is_empty());
     if !well_formed {
+        // The value is not echoed, deliberately: `kuma check` output is
+        // pasted, and a hash that fails this check is still a secret
+        // somebody meant. Naming the key says which line to fix; the
+        // position in the parse error above it says where.
         bail!(
-            "user.password_hash {hash:?} is not a crypt(5) hash (expected `$id$salt$hash`, e.g. from `kuma passwd`); \
+            "user.password_hash is not a crypt(5) hash (expected `$id$salt$hash`, e.g. from `kuma passwd`); \
              a placeholder here builds fine and then fails on the machine at first boot"
         );
     }

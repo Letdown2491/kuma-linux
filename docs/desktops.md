@@ -120,10 +120,8 @@ are on keys: `Mod+Ctrl+V` for clipboard history, `Mod+Ctrl+W` for the
 wallpaper picker. `Mod+Shift+/` lists every bind the session has.
 
 `Mod+D` opens the shell's launcher. Your applications are in it, and so are
-kuma's own verbs: edit the declaration, show drift, review proposals, system
-health, check for updates, rebuild, roll back, snapshots. Those arrive as
-ordinary desktop entries rather than anything the shell knows about, so they
-are on the COSMIC desktop too. See [kuma in your launcher](concepts.md#kuma-in-your-launcher).
+kuma's own verbs, the same desktop entries on every desktop kuma builds.
+See [kuma in your launcher](concepts.md#kuma-in-your-launcher).
 
 ## COSMIC
 

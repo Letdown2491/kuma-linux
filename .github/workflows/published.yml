@@ -72,7 +72,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: install the published image and boot the disk it wrote
         uses: ./.github/actions/install-boot
         with:
@@ -81,7 +81,7 @@ jobs:
       - name: guest console
         if: failure() || cancelled()
         run: tail -200 vm-smoke/published/console.log || true
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: failure() || cancelled()
         with:
           name: console-published
@@ -104,7 +104,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: install an encrypted disk, then unlock it at the console
         uses: ./.github/actions/install-boot
         with:
@@ -118,7 +118,7 @@ jobs:
           tail -200 vm-smoke/published/console.log || true
           echo "=== what the unlocker saw ==="
           cat vm-smoke/published/unlock.log || true
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: failure() || cancelled()
         with:
           name: console-encrypted
@@ -160,16 +160,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: the release before this one
         id: fixture
+        env:
+          # Env, not interpolation: the input is a caller's string, and
+          # this run block is where it would otherwise become code.
+          FROM_IMAGE: ${{ inputs.from_image }}
         run: |
           set -euo pipefail
           repo="ghcr.io/letdown2491/kuma"
-          if [ -n "${{ inputs.from_image }}" ]; then
-            echo "from=${{ inputs.from_image }}" >> "$GITHUB_OUTPUT"
-            echo "caller named the fixture: ${{ inputs.from_image }}"
+          if [ -n "$FROM_IMAGE" ]; then
+            echo "from=$FROM_IMAGE" >> "$GITHUB_OUTPUT"
+            echo "caller named the fixture: $FROM_IMAGE"
             exit 0
           fi
           command -v skopeo >/dev/null || sudo apt-get install -y -qq skopeo
@@ -199,7 +203,7 @@ jobs:
       - name: guest console
         if: failure() || cancelled()
         run: tail -200 vm-smoke/published/console.log || true
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: failure() || cancelled()
         with:
           name: console-cross-version

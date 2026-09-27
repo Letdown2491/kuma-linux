@@ -998,12 +998,12 @@ smoke_published() {
     guest() { sshpass -p "$pass" ssh "${ssh_opts[@]}" "$@" 2>/dev/null; }
 
     # sudo over ssh has no terminal to ask on, and this account is in
-    # wheel rather than NOPASSWD, so the password goes in on stdin. Same
-    # shape `kuma vm --apply` already uses against its own guests. `-p ''`
-    # drops the prompt, which would otherwise land in the output being
-    # parsed. The remote side re-parses one string, so the pipeline is
-    # built here as one argument rather than passed as words.
-    gsudo() { guest "echo '$pass' | sudo -S -p '' $*"; }
+    # wheel rather than NOPASSWD, so the password goes in on stdin,
+    # piped locally: in no argv, not ssh's and not the guest's echo's,
+    # which is where the earlier `echo '$pass' |` spelling put it for
+    # the guest's ps to see. `-p ''` drops the prompt, which would
+    # otherwise land in the output being parsed.
+    gsudo() { guest "sudo -S -p '' $*" <<<"$pass"; }
 
     # One ssh hop into a machine that has just booted or just resumed is
     # this stage's one flaky thing. The plain hibernate cycle learned it

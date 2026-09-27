@@ -2751,6 +2751,15 @@ prefix=/home/linuxbrew/.linuxbrew
 # So: refuse rather than repair. A prefix that exists and is not root's
 # is somebody's business, not this unit's, and saying so beats silently
 # extracting into it.
+#
+# The guard above and the download below are deliberately not atomic,
+# and that is safe rather than sloppy: between the check and the tar,
+# every path this script writes through is root-owned (only root can
+# create /home/linuxbrew under a root-owned /var/home), so a non-root
+# uid has nothing to interleave with; once the tree has met chown -R it
+# is uid-1000-owned, and the check refuses it. There is no window
+# between the two states where root writes through a path anybody else
+# chose.
 for dir in /home/linuxbrew "$prefix" "$prefix/Homebrew" "$prefix/bin"; do
     [ -e "$dir" ] || continue
     if [ -L "$dir" ] || [ ! -d "$dir" ]; then

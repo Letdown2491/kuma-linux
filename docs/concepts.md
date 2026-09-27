@@ -115,12 +115,16 @@ inherited: `kuma vm` and the boot stage of the smoke tests both reach a guest
 over ssh, so an image that could not be reached that way would take the test
 harness with it.
 
-Authentication is Fedora's default, which means passwords work. If you
-declare `[user].ssh_keys`, kuma serves them from `/etc/kuma/keys/<name>`
-alongside the user's own `~/.ssh/authorized_keys` and never overwrites it. To
-require keys, drop a conf into `/etc/ssh/sshd_config.d/`; `/etc` is merged
-rather than replaced, so it survives image updates, and `kuma doctor` will
-report it as a local modification because it is one.
+Authentication is Fedora's default, which means passwords work, and the
+account `kuma install` creates is in `wheel`. On a laptop that joins a
+network you do not run, that is a password prompt anybody on that network
+can reach. Online guessing is rate-limited rather than locked out, so a
+weak password is weak here in a way the hash's own cost does not help. If
+you declare `[user].ssh_keys`, kuma serves them from `/etc/kuma/keys/<name>`
+alongside the user's own `~/.ssh/authorized_keys` and never overwrites it.
+To require keys, drop a conf into `/etc/ssh/sshd_config.d/`; `/etc` is
+merged rather than replaced, so it survives image updates, and `kuma doctor`
+will report it as a local modification because it is one.
 
 `[services].disable = ["sshd.service"]` turns it off on a machine that
 doesn't want it. It is a default, not part of kuma's floor: the image enables
@@ -466,8 +470,14 @@ complete: that one exists and what it is called are both declared, and only
 the value is elsewhere. The consequence is about recovery, and worth stating
 plainly: **restoring a machine needs two things**, this file and that
 credential. A repository address carrying its own password is refused, since
-that arrives by pasting a restic command line that already worked rather than
-by anyone deciding to put a secret in git.
+that arrives by pasting a restic command line that already worked rather
+than by anyone deciding to put a secret in git.
+
+**What the far end can see.** restic encrypts and authenticates
+client-side, so the repository holds ciphertext and its operator cannot
+read your files, whoever runs it. What they see is the shape of the
+traffic: how much you store, how often, and when. The repository password
+protects the data and nothing else protects the metadata.
 
 Excludes are additive on top of a curated set that cannot be configured away:
 `linuxbrew`, `~/.cache`, `~/.local/share/containers`. Every one is a tree this
@@ -677,7 +687,11 @@ a machine installed from one would otherwise have no account and no way in.
 So `kuma install` asks, writes the answers to `/var/lib/kuma/user` on the
 target, and `kuma-user-sync` creates the account at first boot exactly as it
 does for a declared one. The installer creates nobody; it writes down what the
-machine should converge to.
+machine should converge to. When the image does declare a `[user]` and the
+person installing asks for a different one, the installer also drops the
+declared account's autologin from the greeter, since a greeter cannot log in
+a user the machine will not have; install an image for the account it
+declares and the autologin stays, because then it names somebody who exists.
 
 That split decides where things live, for the reason in
 [why a file you edited by hand keeps winning](#why-a-file-you-edited-by-hand-keeps-winning):
@@ -698,6 +712,32 @@ should not have to know how to boot from four kinds of one. Whether the root
 holds a LUKS container is asked at install too and cannot be revised
 afterwards without installing again, which is why both are asked before the
 plan is printed rather than defaulted either way.
+
+**What encryption protects is a disk at rest, and only that.** `/boot` and
+the EFI system partition sit outside the container on every install,
+because a bootloader has to read a kernel before anything is unlocked.
+Nothing measures or verifies them, so an attacker with repeated physical
+access can modify the initramfs that later asks for your passphrase.
+Defending against that needs Secure Boot with signed and measured boot,
+which kuma does not do. Encryption answers a stolen or discarded disk, not
+a machine somebody keeps visiting.
+
+**The passphrase is handled like the machine's most consequential secret,
+because it is.** It reaches `cryptsetup` on a pipe, never a command line
+where `ps` would show it and never a file. It does live in memory while
+the install runs, in kuma's own heap and in a shell variable in the
+install script, and kuma makes no claim to defend against something
+reading another process's memory, which on this machine already means
+root. Kuma writes it nowhere, there is no recovery key and no escrow, and
+a lost passphrase is a lost disk. Changing it later is `cryptsetup
+luksChangeKey` on the machine itself, which kuma has no verb for.
+
+The account password gets the same handling: prompted for at a terminal or
+read as one line from a pipe, never passed as an argument, so it does not
+reach `ps` or a shell history. Its hash is written to `/var/lib/kuma/user`
+on the target, mode 0600, where `kuma-user-sync` reads it at first boot.
+Unlike a declared `[user]`, it is written to the machine rather than baked
+into the image, so it is not published by publishing the image.
 
 A swapfile is machine state for a sharper reason than the rest of it.
 Hibernating writes memory to a file and the kernel has to be told where that

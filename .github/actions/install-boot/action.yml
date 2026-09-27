@@ -36,8 +36,8 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: dtolnay/rust-toolchain@stable
-    - uses: Swatinem/rust-cache@v2
+    - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
     - shell: bash
       run: cargo build --locked
 
@@ -144,14 +144,21 @@ runs:
     - name: build this tree's image
       if: inputs.prebuild != ''
       shell: bash
-      run: ./scripts/smoke.sh --keep ${{ inputs.prebuild }}
+      env:
+        PREBUILD: ${{ inputs.prebuild }}
+      run: ./scripts/smoke.sh --keep $PREBUILD
 
+    # Inputs travel as env values rather than template text: an input is
+    # a caller's string, and a template substitution inside `run:` is
+    # code before the shell ever parses it. Unquoted, on purpose — the
+    # value is flags, and word-splitting is how flags arrive.
     - name: smoke
       shell: bash
       env:
         QEMU_VGA: virtio-vga
         QEMU_DISPLAY: none
-      run: ./scripts/smoke.sh ${{ inputs.smoke_args }}
+        SMOKE_ARGS: ${{ inputs.smoke_args }}
+      run: ./scripts/smoke.sh $SMOKE_ARGS
 
 # Keeping the console on failure is deliberately NOT in here, and the
 # reason is worth stating so nobody folds it in later for symmetry.

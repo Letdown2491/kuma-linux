@@ -40,9 +40,28 @@ jobs:
     outputs:
       remote: ${{ steps.ref.outputs.remote }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # The choice list above constrains the web UI only; the API hands
+      # whatever it is given to the expressions below, and those
+      # interpolate into the run blocks. So the input is guarded at the
+      # source, through an env var (data the shell reads) rather than a
+      # template (text the run block becomes), and only the two values
+      # the choice list names ever reach the steps downstream.
+      - name: guard the inputs
+        id: guard
+        env:
+          EXAMPLE: ${{ inputs.example }}
+        run: |
+          set -euo pipefail
+          case "$EXAMPLE" in
+            niri | cosmic) ;;
+            *) echo "::error::example must be niri or cosmic; the API does not enforce the choice list, this does" >&2; exit 1 ;;
+          esac
+          echo "example=$EXAMPLE" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # The binary is baked into the image by `kuma build`, so its build
       # paths ride along into everything published. Same remap as
@@ -73,9 +92,9 @@ jobs:
           version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
           repo="ghcr.io/$owner/kuma"
           {
-            echo "remote=$repo:${{ inputs.example }}"
-            echo "pinned=$repo:${{ inputs.example }}-$version"
-            echo "local=localhost/kuma-publish:${{ inputs.example }}"
+            echo "remote=$repo:${{ steps.guard.outputs.example }}"
+            echo "pinned=$repo:${{ steps.guard.outputs.example }}-$version"
+            echo "local=localhost/kuma-publish:${{ steps.guard.outputs.example }}"
           } >> "$GITHUB_OUTPUT"
 
       # Composes its own base, so this is the long step. The declaration
@@ -85,7 +104,7 @@ jobs:
       - name: build the image
         run: |
           ./target/release/kuma build \
-            --config "examples/${{ inputs.example }}.toml" \
+            --config "examples/${{ steps.guard.outputs.example }}.toml" \
             --tag "${{ steps.ref.outputs.local }}"
 
       # Before the registry, never after. A published image cannot be
@@ -93,7 +112,7 @@ jobs:
       - name: audit for personal information
         run: ./scripts/publish-audit.sh "${{ steps.ref.outputs.local }}"
 
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
         if: ${{ !inputs.allow_unsigned }}
 
       # Twice, because they do not share a credential store. podman writes
@@ -103,11 +122,13 @@ jobs:
       # write access whether or not the package is public, and the failure
       # without this arrives at the one step that cannot be rehearsed.
       - name: log in to ghcr
+        env:
+          ALLOW_UNSIGNED: ${{ inputs.allow_unsigned }}
         run: |
           set -euo pipefail
           echo "${{ secrets.GITHUB_TOKEN }}" \
             | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
-          if [ "${{ inputs.allow_unsigned }}" != "true" ]; then
+          if [ "$ALLOW_UNSIGNED" != "true" ]; then
             echo "${{ secrets.GITHUB_TOKEN }}" \
               | cosign login ghcr.io -u "${{ github.actor }}" --password-stdin
           fi
@@ -189,6 +210,8 @@ jobs:
           done
 
       - name: summary
+        env:
+          ALLOW_UNSIGNED: ${{ inputs.allow_unsigned }}
         run: |
           # shellcheck disable=SC2016  # Actions substitutes its own
           # expressions before the shell runs, so single quotes here are
@@ -199,7 +222,7 @@ jobs:
             echo '`${{ steps.ref.outputs.remote }}`  (moves)'
             echo '`${{ steps.ref.outputs.pinned }}`  (pinned)'
             echo
-            if [ "${{ inputs.allow_unsigned }}" = "true" ]; then
+            if [ "$ALLOW_UNSIGNED" = "true" ]; then
               echo "**Unsigned.** Rebasing onto it verifies nothing."
             fi
             echo "Rebase from an atomic Fedora with:"

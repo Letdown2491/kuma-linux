@@ -15,7 +15,7 @@
 use crate::config::Config;
 use crate::host::{host_output, run_host};
 use crate::response;
-use crate::state::{print_actions, Action};
+use crate::state::{print_actions, shell_quote, Action};
 use anyhow::{bail, Result};
 use std::path::Path;
 
@@ -137,12 +137,34 @@ fn restic_argv_within(
 /// EXPANDED value, so its password is not what is written in the file.
 /// `restic passwd` is the way out, and the message says so.
 pub fn ambiguous_values(text: &str) -> Vec<String> {
-    text.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .filter_map(|l| l.split_once('='))
-        .filter(|(_, value)| value.contains(['$', '`', '"', '\'', '\\']))
-        .map(|(key, _)| key.trim().to_string())
+    // split('\n') rather than lines(): lines() strips a trailing \r,
+    // which is exactly the byte a CRLF file hides from this check while
+    // the shell reader keeps it.
+    text.split('\n')
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return None;
+            }
+            let (key, value) = trimmed.split_once('=')?;
+            // A line that changes under trim reads differently through
+            // the parsers that consume this file: the shell loop keeps
+            // the whitespace (`IFS= read -r`) and the env-file reader
+            // does not, so the trim difference is refused on the same
+            // terms as a metacharacter. Edge whitespace on the key or
+            // the value (`KEY =v`, `KEY= v`) is the same disagreement
+            // with the `=` in the middle, where a whole-line trim
+            // cannot see it.
+            if trimmed != line
+                || key != key.trim()
+                || value != value.trim()
+                || value.contains(['$', '`', '"', '\'', '\\'])
+            {
+                Some(key.trim().to_string())
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
@@ -451,7 +473,10 @@ fn restore_path(
             // the document was supposed to prevent.
             document = document.dry_run().action(Action::new(
                 "write",
-                format!("sudo kuma backup --restore {path} --yes"),
+                // Quoted, because this line is shell for whoever pastes
+                // it, and a path with a space is an ordinary path. Same
+                // discipline capture applies to its own suggestion.
+                format!("sudo kuma backup --restore {} --yes", shell_quote(path)),
                 "actually write it back",
             ));
         }
@@ -482,12 +507,12 @@ fn restore_path(
     };
     run_host(&argv)?;
     if !yes && !json {
-        println!();
-        print_actions(&[Action::new(
-            "write",
-            format!("sudo kuma backup --restore {path} --yes"),
-            "actually write it back",
-        )]);
+    println!();
+    print_actions(&[Action::new(
+        "write",
+        format!("sudo kuma backup --restore {} --yes", shell_quote(path)),
+        "actually write it back",
+    )]);
     }
     Ok(())
 }
@@ -535,6 +560,28 @@ mod tests {
         // values, and punctuation no reader treats specially.
         let fine = "# a comment\n\nRESTIC_PASSWORD=hunter2-with.punct_and/slash\nB2_KEY=abc123\n";
         assert!(ambiguous_values(fine).is_empty());
+    }
+
+    /// A line that changes under trim is its own refusal, and a CRLF
+    /// file is the ordinary way to get one: the file a person edits on
+    /// the stick may carry \r endings, `str::lines` would eat them, and
+    /// the shell reader keeps them — so the check reads the raw text.
+    #[test]
+    fn a_line_that_changes_under_trim_is_refused() {
+        let crlf = "RESTIC_PASSWORD=hunter2\r\nB2_ACCOUNT_ID=plain\r\n";
+        assert_eq!(ambiguous_values(crlf), vec!["RESTIC_PASSWORD", "B2_ACCOUNT_ID"]);
+        for hostile in [
+            "RESTIC_PASSWORD=hunter2\r\n",      // trailing \r: the CRLF case
+            "RESTIC_PASSWORD=hunter2 \n",       // trailing space
+            " RESTIC_PASSWORD=hunter2\n",       // leading whitespace on the key
+            "RESTIC_PASSWORD =hunter2\n",       // space before the equals sign
+        ] {
+            assert_eq!(
+                ambiguous_values(hostile),
+                vec!["RESTIC_PASSWORD"],
+                "{hostile:?} slipped through"
+            );
+        }
     }
 
     #[test]

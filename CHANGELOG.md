@@ -6,6 +6,52 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+### Fixed
+
+- **An unparseable declaration can no longer quote a secret line back.**
+  The toml crate's parse errors point at the mistake by quoting the line
+  they span, and a `password_hash` with one wrong character in it is
+  exactly such a line. That error text is the string kuma builds to be
+  pasted — `kuma --json` carries it as the config fact and the edit
+  affordance carries it as the reason — so the probe keeps the position
+  and the verdict and drops the quoting, and `kuma check`'s
+  not-a-crypt-hash message names the key instead of echoing the value.
+  `doctor --report` already redacted; now everything that pastes does.
+
+- **A credential file the readers would disagree about is refused in
+  full.** The refusal list covered `$`, backticks, quotes and backslashes
+  in values, but a line that merely *changes under trim* slipped past it:
+  a `RESTIC_PASSWORD` saved by a Windows editor arrives with a trailing
+  `\r`, the shell reader keeps that byte and the env-file reader does
+  not, and the two log into the repository with different passwords. The
+  check reads the raw text now and refuses any line whose trimmed form
+  differs — CRLF endings, leading whitespace, a space before the `=`,
+  trailing spaces on the value — naming the key either way. `kuma
+  backup`, `kuma install --restore` and `kuma doctor` all run the same
+  check; a file that was fine stays fine, and one that came off a stick
+  through Windows says what is wrong with it instead of failing at the
+  far end.
+
+- **The restore suggestion survives a paste.** `kuma backup --restore`'s
+  dry run names the command that performs the write, and it interpolated
+  the path bare, so `/var/home/me/My Files/x` pasted as two arguments.
+  The path is shell-quoted in the suggestion, in the JSON document and
+  in the prose alike, the way `kuma capture` already quotes its own.
+
+### Changed
+
+- **`kuma install` refuses a disk that belongs to a volume elsewhere.**
+  The preflight asked whether anything on the disk is mounted, which an
+  LVM physical volume and a raid member need not be: their other members
+  sit on other disks, and wiping one of them breaks a VG or an array
+  that may hold the only copy of something. One more lsblk asks what
+  filesystem types the device tree carries, and `LVM2_member` or
+  `linux_raid_member` anywhere in it is an objection named in the
+  refusal, before the plan prints and before a password is asked. An
+  unopened LUKS container is deliberately not objected to — reinstalling
+  over an old kuma machine is the ordinary case, and its container
+  endangers only itself.
+
 ## v44.2.0 (2026-09-26)
 
 ### Changed

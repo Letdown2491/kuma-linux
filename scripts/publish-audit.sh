@@ -115,8 +115,13 @@ fi
 # exclusion this check fails on every kuma binary ever built, which is
 # how a gate that cries wolf stops being read.
 if [ -f "$mnt/usr/bin/kuma" ]; then
-    if paths=$(grep -aoE '/(var/)?home/[a-z_][a-z0-9_-]*/' "$mnt/usr/bin/kuma" 2>/dev/null |
-        grep -v linuxbrew | sort -u | head -3) && [ -n "$paths" ]; then
+    # No `head` to bound the output, deliberately: with one, the early
+    # exit SIGPIPEs the upstream grep, pipefail reads the death as a
+    # failed condition, and a binary full of paths prints "embeds no
+    # build paths". Reading everything is what makes the pass mean
+    # something; there is no `2>/dev/null` either, for the same reason.
+    if paths=$(grep -aoE '/(var/)?home/[a-z_][a-z0-9_-]*/' "$mnt/usr/bin/kuma" |
+        grep -v linuxbrew | sort -u) && [ -n "$paths" ]; then
         bad "/usr/bin/kuma embeds build paths: $(echo "$paths" | tr '\n' ' ')" \
             "build it in CI, or set trim-paths in the release profile"
     else

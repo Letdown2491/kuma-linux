@@ -3125,7 +3125,18 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         None if to_file => loop_backed_mountpoints(disk_str),
         None => host_output_any(&["lsblk", "-no", "MOUNTPOINTS", disk_str]).unwrap_or_default(),
     };
-    let objections = install::disk_objections(disk_str, &mounts, &lsblk, to_file);
+    // Membership is a different question from mounting, and one lsblk
+    // answers it: a PV or a raid member is in use by a volume whose
+    // other members are elsewhere, with nothing mounted anywhere. A
+    // file target is asked nothing — a loop-backed image is not a
+    // member of anything.
+    let fstypes = if to_file {
+        String::new()
+    } else {
+        host_output_any(&["lsblk", "-no", "FSTYPE", disk_str]).unwrap_or_default()
+    };
+    let mut objections = install::disk_objections(disk_str, &mounts, &lsblk, to_file);
+    objections.extend(install::membership_objections(&fstypes));
     if !objections.is_empty() {
         bail!(
             "refusing to install to {}:\n  {}\n\nUnmount it, or pick another disk.",
@@ -4660,8 +4671,8 @@ mod tests {
             "publish.yml no longer builds a ghcr.io/<owner>/kuma reference"
         );
         assert!(
-            workflow.contains(r#"echo "remote=$repo:${{ inputs.example }}""#),
-            "publish.yml no longer tags the image with its example input"
+            workflow.contains(r#"echo "remote=$repo:${{ steps.guard.outputs.example }}""#),
+            "publish.yml no longer tags the image with its guarded example input"
         );
         assert!(
             workflow.contains(&format!("options: [{tag}, "))

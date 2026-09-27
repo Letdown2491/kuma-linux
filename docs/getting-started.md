@@ -154,10 +154,9 @@ brew = ["ripgrep", "gh"]
 
 Four things are worth knowing about that file, and the rest can wait.
 
-**Three package lists, because the three behave differently.** `rpm` is part
-of the system image, so changing that list means building a new image and
-rebooting into it. `flatpak` is applications, and `brew` is command line
-tools; both are installed while the machine runs and need no reboot.
+**Three package lists, because the three behave differently.** `rpm` becomes
+part of the image — changing it is a build and a reboot; `flatpak` and `brew`
+install on the running machine and need no reboot.
 
 **A password is not in there yet.** Run `kuma passwd`, and paste what it
 prints into `[user]` as `password_hash`. Without it the account exists but
@@ -168,9 +167,9 @@ out of anything you publish.
 foundation out of Fedora's packages. Naming `system.base` opts out and builds
 on the image you name instead.
 
-**Your machine's own settings stay out of the file.** Hostname, timezone, and
-whether a disk is encrypted belong to the machine, not to the description. Two
-machines built from this one file can differ on all three.
+**Your machine's own settings stay out of the file.** Hostname, timezone and
+encryption belong to the machine; two machines built from this one file can
+differ on all three.
 
 Check it before building anything:
 
@@ -263,6 +262,16 @@ A `[user]` in the declaration rides into the media as a real account and
 password hash, so build shareable media from a declaration without one.
 Anaconda's create-a-user screen comes back on its own when you do.
 
+The live session itself runs as `liveuser`, a passwordless account with
+passwordless sudo that exists only inside the ISO's read-only filesystem and
+never reaches an installed machine, and it runs SELinux permissive, since a
+container image's real labels are not reachable through a podman mount. An
+installed machine is enforcing from its first boot. The media also records
+which image to install rather than carrying it, so that file is trust: it
+names this project's registry, whose images the signature policy checks, and
+only root at the live console could name anything else — the same power that
+comes with the keyboard anyway.
+
 ## 9. Living with it
 
 Five commands cover ordinary use. All of them read the same declaration.
@@ -277,7 +286,11 @@ $ kuma rollback --yes   # go back to the deployment you were on before
 
 Running bare `kuma` is always safe and always tells you where you are. Every
 command ends by naming what you can legally do next, so you can follow the
-prompts rather than remember the verbs.
+prompts rather than remember the verbs. Nothing changes what is running
+without a reboot: an update stages, the change lands when you choose, and if
+one would move you to a new Fedora release it says so in those words before
+it stages — that is the largest change kuma can make, and it otherwise
+arrives as several hundred package lines.
 
 **Hibernate, if you did not ask for it at install.** A machine hibernates into
 a swapfile, and needs the kernel told where that file physically sits on the
@@ -289,38 +302,28 @@ $ kuma hibernate --yes        # make it; takes effect on the next boot
 $ kuma hibernate --off --yes  # take it away again
 ```
 
-It defaults to the size of memory, which is the most a machine can ever have to
-save. The file is never resized in place: growing it would move it, and the
-kernel would then resume from the wrong place on the disk. To change the size,
-turn it off and on again.
+It defaults to the size of memory, which is the most a machine can ever have
+to save. The file is never resized in place: growing it would move it, and
+the kernel would then resume from the wrong place on the disk. To change the
+size, turn it off and on again.
 
-Setting hibernate up also points the lid at suspend-then-hibernate, so a
-laptop closed and left in a bag suspends first and hibernates before the
-battery dies, rather than draining out. On battery nothing times it: the
-machine wakes and hibernates on the firmware's own low-battery alarm. On a
-machine with no battery the delay is two hours. `kuma hibernate --off` takes
-the lid setting away with the rest, and `kuma doctor` grades the lid beside
-hibernate itself.
+Setting hibernate up also points the lid at suspend-then-hibernate: a laptop
+closed in a bag suspends first and hibernates on the firmware's own
+low-battery alarm, before the battery dies. `kuma hibernate --off` takes the
+lid setting away with the rest. `kuma doctor` grades the lid, the offset the
+kernel was given against the one the file actually has, and a `kuma
+hibernate --yes` on a machine that already has a swapfile repairs what
+disagrees.
 
 **Secure Boot and hibernate do not go together.** A kernel that booted with
-Secure Boot on runs locked down, and a locked-down kernel refuses to hibernate,
-because a hibernate image is a way to write arbitrary memory back into a
-running kernel. Kuma can still set everything up correctly and the machine will
-still refuse. `kuma install` and `kuma hibernate` say so before you spend the
-disk, and `kuma doctor` warns rather than calling the machine ready. Turning
-Secure Boot off in firmware is the only way to have both.
+Secure Boot on runs locked down, and a locked-down kernel refuses to
+hibernate, because a hibernate image is a way to write arbitrary memory back
+into a running kernel. `kuma doctor` warns rather than calling the machine
+ready; turning Secure Boot off in firmware is the only way to have both.
 
-`kuma doctor` grades the result, and grades the parts that fail silently: a
-swapfile and kernel arguments that disagree, which makes a hibernated machine
-boot fresh with the session gone, and SELinux labels that stop the sleep code
-reading the file at all. Running `kuma hibernate --yes` on a machine that
-already has a swapfile repairs both, leaving the file where it is.
-
-Hibernate from the desktop rather than over ssh. `systemctl hibernate` asks
-logind, which gates it on polkit, and polkit wants an active session; an ssh
-login is not one, so it is refused with `Access denied` before the kernel is
-ever asked. That is not kuma, and `kuma doctor` will still tell you the machine
-is ready.
+Hibernate from the desktop rather than over ssh: logind gates it on an
+active session, and an ssh login is not one. That is not kuma, and
+`kuma doctor` will still tell you the machine is ready.
 
 **Your files are the one thing this file cannot rebuild.** A declaration
 reproduces a system; it does not reproduce `/var/home`, and it never will,
@@ -337,13 +340,11 @@ repo = "s3:https://minio.example:9000/kuma"
 secret = "backup"                              # names a credential; see below
 ```
 
-Snapshots answer a mistake and cannot answer a dead disk, because they are on
-it. `[backup]` copies them offsite with restic, on a timer, reading from a
-snapshot so nothing changes mid-copy.
-
-The credential is named in the declaration and kept out of it. Put the
-repository's keys at `/var/lib/kuma/secrets/backup.env`, mode 0600, then make
-the first copy on purpose:
+Snapshots answer a mistake and cannot answer a dead disk, because they are
+on it. `[backup]` copies them offsite with restic, on a timer. The
+credential is named in the declaration and kept out of it — put the
+repository's keys at `/var/lib/kuma/secrets/backup.env`, mode 0600, then
+make the first copy on purpose:
 
 ```console
 $ sudo kuma backup --init
@@ -352,16 +353,15 @@ $ sudo kuma backup --init
 After that `kuma backup` reports without touching the network, and
 `kuma doctor` grades how fresh the copies stay, which matters because the way
 backups fail is silence rather than errors.
+[How kuma behaves](concepts.md#backups-and-the-two-things-a-restore-needs)
+explains why the credential lives on the machine, what the far end can see,
+and why restoring a machine needs two things.
 
-**On a desktop, `Mod+D` opens the launcher.** Your applications are in it, and
-so are kuma's own verbs: type `kuma` and you get edit the declaration, show
-drift, review proposals, system health, check for updates, rebuild, roll back,
-snapshots. Each opens a terminal and leaves it open afterwards, because
-several of them ask for a password and all of them print something worth
-reading.
-
-None of them writes your declaration without asking. Wifi, bluetooth, audio
-and brightness are the shell's control centre rather than kuma's business.
+**On a desktop, `Mod+D` opens the launcher.** Your applications are in it,
+and so are kuma's own verbs; each opens a terminal and leaves it open,
+because several ask for a password and all print something worth reading.
+[Kuma in your launcher](concepts.md#kuma-in-your-launcher) has the list and
+the one rule about it: no entry writes your declaration without asking.
 
 **When something is wrong and you want help.** `kuma doctor --report` prints
 one JSON document with the findings, which kuma is running, which image is
@@ -371,29 +371,10 @@ a declaration kuma cannot parse is left out entirely rather than pasted raw,
 and where a report quotes what a failed service said, anything shaped like a
 password hash is masked in that too.
 
-**Updates never happen behind your back.** Kuma tells you when there is
-something to take and leaves the taking to you. `kuma update --yes` builds a
-new image and stages it; the change lands when you reboot, and the previous
-system stays in the rollback slot. If an update would move you to a new Fedora
-release, it says so in those words before anything is staged, because that is
-the largest change kuma can make to a machine and it otherwise arrives as
-several hundred package lines.
-
-**A machine tracking the published image checks the signature.** Every image
-ships kuma's signing key and a policy requiring it, so an update that did not
-come from this project is refused rather than installed. `kuma doctor` grades
-that the policy is really in place; images you build yourself are your own and
-are not required to be signed.
-
-**A bad update rolls itself back.** If a new image fails to boot to a working
-desktop three times, the bootloader falls back to the previous one on its own.
-You do not have to be there.
-
-**Changes you make by hand are not errors.** Install something from a store,
-or with `brew install`, and kuma leaves it alone. `kuma diff` shows what your
-machine has that your file does not mention, and `kuma capture` offers to
-write it into the declaration for you. Nothing is deleted for being
-undeclared.
+The reasoning behind the rest of the loop — why drift is a proposal rather
+than an error, what the signature on an update refuses, how a bad update
+rolls itself back without you — is [how kuma
+behaves](concepts.md), which is where to go when something surprises you.
 
 ## Recovering a machine
 

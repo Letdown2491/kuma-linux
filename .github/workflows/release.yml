@@ -53,7 +53,7 @@ jobs:
       # the end of this job say what has to be true for it to stay on.
       ATTACH_ISO: ${{ github.event_name == 'push' && 'true' || inputs.attach_iso }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: work out what this build is
         id: what
@@ -91,10 +91,10 @@ jobs:
             echo "publish=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: x86_64-unknown-linux-musl
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # ci.yml runs on this same push, but nothing makes this job wait for
       # it, so without a gate here a red tree still publishes a binary.
@@ -138,7 +138,7 @@ jobs:
           "./$name" --version
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
       # One bundle rather than a separate .sig and .pem: cosign deprecated
       # --output-signature and --output-certificate, and the flags that
@@ -161,7 +161,7 @@ jobs:
       # expires on its own instead of accumulating on the releases page.
       - name: keep the build without releasing it
         if: steps.what.outputs.publish != 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ steps.pkg.outputs.name }}
           path: |
@@ -260,13 +260,29 @@ jobs:
           ```console
           $ cosign verify-blob \
               --bundle ${{ steps.pkg.outputs.name }}.bundle \
-              --certificate-identity-regexp '^${{ github.server_url }}/${{ github.repository }}/' \
+              --certificate-identity-regexp '^${{ github.server_url }}/${{ github.repository }}/.+@refs/tags/' \
               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
               ${{ steps.pkg.outputs.name }}
           ```
 
           Built from `${{ github.sha }}`.
           NOTES
+          # The media block quotes the same command SECURITY.md does, and
+          # rides the same switch as the attach step: a release cut without
+          # its ISO does not quote a command for an asset it does not carry.
+          if [ "${ATTACH_ISO}" = 'true' ]; then cat <<'NOTES'
+
+          The installer media on this page verifies the same way:
+
+          ```console
+          $ cosign verify-blob \
+              --bundle kuma-x86_64.iso.bundle \
+              --certificate-identity-regexp '^${{ github.server_url }}/${{ github.repository }}/.+@refs/tags/' \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              kuma-x86_64.iso
+          ```
+          NOTES
+          fi
           )" \
             --target '${{ github.sha }}' \
             '${{ steps.pkg.outputs.name }}' \

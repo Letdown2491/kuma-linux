@@ -248,6 +248,32 @@ fn json_of(snapshot: &Snapshot) -> serde_json::Value {
     })
 }
 
+/// The toml crate points at a mistake by quoting the line it spans.
+/// The quoted line can be a secret: a `password_hash` one keystroke
+/// away from valid is unparseable, and this string is the one kuma
+/// builds to be pasted — it lands in `kuma --json`'s facts and in the
+/// edit action's why. Keep the position line and the message; drop
+/// every line that quotes source: the gutter (`  |`), the caret row,
+/// and `12 | the line itself`.
+fn without_quoted_source(text: &str) -> String {
+    text.lines()
+        .filter(|line| {
+            let t = line.trim_start();
+            if t.starts_with('|') || t.starts_with('^') {
+                return false;
+            }
+            match t.find('|') {
+                Some(at) => {
+                    let before = t[..at].trim();
+                    !(before.chars().all(|c| c.is_ascii_digit()) && !before.is_empty())
+                }
+                None => true,
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn observe(config_path: &Path) -> Observed {
     let config = if config_path.exists() {
         match Config::load(config_path) {
@@ -256,7 +282,7 @@ fn observe(config_path: &Path) -> Observed {
                 flatpak: config.packages.flatpak.len(),
                 brew: config.packages.brew.len(),
             },
-            Err(e) => ConfigFact::Invalid(format!("{e:#}")),
+            Err(e) => ConfigFact::Invalid(without_quoted_source(&format!("{e:#}"))),
         }
     } else if let Ok(config) = Config::load(Path::new(BAKED_CONFIG)) {
         ConfigFact::Baked {
@@ -874,6 +900,28 @@ mod tests {
             shell_quote("localhost/kuma-base:m0123456789a"),
             "localhost/kuma-base:m0123456789a"
         );
+    }
+
+    /// The snippet is the toml crate's shape, pinned here as a fixture:
+    /// the gutter, the numbered source line, the caret, then the
+    /// message. What the probe keeps is the position and the verdict;
+    /// what it drops is the line, because the line can be a secret.
+    #[test]
+    fn the_probe_drops_quoted_source_and_keeps_the_verdict() {
+        let quoted = concat!(
+            "TOML parse error at line 12, column 5\n",
+            "  |\n",
+            "12 | password_hash = \"$6$rounds=1$salthunter2\"\n",
+            "  |     ^\n",
+            "invalid value\n",
+        );
+        let kept = without_quoted_source(quoted);
+        assert!(kept.contains("TOML parse error at line 12, column 5"), "{kept}");
+        assert!(kept.contains("invalid value"), "{kept}");
+        assert!(!kept.contains("hunter2"), "{kept}");
+        assert!(!kept.contains("password_hash ="), "{kept}");
+        // A one-line error has nothing to drop.
+        assert_eq!(without_quoted_source("no such file"), "no such file");
     }
     fn loaded() -> ConfigFact {
         ConfigFact::Loaded { rpm: 2, flatpak: 1, brew: 0 }
