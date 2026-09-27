@@ -216,9 +216,10 @@ $ kuma vm
 ```
 
 That builds a virtual disk from the image and boots it in a window. It needs
-KVM and sudo. Log in as the account you declared, or as `kuma` with the
-password `kuma`, which every VM disk carries so you are never locked out of
-your own test.
+KVM and sudo. Log in as `kuma` with the password `kuma`, which every VM disk
+carries so you are never locked out of your own test: the disk is built by
+kuma's own installer, and the account it answers for is the appliance
+account, not the declaration's — a test disk has no person on it.
 
 This is where you find out that you wanted a different terminal, or that you
 forgot a package. Edit `kuma.toml`, run `kuma build` again, then:

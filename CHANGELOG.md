@@ -6,6 +6,8 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+## v44.2.0 (2026-09-26)
+
 ### Changed
 
 - **`kuma vm` disks are built by kuma's own installer, and boot a btrfs
