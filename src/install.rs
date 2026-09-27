@@ -84,6 +84,10 @@ pub struct Request {
     /// A file naming the repository and its credentials, written onto
     /// the target so its first boot puts the home directory back.
     pub restore: Option<std::path::PathBuf>,
+    /// The install-time facts for the target's provenance file, as
+    /// sembled by the caller: it knows the declaration, the lock and the
+    /// media that this verb can only be told about.
+    pub provenance: Provenance,
     pub yes: bool,
     pub json: bool,
 }
@@ -134,6 +138,60 @@ pub fn user_file(account: &Account, ssh_key: Option<&str>) -> String {
     out
 }
 
+/// The install-time facts written onto the target beside the account
+/// and hostname.
+///
+/// The image carries the declaration; it cannot carry what only the
+/// installer knows — when the machine was installed, with which kuma,
+/// from what media, and which base digest the lock resolved that day.
+/// bootc records its own facts at the same root (.bootc-aleph.json);
+/// this is kuma's half of the same story, and the two answer different
+/// questions: aleph says what bootc installed, this says who drove it.
+///
+/// `None` fields are honest unknowns, not omissions: a machine
+/// installed where no lock was written cannot name a base digest, and
+/// an image that came from a registry cannot have its digest read
+/// locally. Readers grade nothing on absence — this file is
+/// self-description, and it exists only where an install ran.
+pub struct Provenance {
+    /// The kuma that ran the install, as `--version` prints it.
+    pub kuma: String,
+    /// When the install ran, RFC3339 UTC.
+    pub installed_at: String,
+    /// sha256 of the declaration the install was driven from, when one
+    /// was in hand. The hash rather than the file: the image already
+    /// carries the declaration, and what ages well here is the fact of
+    /// which one it was.
+    pub declaration: Option<String>,
+    /// The base digest the lock beside that declaration had resolved.
+    /// Absent wherever no lock was written: a fresh checkout's first
+    /// install, or media with no build of its own.
+    pub base: Option<String>,
+    /// The image ref that was installed.
+    pub image: String,
+    /// Its digest, when the image was local enough to ask.
+    pub image_digest: Option<String>,
+    /// What physically installed the machine: "host" (kuma install run
+    /// from an installed machine), "live media" (the ISO), or "vm disk"
+    /// (a `kuma vm` build, which installs by the same path).
+    pub media: String,
+}
+
+impl Provenance {
+    pub fn to_json(&self) -> String {
+        serde_json::json!({
+            "kuma": self.kuma,
+            "installed_at": self.installed_at,
+            "declaration": self.declaration,
+            "base": self.base,
+            "image": self.image,
+            "image_digest": self.image_digest,
+            "media": self.media,
+        })
+        .to_string()
+    }
+}
+
 /// The one-layer image that carries the answers onto the target.
 ///
 /// Into /var, not /etc. bootc fills /var from the image once at install
@@ -165,6 +223,7 @@ pub fn install_containerfile(source: &str, account: &Account, restore: bool) -> 
          {guard}\
          COPY --chmod=600 kuma-user /var/lib/kuma/user\n\
          COPY kuma-hostname /var/lib/kuma/hostname\n\
+         COPY kuma-install /var/lib/kuma/install.json\n\
          {restore}{}",
         drop_foreign_autologin(&account.name),
         restore = if restore { RESTORE_LAYER } else { "" }

@@ -26,10 +26,33 @@ differently. Why it changed belongs in the commit that made it.
   host's ssh key, now delivered through the account file the first-boot
   converger reads rather than a bib blueprint.
 
+### Deprecated
+
+- **`kuma iso` without `--live`.** The legacy Anaconda media it builds is
+  the last job of the frozen bootc-image-builder container, strangers
+  download the live ISO instead (it is what releases attach), and
+  Anaconda's manual partitioning buys nothing against kuma's fixed
+  three-partition model. It keeps working all through 44.x, warning in
+  its output; the default flips to `--live` in 45.0.0. What to use
+  instead: `kuma iso --live`. The one real trade-off: a live install
+  pulls the image over the network by design — an offline installer
+  would be a new flag, not this default.
+
 ## v44.1.0 (2026-09-25)
 
 ### Added
 
+- **An install records its own provenance on the machine.** Every install
+  — `kuma install` from a host or live media, and a `kuma vm` disk, which
+  installs by the same path — writes `/var/lib/kuma/install.json` beside
+  the account and hostname: which kuma ran the install, when, from what
+  media, the declaration it was driven from (hashed), the base digest the
+  lock had resolved, and the image that landed. bootc records its own
+  facts at the same root; this is the kuma half of the story, and the two
+  answer different questions. `kuma doctor` says it back as an
+  informational check, and stays silent on machines that have no record —
+  every machine updated into this release is one, and absence is
+  ambiguous, so nothing is graded on it.
 - **The daily convergence timer waits for power and a real connection.**
   The timer that carries flatpak and brew installs fired on a sleeping
   laptop's catch-up whether the machine was on battery or paying by the

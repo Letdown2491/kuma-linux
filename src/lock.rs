@@ -440,7 +440,7 @@ fn utc_now() -> String {
 /// Seconds since the epoch as `YYYY-MM-DDTHH:MM:SSZ`. Hand-rolled
 /// (civil-from-days) rather than adding a date crate for one timestamp
 /// nothing parses back.
-fn rfc3339(secs: u64) -> String {
+pub(crate) fn rfc3339(secs: u64) -> String {
     let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
     // Howard Hinnant's civil_from_days, with the era shifted so day 0 is
     // 1970-01-01.

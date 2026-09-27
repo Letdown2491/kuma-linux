@@ -807,6 +807,7 @@ pub fn doctor(json: bool, as_report: bool) -> Result<()> {
         );
     } else if booted_kuma_machine() {
         check_convergence(&mut report);
+        check_install_provenance(&mut report);
         check_overrides(&override_roots(), &mut report);
         check_enablements(Path::new(ETC_UNITS), &mut report);
         // The same shape one directory over: `systemctl --global enable`
@@ -1666,6 +1667,36 @@ fn check_convergence(report: &mut impl FnMut(Grade, &str, String, Option<Action>
             );
         }
     }
+}
+
+/// The install record, when this machine has one. bootc writes its own
+/// facts to the same root; this is the kuma half — who ran the install,
+/// when, from what, and what the lock had resolved. Informational by
+/// design and silent when absent: every machine that updated into the
+/// feature has no file, absence is ambiguous (pre-feature install vs
+/// never-kuma), and a check that nagged its most loyal machines about a
+/// fact nothing can act on would be a broken check. Corrupt counts as
+/// absent for the same reason: an unparseable self-description answers
+/// nothing, and saying so on every run is noise.
+fn check_install_provenance(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
+    let Ok(text) = std::fs::read_to_string("/var/lib/kuma/install.json") else { return };
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) else { return };
+    let mut said = String::new();
+    for (key, label) in [("kuma", "by kuma"), ("installed_at", "on"), ("media", "from")] {
+        if let Some(value) = parsed[key].as_str() {
+            if !said.is_empty() {
+                said.push_str(", ");
+            }
+            said.push_str(&format!("{label} {value}"));
+        }
+    }
+    if let Some(base) = parsed["base"].as_str() {
+        said.push_str(&format!(", base {}", crate::short(base)));
+    }
+    if said.is_empty() {
+        return;
+    }
+    report(Grade::Ok, "install", said, None);
 }
 
 /// Whether a `stat -c %i` answer names the root of a btrfs subvolume.

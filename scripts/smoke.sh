@@ -546,6 +546,16 @@ smoke_install() {
     [ -n "$host_file" ] || bad "no /var/lib/kuma/hostname for first boot to apply"
     ok "the hostname to apply is written beside it"
 
+    # The install's own provenance, beside the same two files. It exists
+    # because THIS stage ran an install; the digest it records must be
+    # the image the stage staged, or the file is decoration.
+    local provenance
+    provenance=$(sudo find "$mnt/ostree/deploy" -maxdepth 5 -path '*/var/lib/kuma/install.json' -print -quit)
+    [ -n "$provenance" ] || bad "no /var/lib/kuma/install.json on the installed root"
+    sudo grep -q "$tag" "$provenance" \
+        || bad "install.json does not name the image that was installed"
+    ok "the install recorded its own provenance"
+
     # The two fstab lines that make the swapfile swap. Without them the
     # machine has a resume offset pointing at a file nothing ever
     # activates, so it can never write an image to hibernate from.

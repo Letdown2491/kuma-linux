@@ -609,6 +609,9 @@ fn run(
                     default_image.clone()
                 }
             };
+            // Provenance before the move: it names the same image.
+            let media = if inspect::live_source().is_some() { "live media" } else { "host" };
+            let provenance = install_provenance(config_path, media, image.as_str());
             let request = install::Request {
                 image,
                 default_image,
@@ -622,6 +625,7 @@ fn run(
                 esp,
                 boot,
                 restore,
+                provenance,
                 yes,
                 json,
             };
@@ -1762,7 +1766,7 @@ fn print_lock_diff(moved: Option<&lock::LockDiff>) {
     }
 }
 
-fn short(digest: &str) -> String {
+pub(crate) fn short(digest: &str) -> String {
     let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
     format!("sha256:{}", &hex[..hex.len().min(12)])
 }
@@ -2321,6 +2325,37 @@ fn build_disk(tag: &str, output: &Path) -> Result<()> {
         .set_len(20 * 1024 * 1024 * 1024)
         .with_context(|| format!("cannot size {}", raw.display()))?;
     let mut root = host::for_root()?;
+    // Install-time facts for the disk, into the runner context before
+    // the script that COPYs it: same file a real install writes,
+    // because a `kuma vm` disk IS an install — the media kind is how
+    // the two are told apart later.
+    let declaration =
+        host_output(&["podman", "run", "--rm", tag, "cat", "/usr/lib/kuma/kuma.toml"]).ok().map(
+            |bytes| {
+                use sha2::{Digest, Sha256};
+                format!(
+                    "sha256:{}",
+                    Sha256::digest(bytes.as_bytes())
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>()
+                )
+            },
+        );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    let provenance = install::Provenance {
+        kuma: VERSION.to_string(),
+        installed_at: crate::lock::rfc3339(now),
+        declaration,
+        base: None,
+        image: tag.to_string(),
+        image_digest: Some(local_id.clone()),
+        media: "vm disk".to_string(),
+    };
+    root.file("kuma-install", &provenance.to_json())?;
     run_install(
         &mut root,
         &raw,
@@ -2396,7 +2431,22 @@ fn run_install(
 /// output type. Unlike `kuma vm` nothing risky is preseeded — media
 /// meant for hardware gets no baked-in test user and no disk-wiping
 /// kickstart; Anaconda runs interactively.
+///
+/// Deprecated as the default. Releases attach the live ISO, which is
+/// kuma's own installer media; the bib Anaconda image is the default
+/// only for history's sake, and its manual-partitioning value is nil
+/// against kuma's fixed three-partition model. Announced here and in
+/// the changelog; the default flips to `--live` in 45.0.0, never the
+/// release that named the removal (the contract's rule). The one real
+/// trade-off is stated in the warning: a live install pulls the image
+/// over the network by design.
 fn iso(config_path: &Path, tag: &str, output: &Path) -> Result<()> {
+    println!(
+        "WARNING: `kuma iso` without --live builds the legacy Anaconda image; it is\n\
+         deprecated and stops being the default in 45.0.0. Use --live instead: the\n\
+         live ISO is what releases attach, and it installs with kuma's own installer.\n\
+         The trade: a live install pulls the image over the network by design.\n"
+    );
     let config = Config::load(config_path)?;
     // Installer media outlives the machine it was meant for — surface
     // what identity it carries at the moment it's being baked in.
@@ -2961,6 +3011,34 @@ fn install_done_response(
         .action(reboot)
 }
 
+/// The install-time facts the caller knows and the verb cannot see: the
+/// declaration the install was driven from, the base digest the lock
+/// beside it resolved, and what physically ran the install. Absent
+/// where unknowable — the file records what it can, and readers grade
+/// nothing on absence.
+fn install_provenance(config_path: &Path, media: &str, image: &str) -> install::Provenance {
+    let declaration = std::fs::read(config_path).ok().map(|bytes| {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(&bytes);
+        format!("sha256:{}", digest.iter().map(|b| format!("{b:02x}")).collect::<String>())
+    });
+    let base =
+        crate::lock::Lock::load(&crate::lock::path_for(config_path)).map(|lock| lock.base.digest);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    install::Provenance {
+        kuma: VERSION.to_string(),
+        installed_at: crate::lock::rfc3339(now),
+        declaration,
+        base,
+        image: image.to_string(),
+        image_digest: image_id(image).ok(),
+        media: media.to_string(),
+    }
+}
+
 fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     let install::Request {
         image: image_owned,
@@ -2975,6 +3053,7 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
         esp: esp_flag,
         boot: boot_flag,
         restore,
+        provenance,
         yes,
         json,
     } = request;
@@ -3405,6 +3484,9 @@ fn install(disk: Option<&Path>, request: install::Request) -> Result<()> {
     let account = install::ask_account(user, groups, shell)?;
     let hostname = install::ask_hostname(hostname)?;
     let mut root = host::for_root()?;
+    // Install-time facts, onto the target the same way the account and
+    // hostname travel: one layer, /var, written once at install.
+    root.file("kuma-install", &provenance.to_json())?;
     // The restore file is read and checked here, before anything is
     // written to a disk. A restore that cannot work is worth finding out
     // about while the old machine's data is still the only copy.
