@@ -8,6 +8,18 @@ differently. Why it changed belongs in the commit that made it.
 
 ### Fixed
 
+- **A `kuma vm` disk no longer carries the install's dead blocks.** The
+  install script trimmed the filesystem before throwing anything away:
+  the store subvolume holding the image blobs and tmp's staged copies
+  were still allocated at trim time, and deleting them afterwards frees
+  space without discarding any — so the `qemu-img convert` that makes
+  the qcow2 copied up to two gigabytes of nothing into the artifact.
+  The trim now runs in the cleanup trap, after the store subvolume and
+  tmp are gone and while the filesystem can still hear it; the ordering
+  that keeps the mapper closing after the unmounts is pinned by test.
+  Nothing a reader does changes, and the disk a machine boots from is
+  byte-for-byte the same system; the qcow2 is just smaller.
+
 - **An unparseable declaration can no longer quote a secret line back.**
   The toml crate's parse errors point at the mistake by quoting the line
   they span, and a `password_hash` with one wrong character in it is
@@ -39,6 +51,36 @@ differently. Why it changed belongs in the commit that made it.
   in the prose alike, the way `kuma capture` already quotes its own.
 
 ### Changed
+
+- **Boot convergence stops where the declaration ends.** The units that
+  converge flatpaks and brew at boot also updated every application on
+  the machine and pruned unused runtimes — unscoped, ungated, on every
+  boot, so a laptop on a metered connection paid a Flathub visit every
+  morning to learn nothing had changed. Boot now answers the
+  declaration's question only: what is named gets installed, what kuma
+  installed and the declaration dropped is removed, and a machine that
+  already matches its file runs nothing at all — no process, no vendor,
+  no network. Keeping applications current, declared or ad-hoc, is the
+  daily timer's job behind the battery-and-metered gate 44.1.0 added,
+  which is where the docs already put it. `kuma sync` starts the boot
+  unit and converges without updating. What to do differently: only if
+  you relied on reboots to update applications you installed yourself —
+  then the daily timer does what it was always for, or `flatpak update`
+  by hand does it now.
+
+- **Converged boots stop remounting /boot for nothing.** On every boot,
+  `kuma-boot-health-sync` remounted /boot read-write, grepped two files,
+  and remounted it back — including on the converged path where it
+  writes nothing, which after the first boot is every boot. The greps
+  run on the read-only mount now, and the remount happens only on the
+  paths that write. Nothing to do differently; the boot journal is two
+  lines quieter.
+
+- **`kuma iso --live` stops re-downloading the tools' metadata.** The
+  assembly container installed squashfs-tools and xorriso from a cold
+  dnf cache on every build; a named volume now carries that cache
+  between builds, the same pattern the compose's package cache already
+  uses. Second and later builds on one machine skip most of the wait.
 
 - **`kuma install` refuses a disk that belongs to a volume elsewhere.**
   The preflight asked whether anything on the disk is mounted, which an

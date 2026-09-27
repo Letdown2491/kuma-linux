@@ -293,11 +293,15 @@ sees. The lock diff afterwards is the record of what happened.
 
 ## What updates itself, and what waits for you
 
-Flatpaks and brew formulae converge on a daily timer: what the declaration
-names gets installed, what is already there gets updated, and what
-convergence installed but the declaration no longer names gets removed. They
-are per-package, reversible, and live the moment they land, so there is
-nothing to gain by making you ask first.
+Flatpaks and brew formulae converge at boot: what the declaration names
+gets installed, and what convergence installed but the declaration no
+longer names gets removed — and when the machine already matches its
+declaration, the run touches nothing at all. Keeping what is already
+there current is the daily timer's question, the same schedule for a
+declared app and an ad-hoc one, behind the gate that waits for power and
+an unmetered line. A person who wants an application updated this minute
+runs the update by hand; that is drift by choice, and the machine's
+answer to it is `kuma capture`, not an undo.
 
 The image is the opposite on every count. An update replaces the entire
 operating system at once and applies on the next boot, so putting it on a

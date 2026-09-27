@@ -583,7 +583,10 @@ WantedBy=timers.target
 /// The unit the daily timer fires. Deliberately not the boot service:
 /// the boot run is the convergence promise and never asks permission,
 /// and `kuma sync` starts the boot unit for the same reason. Only the
-/// timer's run passes the gate, whose skip marker its ExecStart honours.
+/// timer's run passes the gate, whose skip marker its ExecStart
+/// honours — and only the timer's run is `full`, the mode that carries
+/// the currency passes: boot converges, the timer also keeps what the
+/// declaration never named current.
 pub(crate) const FLATPAK_SYNC_DAILY_SERVICE: &str = r#"[Unit]
 Description=Daily Flatpak convergence, skipped on battery or a metered connection
 Wants=network-online.target
@@ -595,7 +598,7 @@ StartLimitBurst=6
 Type=oneshot
 RuntimeDirectory=kuma-converge-gate
 ExecStartPre=/usr/libexec/kuma-converge-gate
-ExecStart=/usr/libexec/kuma-flatpak-sync
+ExecStart=/usr/libexec/kuma-flatpak-sync full
 Restart=on-failure
 RestartSec=2min
 CPUWeight=25
@@ -1043,8 +1046,8 @@ fi
 /// Convergence, not just installation: an app the declaration installed
 /// and no longer names is removed, so deleting a line in kuma.toml has
 /// the same authority as adding one. That authority covers applications;
-/// the unused-runtime prune at the end is the one exception and says so
-/// where it is argued below.
+/// the unused-runtime prune is the one exception and says so where it is
+/// argued below.
 ///
 /// Authority is tracked explicitly, in a state file of what the
 /// declaration installed, exactly as the brew sync does — and for the
@@ -1061,24 +1064,27 @@ fi
 /// The uninstall tolerates failure because the state file can name an
 /// app the owner already removed by hand, which is not an error.
 ///
-/// **The prune at the end reaches past the declaration, and this is the
-/// sentence saying so.** `flatpak uninstall --unused` removes any runtime
-/// no installed app needs, including one somebody installed on purpose.
-/// It is kept because a runtime nothing references is dead weight of the
+/// **The prune reaches past the declaration, and this is the sentence
+/// saying so.** `flatpak uninstall --unused` removes any runtime no
+/// installed app needs, including one somebody installed on purpose. It
+/// is kept because a runtime nothing references is dead weight of the
 /// kind an image-based system exists to avoid, and because a runtime is
 /// infrastructure rather than a choice: reinstalling one is a download,
-/// not a decision. The brew converger makes the same trade one line from
-/// its own end and already admits it; this did not, while the docstring
-/// above claimed convergence takes back only what it gave. The claim is
-/// true of applications, which is what it was written about.
+/// not a decision. It runs in `full` mode only — the daily, gated run —
+/// because keeping the machine current is the timer's question, not the
+/// boot's. The brew converger makes the same trade, and its own script
+/// comment admits it; the convergence claim above is true of
+/// applications, which is what it was written about.
 ///
 /// Membership and currency are different questions, and only the first
 /// belongs to the declaration. Convergence decides what exists; the
-/// update decides how old it is, and it is deliberately unscoped. An app
-/// the owner installed through the store is theirs to keep, but leaving
-/// it to rot is not respect, it is an unpatched browser. The same call
-/// covers runtimes, which the declared install reaches only when a
-/// declared app happens to demand a newer one.
+/// update decides how old it is, and it is deliberately unscoped — an
+/// app the owner installed through the store is theirs to keep, but
+/// leaving it to rot is not respect, it is an unpatched browser. The
+/// same call covers runtimes, which the declared install reaches only
+/// when a declared app happens to demand a newer one. Unscoped or not,
+/// currency is the daily run's mode, so it waits for the gate the way
+/// every other update does.
 ///
 /// Ordering is load-bearing. The state file is written before the
 /// update, so a failed update (a flaky network, one broken remote)
@@ -1115,18 +1121,40 @@ declared=/usr/lib/kuma/flatpaks
 state=/var/lib/kuma/flatpaks-installed
 mkdir -p /var/lib/kuma
 [ -f "$state" ] || : > "$state"
+
+# Two questions, two answers. CONVERGENCE is the declaration's question —
+# what is named exists, what kuma installed and the declaration dropped
+# is gone — and it runs for every caller, because it is the promise.
+# CURRENCY is everything past that — updating ad-hoc applications,
+# pruning unused runtimes — and it runs only in `full` mode, which is
+# the daily unit's. A boot that finds the machine matching its
+# declaration spawns nothing, calls no vendor, and pays no network
+# until the declaration changes; the daily run is where ad-hoc
+# applications get kept current, behind the gate, on the schedule the
+# docs promise them.
 install_declared() {
     xargs -r -a "$declared" flatpak install --system --assumeyes --noninteractive --or-update "$@" flathub
 }
-install_declared || install_declared --no-static-deltas
-while read -r app; do
-    grep -qxF "$app" "$declared" \
-        || flatpak uninstall --system --assumeyes --noninteractive "$app" || true
-done < "$state"
-cp "$declared" "$state"
-flatpak update --system --assumeyes --noninteractive \
-    || flatpak update --system --assumeyes --noninteractive --no-static-deltas
-flatpak uninstall --system --unused --assumeyes --noninteractive
+converge() {
+    install_declared || install_declared --no-static-deltas
+    while read -r app; do
+        grep -qxF "$app" "$declared" \
+            || flatpak uninstall --system --assumeyes --noninteractive "$app" || true
+    done < "$state"
+    cp "$declared" "$state"
+}
+# The state file is written only by a run that finished, so equal lists
+# mean the last run converged and this one has nothing to do. An
+# unequal pair is either a declaration that changed or a run that
+# died; both are what converging is for.
+if ! cmp -s "$declared" "$state"; then
+    converge
+fi
+if [ "${1:-}" = full ]; then
+    flatpak update --system --assumeyes --noninteractive \
+        || flatpak update --system --assumeyes --noninteractive --no-static-deltas
+    flatpak uninstall --system --unused --assumeyes --noninteractive
+fi
 "#;
 
 /// The daily timer's gate. Decides whether NOW is a time the machine
@@ -1474,17 +1502,25 @@ begin='# >>> kuma boot-health >>>'
 end='# <<< kuma boot-health <<<'
 [ -f "$cfg" ] || exit 0
 
+# Remounted rw only on the paths that write, and only once: the
+# converged boots of this script are two greps and an exit, and paying
+# two remounts of /boot for zero writes on every one of them is churn
+# the boot journal records and nobody needs. Greps read a ro mount
+# happily.
 restore=""
-if findmnt -n -o OPTIONS /boot 2>/dev/null | grep -qw ro; then
-    mount -o remount,rw /boot
-    restore="ro"
-fi
+remount_rw() {
+    if [ -z "$restore" ] && findmnt -n -o OPTIONS /boot 2>/dev/null | grep -qw ro; then
+        mount -o remount,rw /boot
+        restore="ro"
+    fi
+}
 finish() { [ "$restore" = ro ] && mount -o remount,ro /boot || true; }
 trap finish EXIT
 
 if grep -q boot_counter "$cfg"; then
     # The bootloader counts natively; drop our block if we ever wrote one.
     if [ -f "$custom" ] && grep -qF "$begin" "$custom"; then
+        remount_rw
         sed -i "\|^$begin|,\|^$end|d" "$custom"
         [ -s "$custom" ] || rm -f "$custom"
     fi
@@ -1493,6 +1529,7 @@ fi
 if [ -f "$custom" ] && grep -qF "$begin" "$custom"; then
     exit 0
 fi
+remount_rw
 cat >> "$custom" <<'EOF'
 # >>> kuma boot-health >>>
 # Managed by kuma-boot-health-sync; do not edit between these markers.
@@ -2810,14 +2847,15 @@ WantedBy=multi-user.target
 /// install` is untouched. The flatpak sync learned the same trick after
 /// its scope proxy turned out to be one a store could break.
 ///
-/// The upgrade at the end is unscoped on purpose, and it is the one
-/// thing here that reaches past the declaration. Ad-hoc formulae stay
-/// the owner's to keep or remove; they were simply never getting
-/// updated, because the upgrade used to name the declared list. Bare
-/// `brew upgrade` also covers casks, which nothing else in kuma can even
-/// see. It runs after the state file is written so a failure cannot
-/// strand authority tracking, and needs no `brew update` first because
-/// brew auto-updates its taps before upgrading.
+/// The upgrade is unscoped on purpose, and it is the one thing here
+/// that reaches past the declaration. Ad-hoc formulae stay the owner's
+/// to keep or remove; they were simply never getting updated, because
+/// the upgrade used to name the declared list. Bare `brew upgrade` also
+/// covers casks, which nothing else in kuma can even see. It runs in
+/// `full` mode — the daily, gated run — along with `autoremove`, after
+/// the state file is written so a failure cannot strand authority
+/// tracking, and needs no `brew update` first because brew auto-updates
+/// its taps before upgrading.
 pub(crate) const BREW_SYNC_SCRIPT: &str = r#"#!/usr/bin/bash
 set -euo pipefail
 # The flatpak sync's marker check, word for word: the gate is the
@@ -2830,16 +2868,25 @@ brew=/home/linuxbrew/.linuxbrew/bin/brew
 declared=/usr/lib/kuma/brews
 state=/home/linuxbrew/.linuxbrew/.kuma-brews
 [ -f "$state" ] || : > "$state"
-if [ -s "$declared" ]; then
-    xargs -a "$declared" "$brew" install
+# The convergence/currency split, the flatpak sync's word for word in
+# spirit: converge for every caller, `full` — autoremove and the
+# unscoped upgrade — for the daily, gated run. The state file is
+# written only by a run that finished, so equal lists are a converged
+# boot: no ruby, no vendor, no network.
+if ! cmp -s "$declared" "$state"; then
+    if [ -s "$declared" ]; then
+        xargs -a "$declared" "$brew" install
+    fi
+    while read -r formula; do
+        grep -qxF "$formula" "$declared" && continue
+        "$brew" uninstall "$formula" || true
+    done < "$state"
+    cp "$declared" "$state"
 fi
-while read -r formula; do
-    grep -qxF "$formula" "$declared" && continue
-    "$brew" uninstall "$formula" || true
-done < "$state"
-"$brew" autoremove
-cp "$declared" "$state"
-"$brew" upgrade
+if [ "${1:-}" = full ]; then
+    "$brew" autoremove
+    "$brew" upgrade
+fi
 "#;
 
 /// brew refuses to run as root; uid 1000 owns the prefix (brew's
@@ -2901,7 +2948,7 @@ User=1000
 Environment=HOME=/home/linuxbrew
 RuntimeDirectory=kuma-converge-gate
 ExecStartPre=+/usr/libexec/kuma-converge-gate
-ExecStart=/usr/libexec/kuma-brew-sync
+ExecStart=/usr/libexec/kuma-brew-sync full
 Restart=on-failure
 RestartSec=2min
 CPUWeight=25

@@ -682,11 +682,20 @@ cleanup() {
     # Not tidiness: that subvolume holds the image layer carrying the
     # account's password hash, and it must not survive the install.
     btrfs subvolume delete "$fsmnt/@STORE@" >/dev/null 2>&1 || true
-    umount "$fsmnt" 2>/dev/null || true
-@CLOSE@    rm -f "${conf:-}" 2>/dev/null || true
     # Before the filesystem it lives on goes away.
     if [ -n "${bound_tmp:-}" ]; then umount /var/tmp 2>/dev/null || true; fi
     rm -rf "$fsmnt/tmp" 2>/dev/null || true
+    # The trim lives HERE rather than at the end of the install body,
+    # and the order is the whole point: the store's deleted blobs and
+    # tmp's staged ones were still allocated when the body's work
+    # finished, so a trim there kept them; deleting the subvolume frees
+    # blocks without discarding any, and after the unmount nothing can
+    # reach the filesystem to discard them either. A disk image built
+    # from this script stays sparse only if the dead blocks die before
+    # the filesystem goes away.
+    fstrim "$fsmnt" >/dev/null 2>&1 || true
+    umount "$fsmnt" 2>/dev/null || true
+@CLOSE@    rm -f "${conf:-}" 2>/dev/null || true
     rmdir "$mnt" "$fsmnt" 2>/dev/null || true
     if [ -n "$loop" ]; then losetup -d "$loop" 2>/dev/null || true; fi
 }
@@ -835,10 +844,8 @@ podman --root "$store" --runroot /run/kuma-install --storage-driver overlay \
 # mounted three times over by then: this script has the filesystem top
 # level and the subvolume, and the container has a bind of both. The
 # remount fails with `mount point is busy` after a complete and correct
-# install. The trim is the half worth keeping, because it is what lets a
-# disk image stay sparse, and it is an optimisation rather than a step
-# an install depends on.
-fstrim "$mnt" >/dev/null 2>&1 || true
+# install. The trim this script does has moved into cleanup(), which is
+# where the dead blocks can actually be discarded: see the comment there.
 "##;
 
 #[cfg(test)]

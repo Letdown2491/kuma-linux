@@ -2290,6 +2290,37 @@ fn vm(tag: &str, output: &Path, no_run: bool, rebuild: bool, apply: bool) -> Res
 
 fn build_disk(tag: &str, output: &Path) -> Result<()> {
     let local_id = sync_image_to_root(tag, output)?;
+    // One read of the baked declaration answers both questions it is
+    // asked here: the hash the provenance record carries, and the shell
+    // the convenience account gets. Two `podman run`s over a multi-GB
+    // image was the same bytes twice, at seconds a container.
+    //
+    // Through the seam rather than a private spawn: this is the one
+    // podman call that did not escape the container kuma itself runs
+    // in, so inside one it never found the tag and the shell fell back
+    // to silence — and its every failure being None is exactly why
+    // nobody could tell.
+    let baked = host_output(&[
+        "podman",
+        "run",
+        "--rm",
+        "--entrypoint",
+        "",
+        tag,
+        "cat",
+        "/usr/lib/kuma/kuma.toml",
+    ])
+    .ok();
+    let declaration = baked.as_ref().map(|bytes| {
+        use sha2::{Digest, Sha256};
+        format!(
+            "sha256:{}",
+            Sha256::digest(bytes.as_bytes())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        )
+    });
     // What bib used to bake and the installer now answers for: a
     // convenience account on the console — name and password kuma,
     // wheel so it can escalate, the image's shell so a declaration
@@ -2301,7 +2332,7 @@ fn build_disk(tag: &str, output: &Path) -> Result<()> {
         name: "kuma".to_string(),
         password_hash: hash_password("kuma")?,
         groups: vec!["wheel".to_string()],
-        shell: image_shell(tag),
+        shell: baked.as_deref().and_then(baked_shell),
     };
     let ssh_key = vm_ssh_key(output);
     let mut required = partition::REQUIRED_TOOLS.to_vec();
@@ -2325,23 +2356,6 @@ fn build_disk(tag: &str, output: &Path) -> Result<()> {
         .set_len(20 * 1024 * 1024 * 1024)
         .with_context(|| format!("cannot size {}", raw.display()))?;
     let mut root = host::for_root()?;
-    // Install-time facts for the disk, into the runner context before
-    // the script that COPYs it: same file a real install writes,
-    // because a `kuma vm` disk IS an install — the media kind is how
-    // the two are told apart later.
-    let declaration =
-        host_output(&["podman", "run", "--rm", tag, "cat", "/usr/lib/kuma/kuma.toml"]).ok().map(
-            |bytes| {
-                use sha2::{Digest, Sha256};
-                format!(
-                    "sha256:{}",
-                    Sha256::digest(bytes.as_bytes())
-                        .iter()
-                        .map(|b| format!("{b:02x}"))
-                        .collect::<String>()
-                )
-            },
-        );
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -3682,6 +3696,13 @@ fn live_iso(config_path: &Path, tag: &str, output: &Path) -> Result<()> {
     // The live image is mounted rather than exported: podman assembles
     // the merged filesystem itself, so nothing here unpacks 3 GB into a
     // temp directory first.
+    //
+    // The tools the script installs live in a throwaway container, but
+    // their dnf metadata does not have to: a named volume at /var/cache
+    // (which covers both dnf's and dnf5's layouts) is what keeps the
+    // second `kuma iso` from re-downloading Fedora's repo metadata
+    // before installing squashfs-tools and xorriso. The compose's cache
+    // volume is the same pattern for the same reason.
     let script_mount = format!("{}:/src/build-iso:ro", path_str(&script)?);
     let rootfs_mount = format!("type=image,source={LIVE_TAG},dst=/rootfs");
     let out_mount = format!("{}:/output", path_str(&output)?);
@@ -3694,6 +3715,8 @@ fn live_iso(config_path: &Path, tag: &str, output: &Path) -> Result<()> {
         "label=disable",
         "-v",
         &script_mount,
+        "-v",
+        "kuma-iso-tools-cache:/var/cache",
         "--mount",
         &rootfs_mount,
         "-v",
@@ -3977,28 +4000,12 @@ fn iso_config_toml(config: &Config) -> String {
 /// Every failure is None. A tag that is not a kuma image, an image from
 /// before this file existed, a declaration that declares no shell: all
 /// of them mean "say nothing to bib", which is what kuma did before.
-fn image_shell(tag: &str) -> Option<String> {
-    // Through the seam rather than a private spawn: this is the one
-    // podman call that did not escape the container kuma itself runs
-    // in, so inside one it never found the tag and the shell fell back
-    // to silence — and its every failure being None is exactly why
-    // nobody could tell.
-    let baked = host_output(&[
-        "podman",
-        "run",
-        "--rm",
-        "--entrypoint",
-        "",
-        tag,
-        "cat",
-        "/usr/lib/kuma/kuma.toml",
-    ])
-    .ok()?;
-    let parsed: Config = toml::from_str(&baked).ok()?;
-    // Validated, because `Config::load` is what normally does that and
-    // this does not go through it. `--tag` can name an image kuma did
-    // not build, so a declaration read here has been through no build
-    // of kuma's and no check of kuma's.
+/// The baked declaration's shell. `--tag` can name an image kuma did not
+/// build, so a declaration read here has been through no build of kuma's
+/// and no check of kuma's: `Config::load` would validate it, and this
+/// does not go through that, so validate here or take nothing.
+fn baked_shell(baked: &str) -> Option<String> {
+    let parsed: Config = toml::from_str(baked).ok()?;
     parsed.validate().ok()?;
     parsed.system.shell
 }
