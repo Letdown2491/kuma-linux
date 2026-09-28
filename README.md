@@ -1,10 +1,10 @@
-# Kuma
+# kumaOS
 
-[![ci](https://github.com/Letdown2491/kuma-linux/actions/workflows/ci.yml/badge.svg)](https://github.com/Letdown2491/kuma-linux/actions/workflows/ci.yml)
+[![ci](https://github.com/Letdown2491/kumaos/actions/workflows/ci.yml/badge.svg)](https://github.com/Letdown2491/kumaos/actions/workflows/ci.yml)
 
 **Your system is one file.**
 
-Kuma turns a short text file into a working Linux system. You write down what
+kumaOS turns a short text file into a working Linux system. You write down what
 the machine should have, a desktop and some applications and a few command
 line tools, and kuma builds that description into a complete system image.
 Installing a machine, and every update after it, comes from that file.
@@ -15,12 +15,12 @@ running is still on the disk, so going back is a reboot. And a new system
 that cannot boot to a working desktop puts the old one back by itself,
 without you there.
 
-Kuma is a layer over [Fedora bootc](https://docs.fedoraproject.org/en-US/bootc/).
+kumaOS is a layer over [Fedora bootc](https://docs.fedoraproject.org/en-US/bootc/).
 Fedora supplies the packages and the kernel; kuma decides what goes into the
 image and keeps the running machine matching your file. New to any of these
 words? [The glossary](docs/glossary.md) defines each in a line.
 
-![Kuma running the niri desktop: the shell's bar across the top of a wallpapered screen, with niri's Important Hotkeys overlay open in the middle listing the session's binds](docs/screenshots/niri.png)
+![kumaOS running the niri desktop: the shell's bar across the top of a wallpapered screen, with niri's Important Hotkeys overlay open in the middle listing the session's binds](docs/screenshots/niri.png)
 
 ## Your declaration
 
@@ -82,7 +82,7 @@ boots with working graphics, wifi, and audio.
 
 ## Status
 
-Kuma builds, boots, and updates real hardware, and it has not been run
+kumaOS builds, boots, and updates real hardware, and it has not been run
 widely. That is the honest limit: `bootc` will roll a bad image back, but
 try a declaration in `kuma vm` before a machine you depend on.
 
@@ -98,7 +98,7 @@ Two downloads, depending on what you have. Installer media, which becomes a
 machine:
 
 ```console
-$ curl -LO https://github.com/Letdown2491/kuma-linux/releases/latest/download/kuma-x86_64.iso
+$ curl -LO https://github.com/Letdown2491/kumaos/releases/latest/download/kuma-x86_64.iso
 ```
 
 Or the binary, for building images on a machine you already have. One
@@ -106,7 +106,7 @@ self-contained file: the wallpaper, the greeter configuration and every
 desktop asset are compiled in, so it needs nothing installed beside it.
 
 ```console
-$ curl -LO https://github.com/Letdown2491/kuma-linux/releases/latest/download/kuma-x86_64-unknown-linux-musl
+$ curl -LO https://github.com/Letdown2491/kumaos/releases/latest/download/kuma-x86_64-unknown-linux-musl
 $ chmod +x kuma-x86_64-unknown-linux-musl
 $ sudo mv kuma-x86_64-unknown-linux-musl /usr/local/bin/kuma
 ```
@@ -162,7 +162,7 @@ discoverable without this table. `kuma --help` lists all of it.
 
 **NixOS and Guix** own the idea: one versioned file, convergence as the only
 way to change anything, rollback for free. Getting there cost them an entire
-package universe. Kuma keeps Fedora as the package source and builds no
+package universe. kumaOS keeps Fedora as the package source and builds no
 packages and no kernels, so the declarative property arrives without an
 ecosystem to rebuild. Nix's purity guarantees are what you give up for that.
 
@@ -171,14 +171,14 @@ base, flatpaks for applications, Homebrew for command line tools. The unit of
 configuration is which image you chose. Brewfiles now declare flatpaks and
 formulae together, but `brew bundle` is a command you run rather than a loop
 that runs without you, and its cleanup decides what to remove from what is
-installed rather than from what it installed. Kuma converges at boot and on a
+installed rather than from what it installed. kumaOS converges at boot and on a
 daily timer, and records what it installed, so an application you added
 yourself stays yours and `kuma capture` offers to write it down. Already
 running one of those images? [Moving over](docs/moving.md) is the short
 path.
 
 **BlueBuild** builds an image from a recipe and stops at the image. The
-recipe never reaches the running machine. Kuma's keeps working after install:
+recipe never reaches the running machine. kumaOS's keeps working after install:
 `sync` converges, `diff` reports drift across file, image, and machine,
 `kuma.lock` records what the last build resolved to, and `capture` turns a
 change you made by hand into a proposal against the declaration instead of an
@@ -229,6 +229,6 @@ In order:
   including installing beside another system, still has to be done by
   something else.
 - **No proprietary NVIDIA driver.** Images carry `nvidia-gpu-firmware` and
-  nouveau, which is what an NVIDIA machine boots on. Kuma enables RPM Fusion
+  nouveau, which is what an NVIDIA machine boots on. kumaOS enables RPM Fusion
   free, not nonfree, and builds no kernel modules, so declaring
   `akmod-nvidia` fails the build rather than working.

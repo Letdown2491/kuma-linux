@@ -1,6 +1,6 @@
 # The contract
 
-Kuma 44.0 begins a set of promises. This page says what they are, what they
+kumaOS 44.0 begins a set of promises. This page says what they are, what they
 cover, and what sits deliberately outside them. Every promise names the
 test or check that holds it: a promise whose enforcement is gone is a bug
 in kuma, not a change of policy.
@@ -32,7 +32,7 @@ declarations from v0.4.0 on and parses every one of them.
 survives moving forward. CI proves the path every machine takes: the
 release before the one being published, upgraded inside the guest.
 Machines older than that step through intermediate tags the same way they
-always have. Kuma makes no claim about jumping several releases at once.
+always have. kumaOS makes no claim about jumping several releases at once.
 
 Held by: the cross-version job, which installs the previous published
 release and upgrades it in the guest on every publish.
@@ -108,12 +108,12 @@ beside another system are other tools' jobs. This is the shape the
 swapfile hibernate machinery assumes, which is why it is the design rather
 than a missing feature. It names what 44.0 does, not what may never exist.
 
-**Reproducible builds, and an SBOM.** Kuma makes no claim that two builds
+**Reproducible builds, and an SBOM.** kumaOS makes no claim that two builds
 of one declaration produce identical bytes, and emits no SBOM. The
 resolved versions in `kuma.lock` are adjacent, not the same thing. Both
 are stated here as the stance; SECURITY.md's Not-yet section explains why.
 
-**Signing user-built images.** Kuma's published images are signed, and
+**Signing user-built images.** kumaOS's published images are signed, and
 machines carrying its policy refuse unsigned ones. An image built from
 your own declaration is yours to sign; kuma does not do it for you.
 

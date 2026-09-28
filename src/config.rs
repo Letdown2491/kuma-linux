@@ -1093,7 +1093,7 @@ pub(crate) mod tests {
     /// running it.
     const WALKTHROUGH: &[(&str, Proof)] = &[
         (
-            "curl -LO https://github.com/Letdown2491/kuma-linux/releases/latest/download/kuma-x86_64.iso",
+            "curl -LO https://github.com/Letdown2491/kumaos/releases/latest/download/kuma-x86_64.iso",
             Proof::Unexecuted("the asset name is asserted by the sibling test; the download itself is not run"),
         ),
         (
@@ -1104,7 +1104,7 @@ pub(crate) mod tests {
         ("kuma", Proof::Unexecuted("the bare status line is not run anywhere")),
         ("kuma init", Proof::Unexecuted("nothing runs it; the starter declaration is only read as a fixture")),
         (
-            "curl -LO https://github.com/Letdown2491/kuma-linux/releases/latest/download/kuma-x86_64-unknown-linux-musl",
+            "curl -LO https://github.com/Letdown2491/kumaos/releases/latest/download/kuma-x86_64-unknown-linux-musl",
             Proof::Unexecuted("the asset name is asserted by the sibling test; the download itself is not run"),
         ),
         ("chmod +x kuma-x86_64-unknown-linux-musl", Proof::Unexecuted("plain shell, nothing of kuma's to prove")),

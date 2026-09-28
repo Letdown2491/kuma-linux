@@ -602,11 +602,11 @@ mod tests {
     #[test]
     fn branding_always_applied() {
         let out = generate(&config("schema_version = 1"));
-        assert!(out.contains("NAME=\"Kuma\""));
+        assert!(out.contains("NAME=\"kumaOS\""));
         assert!(out.contains("ID=kuma"));
         assert!(out.contains("ID_LIKE=\\\"fedora\\\"") || out.contains("ID_LIKE=\"fedora\""));
         // branding must come after every dnf layer
-        let brand_at = out.find("NAME=\"Kuma\"").unwrap();
+        let brand_at = out.find("NAME=\"kumaOS\"").unwrap();
         assert!(out.rfind("dnf -y install").is_none_or(|dnf_at| dnf_at < brand_at));
     }
 
@@ -1359,7 +1359,7 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
         assert!(extras.contains("kuma-clipboard-bridge"));
         assert!(dir.path().join("kuma-clipboard-bridge").exists());
         let greetd = std::fs::read_to_string(dir.path().join("greetd-config.toml")).unwrap();
-        assert!(greetd.contains("Welcome to Kuma"));
+        assert!(greetd.contains("Welcome to kumaOS"));
         assert!(dir.path().join("noctalia-config.toml").exists());
         assert!(dir.path().join("kitty.conf").exists());
         let ff = std::fs::read_to_string(dir.path().join("fastfetch-config.jsonc")).unwrap();
@@ -1371,7 +1371,7 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
     fn branding_names_the_release() {
         let out = generate(&config("schema_version = 1\n"));
         // One bear per Fedora base, and an unlisted base must still name
-        // the kuma version rather than degrading to a bare "Kuma".
+        // the kuma version rather than degrading to a bare "kumaOS".
         assert!(out.contains(r#"44) CODENAME="Beorn""#));
         assert!(out.contains(r#"45) CODENAME="Callisto""#));
         assert!(out.contains(r#"*) CODENAME="""#));
@@ -1385,20 +1385,19 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
             !out.contains("@KUMAVERSION@"),
             "the version placeholder reached the Containerfile"
         );
-        assert!(
-            out.contains(&format!(r#"PRETTY_NAME=\"Kuma {version}${{CODENAME:+ ($CODENAME)}}\""#))
-        );
+        assert!(out
+            .contains(&format!(r#"PRETTY_NAME=\"kumaOS {version}${{CODENAME:+ ($CODENAME)}}\""#)));
         // VERSION is rewritten unconditionally, not only when a bear
         // matched: left alone it keeps Fedora's own string, which on a
         // branched base reads "45 (Rawhide Prerelease)" inside an OS that
-        // otherwise calls itself Kuma.
+        // otherwise calls itself kumaOS.
         assert!(out.contains(&format!(r#"VERSION=\"{version}${{CODENAME:+ ($CODENAME)}}\""#)));
 
         // VERSION_ID stays Fedora's: toolbox, distrobox and COPR resolve
         // against it, so kuma's version must never be written there.
         assert!(!out.contains(&format!("VERSION_ID={version}")));
         // fedora-release is a compatibility file and keeps Fedora's number.
-        assert!(out.contains(r#"echo "Kuma release ${VERSION_ID}${CODENAME:+ ($CODENAME)}""#));
+        assert!(out.contains(r#"echo "kumaOS release ${VERSION_ID}${CODENAME:+ ($CODENAME)}""#));
     }
 
     #[test]
@@ -2903,7 +2902,7 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
         // undeclared, the default seeds the ostree merge default
         let dir = tempfile::tempdir().unwrap();
         context("schema_version = 1\n", dir.path());
-        assert_eq!(std::fs::read_to_string(dir.path().join("hostname")).unwrap(), "kuma\n");
+        assert_eq!(std::fs::read_to_string(dir.path().join("hostname")).unwrap(), "kumaos\n");
         assert!(out.contains(&dnf_install("glibc-langpack-de")));
         assert!(out.contains("RUN echo 'LANG=de_DE.UTF-8' > /etc/locale.conf"));
         // C.UTF-8 has no territory, so no langpack layer

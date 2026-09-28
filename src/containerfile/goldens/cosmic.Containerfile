@@ -117,18 +117,18 @@ RUN . /usr/lib/os-release \
         *) CODENAME="" ;; \
     esac \
     && sed -i \
-        -e 's|^NAME=.*|NAME="Kuma"|' \
-        -e "s|^PRETTY_NAME=.*|PRETTY_NAME=\"Kuma 44.3.0${CODENAME:+ ($CODENAME)}\"|" \
+        -e 's|^NAME=.*|NAME="kumaOS"|' \
+        -e "s|^PRETTY_NAME=.*|PRETTY_NAME=\"kumaOS 44.3.0${CODENAME:+ ($CODENAME)}\"|" \
         -e "s|^VERSION=.*|VERSION=\"44.3.0${CODENAME:+ ($CODENAME)}\"|" \
         -e 's|^ID=.*|ID=kuma|' \
-        -e 's|^DEFAULT_HOSTNAME=.*|DEFAULT_HOSTNAME="kuma"|' \
+        -e 's|^DEFAULT_HOSTNAME=.*|DEFAULT_HOSTNAME="kumaos"|' \
         -e 's|^ANSI_COLOR=.*|ANSI_COLOR="0;38;2;126;224;168"|' \
         /usr/lib/os-release \
     && if [ -n "$CODENAME" ]; then sed -i \
         -e "s|^VERSION_CODENAME=.*|VERSION_CODENAME=$(printf %s "$CODENAME" | tr '[:upper:]' '[:lower:]')|" \
         /usr/lib/os-release; fi \
     && { grep -q '^ID_LIKE=' /usr/lib/os-release || echo 'ID_LIKE="fedora"' >> /usr/lib/os-release; } \
-    && { [ ! -f /usr/lib/fedora-release ] || echo "Kuma release ${VERSION_ID}${CODENAME:+ ($CODENAME)}" > /usr/lib/fedora-release; }
+    && { [ ! -f /usr/lib/fedora-release ] || echo "kumaOS release ${VERSION_ID}${CODENAME:+ ($CODENAME)}" > /usr/lib/fedora-release; }
 
 COPY --chmod=755 kuma /usr/bin/kuma
 RUN /usr/bin/kuma --version

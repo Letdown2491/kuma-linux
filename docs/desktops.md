@@ -79,7 +79,7 @@ that hangs rather than exits is caught the same way: on the way into sleep,
 the guard asks it over the session bus it owns, and a shell that cannot
 answer twice has its session ended like a dead one.
 
-**The desktop's own look comes from the image.** Kuma bakes a noctalia config
+**The desktop's own look comes from the image.** kumaOS bakes a noctalia config
 (bar layout, fonts, wallpaper, and the idle lock and night light that noctalia
 ships turned off) and the shell reads it from there. The baked config also
 ships the shell quiet: no weather lookups, no IP geolocation, and no plugin
@@ -90,7 +90,7 @@ shell through the service that starts it, so a shell started any other way
 comes up on noctalia's defaults: a different bar, no palette taken from the
 wallpaper, and a first-run wizard. Changing anything from the desktop's own
 settings writes `~/.local/state/noctalia/settings.toml`, which wins over the
-image. That file is yours and the image will not overwrite it. Kuma does not
+image. That file is yours and the image will not overwrite it. kuma does not
 write it either, so `kuma diff` will not mention it: what kuma does is say
 where your desktop differs from the image, which `kuma doctor` names by key
 with `noctalia config export merged` as the command that answers for the

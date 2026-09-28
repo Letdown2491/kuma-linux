@@ -10,7 +10,7 @@ signing key is lost or rotated.
 ## Reporting a vulnerability
 
 Use GitHub's private vulnerability reporting:
-[**Report a vulnerability**](https://github.com/Letdown2491/kuma-linux/security/advisories/new).
+[**Report a vulnerability**](https://github.com/Letdown2491/kumaos/security/advisories/new).
 It reaches the maintainer privately, and it is the only channel. Please don't
 open a public issue for one first.
 
@@ -135,7 +135,7 @@ would have to take is push access to this repository.
 ```console
 $ cosign verify-blob \
     --bundle kuma-x86_64-unknown-linux-musl.bundle \
-    --certificate-identity-regexp '^https://github.com/Letdown2491/kuma-linux/.+@refs/tags/' \
+    --certificate-identity-regexp '^https://github.com/Letdown2491/kumaos/.+@refs/tags/' \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
     kuma-x86_64-unknown-linux-musl
 ```
@@ -155,7 +155,7 @@ release's notes quote this command beside the binary's:
 ```console
 $ cosign verify-blob \
     --bundle kuma-x86_64.iso.bundle \
-    --certificate-identity-regexp '^https://github.com/Letdown2491/kuma-linux/.+@refs/tags/' \
+    --certificate-identity-regexp '^https://github.com/Letdown2491/kumaos/.+@refs/tags/' \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
     kuma-x86_64.iso
 ```

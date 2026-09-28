@@ -265,16 +265,16 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let entries = root.path().join("boot/loader/entries");
         std::fs::create_dir_all(&entries).unwrap();
-        deployment(root.path(), 0, "eabbce68", "Kuma 0.12.0 (Beorn)");
-        deployment(root.path(), 1, "8e44abe7", "Kuma 0.11.0 (Beorn)");
+        deployment(root.path(), 0, "eabbce68", "kumaOS 0.12.0 (Beorn)");
+        deployment(root.path(), 1, "8e44abe7", "kumaOS 0.11.0 (Beorn)");
         std::fs::write(
             entries.join("ostree-2.conf"),
-            entry_text("Kuma 0.11.0 (Beorn) (ostree:0)", 0),
+            entry_text("kumaOS 0.11.0 (Beorn) (ostree:0)", 0),
         )
         .unwrap();
         std::fs::write(
             entries.join("ostree-1.conf"),
-            entry_text("Kuma 0.10.0 (Beorn) (ostree:1)", 1),
+            entry_text("kumaOS 0.10.0 (Beorn) (ostree:1)", 1),
         )
         .unwrap();
         root
@@ -307,8 +307,8 @@ mod tests {
         assert_eq!(
             titles(&root),
             vec![
-                "Kuma 0.11.0 (Beorn) (ostree:1)".to_string(),
-                "Kuma 0.12.0 (Beorn) (ostree:0)".to_string(),
+                "kumaOS 0.11.0 (Beorn) (ostree:1)".to_string(),
+                "kumaOS 0.12.0 (Beorn) (ostree:0)".to_string(),
             ],
             "ostree-1 boots the 0.11.0 deployment, ostree-2 boots 0.12.0"
         );
@@ -325,11 +325,11 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let entries = root.path().join("boot/loader/entries");
         std::fs::create_dir_all(&entries).unwrap();
-        deployment(root.path(), 0, "eabbce68", "Kuma 0.12.0 (Beorn)");
-        std::fs::write(entries.join("a.conf"), entry_text("Kuma 0.9.0 (Beorn) (ostree:7)", 0))
+        deployment(root.path(), 0, "eabbce68", "kumaOS 0.12.0 (Beorn)");
+        std::fs::write(entries.join("a.conf"), entry_text("kumaOS 0.9.0 (Beorn) (ostree:7)", 0))
             .unwrap();
         apply(&entries, root.path()).unwrap();
-        assert_eq!(titles(&root), vec!["Kuma 0.12.0 (Beorn) (ostree:0)".to_string()]);
+        assert_eq!(titles(&root), vec!["kumaOS 0.12.0 (Beorn) (ostree:0)".to_string()]);
     }
 
     /// The three lines that decide whether the entry boots at all are
@@ -380,10 +380,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let entries = root.path().join("boot/loader/entries");
         std::fs::create_dir_all(&entries).unwrap();
-        deployment(root.path(), 0, "eabbce68", "Kuma 0.12.0 (Beorn)");
-        std::fs::write(entries.join("a.conf"), entry_text("Kuma 0.11.0 (Beorn)", 0)).unwrap();
+        deployment(root.path(), 0, "eabbce68", "kumaOS 0.12.0 (Beorn)");
+        std::fs::write(entries.join("a.conf"), entry_text("kumaOS 0.11.0 (Beorn)", 0)).unwrap();
         apply(&entries, root.path()).unwrap();
-        assert_eq!(titles(&root), vec!["Kuma 0.12.0 (Beorn)".to_string()]);
+        assert_eq!(titles(&root), vec!["kumaOS 0.12.0 (Beorn)".to_string()]);
     }
 
     /// A deployment whose os-release cannot be read answers nothing, so
@@ -394,7 +394,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let entries = root.path().join("boot/loader/entries");
         std::fs::create_dir_all(&entries).unwrap();
-        let text = entry_text("Kuma 0.11.0 (Beorn) (ostree:0)", 0);
+        let text = entry_text("kumaOS 0.11.0 (Beorn) (ostree:0)", 0);
         std::fs::write(entries.join("a.conf"), &text).unwrap();
         assert!(stale(&entries, root.path()).is_empty());
         assert!(apply(&entries, root.path()).unwrap().is_empty());
@@ -404,11 +404,11 @@ mod tests {
     #[test]
     fn pretty_name_is_unquoted_and_a_field_needs_its_whitespace() {
         assert_eq!(
-            pretty_name("PRETTY_NAME=\"Kuma 0.12.0 (Beorn)\"\n").unwrap(),
-            "Kuma 0.12.0 (Beorn)"
+            pretty_name("PRETTY_NAME=\"kumaOS 0.12.0 (Beorn)\"\n").unwrap(),
+            "kumaOS 0.12.0 (Beorn)"
         );
-        assert_eq!(pretty_name("PRETTY_NAME='Kuma 0.12.0'\n").unwrap(), "Kuma 0.12.0");
-        assert_eq!(pretty_name("PRETTY_NAME=Kuma\n").unwrap(), "Kuma");
+        assert_eq!(pretty_name("PRETTY_NAME='kumaOS 0.12.0'\n").unwrap(), "kumaOS 0.12.0");
+        assert_eq!(pretty_name("PRETTY_NAME=kumaOS\n").unwrap(), "kumaOS");
         assert!(pretty_name("ID=kuma\n").is_none());
         assert!(is_field("title Kuma", "title"));
         assert!(!is_field("titles Kuma", "title"));
@@ -421,10 +421,10 @@ mod tests {
         assert_eq!(ostree_karg(options).unwrap(), "/ostree/boot.0/default/abc/1");
         assert_eq!(karg_index("/ostree/boot.0/default/abc/1").unwrap(), 1);
         assert!(ostree_karg("root=UUID=1234 rw").is_none());
-        assert_eq!(suffix_index("Kuma 0.12.0 (Beorn) (ostree:3)").unwrap(), 3);
-        assert!(suffix_index("Kuma 0.12.0 (Beorn)").is_none());
-        assert_eq!(without_slot("Kuma 0.12.0 (Beorn) (ostree:3)"), "Kuma 0.12.0 (Beorn)");
+        assert_eq!(suffix_index("kumaOS 0.12.0 (Beorn) (ostree:3)").unwrap(), 3);
+        assert!(suffix_index("kumaOS 0.12.0 (Beorn)").is_none());
+        assert_eq!(without_slot("kumaOS 0.12.0 (Beorn) (ostree:3)"), "kumaOS 0.12.0 (Beorn)");
         // A version that ends in a parenthesis of its own keeps it.
-        assert_eq!(without_slot("Kuma 0.12.0 (Beorn)"), "Kuma 0.12.0 (Beorn)");
+        assert_eq!(without_slot("kumaOS 0.12.0 (Beorn)"), "kumaOS 0.12.0 (Beorn)");
     }
 }

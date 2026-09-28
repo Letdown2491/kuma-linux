@@ -446,7 +446,7 @@ pub(crate) const GREETD_CONFIG: &str = r#"[terminal]
 vt = 1
 
 [default_session]
-command = "tuigreet --time --remember --greeting 'Welcome to Kuma' --cmd niri-session"
+command = "tuigreet --time --remember --greeting 'Welcome to kumaOS' --cmd niri-session"
 user = "greetd"
 "#;
 
@@ -2630,7 +2630,7 @@ $1 \   | .  .==.  . |   /
 $1  '._ \.' \__/ './ _.'
 $1  /  ``'._-''-_.'``  \
 $1          `--`
-$2     k   u   m   a
+$2     k   u   m   a  O  S
 "#;
 
 /// System-wide default via XDG_CONFIG_DIRS; a user config in
@@ -2688,7 +2688,7 @@ pub(crate) mod plymouth_theme {
 /// The install root every theme file COPY lands under.
 pub(crate) const PLYMOUTH_THEME_DIR: &str = "spinner_alt";
 
-/// Rebrand the OS identity: Kuma, not Fedora. ID_LIKE=fedora keeps tools
+/// Rebrand the OS identity: kumaOS, not Fedora. ID_LIKE=fedora keeps tools
 /// that sniff os-release (toolbox, distrobox, dnf COPR, …) working. Runs
 /// last so every dnf layer before it still sees stock Fedora metadata.
 ///
@@ -2716,7 +2716,7 @@ pub(crate) const PLYMOUTH_THEME_DIR: &str = "spinner_alt";
 /// skipped deliberately (Deninger and Fozzie were the only candidates and
 /// neither earns a place). Assigned through K Kodiak, Fedora 51.
 ///
-/// An unlisted base falls back to no bear, keeping "Kuma <version>" so a
+/// An unlisted base falls back to no bear, keeping "kumaOS <version>" so a
 /// machine still says what built it.
 pub(crate) const BRANDING: &str = r#"
 RUN . /usr/lib/os-release \
@@ -2732,8 +2732,8 @@ RUN . /usr/lib/os-release \
         *) CODENAME="" ;; \
     esac \
     && sed -i \
-        -e 's|^NAME=.*|NAME="Kuma"|' \
-        -e "s|^PRETTY_NAME=.*|PRETTY_NAME=\"Kuma @KUMAVERSION@${CODENAME:+ ($CODENAME)}\"|" \
+        -e 's|^NAME=.*|NAME="kumaOS"|' \
+        -e "s|^PRETTY_NAME=.*|PRETTY_NAME=\"kumaOS @KUMAVERSION@${CODENAME:+ ($CODENAME)}\"|" \
         -e "s|^VERSION=.*|VERSION=\"@KUMAVERSION@${CODENAME:+ ($CODENAME)}\"|" \
         -e 's|^ID=.*|ID=kuma|' \
         -e 's|^DEFAULT_HOSTNAME=.*|DEFAULT_HOSTNAME="{default_hostname}"|' \
@@ -2743,7 +2743,7 @@ RUN . /usr/lib/os-release \
         -e "s|^VERSION_CODENAME=.*|VERSION_CODENAME=$(printf %s "$CODENAME" | tr '[:upper:]' '[:lower:]')|" \
         /usr/lib/os-release; fi \
     && { grep -q '^ID_LIKE=' /usr/lib/os-release || echo 'ID_LIKE="fedora"' >> /usr/lib/os-release; } \
-    && { [ ! -f /usr/lib/fedora-release ] || echo "Kuma release ${VERSION_ID}${CODENAME:+ ($CODENAME)}" > /usr/lib/fedora-release; }
+    && { [ ! -f /usr/lib/fedora-release ] || echo "kumaOS release ${VERSION_ID}${CODENAME:+ ($CODENAME)}" > /usr/lib/fedora-release; }
 "#;
 
 /// BRANDING with the building binary's version substituted in. Not a

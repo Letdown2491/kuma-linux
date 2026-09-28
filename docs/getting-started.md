@@ -22,7 +22,7 @@ virtual machine needs KVM and sudo on top of that.
 ## 1. Write the media
 
 ```console
-$ curl -LO https://github.com/Letdown2491/kuma-linux/releases/latest/download/kuma-x86_64.iso
+$ curl -LO https://github.com/Letdown2491/kumaos/releases/latest/download/kuma-x86_64.iso
 ```
 
 Around 1.8 GB. Every release asset is signed, and
@@ -68,7 +68,7 @@ says so before it starts. Installing pulls that image from the registry rather
 than copying the one you booted, which is why the network matters.
 
 The account is asked for rather than declared because the image is shared and
-you are not. Kuma writes your answers onto the target, and the machine creates
+you are not. kuma writes your answers onto the target, and the machine creates
 the account on its first boot.
 
 Encryption is asked here because it cannot be added later without installing
@@ -129,7 +129,7 @@ kuma, the tool is a single file and everything it needs, including the
 wallpaper and the desktop configuration it bakes into images, is compiled in:
 
 ```console
-$ curl -LO https://github.com/Letdown2491/kuma-linux/releases/latest/download/kuma-x86_64-unknown-linux-musl
+$ curl -LO https://github.com/Letdown2491/kumaos/releases/latest/download/kuma-x86_64-unknown-linux-musl
 $ chmod +x kuma-x86_64-unknown-linux-musl
 $ sudo mv kuma-x86_64-unknown-linux-musl /usr/local/bin/kuma
 ```
@@ -163,7 +163,7 @@ prints into `[user]` as `password_hash`. Without it the account exists but
 cannot log in. Anyone who can read the image can read that hash, so leave it
 out of anything you publish.
 
-**You did not name a base image, and you do not have to.** Kuma builds its own
+**You did not name a base image, and you do not have to.** kuma builds its own
 foundation out of Fedora's packages. Naming `system.base` opts out and builds
 on the image you name instead.
 
@@ -360,7 +360,7 @@ and why restoring a machine needs two things.
 **On a desktop, `Mod+D` opens the launcher.** Your applications are in it,
 and so are kuma's own verbs; each opens a terminal and leaves it open,
 because several ask for a password and all print something worth reading.
-[Kuma in your launcher](concepts.md#kuma-in-your-launcher) has the list and
+[kuma in your launcher](concepts.md#kuma-in-your-launcher) has the list and
 the one rule about it: no entry writes your declaration without asking.
 
 **When something is wrong and you want help.** `kuma doctor --report` prints

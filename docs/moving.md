@@ -28,7 +28,7 @@ $ sudo rpm-ostree rebase ostree-unverified-registry:ghcr.io/letdown2491/kuma:nir
 A [rebase](glossary.md) swaps which image the machine boots. The next boot
 runs kuma's system and keeps everything in `/var`: your account, your home
 directory, your networks, your flatpaks. Nothing is partitioned and nothing
-is wiped. Kuma's three partitions are what `kuma install` writes onto a
+is wiped. kumaOS's three partitions are what `kuma install` writes onto a
 disk, and a rebase never goes near a partition table; the disk keeps the
 layout its previous system gave it.
 

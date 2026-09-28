@@ -42,7 +42,7 @@ more than one, which is what makes rollback instant.
 which points at whatever was published most recently; `kuma.lock` pins it.
 
 **Drift.** Anything the machine has that the declaration does not name.
-Kuma treats it as a proposal to consider rather than a fault to erase; see
+kuma treats it as a proposal to consider rather than a fault to erase; see
 [how kuma behaves](concepts.md#what-happens-to-changes-you-make-by-hand).
 
 **ESP.** The EFI system partition: the small FAT partition the firmware
@@ -60,7 +60,7 @@ machine comes back where it was; it needs the kernel told where that file
 sits on the disk. Distinct from suspend, which keeps memory powered, and
 from **zram**, which is swap inside memory and cannot hold a copy of it.
 
-**Installer media.** The USB stick a machine boots to be installed. Kuma's
+**Installer media.** The USB stick a machine boots to be installed. kumaOS's
 is live: its root filesystem is the desktop image itself, so what you look
 at before installing is what you get.
 
@@ -71,7 +71,7 @@ hibernation, and nothing kuma configures changes it.
 inside a LUKS container, unlocked by a passphrase at every boot.
 
 **Machine state.** What is true of one machine rather than of the system it
-runs — hostname, timezone, which wifi network, the volume. Kuma
+runs — hostname, timezone, which wifi network, the volume. kuma
 deliberately keeps it out of the declaration; the opposite of **system
 definition**.
 

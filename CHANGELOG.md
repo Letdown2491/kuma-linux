@@ -6,6 +6,18 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+### Changed
+
+- **The system calls itself kumaOS.** The display name — os-release `NAME`
+  and `PRETTY_NAME`, so the GRUB menu, fastfetch, and `hostnamectl` all
+  follow — the login greeter's greeting, the fedora-release shim, and the
+  fastfetch wordmark say kumaOS; the default hostname for new installs is
+  `kumaos`. The binary, the crate, `ID=kuma`, and every machine-facing
+  identifier stay `kuma`, and existing machines keep whatever hostname they
+  already have. The repository is `Letdown2491/kumaos`; GitHub redirects the
+  old address, and the cosign identity regexp in SECURITY.md moves with it —
+  verifications of releases tagged after the rename must use the new path.
+
 ## v44.3.0 (2026-09-27)
 
 ### Fixed

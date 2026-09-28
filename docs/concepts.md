@@ -29,7 +29,7 @@ Declarative systems normally treat drift as failure: the machine deviates,
 the tool corrects it, the deviation is erased. That is why the thing you
 installed in a hurry never makes it into the declaration.
 
-Kuma gives drift a second exit. Anything the machine has that `kuma.toml`
+kumaOS gives drift a second exit. Anything the machine has that `kuma.toml`
 doesn't name is a proposal against your declaration:
 
 ```console
@@ -136,11 +136,11 @@ but nothing will be able to ssh into it.
 ## What every image carries
 
 A bootc image is expected to be self-contained: everything the system runs is
-in it. Kuma's images also carry what the machine needs to reason about
+in it. kumaOS's images also carry what the machine needs to reason about
 itself, which is three things.
 
 The declaration it was built from, verbatim at `/usr/lib/kuma/kuma.toml`,
-comments and formatting intact. Kuma itself, at `/usr/bin/kuma`. And the
+comments and formatting intact. kuma itself, at `/usr/bin/kuma`. And the
 units and helpers that converge flatpaks, brews, the declared user, and boot
 health.
 
@@ -306,7 +306,7 @@ answer to it is `kuma capture`, not an undo.
 The image is the opposite on every count. An update replaces the entire
 operating system at once and applies on the next boot, so putting it on a
 timer buys either surprise reboots or a queue of staged deployments nobody
-has booted while the machine reports itself up to date. Kuma stages nothing
+has booted while the machine reports itself up to date. kumaOS stages nothing
 you did not ask for, and `kuma update` stays yours to run.
 
 What is automated is knowing when to run it:
@@ -539,7 +539,7 @@ or a backslash is refused, by `kuma install --restore` and by `kuma backup`
 alike. Two things read this file, the first boot through systemd and the verb
 through a shell loop, and they do not agree about what those characters mean,
 so a password containing one would be a different password depending on which
-one opened the repository. Kuma will not guess which you meant. If a repository
+one opened the repository. kuma will not guess which you meant. If a repository
 predates kuma 0.17 and its password contains one, change it with `restic
 passwd` before rewriting the file: it was encrypted with the expanded value.
 
@@ -657,7 +657,7 @@ Two deliberate choices:
 
 - **No default health checks.** greenboot's optional check package makes DNS
   resolution *required*: reasonable on an always-networked IoT box, absurd on
-  a laptop that boots offline. Kuma installs the core framework and its own
+  a laptop that boots offline. kumaOS installs the core framework and its own
   greeter check. Add your own under `/etc/greenboot/check/required.d/`.
 - **Existing machines are retrofitted.** The boot counter is bootloader
   config written once at install time, so a machine installed before boot
@@ -667,7 +667,7 @@ Two deliberate choices:
 - **The menu names what it boots.** ostree rewrites a boot entry only when the
   kernel or the kernel arguments move, and a release that reuses the same base
   moves neither, so entries kept naming the version that used to hold their
-  slot: a machine running 0.12.0 offered `Kuma 0.11.0`. The order was still
+  slot: a machine running 0.12.0 offered `kumaOS 0.11.0`. The order was still
   right, so it booted the right thing, but the menu is what you read when the
   machine will not come up far enough to run `kuma rollback`.
   `kuma-boot-titles.service` takes each entry's title from the deployment its
@@ -704,7 +704,7 @@ install-time answers need, while a file the installer shipped into `/etc`
 would be image content rather than a local change, and the next update would
 delete it.
 
-The disk itself is machine state too. Kuma writes the same three partitions
+The disk itself is machine state too. kuma writes the same three partitions
 every time: an EFI system partition, a `/boot` outside the root, and a root
 that takes the rest. `/boot` is separate even when nothing is encrypted, so
 that turning encryption on changes what the third partition holds rather than
@@ -732,7 +732,7 @@ where `ps` would show it and never a file. It does live in memory while
 the install runs, in kuma's own heap and in a shell variable in the
 install script, and kuma makes no claim to defend against something
 reading another process's memory, which on this machine already means
-root. Kuma writes it nowhere, there is no recovery key and no escrow, and
+root. kuma writes it nowhere, there is no recovery key and no escrow, and
 a lost passphrase is a lost disk. Changing it later is `cryptsetup
 luksChangeKey` on the machine itself, which kuma has no verb for.
 
@@ -757,7 +757,7 @@ has, because that is the only way this breaks quietly.
 A first boot then spends minutes on the rest of it. The account is made, the
 hostname applied, and the declared flatpaks and brews downloaded, which for a
 full desktop is about a gigabyte and takes a few minutes on an ordinary
-connection. Kuma says so while it happens: bare `kuma` reports `converging`
+connection. kuma says so while it happens: bare `kuma` reports `converging`
 rather than drift, and offers no `sync`, because a sync is what is running. A
 machine that does not match its declaration yet is not the same as one that
 has stopped trying.
