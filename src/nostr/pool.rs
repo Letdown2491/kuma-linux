@@ -29,7 +29,7 @@ use tungstenite::Message;
 /// The subscription id every relay thread uses. One subscription per
 /// relay; the id is what the relay echoes back, so it only needs to be
 /// distinguishable in a log.
-const SUBSCRIPTION_ID: &str = "kuma-bunker";
+pub(crate) const SUBSCRIPTION_ID: &str = "kuma-bunker";
 
 /// The backoff ceiling: a relay that has been down for this long keeps
 /// trying on the minute, because the bunker being reachable when the
@@ -253,88 +253,7 @@ fn set_read_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A relay stub: one WebSocket server that records what it is asked,
-    /// then pushes one scripted event to its subscriber and collects
-    /// what the bunker publishes. This is the offline end of the plan's
-    /// relay harness — the Go relay's job is interop, not the suite.
-    struct StubRelay {
-        url: String,
-        received: Arc<Mutex<Vec<String>>>,
-    }
-
-    impl StubRelay {
-        /// Serve one connection: the subscribe comes in, the scripted
-        /// event goes out, and everything after is recorded.
-        fn start(scripted: Event) -> Self {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let url = format!("ws://127.0.0.1:{}", listener.local_addr().unwrap().port());
-            let received = Arc::new(Mutex::new(Vec::new()));
-            let received_for_thread = received.clone();
-            std::thread::spawn(move || {
-                let (stream, _) = listener.accept().unwrap();
-                let Ok(mut socket) = tungstenite::accept(stream) else {
-                    return;
-                };
-                // The subscribe arrives; its shape is asserted by the
-                // test through what was recorded next.
-                loop {
-                    match socket.read() {
-                        Ok(Message::Text(text)) => {
-                            received_for_thread.lock().unwrap().push(text.to_string());
-                            break;
-                        }
-                        Ok(_) => continue,
-                        Err(_) => return,
-                    }
-                }
-                let frame = serde_json::json!(["EVENT", SUBSCRIPTION_ID, scripted]).to_string();
-                if socket.send(Message::text(frame)).is_err() {
-                    return;
-                }
-                // Collect publishes until the test says stop, with a
-                // read timeout so the thread can notice the socket is
-                // dead and leave.
-                socket.get_mut().set_read_timeout(Some(Duration::from_millis(100))).ok();
-                loop {
-                    match socket.read() {
-                        Ok(Message::Text(text)) => {
-                            received_for_thread.lock().unwrap().push(text.to_string());
-                        }
-                        Ok(Message::Close(_)) => return,
-                        // WouldBlock is the read timeout beat, not a
-                        // fault: a relay holds the connection open.
-                        Err(tungstenite::Error::Io(e))
-                            if e.kind() == ErrorKind::WouldBlock
-                                || e.kind() == ErrorKind::TimedOut =>
-                        {
-                            continue
-                        }
-                        Err(_) => return,
-                        _ => continue,
-                    }
-                }
-            });
-            Self { url, received }
-        }
-
-        fn received(&self) -> Vec<String> {
-            self.received.lock().unwrap().clone()
-        }
-    }
-
-    /// Wait until the closure is true, because a relay thread and a
-    /// subscriber meet in the middle: neither side knows who arrived
-    /// first.
-    fn wait_for(description: &str, tries: u32, check: impl Fn() -> bool) {
-        for _ in 0..tries {
-            if check() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        panic!("timed out waiting for {description}");
-    }
+    use crate::nostr::test_relay::{wait_for, StubRelay};
 
     #[test]
     fn a_request_event_flows_relay_to_pool_and_an_answer_flows_back() {
@@ -353,7 +272,7 @@ mod tests {
             .finalize(&app)
             .unwrap();
 
-        let stub = StubRelay::start(request.clone());
+        let stub = StubRelay::start(vec![request.clone()]);
         let (inbound_tx, inbound_rx) = channel::<Event>();
         let (status_tx, status_rx) = channel::<RelayStatus>();
         let pool = RelayPool::spawn(vec![stub.url.clone()], bunker_pubkey, inbound_tx, status_tx);

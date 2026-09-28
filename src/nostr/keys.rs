@@ -60,6 +60,12 @@ pub fn decrypt_ncryptsec(ncryptsec: &str, passphrase: &str) -> Result<SecretKey>
         .map_err(|e| anyhow::anyhow!("ncryptsec did not decrypt with that passphrase: {e}"))
 }
 
+/// The key's public half, hex — the form the vault blob stores in the
+/// clear and the form NIP-46's answers carry.
+pub fn public_key_hex(key: &SecretKey) -> String {
+    Keys::new(key.clone()).public_key().to_string()
+}
+
 /// Wrap a secret key as NIP-49 `ncryptsec` at the layer's strength, for
 /// storage. `Medium` is the honest `KeySecurity` here: from this call on,
 /// the key is only ever handled in its wrapped form.

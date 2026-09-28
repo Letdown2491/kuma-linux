@@ -139,7 +139,9 @@ fn peer_is_self(stream: &UnixStream) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nostr::test_relay::wait_for;
     use crate::nostr::vault::{MemoryStore, Vault};
+    use nostr::prelude::*;
 
     /// The socket round-trip: a real unix socket in a temp directory, a
     /// daemon over an in-memory store, a client that is a plain thread.
@@ -157,7 +159,8 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600);
 
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let daemon = Arc::new(Mutex::new(Daemon::new(Vault::new(MemoryStore::default()))));
+        let daemon =
+            Arc::new(Mutex::new(Daemon::new(Vault::new(MemoryStore::default()), Vec::new()).0));
         std::thread::spawn(move || {
             serve(listener, daemon, &runtime);
         });
@@ -192,5 +195,105 @@ mod tests {
         assert!(dry.contains("unrecoverable"));
         let status = ask(&mut client, r#"{"cmd":"status"}"#);
         assert!(status.contains("\"exists\":true"));
+    }
+
+    /// The layer's crown test, and the reason the stub relay exists:
+    /// a daemon serving its unix socket, armed by the socket verb
+    /// itself, whose bunker answers an app's request across a real
+    /// relay socket and gets the answer back to the app's own key.
+    /// Every hop is real; only the keyring is a stand-in.
+    #[test]
+    fn a_request_reaches_the_bunker_and_its_answer_comes_back() {
+        use crate::nostr::bunker::DenyAll;
+        use crate::nostr::test_relay::StubRelay;
+        use nostr::nips::nip46::{NostrConnectMessage, NostrConnectMethod, NostrConnectRequest};
+
+        // The relay the daemon will be pointed at.
+        let stub = StubRelay::start(Vec::new());
+
+        // The daemon, its socket, its worker — the shape nostrd runs.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SOCKET_NAME);
+        let listener = bind(&path).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let (daemon, inbound_rx) =
+            Daemon::new(Vault::new(MemoryStore::default()), vec![stub.url.clone()]);
+        let daemon = Arc::new(Mutex::new(daemon));
+        std::thread::spawn({
+            let daemon = daemon.clone();
+            let handle = runtime.handle().clone();
+            move || loop {
+                let Ok(event) = inbound_rx.recv() else {
+                    return;
+                };
+                let mut daemon = daemon.lock().unwrap();
+                if let Some(response) =
+                    handle.block_on(daemon.process_bunker_event(event, &DenyAll))
+                {
+                    let _ = daemon.publish(&response);
+                }
+            }
+        });
+        std::thread::spawn({
+            let daemon = daemon.clone();
+            move || serve(listener, daemon, &runtime)
+        });
+
+        // The socket client arms the bunker by setting it up.
+        let mut client = UnixStream::connect(&path).unwrap();
+        let ask = |mut client: &UnixStream, line: &str| -> String {
+            client.write_all(line.as_bytes()).unwrap();
+            client.write_all(b"\n").unwrap();
+            let mut answer = String::new();
+            BufReader::new(client.try_clone().unwrap()).read_line(&mut answer).unwrap();
+            answer
+        };
+        let setup: serde_json::Value = serde_json::from_str(
+            ask(&mut client, r#"{"cmd":"setup","mode":{"how":"generate"}}"#).trim(),
+        )
+        .unwrap();
+        let npub = setup["pubkey"].as_str().expect("setup answers an npub").to_string();
+
+        // The relay saw the subscription.
+        wait_for("the bunker's subscribe to reach the relay", 100, || {
+            stub.received().iter().any(|frame| frame.contains("REQ"))
+        });
+
+        // An app — with its own keys — asks to connect. It knows only
+        // the npub, which is exactly what a bunker:// URI carries.
+        let bunker_pubkey = nostr::key::PublicKey::parse(&npub).unwrap();
+        let app = Keys::generate();
+        let message = NostrConnectMessage::request(
+            &NostrConnectRequest::from_message(
+                NostrConnectMethod::Connect,
+                // Connect's params lead with the pubkey the app
+                // expects to control — the bunker's own.
+                vec![bunker_pubkey.to_string()],
+            )
+            .unwrap(),
+        );
+        let content = app.nip44_encrypt(&bunker_pubkey, &message.as_json()).unwrap();
+        let request = EventBuilder::new(Kind::NostrConnect, content)
+            .tag(Tag::public_key(bunker_pubkey))
+            .finalize(&app)
+            .unwrap();
+        stub.inject(&request);
+
+        // The bunker's answer comes back through the relay, and the
+        // app's own half of the channel opens it.
+        wait_for("the bunker's answer to come back through the relay", 100, || {
+            stub.received().iter().any(|frame| frame.contains(":24135"))
+        });
+        let answer_frame =
+            stub.received().into_iter().find(|frame| frame.contains(":24135")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&answer_frame).unwrap();
+        let answer: Event = serde_json::from_value(parsed[1].clone()).unwrap();
+        assert_eq!(answer.kind, Kind::from_u16(24135));
+        let plaintext = app.nip44_decrypt(&answer.pubkey, &answer.content).unwrap();
+        let message = NostrConnectMessage::from_json(&plaintext).unwrap();
+        assert!(
+            message.is_response(),
+            "the app's connect request was answered with a response: {message:?}"
+        );
     }
 }

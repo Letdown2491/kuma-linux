@@ -25,6 +25,7 @@
 //! that has a Secret Service.
 
 use anyhow::{anyhow, bail, Context, Result};
+use nostr::key::PublicKey;
 use nostr::key::SecretKey;
 use nostr::nips::nip19::ToBech32;
 use serde::{Deserialize, Serialize};
@@ -51,11 +52,17 @@ pub const VAULT_ATTRIBUTES: [(&str, &str); 2] = [("app", "kuma"), ("account", "n
 /// and a second item would be one more thing to lose. The independent
 /// vault removes this field and asks a person instead; the `ncryptsec`
 /// format does not change.
+///
+/// `pubkey` rides in the clear because it is the one value that is not
+/// secret — the public half of the key — and because a locked daemon
+/// still owes the surfaces an identity: `status` names the npub, and
+/// the doctor grades the bunker without asking the gate to open.
 #[derive(Serialize, Deserialize)]
 struct VaultBlob {
     v: u8,
     wrap: String,
     ncryptsec: String,
+    pubkey: String,
 }
 
 const BLOB_VERSION: u8 = 1;
@@ -63,7 +70,8 @@ const BLOB_VERSION: u8 = 1;
 impl VaultBlob {
     fn new(key: &SecretKey, wrap: String) -> Result<Self> {
         let ncryptsec = keys::to_ncryptsec(key, &wrap)?.to_bech32()?;
-        Ok(Self { v: BLOB_VERSION, wrap, ncryptsec })
+        let pubkey = keys::public_key_hex(key);
+        Ok(Self { v: BLOB_VERSION, wrap, ncryptsec, pubkey })
     }
 
     fn decode(bytes: &[u8]) -> Result<Self> {
@@ -147,6 +155,22 @@ impl<S: SecretStore> Vault<S> {
     /// up" for every caller downstream.
     pub async fn stored(&self) -> Result<bool> {
         Ok(self.store.load().await?.is_some())
+    }
+
+    /// The bunker's public identity, read from the blob without
+    /// unlocking: what `status` names while locked and what the doctor
+    /// grades without asking the gate to open. `None` when no vault
+    /// exists.
+    pub async fn stored_pubkey(&self) -> Result<Option<PublicKey>> {
+        match self.store.load().await? {
+            Some(bytes) => {
+                let blob = VaultBlob::decode(&bytes)?;
+                let pubkey = PublicKey::parse(&blob.pubkey)
+                    .map_err(|e| anyhow!("the stored pubkey is broken: {e}"))?;
+                Ok(Some(pubkey))
+            }
+            None => Ok(None),
+        }
     }
 
     /// The key, borrowed only while unlocked. A locked vault answers

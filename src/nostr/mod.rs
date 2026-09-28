@@ -7,4 +7,6 @@ pub mod keys;
 pub mod pool;
 pub mod protocol;
 pub mod socket;
+#[cfg(test)]
+pub mod test_relay;
 pub mod vault;

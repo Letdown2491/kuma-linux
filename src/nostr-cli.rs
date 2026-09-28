@@ -42,6 +42,14 @@ enum Command {
     Lock,
     /// What the daemon holds: whether a vault exists and is unlocked.
     Status,
+    /// The `bunker://` URI a remote app pairs with — as text, and as a
+    /// QR when asked. The URI carries the bunker pubkey and the relay
+    /// set the daemon is running.
+    Bunker {
+        /// Render a QR beside the URI line.
+        #[arg(long)]
+        qr: bool,
+    },
     /// Delete the vault. The key is unrecoverable afterwards.
     Destroy {
         /// Carry the flag; without it this is a dry run.
@@ -54,12 +62,15 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let path = cli.socket.map(Ok).unwrap_or_else(kuma::nostr::socket::default_socket_path)?;
 
-    let request = match cli.command {
+    let bunker_verb = matches!(cli.command, Command::Bunker { .. });
+    let bunker_qr = matches!(cli.command, Command::Bunker { qr: true });
+
+    let request = match &cli.command {
         Command::Setup { import } => match import {
             Some(secret) => {
                 format!(
                     r#"{{"cmd":"setup","mode":{{"how":"import","secret":{}}}}}"#,
-                    json_string(&secret)
+                    json_string(secret)
                 )
             }
             None => r#"{"cmd":"setup","mode":{"how":"generate"}}"#.to_string(),
@@ -67,6 +78,7 @@ fn main() -> Result<()> {
         Command::Unlock => r#"{"cmd":"unlock"}"#.to_string(),
         Command::Lock => r#"{"cmd":"lock"}"#.to_string(),
         Command::Status => r#"{"cmd":"status"}"#.to_string(),
+        Command::Bunker { .. } => r#"{"cmd":"status"}"#.to_string(),
         Command::Destroy { yes } => format!(r#"{{"cmd":"destroy","confirm":{yes}}}"#),
     };
 
@@ -79,6 +91,10 @@ fn main() -> Result<()> {
     BufReader::new(stream).read_line(&mut answer)?;
     let value: serde_json::Value = serde_json::from_str(answer.trim())
         .context("the daemon's answer was not one JSON document")?;
+
+    if bunker_verb {
+        return render_bunker(&value, bunker_qr);
+    }
 
     render(&value)
 }
@@ -106,7 +122,8 @@ fn render(value: &serde_json::Value) -> Result<()> {
             let pubkey = vault["pubkey"].as_str();
             match (exists, unlocked, pubkey) {
                 (false, _, _) => println!("no vault; run `kuma-nostr setup`"),
-                (true, false, _) => println!("vault exists, locked"),
+                (true, false, Some(npub)) => println!("vault exists, locked, identity {npub}"),
+                (true, false, None) => println!("vault exists, locked"),
                 (true, true, Some(npub)) => println!("vault exists, unlocked as {npub}"),
                 (true, true, None) => println!("vault exists, unlocked"),
             }
@@ -115,7 +132,9 @@ fn render(value: &serde_json::Value) -> Result<()> {
             "vault created, unlocked as {}",
             value["pubkey"].as_str().unwrap_or("(npub unreadable)")
         ),
-        Some("unlock") => println!("unlocked"),
+        Some("unlock") => {
+            println!("unlocked as {}", value["pubkey"].as_str().unwrap_or("(npub unreadable)"))
+        }
         Some("lock") => println!("locked"),
         Some("destroy_dry_run") => println!(
             "dry run: {}",
@@ -124,5 +143,50 @@ fn render(value: &serde_json::Value) -> Result<()> {
         Some("destroy") => println!("vault destroyed"),
         _ => println!("{value}"),
     }
+    Ok(())
+}
+
+/// The `bunker` verb: the pairing URI a phone's nostr app scans. The
+/// URI is the copyable answer; the QR is the scannable one — both carry
+/// the bunker pubkey and the relay set, because a QR that only renders
+/// when the URI is not also printed is a URI nobody can paste into a
+/// support question.
+fn render_bunker(value: &serde_json::Value, qr: bool) -> Result<()> {
+    if value.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        anyhow::bail!(
+            "the daemon refused: {}",
+            value["error"].as_str().unwrap_or("no reason given")
+        );
+    }
+    let vault = &value["vault"];
+    let npub = vault["pubkey"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("the daemon has no identity yet; run `kuma-nostr setup`"))?;
+    let pubkey =
+        nostr::key::PublicKey::parse(npub).context("the daemon's identity did not parse")?;
+    let relays: Vec<String> = vault["relays"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r.as_str().map(str::to_string))
+        .collect();
+    let uri = kuma::nostr::bunker::bunker_uri(&pubkey, &relays);
+
+    if vault["unlocked"].as_bool() != Some(true) {
+        println!("the bunker is locked; the URI pairs but signs nothing until `kuma-nostr unlock`");
+    }
+    if qr {
+        // One quiet-zone module on each side is the minimum a scanner
+        // wants; the debug render is the matrix alone, so the padding
+        // is printed here.
+        let code = qrencode::QrCode::new(uri.as_bytes())?;
+        println!();
+        println!("{}", " ".repeat(code.width() + 8));
+        for line in code.to_debug_str('#', ' ').lines() {
+            println!("    {line}    ");
+        }
+        println!("{}", " ".repeat(code.width() + 8));
+    }
+    println!("{uri}");
     Ok(())
 }

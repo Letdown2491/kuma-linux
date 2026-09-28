@@ -13,11 +13,19 @@
 //! vault's store, and the socket layer at the bottom of the stack is the
 //! only thing that knows a network exists.
 
+use std::collections::HashMap;
+use std::sync::mpsc::{channel, Receiver, Sender};
+
 use anyhow::{anyhow, Result};
-use nostr::key::SecretKey;
+use nostr::event::Event;
+use nostr::key::PublicKey;
+use nostr::key::{Keys, SecretKey};
+use nostr::nips::nip19::ToBech32;
 use serde::{Deserialize, Serialize};
 
+use super::bunker::{Bunker, Gate};
 use super::keys;
+use super::pool::{RelayPool, RelayState, RelayStatus};
 use super::vault::Vault;
 
 /// A request, one line of JSON. `confirm` is the socket spelling of the
@@ -72,7 +80,7 @@ pub enum OkResponse {
     Ping { ok: bool },
     Status { ok: bool, vault: VaultFact },
     Setup { ok: bool, pubkey: String },
-    Unlock { ok: bool },
+    Unlock { ok: bool, pubkey: String },
     Lock { ok: bool },
     DestroyDryRun { ok: bool, would: String },
     Destroy { ok: bool },
@@ -85,9 +93,14 @@ pub struct VaultFact {
     pub exists: bool,
     /// The gate is open in this daemon.
     pub unlocked: bool,
-    /// The bunker's public identity, when unlocked. An npub — the form
-    /// everything downstream renders — never the raw key.
+    /// The bunker's public identity, when a vault exists — from the
+    /// bunker when unlocked, from the stored blob when locked. An npub —
+    /// the form everything downstream renders — never the raw key.
     pub pubkey: Option<String>,
+    /// The relay set the bunker talks to.
+    pub relays: Vec<String>,
+    /// The relays currently reporting a live connection.
+    pub connected: Vec<String>,
 }
 
 /// One line in, one line out, over a newline.
@@ -101,16 +114,52 @@ pub fn encode(response: &Response) -> String {
     line
 }
 
-/// The daemon's brain: a vault plus the answers to the verbs that drive
-/// it. The socket layer calls one method per connection message; tests
-/// call the same method with no socket involved.
+/// The daemon's brain: the vault, the bunker it arms when the gate
+/// opens, and the relay pool that carries the bunker — behind one
+/// mutex, because the socket verbs and the bunker worker both hold it,
+/// and every verb's answer is the state's truth at that instant.
+///
+/// The relay set comes in at construction and the verbs do not change
+/// it: relays are a declaration fact (the block, when it lands), not a
+/// socket verb, and a caller who wants a different set restarts the
+/// daemon with a different declaration behind it.
 pub struct Daemon<S: super::vault::SecretStore> {
     vault: Vault<S>,
+    relays: Vec<String>,
+    bunker: Option<Bunker>,
+    pool: Option<RelayPool>,
+    /// The sender every spawned pool gets a clone of, and the receiver
+    /// the bunker worker consumes; made once in [`Daemon::new`], so a
+    /// lock-unlock cycle spawns a fresh pool onto a channel the worker
+    /// is already reading.
+    inbound: Sender<Event>,
+    status_tx: Sender<RelayStatus>,
+    status_rx: Receiver<RelayStatus>,
+    /// The last thing each relay said, as the Status verb drains the
+    /// channel. Stale by design between statuses: the doctor's liveness
+    /// probe is the live answer, this is the rendered one.
+    relay_states: HashMap<String, RelayState>,
 }
 
 impl<S: super::vault::SecretStore> Daemon<S> {
-    pub fn new(vault: Vault<S>) -> Self {
-        Self { vault }
+    /// Build the daemon and hand back the receiver the bunker worker
+    /// consumes. The split is explicit because the worker is the
+    /// binary's to spawn — it needs the daemon's own `Arc` around it,
+    /// which does not exist until after construction.
+    pub fn new(vault: Vault<S>, relays: Vec<String>) -> (Self, Receiver<Event>) {
+        let (inbound, inbound_rx) = channel();
+        let (status_tx, status_rx) = channel();
+        let daemon = Self {
+            vault,
+            relays,
+            bunker: None,
+            pool: None,
+            inbound,
+            status_tx,
+            status_rx,
+            relay_states: HashMap::new(),
+        };
+        (daemon, inbound_rx)
     }
 
     pub async fn handle(&mut self, request: Request) -> Response {
@@ -123,11 +172,28 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                 // The failure is the answer.
                 match self.vault.stored().await {
                     Ok(exists) => {
+                        // Drain what the relays said since last time;
+                        // their last word is the rendered truth.
+                        while let Ok(RelayStatus { url, state }) = self.status_rx.try_recv() {
+                            self.relay_states.insert(url, state);
+                        }
                         let unlocked = self.vault.is_unlocked();
-                        let pubkey = self.vault.key().map(public_key_bech32);
+                        let pubkey = self.bunker_pubkey().await;
+                        let connected = self
+                            .relay_states
+                            .iter()
+                            .filter(|(_, state)| **state == RelayState::Connected)
+                            .map(|(url, _)| url.clone())
+                            .collect();
                         Response::Ok(OkResponse::Status {
                             ok: true,
-                            vault: VaultFact { exists, unlocked, pubkey },
+                            vault: VaultFact {
+                                exists,
+                                unlocked,
+                                pubkey,
+                                relays: self.relays.clone(),
+                                connected,
+                            },
                         })
                     }
                     Err(e) => err_response(anyhow!("cannot read the vault: {e}")),
@@ -136,6 +202,7 @@ impl<S: super::vault::SecretStore> Daemon<S> {
             Request::Setup { mode } => self.setup(mode).await,
             Request::Unlock => self.unlock().await,
             Request::Lock => {
+                self.teardown_bunker();
                 self.vault.lock();
                 Response::Ok(OkResponse::Lock { ok: true })
             }
@@ -148,12 +215,29 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                             .into(),
                     });
                 }
+                // The pool stops before the key does: a bunker that can
+                // still be asked to sign while its vault is being
+                // deleted is answering with a dead identity.
+                self.teardown_bunker();
                 match self.vault.destroy().await {
                     Ok(()) => Response::Ok(OkResponse::Destroy { ok: true }),
                     Err(e) => err_response(e),
                 }
             }
         }
+    }
+
+    /// The startup posture: auto-unlock when a vault exists. The unit
+    /// restarts with the session and the keyring is PAM-open, so the
+    /// gate is open by design and the bunker comes up answering; the
+    /// lock verb is momentary suspension, not a reboot-persistent
+    /// state. A failure is honest on stderr and the daemon keeps
+    /// running locked — the doctor will say so too.
+    pub async fn startup_unlock(&mut self) -> Result<String> {
+        self.vault.unlock().await?;
+        let key =
+            self.vault.key().ok_or_else(|| anyhow!("unlocked the vault and found no key"))?.clone();
+        Ok(self.arm_bunker(&key))
     }
 
     async fn setup(&mut self, mode: SetupMode) -> Response {
@@ -165,15 +249,84 @@ impl<S: super::vault::SecretStore> Daemon<S> {
             },
         };
         match self.vault.setup(&key).await {
-            Ok(()) => Response::Ok(OkResponse::Setup { ok: true, pubkey: public_key_bech32(&key) }),
+            Ok(()) => {
+                let pubkey = self.arm_bunker(&key);
+                Response::Ok(OkResponse::Setup { ok: true, pubkey })
+            }
             Err(e) => err_response(anyhow!("{e}")),
         }
     }
 
     async fn unlock(&mut self) -> Response {
         match self.vault.unlock().await {
-            Ok(()) => Response::Ok(OkResponse::Unlock { ok: true }),
+            Ok(()) => match self.vault.key().cloned() {
+                Some(key) => {
+                    let pubkey = self.arm_bunker(&key);
+                    Response::Ok(OkResponse::Unlock { ok: true, pubkey })
+                }
+                None => err_response(anyhow!("unlocked the vault and found no key")),
+            },
             Err(e) => err_response(anyhow!("{e}")),
+        }
+    }
+
+    /// Arm the bunker on a fresh unlock: keys in, relay pool up. Any
+    /// previous pool is torn down first — a lock that left one running
+    /// was a bunker that never stopped.
+    fn arm_bunker(&mut self, key: &SecretKey) -> String {
+        self.teardown_bunker();
+        let keys = Keys::new(key.clone());
+        let pubkey = keys.public_key();
+        self.pool = Some(RelayPool::spawn(
+            self.relays.clone(),
+            pubkey,
+            self.inbound.clone(),
+            self.status_tx.clone(),
+        ));
+        self.bunker = Some(Bunker::new(keys));
+        public_key_bech32(&pubkey)
+    }
+
+    /// Disarm: pool down, bunker dropped. A locked bunker holds no
+    /// secret and no subscription; the apps see silence, which is what
+    /// locked means.
+    fn teardown_bunker(&mut self) {
+        self.bunker = None;
+        if let Some(pool) = self.pool.take() {
+            pool.shutdown();
+        }
+    }
+
+    /// The bunker's answer to one relay-delivered event: the response
+    /// event to publish, or None when the bunker is not armed (locked)
+    /// or the event is noise. The worker calls this under the lock;
+    /// async because the gate's decision may wait.
+    pub async fn process_bunker_event(&mut self, event: Event, gate: &impl Gate) -> Option<Event> {
+        let bunker = self.bunker.as_mut()?;
+        bunker.process_event(&event, gate).await
+    }
+
+    /// Publish a bunker answer to every relay that is up.
+    pub fn publish(&self, event: &Event) -> Result<()> {
+        match &self.pool {
+            Some(pool) => pool.publish(event),
+            None => Err(anyhow!("the bunker is not running")),
+        }
+    }
+
+    /// The bunker's public identity: from the armed bunker when
+    /// unlocked, from the stored blob when locked, and honestly None
+    /// when neither exists.
+    async fn bunker_pubkey(&self) -> Option<String> {
+        if let Some(bunker) = &self.bunker {
+            return Some(public_key_bech32(&bunker.public_key()));
+        }
+        match self.vault.stored_pubkey().await {
+            Ok(Some(pubkey)) => Some(pubkey.to_bech32().expect("an npub encodes")),
+            Ok(None) => None,
+            // The identity is decoration; a broken blob answers nothing
+            // rather than failing a status read.
+            Err(_) => None,
         }
     }
 }
@@ -182,9 +335,8 @@ impl<S: super::vault::SecretStore> Daemon<S> {
 /// renders. Deriving it from the key rather than storing it means a
 /// stored blob never has a second copy of a public value to disagree
 /// with itself.
-fn public_key_bech32(key: &SecretKey) -> String {
-    use nostr::nips::nip19::ToBech32;
-    nostr::key::Keys::new(key.clone()).public_key().to_bech32().expect("an npub encodes")
+fn public_key_bech32(key: &PublicKey) -> String {
+    key.to_bech32().expect("an npub encodes")
 }
 
 pub fn err_response(error: anyhow::Error) -> Response {
@@ -197,7 +349,7 @@ mod tests {
     use crate::nostr::vault::{MemoryStore, SecretStore, Vault};
 
     async fn daemon() -> Daemon<MemoryStore> {
-        Daemon::new(Vault::new(MemoryStore::default()))
+        Daemon::new(Vault::new(MemoryStore::default()), Vec::new()).0
     }
 
     async fn round_trip(request: &str) -> String {
@@ -240,7 +392,10 @@ mod tests {
         let line = encode(&status);
         assert!(line.contains("\"exists\":true"));
         assert!(line.contains("\"unlocked\":false"));
-        assert!(line.contains("\"pubkey\":null"), "a locked vault answers no pubkey: {line}");
+        // A locked vault still names its identity — the blob carries the
+        // public half in the clear for exactly this.
+        assert!(line.contains("\"pubkey\":\"npub1"), "locked status names the npub: {line}");
+        assert!(line.contains("\"relays\":["), "status names the relay set: {line}");
 
         daemon.handle(decode(r#"{"cmd":"unlock"}"#).unwrap()).await;
         let status = daemon.handle(decode(r#"{"cmd":"status"}"#).unwrap()).await;
@@ -264,7 +419,7 @@ mod tests {
                 Err(anyhow!("the keyring is not answering"))
             }
         }
-        let mut daemon = Daemon::new(Vault::new(FailingStore));
+        let mut daemon = Daemon::new(Vault::new(FailingStore), Vec::new()).0;
         let response = daemon.handle(decode(r#"{"cmd":"status"}"#).unwrap()).await;
         let line = encode(&response);
         assert!(line.contains("\"ok\":false"), "{line}");
