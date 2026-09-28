@@ -2428,8 +2428,13 @@ smoke_published() {
         [ -n "$before" ] || bad "could not read the booted digest before upgrading"
 
         echo "   .. upgrading to $UPGRADE_TO (pulling inside the guest)"
-        gsudo bootc upgrade >/dev/null 2>&1 \
-            || bad "bootc upgrade failed; console at $log"
+        # Captured, not discarded: a three-second failure says nothing on
+        # the console, and the run this comment answers died reporting
+        # only that bootc disagreed. The pull's own words — unknown
+        # manifest, refused signature, a network the pasta race dropped —
+        # are the diagnosis, and they were going to /dev/null.
+        gsudo bootc upgrade >"$dir/bootc-upgrade.log" 2>&1 \
+            || { tail -20 "$dir/bootc-upgrade.log"; bad "bootc upgrade failed; its own output is above, console at $log"; }
 
         # Staged, or there is nothing to reboot into and a green reboot
         # below would mean nothing at all.
