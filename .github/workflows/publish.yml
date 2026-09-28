@@ -112,8 +112,24 @@ jobs:
       - name: audit for personal information
         run: ./scripts/publish-audit.sh "${{ steps.ref.outputs.local }}"
 
+      # Pinned to the cosign 2.6 line, not the installer's default: v4 of
+      # this action installs cosign v3, and cosign v3 changed where
+      # `cosign sign` puts signatures — OCI 1.1 referrers, no longer the
+      # legacy `sha256-<digest>.sig` attachment tags. Every machine
+      # running a published image verifies pulls through its baked policy
+      # (sigstoreSigned over use-sigstore-attachments), which reads only
+      # the legacy tags, so a v3-signed image is unverifiable by the very
+      # fleet it exists for. Found 2026-09-28: 44.3.0's first publish
+      # failed every bootc upgrade in the cross-version validation in
+      # under three seconds, silently, while this workflow's own verify
+      # passed — the new cosign reads what it wrote. The pin stays until
+      # the images' baked policy understands referrers and a deliberate
+      # migration moves the fleet across. release.yml's installer is not
+      # pinned: it signs blobs keylessly, which has no attachment path.
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         if: ${{ !inputs.allow_unsigned }}
+        with:
+          cosign-release: v2.6.5
 
       # Twice, because they do not share a credential store. podman writes
       # its auth file under XDG_RUNTIME_DIR; cosign reads Docker's
