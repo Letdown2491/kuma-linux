@@ -142,6 +142,13 @@ impl<S: SecretStore> Vault<S> {
         self.key.is_some()
     }
 
+    /// Whether a vault exists in the store, without opening it: what
+    /// `status` reports and what distinguishes "locked" from "never set
+    /// up" for every caller downstream.
+    pub async fn stored(&self) -> Result<bool> {
+        Ok(self.store.load().await?.is_some())
+    }
+
     /// The key, borrowed only while unlocked. A locked vault answers
     /// `None`, and every caller treats that as the refusal it is.
     pub fn key(&self) -> Option<&SecretKey> {

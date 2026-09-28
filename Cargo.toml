@@ -21,6 +21,14 @@ path = "src/lib.rs"
 name = "kuma"
 path = "src/main.rs"
 
+[[bin]]
+name = "kuma-nostrd"
+path = "src/nostrd.rs"
+
+[[bin]]
+name = "kuma-nostr"
+path = "src/nostr-cli.rs"
+
 # cargo-binstall fetches the release asset instead of compiling. Its
 # default URL patterns expect the version in the filename, which kuma's
 # assets deliberately omit, so the pattern is spelled out.
@@ -93,13 +101,12 @@ nostr = { version = "0.45.5", features = ["nip06", "nip44", "nip46", "nip49", "o
 # transport blocking. oo7 cannot be a dev-only or feature-gated dep: the
 # keyring is the vault's wall, not an optional backend.
 oo7 = "0.6.0"
+# The runtime oo7's keyring calls need, for the daemon's bridge and for
+# the test harness; the transport stays blocking beside it.
+tokio = { version = "1.53", features = ["rt", "macros"] }
 # Direct so the vault can mint its random wrap passphrase rather than
 # reaching through oo7 for one; the version is the tree's own.
 getrandom = "0.3"
-
-[dev-dependencies]
-# #[tokio::test] for the vault's async store seam, and nothing else: the
-# daemon's transport stays blocking, so tokio never leaves the test tree.
-tokio = { version = "1.53", features = ["rt", "macros"] }
-nostr = "0.45.5"
-oo7 = "0.6.0"
+# Direct for the daemon's peer-uid check on the socket (SO_PEERCRED), which
+# std does not expose; already in the tree transitively.
+libc = "0.2"
