@@ -2315,10 +2315,7 @@ fn build_disk(tag: &str, output: &Path) -> Result<()> {
         use sha2::{Digest, Sha256};
         format!(
             "sha256:{}",
-            Sha256::digest(bytes.as_bytes())
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>()
+            Sha256::digest(bytes.as_bytes()).iter().map(|b| format!("{b:02x}")).collect::<String>()
         )
     });
     // What bib used to bake and the installer now answers for: a

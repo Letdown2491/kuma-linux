@@ -507,12 +507,12 @@ fn restore_path(
     };
     run_host(&argv)?;
     if !yes && !json {
-    println!();
-    print_actions(&[Action::new(
-        "write",
-        format!("sudo kuma backup --restore {} --yes", shell_quote(path)),
-        "actually write it back",
-    )]);
+        println!();
+        print_actions(&[Action::new(
+            "write",
+            format!("sudo kuma backup --restore {} --yes", shell_quote(path)),
+            "actually write it back",
+        )]);
     }
     Ok(())
 }
@@ -571,10 +571,10 @@ mod tests {
         let crlf = "RESTIC_PASSWORD=hunter2\r\nB2_ACCOUNT_ID=plain\r\n";
         assert_eq!(ambiguous_values(crlf), vec!["RESTIC_PASSWORD", "B2_ACCOUNT_ID"]);
         for hostile in [
-            "RESTIC_PASSWORD=hunter2\r\n",      // trailing \r: the CRLF case
-            "RESTIC_PASSWORD=hunter2 \n",       // trailing space
-            " RESTIC_PASSWORD=hunter2\n",       // leading whitespace on the key
-            "RESTIC_PASSWORD =hunter2\n",       // space before the equals sign
+            "RESTIC_PASSWORD=hunter2\r\n", // trailing \r: the CRLF case
+            "RESTIC_PASSWORD=hunter2 \n",  // trailing space
+            " RESTIC_PASSWORD=hunter2\n",  // leading whitespace on the key
+            "RESTIC_PASSWORD =hunter2\n",  // space before the equals sign
         ] {
             assert_eq!(
                 ambiguous_values(hostile),
