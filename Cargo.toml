@@ -110,3 +110,7 @@ getrandom = "0.3"
 # Direct for the daemon's peer-uid check on the socket (SO_PEERCRED), which
 # std does not expose; already in the tree transitively.
 libc = "0.2"
+# The lean transport's WebSocket: blocking, client and server (the server
+# half is what the baked relay uses). rustls with the system's root store,
+# because the relays a bunker talks to are wss:// in the real world.
+tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
