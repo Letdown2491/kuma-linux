@@ -4387,11 +4387,19 @@ end
 /// build's merge proof is where noctalia says exactly that; the
 /// enabled key joins the section the config already carries, by
 /// injection where that section is written.
+///
+/// The keys are noctalia v5.1.0's own, checked against its `config
+/// validate` rather than grepped off the binary: the first spelling
+/// (`id`, `path`) came from error strings and was unknown to the shell,
+/// which warned at every boot and never loaded the plugin. The source's
+/// `name` is a label and cannot carry `/` — the plugin's id, from its
+/// plugin.toml, is what the enabled list matches.
 pub(crate) const NOSTR_PLUGIN_SOURCE: &str = r#"
 [[plugins.source]]
-id = "kuma/nostr"
+name = "kuma-nostr"
 kind = "path"
-path = "/usr/lib/kuma/noctalia/plugins/kuma-nostr"
+location = "/usr/lib/kuma/noctalia/plugins/kuma-nostr"
+enabled = true
 "#;
 
 /// The enabled key's spelling inside the existing `[plugins]` section,
