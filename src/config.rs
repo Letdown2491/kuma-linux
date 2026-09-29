@@ -47,10 +47,12 @@ pub struct Config {
 /// keyring, which is user state an image update does not touch, so a
 /// disable is reversible by construction.
 ///
-/// The relays are the public fallbacks, listed after the local relay
-/// the layer bakes; the daemon's list is `[local, …declared]`, and a
-/// declared set never removes the local one — removing is spelled,
-/// which is the relay sub-block's own switch when it lands.
+/// The relays are the bunker's roads, declared as full URLs. Absent,
+/// the public relay is the road: a fresh install pairs desktop, web and
+/// phone apps with nothing configured, and no tailscale story to
+/// maintain — the payload is NIP-44 end-to-end, so the relay carries
+/// ciphertext and metadata, not messages. An explicit empty list is the
+/// local-only spelling, for a machine whose relay is its own.
 #[derive(Debug, Deserialize, Default, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Nostr {
@@ -61,12 +63,12 @@ pub struct Nostr {
     /// anything else is exactly the shape of mistake a validator
     /// exists to catch. Every entry is validated here, at build: a
     /// typo is a build failure rather than a shrug.
-    #[serde(default)]
+    #[serde(default = "default_relays")]
     pub relays: Vec<String>,
-    /// The local relay, which ships with the block by default: the
-    /// bunker's first subscription is the relay on this machine,
-    /// loopback only. Declaring relays adds fallbacks after it and
-    /// never removes it — removal is spelled here.
+    /// The local relay, which is opt-in now: the public relay is the
+    /// default signing road, and a loopback relay is for the machine
+    /// that wants its desktop apps pairing with nothing leaving the
+    /// house.
     #[serde(default)]
     pub relay: NostrRelay,
     /// The tailnet exposure switch: serve the local relay on the
@@ -80,26 +82,26 @@ pub struct Nostr {
     pub serve: bool,
 }
 
-/// The local relay's switch. Absent means on — the default signing
-/// path is the relay on this machine — so this block's `enable =
-/// false` is the only way to turn it off, and that is the spelling the
-/// plan gives removal: spoken, not silent.
+/// The local relay's switch. Absent means off — the public relay is
+/// the default signing road, and the loopback relay is the machine
+/// that asks for it by name.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NostrRelay {
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub enable: bool,
 }
 
 impl Default for NostrRelay {
     fn default() -> Self {
-        Self { enable: true }
+        Self { enable: false }
     }
 }
 
-/// The serde default that says what absence means: on.
-fn default_true() -> bool {
-    true
+/// The serde default that says what absence means: the public relay
+/// the layer's installs pair against.
+fn default_relays() -> Vec<String> {
+    vec!["wss://relay.nip46.com".to_string()]
 }
 
 /// Local btrfs snapshots of the machine state a declaration cannot

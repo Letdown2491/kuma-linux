@@ -279,14 +279,14 @@ mod tests {
             dir.path(),
         );
         let unit = std::fs::read_to_string(dir.path().join("kuma-nostrd.service")).unwrap();
-        // The list is [local, ...declared]: the machine's own relay
-        // first, the declared fallbacks after — in that order, because
-        // the order is the policy.
+        // The declared set is the daemon's whole road now: the local
+        // relay is opt-in, so a declaration that names two relays runs
+        // exactly two.
         assert!(
             unit.contains(
-                "ExecStart=/usr/bin/kuma-nostrd --relay ws://127.0.0.1:7777 --relay wss://relay.nip46.com --relay ws://127.0.0.1:7777"
+                "ExecStart=/usr/bin/kuma-nostrd --relay wss://relay.nip46.com --relay ws://127.0.0.1:7777"
             ),
-            "the local relay leads and the declared set follows: {unit}"
+            "the declared relays are the daemon's road, in declaration order: {unit}"
         );
         assert!(unit.contains("ProtectSystem=strict"), "the sandbox is the point: {unit}");
         assert!(
@@ -1901,6 +1901,7 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
          [snapshots]\nenable = true\n\
          [backup]\nenable = true\nrepo = \"b2:kuma\"\nnetwork_connections = true\n\
          [nostr]\nenable = true\nserve = true\nrelays = [\"wss://relay.nip46.com\"]\n\
+         [nostr.relay]\nenable = true\n\
          [overrides.\"org.mozilla.firefox\"]\nsockets = [\"wayland\"]\n\
          [user]\nname = \"probe\"\nssh_keys = [\"ssh-ed25519 AAAAC3Nz probe@example\"]\n";
 

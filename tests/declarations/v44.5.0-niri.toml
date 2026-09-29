@@ -132,15 +132,19 @@ enable = true
 # CLI and pairable from a phone. `enable` gates the whole render, and a
 # toggle never destroys anything — the key lives in your login keyring,
 # user state no image update touches, so a disable is reversible. The
-# relays are the public fallbacks, listed after the local relay the
-# layer runs; `wss://` to the world, `ws://` only to loopback.
+# relays are the bunker's roads; absent, the public relay is the road,
+# which is what makes a fresh install pairable from anywhere with
+# nothing configured. Payloads are NIP-44 end-to-end; the relay sees
+# ciphertext and metadata.
 # [nostr]
 # enable = true
-# serve = true           # serve the local relay on your ts.net name;
-# relays = ["wss://relay.nip46.com"]   # off means local-only, and the
-#                        # relay running beside tailscaled does not imply it
-# [nostr.relay]          # the local relay, on by default;
-# enable = false         # this is its off switch
+# relays = ["wss://relay.nip46.com"]   # absent means this
+# [nostr.relay]          # the local loopback relay, opt-in;
+# enable = true          # desktop apps pair with nothing leaving the house
+# [nostr]                # local-only spelling: an empty list plus the
+# relays = []            # local relay is a bunker nothing off-machine sees
+# serve = true           # and serve is its tailnet face, wss:// over
+#                        # tailscale — the local relay's requirement
 #
 # Wifi passwords are the one thing nothing else can recreate: not this
 # file, which calls them out of scope, not the image, which ships that
