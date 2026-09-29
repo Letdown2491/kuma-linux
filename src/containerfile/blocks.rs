@@ -4023,8 +4023,18 @@ pub(super) fn live_masks() -> Vec<&'static str> {
 /// set rides the exec line — `--relay` per entry — because the daemon
 /// takes no declaration of its own: the declaration is kuma's, and the
 /// unit is the spelling of it systemd can run.
-fn nostrd_service(relays: &[String]) -> String {
-    let relay_args = relays.iter().map(|r| format!(" --relay {r}")).collect::<String>();
+fn nostrd_service(nostr: &crate::config::Nostr) -> String {
+    // The list is [local, ...declared]: the bunker's first subscription
+    // is the relay on this machine, and the declared set follows as
+    // fallbacks. A relay that is not baked (the off switch) leaves the
+    // declared set alone — removal was spoken in the declaration.
+    let mut relay_args = String::new();
+    if nostr.relay.enable {
+        relay_args.push_str(&format!(" --relay {LOCAL_RELAY_URL}"));
+    }
+    for r in &nostr.relays {
+        relay_args.push_str(&format!(" --relay {r}"));
+    }
     format!(
         r#"[Unit]
 Description=kumaOS nostr bunker
@@ -4081,7 +4091,7 @@ fn nostr(e: &mut Emitter<'_>) {
     if !config.nostr.enable {
         return;
     }
-    let unit = e.stage("kuma-nostrd.service", nostrd_service(&config.nostr.relays));
+    let unit = e.stage("kuma-nostrd.service", nostrd_service(&config.nostr));
     // Supplied by write_context from beside the running binary: the
     // release carries the three together, and a build that cannot find
     // the siblings fails here rather than baking a unit whose
@@ -4096,7 +4106,17 @@ fn nostr(e: &mut Emitter<'_>) {
     // --global because the bunker is session furniture for every
     // account: the first login arms it without each user opting in
     // again.
-    e.enable_global(&["kuma-nostrd.service"]);
+    if config.nostr.relay.enable {
+        let relay = e.supplied("nip46-relay");
+        let relay_unit = e.stage("nip46-relay.service", relay_service());
+        e.copy_exec(&relay, "/usr/bin/nip46-relay");
+        e.copy(&relay_unit, "/usr/lib/systemd/user/nip46-relay.service");
+    }
+    let mut global = vec!["kuma-nostrd.service"];
+    if config.nostr.relay.enable {
+        global.push("nip46-relay.service");
+    }
+    e.enable_global(&global);
     // The version guard is the binary-runs proof the kuma COPY carries:
     // a musl-host binary on a glibc base shows up here, at build, where
     // it costs a build, not at boot, where it costs the session.
@@ -4117,6 +4137,58 @@ fn nostr(e: &mut Emitter<'_>) {
     // plugin directory the path source points at.
     e.copy(&plugin_tree, "/usr/lib/kuma/noctalia/plugins/kuma-nostr/");
     e.copy(&panel_desktop, "/usr/share/applications/kuma-nostr-panel.desktop");
+}
+
+/// The local relay's address, and the port it binds: the bunker's
+/// first subscription and the relay unit's exec line agree on both,
+/// because the daemon connecting to a relay that is not listening is
+/// the one failure the composition can have.
+pub(crate) const LOCAL_RELAY_URL: &str = "ws://127.0.0.1:7777";
+pub(crate) const LOCAL_RELAY_BIND: &str = "127.0.0.1:7777";
+
+/// The local relay's unit: the ported relay as session furniture,
+/// bound to loopback — the strongest privacy story the layer tells is
+/// concrete by default. The sandbox is the daemon's, minus the
+/// network-shy lines: this is the one component whose job is the
+/// network, and its write set is empty.
+fn relay_service() -> String {
+    format!(
+        r#"[Unit]
+Description=kumaOS nostr relay (local, loopback only)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/nip46-relay --bind {LOCAL_RELAY_BIND}
+Restart=always
+Slice=session.slice
+
+# Loopback is the boundary: the relay carries signing metadata for the
+# machine's own bunker, and widening the bind is a decision made in a
+# declaration, not a default.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=graphical-session.target
+"#
+    )
 }
 
 /// The plugin's files, staged as a tree at
@@ -4356,7 +4428,10 @@ pub(super) static BLOCKS: &[Block] = &[
     Block {
         name: "nostr",
         emit: nostr,
-        units: &[("kuma-nostrd.service", Live::Runs("a live session is a person at a desktop, and the bunker answers its socket either way; its vault is as ephemeral as the session"))],
+        units: &[
+            ("kuma-nostrd.service", Live::Runs("a live session is a person at a desktop, and the bunker answers its socket either way; its vault is as ephemeral as the session")),
+            ("nip46-relay.service", Live::Runs("the local relay is loopback furniture of the same session")),
+        ],
     },
     Block {
         name: "vm-timezone",

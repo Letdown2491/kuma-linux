@@ -137,6 +137,8 @@ enable = true
 # [nostr]
 # enable = true
 # relays = ["wss://relay.nip46.com"]
+# [nostr.relay]          # the local relay, on by default;
+# enable = false         # this is its off switch
 #
 # Wifi passwords are the one thing nothing else can recreate: not this
 # file, which calls them out of scope, not the image, which ships that

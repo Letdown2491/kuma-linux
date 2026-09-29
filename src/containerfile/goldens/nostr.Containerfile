@@ -147,7 +147,9 @@ RUN systemctl enable fwupd-refresh.timer
 COPY --chmod=755 kuma-nostrd /usr/bin/kuma-nostrd
 COPY --chmod=755 kuma-nostr /usr/bin/kuma-nostr
 COPY kuma-nostrd.service /usr/lib/systemd/user/kuma-nostrd.service
-RUN systemctl --global enable kuma-nostrd.service
+COPY --chmod=755 nip46-relay /usr/bin/nip46-relay
+COPY nip46-relay.service /usr/lib/systemd/user/nip46-relay.service
+RUN systemctl --global enable kuma-nostrd.service nip46-relay.service
 RUN /usr/bin/kuma-nostrd --version
 COPY kuma-nostr-plugin /usr/lib/kuma/noctalia/plugins/kuma-nostr/
 COPY kuma-nostr-panel.desktop /usr/share/applications/kuma-nostr-panel.desktop

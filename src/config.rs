@@ -63,6 +63,34 @@ pub struct Nostr {
     /// typo is a build failure rather than a shrug.
     #[serde(default)]
     pub relays: Vec<String>,
+    /// The local relay, which ships with the block by default: the
+    /// bunker's first subscription is the relay on this machine,
+    /// loopback only. Declaring relays adds fallbacks after it and
+    /// never removes it — removal is spelled here.
+    #[serde(default)]
+    pub relay: NostrRelay,
+}
+
+/// The local relay's switch. Absent means on — the default signing
+/// path is the relay on this machine — so this block's `enable =
+/// false` is the only way to turn it off, and that is the spelling the
+/// plan gives removal: spoken, not silent.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NostrRelay {
+    #[serde(default = "default_true")]
+    pub enable: bool,
+}
+
+impl Default for NostrRelay {
+    fn default() -> Self {
+        Self { enable: true }
+    }
+}
+
+/// The serde default that says what absence means: on.
+fn default_true() -> bool {
+    true
 }
 
 /// Local btrfs snapshots of the machine state a declaration cannot

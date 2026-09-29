@@ -159,7 +159,11 @@ pub fn write_context(
         let parent = kuma_binary
             .parent()
             .with_context(|| "the running kuma has no parent directory".to_string())?;
-        for name in ["kuma-nostrd", "kuma-nostr"] {
+        let mut names = vec!["kuma-nostrd", "kuma-nostr"];
+        if config.nostr.relay.enable {
+            names.push("nip46-relay");
+        }
+        for name in names {
             let sibling = parent.join(name);
             std::fs::copy(&sibling, dir.join(name)).with_context(|| {
                 format!(
@@ -210,7 +214,11 @@ mod tests {
         let cfg = config(toml);
         // The nostr siblings are as fake as the stub, and as stable.
         if cfg.nostr.enable {
-            for name in ["kuma-nostrd", "kuma-nostr"] {
+            let mut names = vec!["kuma-nostrd", "kuma-nostr"];
+            if cfg.nostr.relay.enable {
+                names.push("nip46-relay");
+            }
+            for name in names {
                 std::fs::write(bin_home.path().join(name), format!("not really {name}\n")).unwrap();
             }
         }
@@ -271,11 +279,14 @@ mod tests {
             dir.path(),
         );
         let unit = std::fs::read_to_string(dir.path().join("kuma-nostrd.service")).unwrap();
+        // The list is [local, ...declared]: the machine's own relay
+        // first, the declared fallbacks after — in that order, because
+        // the order is the policy.
         assert!(
             unit.contains(
-                "ExecStart=/usr/bin/kuma-nostrd --relay wss://relay.nip46.com --relay ws://127.0.0.1:7777"
+                "ExecStart=/usr/bin/kuma-nostrd --relay ws://127.0.0.1:7777 --relay wss://relay.nip46.com --relay ws://127.0.0.1:7777"
             ),
-            "the relay set rides the exec line: {unit}"
+            "the local relay leads and the declared set follows: {unit}"
         );
         assert!(unit.contains("ProtectSystem=strict"), "the sandbox is the point: {unit}");
         assert!(
