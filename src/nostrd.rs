@@ -22,7 +22,7 @@ use kuma::nostr::socket;
 use kuma::nostr::vault::{KeyringStore, Vault};
 
 #[derive(Parser)]
-#[command(name = "kuma-nostrd", about = "The kumaOS nostr layer's daemon", verbatim_doc_comment)]
+#[command(name = "kuma-nostrd", about = "The kumaOS nostr layer's daemon", version, verbatim_doc_comment)]
 struct Args {
     /// The socket to answer on; the default is
     /// `$XDG_RUNTIME_DIR/kuma-nostr.sock`.
