@@ -3017,7 +3017,20 @@ fn desktop_niri(e: &mut Emitter<'_>) {
     // scheme handler line in the associations. A user's own settings
     // still win over every one of them.
     let noctalia_text = if config.nostr.enable {
-        KUMA_NOCTALIA.to_string() + NOSTR_PLUGIN_SOURCE
+        // The enabled key joins the `[plugins]` section the config
+        // already carries — a second header is a TOML redefinition,
+        // and the build's merge proof is where noctalia says exactly
+        // that. The anchor's drift is a build failure here, where it
+        // is a message, rather than a silently absent enabled line.
+        let injected = KUMA_NOCTALIA.replace(
+            NOSTR_PLUGIN_ANCHOR,
+            &format!("{NOSTR_PLUGIN_ANCHOR}\n{NOSTR_PLUGIN_ENABLED_LINE}"),
+        );
+        assert!(
+            injected != KUMA_NOCTALIA,
+            "the [plugins] section moved in KUMA_NOCTALIA; the nostr enabled line has nowhere to land"
+        );
+        injected + NOSTR_PLUGIN_SOURCE
     } else {
         KUMA_NOCTALIA.to_string()
     };
@@ -4358,17 +4371,22 @@ end
 
 /// The authored config's plugin entry, appended to the noctalia config
 /// only when the declaration says so: the path source (no git ops on
-/// anything kuma baked) and the enabled list. The user's own
-/// settings.toml still wins over every line here.
+/// anything kuma baked). Only the array entry rides the append — a
+/// second `[plugins]` header would be a TOML redefinition, and the
+/// build's merge proof is where noctalia says exactly that; the
+/// enabled key joins the section the config already carries, by
+/// injection where that section is written.
 pub(crate) const NOSTR_PLUGIN_SOURCE: &str = r#"
 [[plugins.source]]
 id = "kuma/nostr"
 kind = "path"
 path = "/usr/lib/kuma/noctalia/plugins/kuma-nostr"
-
-[plugins]
-enabled = ["kuma/nostr"]
 "#;
+
+/// The enabled key's spelling inside the existing `[plugins]` section,
+/// and the line it joins.
+pub(crate) const NOSTR_PLUGIN_ENABLED_LINE: &str = "enabled = [\"kuma/nostr\"]";
+pub(crate) const NOSTR_PLUGIN_ANCHOR: &str = "[plugins]\nauto_update = \"none\"";
 
 /// The bind that opens the approval panel, joining the baked binds only
 /// when the block renders — a key that opens a panel that does not
