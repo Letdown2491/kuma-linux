@@ -4276,7 +4276,7 @@ pub(crate) const NOSTR_PLUGIN_TREE: &[(&str, &str)] = &[
         "plugin.toml",
         r#"id = "kuma/nostr"
 name = "kumaOS Nostr"
-description = "The bunker's face: pending approvals in the bar, the approval panel behind them."
+description = "Bunker widget for Niri."
 # The manifest's mandatory keys are the loader's first gate: a manifest
 # without `version`, or with an `plugin_api` the host does not speak,
 # loads nothing and says nothing on the bar. Shaped against
@@ -4296,8 +4296,7 @@ id = "panel"
 entry = "panel.lua"
 width = 420
 height = 410
-placement = "floating"
-position = "center"
+placement = "attached"
 "#,
     ),
     (
@@ -4307,15 +4306,14 @@ position = "center"
 -- person are a dot on it. Polling the CLI is the whole transport --
 -- Luau has no sockets, and the daemon is the policy. Presentation is
 -- barWidget's to own: the host renders the bar, the plugin only states
--- what it says.
+-- what it says. The glyph carries the idle state — every neighbour on
+-- the bar is an icon — and the count rides beside it only when asks
+-- wait, which is the one fact worth reading at a glance.
 local pending = 0
 
 local function render()
-    if pending > 0 then
-        barWidget.setText("** " .. pending)
-    else
-        barWidget.setText("bunker")
-    end
+    barWidget.setGlyph("shield-lock")
+    barWidget.setText(pending > 0 and tostring(pending) or "")
     barWidget.setTooltip("Nostr bunker: " .. pending .. " pending")
 end
 
@@ -4348,18 +4346,31 @@ end
     (
         "panel.lua",
         r#"--!nonstrict
--- The approval panel: the pending queue, the method that asked, and the
--- remember choice. The ui tree is the whole face; the daemon stays the
--- policy and the CLI stays the transport. Buttons close over the prompt
--- they act on, and every action re-asks so the list is the daemon's
--- truth, not the last render's.
+-- The approval panel: the pending asks, and the pairing answer for the
+-- moments nothing is waiting — the bunker URI an app logs in with, one
+-- copy away, because pairing is the thing a person comes here for even
+-- when the queue is empty. The ui tree is the whole face; the daemon
+-- stays the policy and the CLI stays the transport. Buttons close over
+-- the prompt they act on, and every action re-asks so the list is the
+-- daemon's truth, not the last render's.
 local prompts = {}
+local vault = nil
+local uri = nil
 
 local function refresh()
-    noctalia.runAsync("kuma-nostr prompts --json", function(result)
+    noctalia.runAsync("kuma-nostr status --json", function(result)
         local doc = noctalia.json.decode(result.stdout or "{}")
-        prompts = doc.prompts or {}
-        render()
+        vault = doc.vault
+        if vault and vault.unlocked and vault.pubkey then
+            noctalia.runAsync("kuma-nostr bunker --json", function(second)
+                local pair = noctalia.json.decode(second.stdout or "{}")
+                uri = pair.uri
+                render()
+            end)
+        else
+            uri = nil
+            render()
+        end
     end)
 end
 
@@ -4367,6 +4378,47 @@ end
 -- ride in them, so the line is safe to join.
 local function cli(args)
     noctalia.runAsync("kuma-nostr " .. table.concat(args, " "), refresh)
+end
+
+local function pairingSection()
+    if vault == nil then
+        return nil
+    end
+    if not vault.exists then
+        return ui.column({ gap = 8 }, {
+            ui.label({ text = "No vault yet.", fontWeight = "bold", color = "on_surface" }),
+            ui.label({
+                text = "Provision one from a terminal: kuma-nostr setup asks; kuma-nostr import brings a key you already hold.",
+                color = "on_surface_variant",
+            }),
+        })
+    end
+    if not vault.unlocked then
+        return ui.column({ gap = 8 }, {
+            ui.label({ text = "The bunker is locked.", fontWeight = "bold", color = "on_surface" }),
+            ui.label({
+                text = "Unlock from a terminal: kuma-nostr unlock. It pairs while locked, and signs nothing.",
+                color = "on_surface_variant",
+            }),
+        })
+    end
+    return ui.column({ gap = 8 }, {
+        ui.label({ text = "Pair an app", fontWeight = "bold", color = "on_surface" }),
+        ui.label({
+            text = "Give the app this URI. Its connect ask lands here to approve.",
+            color = "on_surface_variant",
+        }),
+        ui.label({ text = uri or "(the uri is on its way)", color = "primary" }),
+        ui.button({
+            text = "Copy URI",
+            glyph = "clipboard-copy",
+            onClick = function()
+                if uri then
+                    noctalia.copyToClipboard(uri, "text/plain")
+                end
+            end,
+        }),
+    })
 end
 
 local function askRow(p)
@@ -4399,10 +4451,15 @@ end
 
 local function render()
     local children = {}
-    if #prompts == 0 then
+    local pairing = pairingSection()
+    if pairing then
+        table.insert(children, pairing)
+    end
+    if #prompts > 0 then
         table.insert(children, ui.label({
-            text = "Nothing is waiting on you.",
-            color = "on_surface_variant",
+            text = "Waiting on you",
+            fontWeight = "bold",
+            color = "on_surface",
         }))
     end
     for _, p in ipairs(prompts) do
@@ -4442,15 +4499,16 @@ location = "/usr/lib/kuma/noctalia/plugins"
 enabled = true
 "#;
 
-/// The bar's end list closes on the control centre, and the bunker's
-/// glyph joins after it — as an instance: a plugin's bar widget is
-/// `[widget.<name>]` whose `type` names the plugin entry, and the bar's
-/// list carries the instance's name, not the plugin's id. Both halves
-/// are the nostr-enabled render's; the anchor on the battery widget's
-/// section is where the instance declaration lands.
-pub(crate) const NOSTR_BAR_ANCHOR: &str = "    \"control-center\"\n]";
+/// The bunker's glyph sits after notifications — the state widgets'
+/// neighborhood, where a person glances for facts. As an instance: a
+/// plugin's bar widget is `[widget.<name>]` whose `type` names the
+/// plugin entry, and the bar's list carries the instance's name, not
+/// the plugin's id. Both halves are the nostr-enabled render's; the
+/// anchor on the battery widget's section is where the instance
+/// declaration lands.
+pub(crate) const NOSTR_BAR_ANCHOR: &str = "    \"notifications\",\n    \"network\",";
 pub(crate) const NOSTR_BAR_WIDGET: &str =
-    "    \"control-center\",\n    \"bunker\"\n]";
+    "    \"notifications\",\n    \"bunker\",\n    \"network\",";
 pub(crate) const NOSTR_BAR_INSTANCE_ANCHOR: &str = "[widget.battery]";
 pub(crate) const NOSTR_BAR_INSTANCE: &str =
     "[widget.bunker]\ntype = \"kuma/nostr:bunker\"\n\n[widget.battery]";

@@ -147,7 +147,7 @@ fn main() -> Result<()> {
     let value = client.ask(&request)?;
 
     if bunker_verb {
-        return render_bunker(&value, bunker_qr);
+        return bunker_verb_render(&value, bunker_qr, cli.json);
     }
 
     if cli.json {
@@ -325,8 +325,9 @@ fn render(value: &serde_json::Value) -> Result<()> {
 /// URI is the copyable answer; the QR is the scannable one — both carry
 /// the bunker pubkey and the relay set, because a QR that only renders
 /// when the URI is not also printed is a URI nobody can paste into a
-/// support question.
-fn render_bunker(value: &serde_json::Value, qr: bool) -> Result<()> {
+/// support question. `--json` prints the URI alone in the house shape,
+/// which is what the panel reads.
+fn bunker_verb_render(value: &serde_json::Value, qr: bool, json: bool) -> Result<()> {
     if value.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
         anyhow::bail!(
             "the daemon refused: {}",
@@ -346,6 +347,15 @@ fn render_bunker(value: &serde_json::Value, qr: bool) -> Result<()> {
         .filter_map(|r| r.as_str().map(str::to_string))
         .collect();
     let uri = kuma::nostr::bunker::bunker_uri(&pubkey, &relays);
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({ "ok": true, "uri": uri }))
+                .expect("a uri serializes")
+        );
+        return Ok(());
+    }
 
     if vault["unlocked"].as_bool() != Some(true) {
         println!("the bunker is locked; the URI pairs but signs nothing until `kuma-nostr unlock`");
