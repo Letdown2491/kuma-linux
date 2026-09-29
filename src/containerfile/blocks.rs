@@ -4368,6 +4368,7 @@ local apps = {}
 local vault = nil
 local uri = nil
 local tab = "asks" -- asks | apps | pair
+local tab_chosen = false -- the person's click wins over the onboarding default
 local render -- forward-declared: refresh's callbacks call it before the
               -- file's bottom assigns it, and a name read before its
               -- local exists resolves to the global — nil.
@@ -4389,6 +4390,11 @@ local function refresh()
     noctalia.runAsync(APPS_URL, function(result)
         local doc = noctalia.json.decode(result.stdout or "{}")
         apps = (doc and doc.apps) or {}
+        -- Onboarding opens where the work is: nobody paired yet is a
+        -- person who came for the URI.
+        if not tab_chosen and #apps == 0 then
+            tab = "pair"
+        end
         render()
     end)
 end
@@ -4412,23 +4418,24 @@ local function short(pk)
     return (pk or "?"):sub(1, 8) .. "…"
 end
 
--- A section's header: the title, and the one line under it that says
--- what the pane is about today — a count, a state, a nudge.
-local function paneHeader(title, subtitle, badge)
-    local head = {
-        ui.row({ gap = 10, align = "center" }, {
-            ui.label({ text = title, fontSize = 17, fontWeight = "bold", color = "on_surface" }),
-            badge and ui.box({ radius = 9, fill = "primary", paddingH = 8 }) and ui.box({
-                radius = 9, fill = "primary", paddingH = 8, paddingV = 1,
-            }, { ui.label({
-                text = tostring(badge), fontSize = 11, fontWeight = "bold", color = "on_primary",
-            }) }) or nil,
-        }),
+-- A section's header: the title, and the count chip when there is
+-- one. No subtitles — the rail already says where you are, and a
+-- second line of filler is noise wearing a font.
+local function paneHeader(title, badge)
+    local row = {
+        ui.label({ text = title, fontSize = 17, fontWeight = "bold", color = "on_surface", flexGrow = 1 }),
     }
-    if subtitle then
-        table.insert(head, ui.label({ text = subtitle, fontSize = 12, color = "on_surface_variant" }))
+    if badge then
+        table.insert(row, ui.box({ radius = 9, fill = "primary", paddingH = 8, paddingV = 1 }, {
+            ui.label({ text = tostring(badge), fontSize = 11, fontWeight = "bold", color = "on_primary" }),
+        }))
     end
-    return ui.column({ gap = 2 }, head)
+    table.insert(row, ui.glyph({
+        name = vault and vault.unlocked and "shield-lock" or "lock",
+        size = 16,
+        color = vault and vault.unlocked and "primary/0.7" or "on_surface_variant/0.7",
+    }))
+    return ui.row({ gap = 10, align = "center" }, row)
 end
 
 local function emptyState(glyph, title, subtitle)
@@ -4478,6 +4485,7 @@ local function railButton(t)
         text = count,
         onClick = function()
             tab = t.id
+            tab_chosen = true
             render()
         end,
     })
@@ -4555,13 +4563,21 @@ end
 
 local function pairPane()
     local locked = vault and not vault.unlocked
+    if locked then
+        return ui.column({ gap = 12 }, {
+            ui.label({ text = "The bunker is locked.", fontWeight = "semibold", color = "on_surface" }),
+            ui.label({
+                text = "Unlock from a terminal: kuma-nostr unlock. It pairs while locked, and signs nothing.",
+                fontSize = 12, color = "on_surface_variant", maxLines = 3,
+            }),
+        })
+    end
     return ui.column({ gap = 12 }, {
-        paneHeader("Pair an app", locked and "the bunker is locked" or "the front door"),
         ui.box({ fill = "surface_variant/0.35", radius = 14, padding = 14 }, {
             ui.column({ gap = 10 }, {
                 ui.label({
                     text = "Copy the URI into any NIP-46 app. Its connect lands as a request here.",
-                    fontSize = 12, color = "on_surface_variant",
+                    fontSize = 12, color = "on_surface_variant", maxLines = 3,
                 }),
                 ui.row({ gap = 8 }, {
                     ui.button({ text = "Copy URI", variant = "primary", glyph = "clipboard-copy", onClick = function()
@@ -4573,7 +4589,7 @@ local function pairPane()
                 }),
                 ui.label({
                     text = "Rotation retires every URI printed before it.",
-                    fontSize = 11, color = "on_surface_variant/0.8",
+                    fontSize = 11, color = "on_surface_variant/0.8", maxLines = 2,
                 }),
             }),
         }),
@@ -4613,37 +4629,26 @@ render = function()
     end
 
     local title, subtitle, body
+    local badge = nil
     if tab == "asks" then
         title = "Requests"
-        subtitle = #prompts > 0 and (#prompts .. " waiting on you") or "the queue is clear"
+        badge = #prompts > 0 and #prompts or nil
         body = asksPane()
     elseif tab == "apps" then
         title = "Paired apps"
-        subtitle = #apps > 0 and (#apps .. " hold the vault's trust") or "nobody yet"
         body = appsPane()
     else
         title = "Pair"
-        subtitle = nil
         body = pairPane()
     end
 
-    local headerRow = {
-        ui.column({ gap = 2, flexGrow = 1 }, {
-            ui.label({ text = title, fontSize = 17, fontWeight = "bold", color = "on_surface" }),
-            subtitle and ui.label({ text = subtitle, fontSize = 12, color = "on_surface_variant" }) or nil,
-        }),
-        ui.glyph({
-            name = vault and vault.unlocked and "shield-lock" or "lock",
-            size = 16,
-            color = vault and vault.unlocked and "primary/0.7" or "on_surface_variant/0.7",
-        }),
-    }
+    local headerRow = paneHeader(title, badge)
 
     panel.render(ui.row({ gap = 14, padding = 14 }, {
         -- the rail: the shell's panels keep their sections on a slim
         -- column, and so does this one
         ui.column({ gap = 8, width = 52, align = "center" }, rail),
-        ui.column({ gap = 12, flexGrow = 1 }, {
+        ui.column({ gap = 12, width = 470 }, {
             ui.row({ gap = 10, align = "center" }, headerRow),
             ui.separator({}),
             ui.scroll({ flexGrow = 1, gap = 12 }, { body }),
