@@ -182,6 +182,8 @@ COPY --chmod=755 kuma-nostr /usr/bin/kuma-nostr
 COPY kuma-nostrd.service /usr/lib/systemd/user/kuma-nostrd.service
 RUN systemctl --global enable kuma-nostrd.service
 RUN /usr/bin/kuma-nostrd --version
+COPY kuma-nostr-plugin /usr/lib/kuma/noctalia/plugins/kuma-nostr/
+COPY kuma-nostr-panel.desktop /usr/share/applications/kuma-nostr-panel.desktop
 
 COPY --chmod=755 kuma-vm-timezone /usr/libexec/kuma-vm-timezone
 COPY kuma-vm-timezone.service /usr/lib/systemd/system/kuma-vm-timezone.service

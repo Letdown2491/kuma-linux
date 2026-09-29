@@ -3011,13 +3011,33 @@ fn desktop_niri(e: &mut Emitter<'_>) {
     }
     let greetd = e.stage("greetd-config.toml", greetd_config(config));
     let niri_extras = e.stage("niri-extras.kdl", NIRI_EXTRAS);
-    let noctalia = e.stage("noctalia-config.toml", KUMA_NOCTALIA);
+    // The nostr layer's authored pieces ride the texts they belong to,
+    // only when the declaration says so: the plugin's path source in
+    // the shell config, the panel bind beside the media binds, and the
+    // scheme handler line in the associations. A user's own settings
+    // still win over every one of them.
+    let noctalia_text = if config.nostr.enable {
+        KUMA_NOCTALIA.to_string() + NOSTR_PLUGIN_SOURCE
+    } else {
+        KUMA_NOCTALIA.to_string()
+    };
+    let noctalia = e.stage("noctalia-config.toml", noctalia_text);
     let kitty = e.stage("kitty.conf", KITTY_CONFIG);
     let clipboard = e.stage("kuma-clipboard-bridge", clipboard_bridge());
     let xsettings = e.stage("kuma-xsettings", xsettings_launcher());
     let xsettingsd = e.stage("xsettingsd.conf", XSETTINGSD_CONF);
-    let binds = e.stage("niri-binds.kdl", NIRI_MEDIA_BINDS);
-    let mimeapps = e.stage("mimeapps.list", MIMEAPPS);
+    let binds_text = if config.nostr.enable {
+        format!("{NIRI_MEDIA_BINDS}\n{NIRI_NOSTR_BIND}\n")
+    } else {
+        NIRI_MEDIA_BINDS.to_string()
+    };
+    let binds = e.stage("niri-binds.kdl", binds_text);
+    let mimeapps_text = if config.nostr.enable {
+        format!("{MIMEAPPS}\nx-scheme-handler/nostrconnect=kuma-nostr-panel.desktop\n")
+    } else {
+        MIMEAPPS.to_string()
+    };
+    let mimeapps = e.stage("mimeapps.list", mimeapps_text);
     let record = e.stage("kuma-record", RECORD_SCRIPT);
     let battery = e.stage("kuma-battery-watch", BATTERY_WATCH);
     let shell = e.stage("kuma-shell.service", SHELL_SERVICE);
@@ -4068,6 +4088,7 @@ fn nostr(e: &mut Emitter<'_>) {
     // ExecStart names nothing.
     let nostrd = e.supplied("kuma-nostrd");
     let cli = e.supplied("kuma-nostr");
+    let panel_desktop = e.stage("kuma-nostr-panel.desktop", NOSTR_PANEL_DESKTOP);
     e.raw("\n");
     e.copy_exec(&nostrd, "/usr/bin/kuma-nostrd");
     e.copy_exec(&cli, "/usr/bin/kuma-nostr");
@@ -4080,7 +4101,178 @@ fn nostr(e: &mut Emitter<'_>) {
     // a musl-host binary on a glibc base shows up here, at build, where
     // it costs a build, not at boot, where it costs the session.
     e.raw("RUN /usr/bin/kuma-nostrd --version\n");
+
+    // The plugin: a tree at a path source, the authored config naming
+    // it, and the scheme handler wiring a nostrconnect:// link to the
+    // panel. This is the niri-shaped render; cosmic gets the daemon
+    // without the face.
+    // The tree's context name is not the destination's: the CLI binary
+    // is a file named kuma-nostr beside it, and one context name cannot
+    // be both a file and a directory.
+    let plugin_tree = e.stage_tree(
+        "kuma-nostr-plugin",
+        NOSTR_PLUGIN_TREE.iter().map(|(name, text)| (name.to_string(), text.to_string().into())),
+    );
+    // COPY copies a directory's contents, so the destination names the
+    // plugin directory the path source points at.
+    e.copy(&plugin_tree, "/usr/lib/kuma/noctalia/plugins/kuma-nostr/");
+    e.copy(&panel_desktop, "/usr/share/applications/kuma-nostr-panel.desktop");
 }
+
+/// The plugin's files, staged as a tree at
+/// /usr/lib/kuma/noctalia/plugins/kuma-nostr/ and declared by the
+/// authored config as a path source: noctalia treats path sources as
+/// immutable and runs no git ops on them, which is exactly the shape of
+/// a file kuma baked. The plugin is a face — the widget shells the CLI,
+/// the panel decides through it, and no Luau ever holds a key.
+pub(crate) const NOSTR_PLUGIN_TREE: &[(&str, &str)] = &[
+    (
+        "plugin.toml",
+        r#"id = "kuma/nostr"
+name = "kumaOS Nostr"
+description = "The bunker's face: pending approvals in the bar, the approval panel behind them."
+plugin_api = 1
+
+[[widget]]
+file = "widget.lua"
+
+[[panel]]
+id = "panel"
+file = "panel.lua"
+"#,
+    ),
+    (
+        "widget.lua",
+        r#"-- The bar glyph: a bunker that exists is a glyph; asks waiting on a
+-- person are a dot on it. Polling the CLI is the whole transport --
+-- Luau has no sockets, and the daemon is the policy.
+local pending = 0
+
+function onTick()
+    noctalia.runAsync({
+        cmd = "kuma-nostr",
+        args = { "prompts", "--json" },
+        callback = function(out)
+            local doc = noctalia.json.decode(out.stdout or "{}")
+            local queue = doc.prompts or {}
+            pending = #queue
+            if pending > 0 then
+                noctalia.notify({
+                    title = "kumaOS nostr",
+                    body = pending .. " ask" .. (pending == 1 and "" or "s")
+                        .. " waiting on you",
+                })
+            end
+        end,
+    })
+end
+
+function render()
+    return {
+        text = pending > 0 and ("** " .. pending) or "bunker",
+        tooltip = "Nostr bunker: " .. pending .. " pending",
+        onClick = "panel kuma/nostr:panel",
+    }
+end
+"#,
+    ),
+    (
+        "panel.lua",
+        r#"-- The approval panel: the pending queue, the exact event where the
+-- method carries one, and the remember choice. Every mutation goes
+-- through the CLI -- the plugin is a face, the daemon is the policy.
+local prompts = {}
+
+function onOpen()
+    noctalia.runAsync({
+        cmd = "kuma-nostr",
+        args = { "prompts", "--json" },
+        callback = function(out)
+            local doc = noctalia.json.decode(out.stdout or "{}")
+            prompts = doc.prompts or {}
+        end,
+    })
+end
+
+function render()
+    local rows = {}
+    for _, prompt in ipairs(prompts) do
+        table.insert(rows, {
+            title = prompt.method .. " from " .. prompt.app,
+            body = prompt.summary,
+            detail = prompt.detail,
+            actions = {
+                {
+                    label = "Approve",
+                    onClick = function()
+                        noctalia.runAsync({
+                            cmd = "kuma-nostr",
+                            args = { "approve", prompt.id },
+                        })
+                        onOpen()
+                    end,
+                },
+                {
+                    label = "Approve for an hour",
+                    onClick = function()
+                        noctalia.runAsync({
+                            cmd = "kuma-nostr",
+                            args = { "approve", prompt.id, "--remember", "1" },
+                        })
+                        onOpen()
+                    end,
+                },
+                {
+                    label = "Deny",
+                    onClick = function()
+                        noctalia.runAsync({
+                            cmd = "kuma-nostr",
+                            args = { "deny", prompt.id },
+                        })
+                        onOpen()
+                    end,
+                },
+            },
+        })
+    end
+    if #prompts == 0 then
+        return { title = "Nostr", body = "Nothing is waiting on you." }
+    end
+    return rows
+end
+"#,
+    ),
+];
+
+/// The authored config's plugin entry, appended to the noctalia config
+/// only when the declaration says so: the path source (no git ops on
+/// anything kuma baked) and the enabled list. The user's own
+/// settings.toml still wins over every line here.
+pub(crate) const NOSTR_PLUGIN_SOURCE: &str = r#"
+[[plugins.source]]
+id = "kuma/nostr"
+kind = "path"
+path = "/usr/lib/kuma/noctalia/plugins/kuma-nostr"
+
+[plugins]
+enabled = ["kuma/nostr"]
+"#;
+
+/// The bind that opens the approval panel, joining the baked binds only
+/// when the block renders — a key that opens a panel that does not
+/// exist is exactly the dead-key shape kuma rewrites out of stock niri.
+pub(crate) const NIRI_NOSTR_BIND: &str = r#"    Mod+Ctrl+N allow-when-locked=true hotkey-overlay-title="Nostr approvals" { spawn "noctalia" "msg" "panel-toggle" "kuma/nostr:panel"; }"#;
+
+/// The scheme handler: a nostrconnect:// link clicked anywhere lands in
+/// the approval panel rather than in nothing. The desktop file is the
+/// handler; the mimeapps line names it.
+pub(crate) const NOSTR_PANEL_DESKTOP: &str = r#"[Desktop Entry]
+Type=Application
+Name=kumaOS Nostr approvals
+Exec=noctalia msg panel-toggle kuma/nostr:panel
+NoDisplay=true
+MimeType=x-scheme-handler/nostrconnect;
+"#;
 
 pub(super) static BLOCKS: &[Block] = &[
     Block { name: "header", emit: header, units: &[] },

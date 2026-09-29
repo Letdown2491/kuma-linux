@@ -23,6 +23,11 @@ struct Cli {
     /// subcommand.
     #[arg(long, global = true)]
     socket: Option<std::path::PathBuf>,
+    /// Print the daemon's JSON document instead of the rendered line —
+    /// the plugin's transport and the house convention for anything a
+    /// program reads (docs/agents.md).
+    #[arg(long, global = true)]
+    json: bool,
 }
 
 #[derive(clap::Subcommand)]
@@ -113,6 +118,11 @@ fn main() -> Result<()> {
 
     if bunker_verb {
         return render_bunker(&value, bunker_qr);
+    }
+
+    if cli.json {
+        println!("{value}");
+        return Ok(());
     }
 
     render(&value)
