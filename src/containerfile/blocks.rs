@@ -4357,6 +4357,11 @@ local prompts = {}
 local apps = {}
 local vault = nil
 local uri = nil
+-- Forward-declared: refresh's callbacks call render before the file's
+-- bottom assigns it, and a name read before its local exists resolves
+-- to the global — nil — which is the blank panel and the retirement
+-- that followed. The notes plugin's own panel does the same thing.
+local render
 
 local function refresh()
     -- One ask carries the vault's state and the pairing URI, because
@@ -4503,7 +4508,7 @@ local function pairingSection()
     })
 end
 
-local function render()
+render = function()
     local children = {}
     local pairing = pairingSection()
     if pairing then
