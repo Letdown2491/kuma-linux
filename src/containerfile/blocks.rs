@@ -4413,13 +4413,12 @@ local function pairingSection()
             }),
         })
     end
-    return ui.column({ gap = 8 }, {
+    local rows = {
         ui.label({ text = "Pair an app", fontWeight = "bold", color = "on_surface" }),
         ui.label({
-            text = "Give the app this URI. Its connect ask lands here to approve.",
+            text = "Copy the bunker URI into the app. Its connect ask lands here to approve.",
             color = "on_surface_variant",
         }),
-        ui.label({ text = uri or "(the uri is on its way)", color = "primary" }),
         ui.button({
             text = "Copy URI",
             glyph = "clipboard-copy",
@@ -4429,7 +4428,18 @@ local function pairingSection()
                 end
             end,
         }),
-    })
+    }
+    -- The uri's relay is what the app must reach: a loopback relay
+    -- serves the apps on this machine, and a browser will not carry it
+    -- to a web app anywhere else. The way out is a relay with a name:
+    -- serve on the tailnet, or a declared wss:// relay.
+    if uri and uri.find(uri, "127.0.0.1", 1, true) then
+        table.insert(rows, ui.label({
+            text = "The relay in this URI is loopback-only; apps on this machine can reach it. For a web app or a phone, enable serve or declare a public relay.",
+            color = "on_surface_variant",
+        }))
+    end
+    return ui.column({ gap = 8 }, rows)
 end
 
 local function askRow(p)
