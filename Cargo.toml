@@ -118,4 +118,9 @@ libc = "0.2"
 # half is what the baked relay uses). rustls with the system's root store,
 # because the relays a bunker talks to are wss:// in the real world.
 tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
+# Direct so the daemon can install one crypto provider by name: the
+# graph carries two (ring via tungstenite, aws-lc-rs via another door),
+# and rustls 0.23 refuses to guess — every wss:// connect panicked
+# until one was installed.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 qrencode = "0.14"

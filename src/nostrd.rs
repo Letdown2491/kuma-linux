@@ -41,6 +41,16 @@ struct Args {
 }
 
 fn main() -> anyhow::Result<()> {
+    // The relay roads are wss:// in the real world, and rustls 0.23
+    // refuses to pick a crypto provider when the dependency graph
+    // carries two — ring here, aws-lc-rs through another door — so the
+    // first TLS connect panicked and the pool's retries hit the same
+    // wall: a bunker deaf on every wss relay it advertises. Installing
+    // one by name is the whole fix; ring is already the tree's own.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("installing the crypto provider");
+
     let args = Args::parse();
     let socket_path = match &args.socket {
         Some(path) => path.clone(),

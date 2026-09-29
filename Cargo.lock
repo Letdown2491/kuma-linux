@@ -1068,6 +1068,7 @@ dependencies = [
  "oo7",
  "qrencode",
  "rpassword",
+ "rustls",
  "schemars",
  "serde",
  "serde_json",
@@ -1629,6 +1630,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
 dependencies = [
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",
