@@ -4111,6 +4111,18 @@ fn nostr(e: &mut Emitter<'_>) {
         let relay_unit = e.stage("nip46-relay.service", relay_service());
         e.copy_exec(&relay, "/usr/bin/nip46-relay");
         e.copy(&relay_unit, "/usr/lib/systemd/user/nip46-relay.service");
+
+        // The tailnet exposure: a converge script and a oneshot, and
+        // only when the declaration runs tailscaled — the relay's
+        // reachability is the operator's business, and this is what
+        // "the declaration runs tailscaled" does with it.
+        if config.services.enable.iter().any(|s| s == "tailscaled.service") {
+            let serve = e.stage("kuma-nostr-serve", NOSTR_SERVE_SCRIPT);
+            let serve_unit = e.stage("kuma-nostr-serve.service", NOSTR_SERVE_SERVICE);
+            e.copy_exec(&serve, "/usr/libexec/kuma-nostr-serve");
+            e.copy(&serve_unit, "/usr/lib/systemd/system/kuma-nostr-serve.service");
+            e.enable(&["kuma-nostr-serve.service"]);
+        }
     }
     let mut global = vec!["kuma-nostrd.service"];
     if config.nostr.relay.enable {
@@ -4190,6 +4202,34 @@ WantedBy=graphical-session.target
 "#
     )
 }
+
+/// The converge script: `tailscale serve` is a runtime action in
+/// tailscaled's own state — the image cannot bake it, and re-running it
+/// is the convergence. Idempotent by construction: the mapping it sets
+/// is the mapping this unit wants, every boot.
+pub(crate) const NOSTR_SERVE_SCRIPT: &str = r#"#!/usr/bin/bash
+set -euo pipefail
+# The relay is loopback-only by its own bind; this is what puts it on
+# the tailnet, TLS and all, under the machine's ts.net name.
+exec tailscale serve --bg 127.0.0.1:7777
+"#;
+
+/// The serve unit: a system oneshot, because `tailscale serve` speaks
+/// to the system daemon's LocalAPI and the mapping is the node's.
+/// Ships only when the declaration runs tailscaled — absent tailscale
+/// the relay is local-only and nothing is refused.
+pub(crate) const NOSTR_SERVE_SERVICE: &str = r#"[Unit]
+Description=Expose the local nostr relay to the tailnet
+Wants=tailscaled.service
+After=tailscaled.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/kuma-nostr-serve
+
+[Install]
+WantedBy=multi-user.target
+"#;
 
 /// The plugin's files, staged as a tree at
 /// /usr/lib/kuma/noctalia/plugins/kuma-nostr/ and declared by the
@@ -4431,6 +4471,7 @@ pub(super) static BLOCKS: &[Block] = &[
         units: &[
             ("kuma-nostrd.service", Live::Runs("a live session is a person at a desktop, and the bunker answers its socket either way; its vault is as ephemeral as the session")),
             ("nip46-relay.service", Live::Runs("the local relay is loopback furniture of the same session")),
+            ("kuma-nostr-serve.service", Live::Masked("live media's tailscaled is ephemeral, and a serve mapping nothing can reach twice is noise")),
         ],
     },
     Block {

@@ -1892,7 +1892,7 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
          [system]\ndesktop = \"niri\"\nbrew = true\nhostname = \"probe\"\n\
          timezone = \"Pacific/Auckland\"\n\
          [packages]\nflatpak = [\"org.mozilla.firefox\"]\nbrew = [\"ripgrep\"]\n\
-         [services]\nenable = [\"sshd.service\"]\n\
+         [services]\nenable = [\"sshd.service\", \"tailscaled.service\"]\n\
          [snapshots]\nenable = true\n\
          [backup]\nenable = true\nrepo = \"b2:kuma\"\nnetwork_connections = true\n\
          [nostr]\nenable = true\nrelays = [\"wss://relay.nip46.com\"]\n\

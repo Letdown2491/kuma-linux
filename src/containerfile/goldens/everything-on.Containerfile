@@ -105,7 +105,7 @@ RUN systemctl enable kuma-brew-setup.service kuma-brew-sync.service kuma-brew-sy
 
 RUN systemctl enable sshd.service
 
-RUN systemctl enable sshd.service
+RUN systemctl enable sshd.service && systemctl enable tailscaled.service
 
 RUN --mount=type=cache,target=/var/cache/libdnf5 \
     dnf -y install --setopt=keepcache=1 fuse fuse-libs
@@ -182,6 +182,9 @@ COPY --chmod=755 kuma-nostr /usr/bin/kuma-nostr
 COPY kuma-nostrd.service /usr/lib/systemd/user/kuma-nostrd.service
 COPY --chmod=755 nip46-relay /usr/bin/nip46-relay
 COPY nip46-relay.service /usr/lib/systemd/user/nip46-relay.service
+COPY --chmod=755 kuma-nostr-serve /usr/libexec/kuma-nostr-serve
+COPY kuma-nostr-serve.service /usr/lib/systemd/system/kuma-nostr-serve.service
+RUN systemctl enable kuma-nostr-serve.service
 RUN systemctl --global enable kuma-nostrd.service nip46-relay.service
 RUN /usr/bin/kuma-nostrd --version
 COPY kuma-nostr-plugin /usr/lib/kuma/noctalia/plugins/kuma-nostr/

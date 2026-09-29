@@ -2759,6 +2759,39 @@ fn check_nostr(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     // machine's and the CLI's alone.
     report(Grade::Ok, "nostr", reachability_wording(&config.nostr.relays), None);
 
+    // The tailnet exposure, graded against the declaration: the baked
+    // unit exists exactly when the declaration said serve, so the
+    // question is whether tailscale's own state agrees. Asking it can
+    // fail three ways (no operator, daemon down, command missing) and
+    // all three grade warn — a check that could not be made is not a
+    // broken machine.
+    let serve_declared = config.nostr.relay.enable
+        && config.services.enable.iter().any(|s| s == "tailscaled.service");
+    if serve_declared {
+        match host_output(&["tailscale", "serve", "status"]) {
+            Ok(status) if status.contains(":7777") => {
+                report(Grade::Ok, "nostr", "the local relay is served on the tailnet".into(), None);
+            }
+            Ok(_) => report(
+                Grade::Warn,
+                "nostr",
+                "the declaration says serve, and tailscale's serve config does not name the relay"
+                    .into(),
+                Some(Action::new(
+                    "converge",
+                    "sudo systemctl start kuma-nostr-serve.service".to_string(),
+                    "the serve unit re-runs the mapping; convergence is the re-run",
+                )),
+            ),
+            Err(_) => report(
+                Grade::Warn,
+                "nostr",
+                "tailscale could not be asked about the serve mapping".into(),
+                None,
+            ),
+        }
+    }
+
     // The daemon's own answers, through its socket. Every question is
     // one ask; the socket not answering is the first finding, and the
     // rest are not asked.
