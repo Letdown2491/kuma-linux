@@ -14,3 +14,4 @@
 //! byte format of what the keyring holds.
 
 pub mod nostr;
+pub mod relay;

@@ -29,6 +29,10 @@ path = "src/nostrd.rs"
 name = "kuma-nostr"
 path = "src/nostr-cli.rs"
 
+[[bin]]
+name = "nip46-relay"
+path = "src/nip46-relay.rs"
+
 # cargo-binstall fetches the release asset instead of compiling. Its
 # default URL patterns expect the version in the filename, which kuma's
 # assets deliberately omit, so the pattern is spelled out.
