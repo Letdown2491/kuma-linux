@@ -107,15 +107,22 @@ pub enum Plan {
     },
 }
 
-/// The bunker: the signer keys and the apps that have connected.
+/// The bunker: the signer keys, the apps that have connected, and the
+/// pairing nonce the URI carries.
 pub struct Bunker {
     keys: Keys,
     sessions: HashMap<PublicKey, Session>,
+    /// The pairing nonce the bunker URI carries, when the vault has
+    /// one. A connect that does not echo it is refused before it pairs:
+    /// on a public relay, a pubkey in the clear is an invitation, and
+    /// this is the door that invitation does not open. `None` only
+    /// before the vault's first read, when there is no URI yet either.
+    expected_secret: Option<String>,
 }
 
 impl Bunker {
-    pub fn new(keys: Keys) -> Self {
-        Self { keys, sessions: HashMap::new() }
+    pub fn new(keys: Keys, expected_secret: Option<String>) -> Self {
+        Self { keys, sessions: HashMap::new(), expected_secret }
     }
 
     /// The bunker's public identity, hex — what `get_public_key`
@@ -157,10 +164,32 @@ impl Bunker {
         };
         let response = match method {
             NostrConnectMethod::Connect => {
-                // Params are [user_pubkey, secret?]; the secret rides
-                // back as the result when it was sent (nostrconnect://
-                // flow), and its absence is the bunker:// flow.
+                // Params are [user_pubkey, secret?]. When the URI
+                // carries a pairing nonce, the connect must echo it —
+                // constant-time, because a comparison that leaks its
+                // own progress is a lock that shows its keys. A connect
+                // without the echo is refused before it pairs, so a
+                // scraped pubkey opens asks on nobody. With no nonce in
+                // the vault there is nothing to verify against, and the
+                // person's gate stays the door.
                 let secret = params.get(1).cloned();
+                let refused = match (&self.expected_secret, secret.as_deref()) {
+                    (Some(expected), Some(provided)) => !constant_time_eq(provided, expected),
+                    (Some(_), None) => true,
+                    (None, _) => false,
+                };
+                if refused {
+                    return match self.response_event(
+                        event,
+                        &id,
+                        NostrConnectResponse::with_error(
+                            "the connect did not carry the secret the pairing URI carries",
+                        ),
+                    ) {
+                        Some(answer) => Plan::Answer(answer),
+                        None => Plan::Ignore,
+                    };
+                }
                 self.sessions.entry(event.pubkey).or_insert(Session { secret: secret.clone() });
                 secret.map_or(ResponseResult::Ack, ResponseResult::ConnectSecret)
             }
@@ -262,7 +291,18 @@ impl Bunker {
 /// The `bunker://` URI a QR renders: the bunker pubkey and the relay
 /// set, in the form a phone's nostr app parses. Percent-encoding the
 /// relay URLs is the spec's own spelling.
-pub fn bunker_uri(public_key: &PublicKey, relays: &[String]) -> String {
+/// Constant-time equality for the pairing nonce's echo. The comparison
+/// leaks its length and nothing else: a nonce this short never leaves
+/// room for a timing oracle to matter, and the discipline costs one
+/// fold.
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    use subtle::ConstantTimeEq;
+    a.as_bytes().ct_eq(b.as_bytes()).into()
+}
+
+/// The bunker URI an app logs in with: the bunker's key, the relays it
+/// answers on, and the pairing nonce the connect must echo.
+pub fn bunker_uri(public_key: &PublicKey, relays: &[String], secret: Option<&str>) -> String {
     let mut uri = format!("bunker://{}", public_key);
     for relay in relays {
         let mut encoded = Vec::with_capacity(relay.len());
@@ -278,6 +318,20 @@ pub fn bunker_uri(public_key: &PublicKey, relays: &[String]) -> String {
         let sep = if uri.contains('?') { '&' } else { '?' };
         uri.push(sep);
         uri.push_str("relay=");
+        uri.push_str(&encoded);
+    }
+    if let Some(secret) = secret {
+        let mut encoded = Vec::with_capacity(secret.len());
+        for b in secret.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    encoded.push(b)
+                }
+                _ => encoded.extend_from_slice(format!("%{b:02X}").as_bytes()),
+            }
+        }
+        let encoded = String::from_utf8(encoded).expect("percent-encoded ASCII");
+        uri.push_str("&secret=");
         uri.push_str(&encoded);
     }
     uri
@@ -388,7 +442,7 @@ mod tests {
 
     #[tokio::test]
     async fn ping_round_trips_the_crypto_choreography() {
-        let mut bunker = Bunker::new(Keys::generate());
+        let mut bunker = Bunker::new(Keys::generate(), None);
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
@@ -414,7 +468,7 @@ mod tests {
 
     #[tokio::test]
     async fn connect_pairs_and_get_public_key_answers_the_bunker_identity() {
-        let mut bunker = Bunker::new(Keys::generate());
+        let mut bunker = Bunker::new(Keys::generate(), None);
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
@@ -441,8 +495,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_connect_without_the_nonce_opens_nothing() {
+        let mut bunker = Bunker::new(Keys::generate(), Some("the-nonce".into()));
+        let app = App::new();
+        let bunker_pubkey = bunker.public_key();
+
+        // No echo at all: the app that never read the URI.
+        let request = app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[]);
+        match bunker.plan(&request) {
+            Plan::Answer(response) => match app.decrypt_response(&response) {
+                NostrConnectMessage::Response { error: Some(e), .. } => {
+                    assert!(e.contains("secret"), "the refusal names the nonce: {e}");
+                }
+                other => panic!("the missing echo is a refusal: {other:?}"),
+            },
+            other => panic!("a refusal is an answer, not a silence: {other:?}"),
+        }
+        assert!(!bunker.is_paired(&app.pubkey()), "a refused connect pairs nobody");
+
+        // The wrong echo: a guess, or another URI's nonce. Connect's
+        // params lead with the pubkey the app expects to control; the
+        // nonce's echo rides behind it.
+        let request = app.request_event(
+            &bunker_pubkey,
+            NostrConnectMethod::Connect,
+            &[bunker_pubkey.to_string().as_str(), "another-uri-nonce"],
+        );
+        match bunker.plan(&request) {
+            Plan::Answer(_) => {}
+            other => panic!("the wrong echo is refused too: {other:?}"),
+        }
+        assert!(!bunker.is_paired(&app.pubkey()));
+
+        // The right echo: the app read the URI, and the door opens.
+        let request = app.request_event(
+            &bunker_pubkey,
+            NostrConnectMethod::Connect,
+            &[bunker_pubkey.to_string().as_str(), "the-nonce"],
+        );
+        match bunker.plan(&request) {
+            Plan::Answer(_) => {}
+            other => panic!("the nonce's echo pairs: {other:?}"),
+        }
+        assert!(bunker.is_paired(&app.pubkey()));
+    }
+
+    #[tokio::test]
+    async fn a_bunker_without_a_nonce_still_pairs_by_the_human_gate() {
+        // The pre-nonce shape: a vault that has not migrated yet arms a
+        // bunker with nothing to verify against, and the person's gate
+        // stays the only door — which is why the refusal above is an
+        // answer rather than a silence: an app that reads the refusal
+        // knows to read the fresh URI, and a person whose bunker asks
+        // knows to look at the panel.
+        let mut bunker = Bunker::new(Keys::generate(), None);
+        let app = App::new();
+        let bunker_pubkey = bunker.public_key();
+
+        match bunker.plan(&app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[])) {
+            Plan::Answer(_) => {}
+            other => panic!("connect is protocol: {other:?}"),
+        }
+        assert!(bunker.is_paired(&app.pubkey()));
+    }
+
+    #[tokio::test]
     async fn an_unpaired_app_gets_refused() {
-        let mut bunker = Bunker::new(Keys::generate());
+        let mut bunker = Bunker::new(Keys::generate(), None);
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
@@ -462,7 +581,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_gate_refusal_is_the_answer_the_app_sees() {
-        let mut bunker = Bunker::new(Keys::generate());
+        let mut bunker = Bunker::new(Keys::generate(), None);
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
@@ -492,7 +611,7 @@ mod tests {
 
     #[tokio::test]
     async fn sign_event_signs_when_allowed_and_the_signature_verifies() {
-        let mut bunker = Bunker::new(Keys::generate());
+        let mut bunker = Bunker::new(Keys::generate(), None);
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
         bunker.plan(&app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[]));
@@ -527,7 +646,7 @@ mod tests {
 
     #[tokio::test]
     async fn noise_is_none_and_never_a_response() {
-        let mut bunker = Bunker::new(Keys::generate());
+        let mut bunker = Bunker::new(Keys::generate(), None);
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
@@ -556,7 +675,7 @@ mod tests {
         let pubkey = Keys::generate().public_key();
         let relays =
             vec!["wss://relay.nip46.com".to_string(), "wss://machine.tailnet.ts.net".to_string()];
-        let uri = bunker_uri(&pubkey, &relays);
+        let uri = bunker_uri(&pubkey, &relays, None);
         assert!(uri.starts_with(&format!("bunker://{pubkey}")));
         assert_eq!(parse_bunker_uri(&uri).unwrap(), (pubkey, relays));
         assert!(parse_bunker_uri("nostr://nope").is_err());

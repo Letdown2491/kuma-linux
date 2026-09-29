@@ -134,6 +134,12 @@ pub struct VaultFact {
     pub relays: Vec<String>,
     /// The relays currently reporting a live connection.
     pub connected: Vec<String>,
+    /// The pairing URI an app logs in with — bunker:// with the
+    /// relays and the nonce the connect must echo. Present only while
+    /// the bunker is armed: a locked daemon has no answer to give a
+    /// connect, and a URI that promised one would be a lie with a
+    /// sixty-second fuse.
+    pub uri: Option<String>,
 }
 
 /// One line in, one line out, over a newline.
@@ -220,6 +226,14 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                         }
                         let unlocked = self.vault.is_unlocked();
                         let pubkey = self.bunker_pubkey().await;
+                        let uri = match (&pubkey, self.vault.secret(), self.bunker.is_some()) {
+                            (Some(npub), Some(secret), true) => {
+                                PublicKey::parse(npub).ok().map(|pk| {
+                                    super::bunker::bunker_uri(&pk, &self.relays, Some(secret))
+                                })
+                            }
+                            _ => None,
+                        };
                         let connected = self
                             .relay_states
                             .iter()
@@ -234,6 +248,7 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                                 pubkey,
                                 relays: self.relays.clone(),
                                 connected,
+                                uri,
                             },
                         })
                     }
@@ -357,7 +372,9 @@ impl<S: super::vault::SecretStore> Daemon<S> {
 
     /// Arm the bunker on a fresh unlock: keys in, relay pool up. Any
     /// previous pool is torn down first — a lock that left one running
-    /// was a bunker that never stopped.
+    /// was a bunker that never stopped. The vault's pairing nonce goes
+    /// with the keys: the URI is the daemon's to build and the connect
+    /// echo is the bunker's to verify.
     fn arm_bunker(&mut self, key: &SecretKey) -> String {
         self.teardown_bunker();
         let keys = Keys::new(key.clone());
@@ -368,7 +385,7 @@ impl<S: super::vault::SecretStore> Daemon<S> {
             self.inbound.clone(),
             self.status_tx.clone(),
         ));
-        self.bunker = Some(Bunker::new(keys));
+        self.bunker = Some(Bunker::new(keys, self.vault.secret().map(str::to_string)));
         public_key_bech32(&pubkey)
     }
 

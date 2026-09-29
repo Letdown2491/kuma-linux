@@ -123,4 +123,7 @@ tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 # and rustls 0.23 refuses to guess — every wss:// connect panicked
 # until one was installed.
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+# Direct for the connect nonce's constant-time echo check; already in the
+# tree through rustls and ring.
+subtle = "2"
 qrencode = "0.14"

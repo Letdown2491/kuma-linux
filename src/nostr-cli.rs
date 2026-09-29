@@ -335,31 +335,21 @@ fn bunker_verb_render(value: &serde_json::Value, qr: bool, json: bool) -> Result
         );
     }
     let vault = &value["vault"];
-    let npub = vault["pubkey"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("the daemon has no identity yet; run `kuma-nostr setup`"))?;
-    let pubkey =
-        nostr::key::PublicKey::parse(npub).context("the daemon's identity did not parse")?;
-    let relays: Vec<String> = vault["relays"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|r| r.as_str().map(str::to_string))
-        .collect();
-    let uri = kuma::nostr::bunker::bunker_uri(&pubkey, &relays);
+    if vault["unlocked"].as_bool() != Some(true) {
+        anyhow::bail!("the bunker is locked; unlock it and the pairing URI comes with it");
+    }
+    // The daemon builds the URI — the pairing nonce is the vault's to
+    // hand out, and a URI built anywhere else is a URI that lies about
+    // what the connect path will verify.
+    let uri = vault["uri"].as_str().ok_or_else(|| {
+        anyhow::anyhow!("the daemon has no pairing URI yet; run `kuma-nostr setup`")
+    })?;
 
     if json {
-        println!(
-            "{}",
-            serde_json::to_string(&serde_json::json!({ "ok": true, "uri": uri }))
-                .expect("a uri serializes")
-        );
+        println!("{uri}");
         return Ok(());
     }
 
-    if vault["unlocked"].as_bool() != Some(true) {
-        println!("the bunker is locked; the URI pairs but signs nothing until `kuma-nostr unlock`");
-    }
     if qr {
         // One quiet-zone module on each side is the minimum a scanner
         // wants; the debug render is the matrix alone, so the padding

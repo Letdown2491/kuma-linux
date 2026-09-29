@@ -1074,6 +1074,7 @@ dependencies = [
  "serde_json",
  "sha-crypt",
  "sha2 0.11.0",
+ "subtle",
  "tempfile",
  "tokio",
  "toml",

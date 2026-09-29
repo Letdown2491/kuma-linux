@@ -285,16 +285,22 @@ mod tests {
             stub.received().iter().any(|frame| frame.contains("REQ"))
         });
 
-        // An app — with its own keys — asks to connect. It knows only
-        // the npub, which is exactly what a bunker:// URI carries.
+        // An app — with its own keys — asks to connect. It read the
+        // pairing URI, so the connect echoes the nonce the URI carries:
+        // the door a scraped pubkey does not open.
+        let status: serde_json::Value =
+            serde_json::from_str(ask(&mut client, r#"{"cmd":"status"}"#).trim()).unwrap();
+        let uri = status["vault"]["uri"].as_str().expect("the armed bunker carries a pairing uri");
+        let secret = uri.split("secret=").nth(1).expect("the uri carries the nonce").to_string();
         let bunker_pubkey = nostr::key::PublicKey::parse(&npub).unwrap();
         let app = Keys::generate();
         let message = NostrConnectMessage::request(
             &NostrConnectRequest::from_message(
                 NostrConnectMethod::Connect,
                 // Connect's params lead with the pubkey the app
-                // expects to control — the bunker's own.
-                vec![bunker_pubkey.to_string()],
+                // expects to control — the bunker's own — and carry
+                // the nonce's echo behind it.
+                vec![bunker_pubkey.to_string(), secret],
             )
             .unwrap(),
         );

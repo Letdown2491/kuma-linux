@@ -63,22 +63,35 @@ struct VaultBlob {
     wrap: String,
     ncryptsec: String,
     pubkey: String,
+    /// The pairing nonce the bunker URI carries and a connecting app
+    /// must echo. It is not a deep secret — it rides in the URI a
+    /// person copies — but it is the difference between a scraped
+    /// pubkey and a read pairing sheet: without it, anyone on a public
+    /// relay can open asks on the daemon; with it, the connect is
+    /// refused before the person ever sees a prompt. Version 2 added
+    /// it; a version 1 blob migrates on first read, the secret minted
+    /// and persisted beside the key it guards.
+    #[serde(default)]
+    secret: Option<String>,
 }
 
-const BLOB_VERSION: u8 = 1;
+const BLOB_VERSION: u8 = 2;
+/// The version the secret joined at. A blob at this version or the one
+/// before it loads; anything else is refused, because a future format
+/// read as this one is a key silently misread.
+const BLOB_VERSION_BEFORE_SECRET: u8 = 1;
 
 impl VaultBlob {
-    fn new(key: &SecretKey, wrap: String) -> Result<Self> {
+    fn new(key: &SecretKey, wrap: String, secret: String) -> Result<Self> {
         let ncryptsec = keys::to_ncryptsec(key, &wrap)?.to_bech32()?;
         let pubkey = keys::public_key_hex(key);
-        Ok(Self { v: BLOB_VERSION, wrap, ncryptsec, pubkey })
+        Ok(Self { v: BLOB_VERSION, wrap, ncryptsec, pubkey, secret: Some(secret) })
     }
 
     fn decode(bytes: &[u8]) -> Result<Self> {
         let blob: Self = serde_json::from_slice(bytes)?;
-        let version = blob.v;
-        if version != BLOB_VERSION {
-            bail!("vault blob is version {version}, this binary reads {BLOB_VERSION}");
+        if blob.v != BLOB_VERSION && blob.v != BLOB_VERSION_BEFORE_SECRET {
+            bail!("vault blob is version {}, this binary reads {BLOB_VERSION}", blob.v);
         }
         Ok(blob)
     }
@@ -116,6 +129,22 @@ pub trait SecretStore {
 #[derive(Default)]
 pub struct MemoryStore(std::sync::Mutex<Option<Vec<u8>>>);
 
+/// Shared ownership, so a test can hold the store a vault borrows and
+/// read what the vault wrote — the migration proof's window.
+impl SecretStore for std::sync::Arc<MemoryStore> {
+    async fn load(&self) -> Result<Option<Vec<u8>>> {
+        (**self).load().await
+    }
+
+    async fn save(&self, payload: &[u8]) -> Result<()> {
+        (**self).save(payload).await
+    }
+
+    async fn remove(&self) -> Result<()> {
+        (**self).remove().await
+    }
+}
+
 impl SecretStore for MemoryStore {
     async fn load(&self) -> Result<Option<Vec<u8>>> {
         Ok(self.0.lock().expect("memory store lock").clone())
@@ -132,6 +161,15 @@ impl SecretStore for MemoryStore {
     }
 }
 
+impl MemoryStore {
+    /// The stored bytes, for the tests that prove what a migration
+    /// wrote.
+    #[cfg(test)]
+    fn peek(&self) -> Option<Vec<u8>> {
+        self.0.lock().expect("memory store lock").clone()
+    }
+}
+
 /// The gate. Holds the store and — when unlocked — the key. Cloning the
 /// key out is deliberately not offered: callers sign through the vault
 /// so that a lock is a lock, and the daemon's request loop will borrow
@@ -139,15 +177,27 @@ impl SecretStore for MemoryStore {
 pub struct Vault<S: SecretStore> {
     store: S,
     key: Option<SecretKey>,
+    /// The pairing nonce from the blob, when one has been read or
+    /// minted. Not a deep secret — it rides in the URI — but it is the
+    /// daemon's to hand out and nobody else's to guess.
+    secret: Option<String>,
 }
 
 impl<S: SecretStore> Vault<S> {
     pub fn new(store: S) -> Self {
-        Self { store, key: None }
+        Self { store, key: None, secret: None }
     }
 
     pub fn is_unlocked(&self) -> bool {
         self.key.is_some()
+    }
+
+    /// The pairing nonce, when the blob has said it. The daemon builds
+    /// the bunker URI from this and the connect path verifies against
+    /// it; `None` before the blob's first read or on a store that has
+    /// nothing yet.
+    pub fn secret(&self) -> Option<&str> {
+        self.secret.as_deref()
     }
 
     /// Whether a vault exists in the store, without opening it: what
@@ -193,14 +243,25 @@ impl<S: SecretStore> Vault<S> {
 
     /// Re-read the key from storage. Idempotent on an already-unlocked
     /// vault — the CLI verb answers "already unlocked" the same way.
+    /// A version 1 blob migrates here: the secret minted and persisted
+    /// beside the key, because a blob that will carry a pairing nonce
+    /// must do so durably, not per-boot.
     pub async fn unlock(&mut self) -> Result<()> {
         if self.key.is_some() {
             return Ok(());
         }
         let bytes =
             self.store.load().await?.ok_or_else(|| anyhow!("no vault exists in this store"))?;
-        let blob = VaultBlob::decode(&bytes)?;
+        let mut blob = VaultBlob::decode(&bytes)?;
         let key = keys::decrypt_ncryptsec(&blob.ncryptsec, &blob.wrap)?;
+        if blob.secret.is_none() {
+            blob.secret = Some(generate_wrap()?);
+            blob.v = BLOB_VERSION;
+            self.store
+                .save(&serde_json::to_vec(&blob).context("serializing the vault blob")?)
+                .await?;
+        }
+        self.secret = blob.secret;
         self.key = Some(key);
         Ok(())
     }
@@ -212,9 +273,12 @@ impl<S: SecretStore> Vault<S> {
     }
 
     /// Forget the vault: the stored blob and the in-memory key both go.
-    /// The key is unrecoverable afterwards, which is the contract.
+    /// The key is unrecoverable afterwards, which is the contract; the
+    /// pairing nonce goes with it, because a URI that outlived its
+    /// vault would point at nothing.
     pub async fn destroy(&mut self) -> Result<()> {
         self.lock();
+        self.secret = None;
         self.store.remove().await
     }
 
@@ -222,8 +286,10 @@ impl<S: SecretStore> Vault<S> {
     /// wrap, store, hold.
     async fn store_and_unlock(&mut self, key: &SecretKey) -> Result<()> {
         let wrap = generate_wrap()?;
-        let blob = VaultBlob::new(key, wrap)?;
+        let secret = generate_wrap()?;
+        let blob = VaultBlob::new(key, wrap, secret)?;
         self.store.save(&serde_json::to_vec(&blob).context("serializing the vault blob")?).await?;
+        self.secret = blob.secret;
         self.key = Some(key.clone());
         Ok(())
     }
@@ -338,7 +404,7 @@ mod tests {
     #[tokio::test]
     async fn the_blob_survives_a_round_trip_through_bytes() {
         let key = SecretKey::generate();
-        let blob = VaultBlob::new(&key, "wrap of substance".into()).unwrap();
+        let blob = VaultBlob::new(&key, "wrap of substance".into(), "the nonce".into()).unwrap();
         let bytes = serde_json::to_vec(&blob).unwrap();
         let decoded = VaultBlob::decode(&bytes).unwrap();
         assert_eq!(decoded.wrap, "wrap of substance");
@@ -348,7 +414,7 @@ mod tests {
     #[tokio::test]
     async fn a_future_blob_version_is_refused_not_reinterpreted() {
         let key = SecretKey::generate();
-        let blob = VaultBlob::new(&key, "wrap".into()).unwrap();
+        let blob = VaultBlob::new(&key, "wrap".into(), "the nonce".into()).unwrap();
         let bytes = serde_json::to_vec(&blob).unwrap();
         let mut mutated = serde_json::from_slice::<serde_json::Value>(&bytes).unwrap();
         mutated["v"] = serde_json::json!(99);
@@ -359,5 +425,36 @@ mod tests {
     async fn the_wrap_is_never_the_same_twice() {
         assert_ne!(generate_wrap().unwrap(), generate_wrap().unwrap());
         assert_eq!(generate_wrap().unwrap().len(), 64);
+    }
+
+    #[tokio::test]
+    async fn a_version_one_blob_migrates_and_the_nonce_becomes_durable() {
+        // A pre-nonce vault: the bytes a 44.4.0 keyring holds. The
+        // unlock mints the nonce and writes it back, because a URI
+        // minted per boot would be a URI every stored copy lies about.
+        let key = SecretKey::generate();
+        let wrap = generate_wrap().unwrap();
+        let ncryptsec = keys::to_ncryptsec(&key, &wrap).unwrap().to_bech32().unwrap();
+        let v1 = serde_json::json!({
+            "v": 1,
+            "wrap": wrap,
+            "ncryptsec": ncryptsec,
+            "pubkey": keys::public_key_hex(&key),
+        });
+        let store = std::sync::Arc::new(MemoryStore::default());
+        store.save(&serde_json::to_vec(&v1).unwrap()).await.unwrap();
+
+        let mut vault = Vault::new(store.clone());
+        vault.unlock().await.unwrap();
+        let minted = vault.secret().expect("the migration mints a nonce").to_string();
+        assert_eq!(minted.len(), 64, "the nonce is the same 32-byte hex shape as the wrap");
+
+        // Durability: what the store now holds is a version 2 blob
+        // whose nonce is the one the vault hands out — a stored URI
+        // keeps telling the truth across restarts.
+        let blob: serde_json::Value =
+            serde_json::from_slice(&store.peek().expect("the migration wrote a blob")).unwrap();
+        assert_eq!(blob["v"], 2, "the migrated blob is the current version");
+        assert_eq!(blob["secret"], minted.as_str(), "the stored nonce is the vault's own");
     }
 }
