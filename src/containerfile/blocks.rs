@@ -4297,20 +4297,36 @@ position = "center"
     ),
     (
         "widget.lua",
-        r#"-- The bar glyph: a bunker that exists is a glyph; asks waiting on a
+        r#"--!nonstrict
+-- The bar glyph: a bunker that exists is a glyph; asks waiting on a
 -- person are a dot on it. Polling the CLI is the whole transport --
--- Luau has no sockets, and the daemon is the policy.
+-- Luau has no sockets, and the daemon is the policy. Presentation is
+-- barWidget's to own: the host renders the bar, the plugin only states
+-- what it says.
 local pending = 0
 
-function onTick()
+local function render()
+    if pending > 0 then
+        barWidget.setText("** " .. pending)
+    else
+        barWidget.setText("bunker")
+    end
+    barWidget.setTooltip("Nostr bunker: " .. pending .. " pending")
+end
+
+-- The host's tick: update(), on the interval the plugin sets itself.
+function update()
+    noctalia.setUpdateInterval(5000)
     noctalia.runAsync({
         cmd = "kuma-nostr",
         args = { "prompts", "--json" },
         callback = function(out)
             local doc = noctalia.json.decode(out.stdout or "{}")
             local queue = doc.prompts or {}
+            local was = pending
             pending = #queue
-            if pending > 0 then
+            render()
+            if pending > was then
                 noctalia.notify({
                     title = "kumaOS nostr",
                     body = pending .. " ask" .. (pending == 1 and "" or "s")
@@ -4321,78 +4337,81 @@ function onTick()
     })
 end
 
-function render()
-    return {
-        text = pending > 0 and ("** " .. pending) or "bunker",
-        tooltip = "Nostr bunker: " .. pending .. " pending",
-        onClick = "panel kuma/nostr:panel",
-    }
+function onClick()
+    noctalia.togglePanel("kuma/nostr:panel")
 end
 "#,
     ),
     (
         "panel.lua",
-        r#"-- The approval panel: the pending queue, the exact event where the
--- method carries one, and the remember choice. Every mutation goes
--- through the CLI -- the plugin is a face, the daemon is the policy.
+        r#"--!nonstrict
+-- The approval panel: the pending queue, the method that asked, and the
+-- remember choice. The ui tree is the whole face; the daemon stays the
+-- policy and the CLI stays the transport. Buttons close over the prompt
+-- they act on, and every action re-asks so the list is the daemon's
+-- truth, not the last render's.
 local prompts = {}
 
-function onOpen()
+local function refresh()
     noctalia.runAsync({
         cmd = "kuma-nostr",
         args = { "prompts", "--json" },
         callback = function(out)
             local doc = noctalia.json.decode(out.stdout or "{}")
             prompts = doc.prompts or {}
+            render()
         end,
     })
 end
 
-function render()
-    local rows = {}
-    for _, prompt in ipairs(prompts) do
-        table.insert(rows, {
-            title = prompt.method .. " from " .. prompt.app,
-            body = prompt.summary,
-            detail = prompt.detail,
-            actions = {
-                {
-                    label = "Approve",
-                    onClick = function()
-                        noctalia.runAsync({
-                            cmd = "kuma-nostr",
-                            args = { "approve", prompt.id },
-                        })
-                        onOpen()
-                    end,
-                },
-                {
-                    label = "Approve for an hour",
-                    onClick = function()
-                        noctalia.runAsync({
-                            cmd = "kuma-nostr",
-                            args = { "approve", prompt.id, "--remember", "1" },
-                        })
-                        onOpen()
-                    end,
-                },
-                {
-                    label = "Deny",
-                    onClick = function()
-                        noctalia.runAsync({
-                            cmd = "kuma-nostr",
-                            args = { "deny", prompt.id },
-                        })
-                        onOpen()
-                    end,
-                },
-            },
-        })
-    end
+local function cli(args)
+    noctalia.runAsync({ cmd = "kuma-nostr", args = args, callback = refresh })
+end
+
+local function askRow(p)
+    return ui.column({ gap = 8 }, {
+        ui.label({ text = p.method or "?", fontWeight = "bold", color = "on_surface" }),
+        ui.label({ text = p.app or "?", color = "on_surface_variant" }),
+        p.summary and ui.label({ text = p.summary, color = "on_surface_variant" }) or nil,
+        p.detail and ui.label({ text = p.detail, color = "on_surface_variant" }) or nil,
+        ui.row({ gap = 8 }, {
+            ui.button({
+                text = "Approve",
+                variant = "primary",
+                glyph = "check",
+                onClick = function() cli({ "approve", p.id }) end,
+            }),
+            ui.button({
+                text = "An hour",
+                variant = "ghost",
+                onClick = function() cli({ "approve", p.id, "--remember", "1" }) end,
+            }),
+            ui.button({
+                text = "Deny",
+                variant = "ghost",
+                glyph = "close",
+                onClick = function() cli({ "deny", p.id }) end,
+            }),
+        }),
+    })
+end
+
+local function render()
+    local children = {}
     if #prompts == 0 then
-        return { title = "Nostr", body = "Nothing is waiting on you." }
+        table.insert(children, ui.label({
+            text = "Nothing is waiting on you.",
+            color = "on_surface_variant",
+        }))
     end
-    return rows
+    for _, p in ipairs(prompts) do
+        table.insert(children, askRow(p))
+    end
+    panel.render(ui.scroll({ flexGrow = 1, gap = 16 }, children))
+end
+
+function onOpen(_context)
+    refresh()
 end
 "#,
     ),
