@@ -4426,7 +4426,7 @@ local function paneHeader(title, badge)
         ui.label({ text = title, fontSize = 17, fontWeight = "bold", color = "on_surface", flexGrow = 1 }),
     }
     if badge then
-        table.insert(row, ui.box({ radius = 9, fill = "primary", paddingH = 8, paddingV = 1 }, {
+        table.insert(row, ui.column({ align = "center", justify = "center", fill = "primary", radius = 9, paddingH = 8, paddingV = 1 }, {
             ui.label({ text = tostring(badge), fontSize = 11, fontWeight = "bold", color = "on_primary" }),
         }))
     end
@@ -4458,7 +4458,7 @@ local function avatar(pubkey, image)
     if image then
         noctalia.download(image, dest, function() render() end)
     end
-    return ui.box({ width = 38, height = 38, radius = 10, fill = "primary/0.14" }, {
+    return ui.column({ width = 38, height = 38, radius = 10, fill = "primary/0.14", align = "center", justify = "center" }, {
         ui.glyph({ name = "puzzle", size = 19, color = "primary" }),
     })
 end
@@ -4497,7 +4497,7 @@ local function askCard(p)
     local glyph = METHOD_GLYPHS[(p.method or ""):lower()] or "shield-lock"
     local lines = {
         ui.row({ gap = 12, align = "center" }, {
-            ui.box({ width = 36, height = 36, radius = 10, fill = "primary/0.14" }, {
+            ui.column({ width = 36, height = 36, radius = 10, fill = "primary/0.14", align = "center", justify = "center" }, {
                 ui.glyph({ name = glyph, size = 18, color = "primary" }),
             }),
             ui.column({ gap = 1, flexGrow = 1 }, {
@@ -4520,9 +4520,7 @@ local function askCard(p)
         ui.button({ text = "Deny", variant = "ghost", controlSize = "sm", glyph = "x",
             onClick = function() cli({ "deny", p.id }) end }),
     }))
-    return ui.box({ fill = "surface_variant/0.35", radius = 14, padding = 14 }, {
-        ui.column({ gap = 10 }, lines),
-    })
+    return ui.column({ fill = "surface_variant/0.35", radius = 14, padding = 14, gap = 10 }, lines)
 end
 
 local LEVELS = { "ask", "basic", "trust" }
@@ -4545,7 +4543,7 @@ local function levelSwitch(a)
 end
 
 local function appCard(a)
-    return ui.box({ fill = "surface_variant/0.35", radius = 14, padding = 14 }, {
+    return ui.column({ fill = "surface_variant/0.35", radius = 14, padding = 14, gap = 10 }, {
         ui.column({ gap = 10 }, {
             ui.row({ gap = 12, align = "center" }, {
                 avatar(a.pubkey, a.image),
@@ -4573,7 +4571,7 @@ local function pairPane()
         })
     end
     return ui.column({ gap = 12 }, {
-        ui.box({ fill = "surface_variant/0.35", radius = 14, padding = 14 }, {
+        ui.column({ fill = "surface_variant/0.35", radius = 14, padding = 14, gap = 10 }, {
             ui.column({ gap = 10 }, {
                 ui.label({
                     text = "Copy the URI into any NIP-46 app. Its connect lands as a request here.",
