@@ -3030,7 +3030,12 @@ fn desktop_niri(e: &mut Emitter<'_>) {
             injected != KUMA_NOCTALIA,
             "the [plugins] section moved in KUMA_NOCTALIA; the nostr enabled line has nowhere to land"
         );
-        injected + NOSTR_PLUGIN_SOURCE
+        let with_bar = injected.replace(NOSTR_BAR_ANCHOR, NOSTR_BAR_WIDGET);
+        assert!(
+            with_bar != injected,
+            "the bar's end list moved in KUMA_NOCTALIA; the bunker's widget has nowhere to sit"
+        );
+        with_bar + NOSTR_PLUGIN_SOURCE
     } else {
         KUMA_NOCTALIA.to_string()
     };
@@ -4267,14 +4272,27 @@ pub(crate) const NOSTR_PLUGIN_TREE: &[(&str, &str)] = &[
         r#"id = "kuma/nostr"
 name = "kumaOS Nostr"
 description = "The bunker's face: pending approvals in the bar, the approval panel behind them."
-plugin_api = 1
+# The manifest's mandatory keys are the loader's first gate: a manifest
+# without `version`, or with an `plugin_api` the host does not speak,
+# loads nothing and says nothing on the bar. Shaped against
+# `noctalia plugins lint` and a loading shell, not against guesses.
+version = "1.0.0"
+plugin_api = 9
 
 [[widget]]
-file = "widget.lua"
+# The bar addresses the widget by plugin-id:widget-id; without an id
+# here the address has no second half and the widget factory calls it
+# unknown, however correctly the rest is wired.
+id = "bunker"
+entry = "widget.lua"
 
 [[panel]]
 id = "panel"
-file = "panel.lua"
+entry = "panel.lua"
+width = 420
+height = 410
+placement = "floating"
+position = "center"
 "#,
     ),
     (
@@ -4381,26 +4399,35 @@ end
 ];
 
 /// The authored config's plugin entry, appended to the noctalia config
-/// only when the declaration says so: the path source (no git ops on
-/// anything kuma baked). Only the array entry rides the append — a
-/// second `[plugins]` header would be a TOML redefinition, and the
-/// build's merge proof is where noctalia says exactly that; the
+/// only when the declaration says so. Only the array entry rides the
+/// append — a second `[plugins]` header would be a TOML redefinition,
+/// and the build's merge proof is where noctalia says exactly that; the
 /// enabled key joins the section the config already carries, by
 /// injection where that section is written.
 ///
 /// The keys are noctalia v5.1.0's own, checked against its `config
 /// validate` rather than grepped off the binary: the first spelling
 /// (`id`, `path`) came from error strings and was unknown to the shell,
-/// which warned at every boot and never loaded the plugin. The source's
-/// `name` is a label and cannot carry `/` — the plugin's id, from its
-/// plugin.toml, is what the enabled list matches.
+/// which warned at every boot and never loaded the plugin. A source's
+/// `location` is a root that holds plugin directories, each with its
+/// own plugin.toml inside — the tree below lands under it, which is why
+/// the path ends at the parent. The source's `name` is a label and
+/// cannot carry `/`; the plugin's id, from its plugin.toml, is what the
+/// enabled list matches.
 pub(crate) const NOSTR_PLUGIN_SOURCE: &str = r#"
 [[plugins.source]]
 name = "kuma-nostr"
 kind = "path"
-location = "/usr/lib/kuma/noctalia/plugins/kuma-nostr"
+location = "/usr/lib/kuma/noctalia/plugins"
 enabled = true
 "#;
+
+/// The bar's end list closes on the control centre; the bunker's glyph
+/// joins after it, in the nostr-enabled render only. The address is the
+/// plugin id and the widget id the plugin.toml declares.
+pub(crate) const NOSTR_BAR_ANCHOR: &str = "    \"control-center\"\n]";
+pub(crate) const NOSTR_BAR_WIDGET: &str =
+    "    \"control-center\",\n    \"kuma/nostr:bunker\"\n]";
 
 /// The enabled key's spelling inside the existing `[plugins]` section,
 /// and the line it joins.
