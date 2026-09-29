@@ -56,6 +56,23 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// The asks waiting on a person, newest last.
+    Prompts,
+    /// Answer an ask with yes. `--remember 1` grants the same method a
+    /// standing yes for an hour — the longest a remember can be.
+    Approve {
+        /// The ask's id, from `prompts`.
+        id: String,
+        /// Hours to remember, at most 1.
+        #[arg(long)]
+        remember: Option<u64>,
+    },
+    /// Answer an ask with no.
+    Deny { id: String },
+    /// The paired apps and their policy levels.
+    Apps,
+    /// Forget a paired app: it answers as unpaired from then on.
+    Revoke { app: String },
 }
 
 fn main() -> Result<()> {
@@ -80,6 +97,17 @@ fn main() -> Result<()> {
         Command::Status => r#"{"cmd":"status"}"#.to_string(),
         Command::Bunker { .. } => r#"{"cmd":"status"}"#.to_string(),
         Command::Destroy { yes } => format!(r#"{{"cmd":"destroy","confirm":{yes}}}"#),
+        Command::Prompts => r#"{"cmd":"prompts"}"#.to_string(),
+        Command::Approve { id, remember } => {
+            format!(
+                r#"{{"cmd":"approve","id":{},"remember_hours":{}}}"#,
+                json_string(id),
+                remember.map_or("null".into(), |h| h.to_string())
+            )
+        }
+        Command::Deny { id } => format!(r#"{{"cmd":"deny","id":{}}}"#, json_string(id)),
+        Command::Apps => r#"{"cmd":"apps"}"#.to_string(),
+        Command::Revoke { app } => format!(r#"{{"cmd":"revoke","app":{}}}"#, json_string(app)),
     };
 
     let mut stream = UnixStream::connect(&path)
@@ -141,6 +169,47 @@ fn render(value: &serde_json::Value) -> Result<()> {
             value["would"].as_str().unwrap_or("this would delete the vault")
         ),
         Some("destroy") => println!("vault destroyed"),
+        Some("prompts") => {
+            let prompts = value["prompts"].as_array().cloned().unwrap_or_default();
+            if prompts.is_empty() {
+                println!("nothing is waiting on you");
+            }
+            for prompt in prompts {
+                println!(
+                    "{}  {}  {}  {}",
+                    prompt["id"].as_str().unwrap_or("?"),
+                    prompt["app"].as_str().unwrap_or("?"),
+                    prompt["method"].as_str().unwrap_or("?"),
+                    prompt["summary"].as_str().unwrap_or("")
+                );
+                if let Some(detail) = prompt["detail"].as_str() {
+                    println!("    {detail}");
+                }
+            }
+        }
+        Some("approve") => println!("approved"),
+        Some("deny") => println!("denied"),
+        Some("apps") => {
+            let apps = value["apps"].as_array().cloned().unwrap_or_default();
+            if apps.is_empty() {
+                println!("no apps paired");
+            }
+            for app in apps {
+                println!(
+                    "{}  {:?}  paired at {}",
+                    app["pubkey"].as_str().unwrap_or("?"),
+                    app["level"],
+                    app["paired_at"].as_u64().unwrap_or(0),
+                );
+            }
+        }
+        Some("revoke") => {
+            if value["removed"].as_bool() == Some(true) {
+                println!("revoked");
+            } else {
+                println!("no such app");
+            }
+        }
         _ => println!("{value}"),
     }
     Ok(())

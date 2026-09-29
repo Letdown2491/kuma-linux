@@ -204,7 +204,7 @@ mod tests {
     /// Every hop is real; only the keyring is a stand-in.
     #[test]
     fn a_request_reaches_the_bunker_and_its_answer_comes_back() {
-        use crate::nostr::bunker::DenyAll;
+        use crate::nostr::bunker::Gate;
         use crate::nostr::test_relay::StubRelay;
         use nostr::nips::nip46::{NostrConnectMessage, NostrConnectMethod, NostrConnectRequest};
 
@@ -218,7 +218,12 @@ mod tests {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let (daemon, inbound_rx) =
             Daemon::new(Vault::new(MemoryStore::default()), vec![stub.url.clone()]);
+        let engine = daemon.engine();
         let daemon = Arc::new(Mutex::new(daemon));
+        // The worker, in the shape nostrd runs: plan under the lock,
+        // decide with the lock released (an Ask may wait on a person
+        // whose answer arrives through the socket), execute under it
+        // again, publish after. Answers and asks both end at the relay.
         std::thread::spawn({
             let daemon = daemon.clone();
             let handle = runtime.handle().clone();
@@ -226,11 +231,22 @@ mod tests {
                 let Ok(event) = inbound_rx.recv() else {
                     return;
                 };
-                let mut daemon = daemon.lock().unwrap();
-                if let Some(response) =
-                    handle.block_on(daemon.process_bunker_event(event, &DenyAll))
-                {
-                    let _ = daemon.publish(&response);
+                let plan = { daemon.lock().unwrap().plan_bunker_event(&event) };
+                let Some(plan) = plan else { continue };
+                match plan {
+                    crate::nostr::bunker::Plan::Ignore => continue,
+                    crate::nostr::bunker::Plan::Answer(answer) => {
+                        let _ = daemon.lock().unwrap().publish(&answer);
+                    }
+                    crate::nostr::bunker::Plan::Ask { ref request, method, ref params, .. } => {
+                        let decision =
+                            handle.block_on(engine.decide(&request.pubkey, &method, params));
+                        let answer =
+                            { daemon.lock().unwrap().execute_bunker_event(plan, decision) };
+                        if let Some(answer) = answer {
+                            let _ = daemon.lock().unwrap().publish(&answer);
+                        }
+                    }
                 }
             }
         });
@@ -295,5 +311,60 @@ mod tests {
             message.is_response(),
             "the app's connect request was answered with a response: {message:?}"
         );
+
+        // Now the policy path: the same app asks for its public key —
+        // consequential, so the engine asks — and the worker waits
+        // with the daemon's lock free, which is what lets the answer
+        // arrive through the very socket that asked.
+        let message = NostrConnectMessage::request(
+            &NostrConnectRequest::from_message(
+                NostrConnectMethod::GetPublicKey,
+                vec![bunker_pubkey.to_string()],
+            )
+            .unwrap(),
+        );
+        let content = app.nip44_encrypt(&bunker_pubkey, &message.as_json()).unwrap();
+        let ask_request = EventBuilder::new(Kind::NostrConnect, content)
+            .tag(Tag::public_key(bunker_pubkey))
+            .finalize(&app)
+            .unwrap();
+        stub.inject(&ask_request);
+
+        // The ask queues as a prompt, visible from a fresh client.
+        wait_for("the prompt to appear", 100, || {
+            let answer = ask(&mut client, r#"{"cmd":"prompts"}"#);
+            answer.contains("GetPublicKey")
+        });
+
+        // Approve it — the answer travels through the socket verb, and
+        // the waiting worker wakes with the lock free to receive it.
+        let prompts: serde_json::Value =
+            serde_json::from_str(ask(&mut client, r#"{"cmd":"prompts"}"#).trim()).unwrap();
+        let prompt_id = prompts["prompts"][0]["id"].as_str().unwrap().to_string();
+        let approved = ask(
+            &mut client,
+            &format!(r#"{{"cmd":"approve","id":"{prompt_id}","remember_hours":null}}"#),
+        );
+        assert!(approved.contains("\"ok\":true"), "{approved}");
+
+        // The answer crossed back through the relay, and it names the
+        // bunker identity — the get_public_key the gate allowed.
+        wait_for("the allowed answer to come back through the relay", 100, || {
+            let answers: Vec<String> =
+                stub.received().into_iter().filter(|frame| frame.contains(":24135")).collect();
+            answers.len() >= 2
+        });
+        let answer_frame =
+            stub.received().into_iter().rfind(|frame| frame.contains(":24135")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&answer_frame).unwrap();
+        let answer: Event = serde_json::from_value(parsed[1].clone()).unwrap();
+        let plaintext = app.nip44_decrypt(&answer.pubkey, &answer.content).unwrap();
+        match NostrConnectMessage::from_json(&plaintext).unwrap() {
+            NostrConnectMessage::Response { result, error, .. } => {
+                assert_eq!(error, None);
+                assert_eq!(result.as_deref(), Some(bunker_pubkey.to_string().as_str()));
+            }
+            other => panic!("a response came back: {other:?}"),
+        }
     }
 }

@@ -5,11 +5,16 @@
 //! wrapping the answer as a kind 24135 response encrypted back to the
 //! asking app. What does *not* live here is the decision of whether a
 //! consequential method runs — that is the [`Gate`]'s job, and the
-//! policy engine that implements it arrives in the next tracer. The
-//! seam is drawn so that tracer changes decisions, not this file: the
-//! round-trip tests prove the crypto choreography against a gate that
-//! allows or denies, and the engine only ever feeds it different
-//! answers.
+//! policy engine implements it.
+//!
+//! The seam is split in two on purpose, and the reason is a deadlock:
+//! an Ask decision waits on a person, and the person answers through a
+//! socket verb that needs the same lock the worker holds. So the bunker
+//! offers [`Bunker::plan`] — decrypt and dispatch, no waiting — and
+//! [`Bunker::execute`] — run the decided method. The worker plans
+//! under the lock, awaits the decision with the lock released, and
+//! re-locks only to execute; an approval arriving a minute later finds
+//! a lock that was free the whole time.
 //!
 //! The key doing the signing is the dedicated remote-signer key the
 //! vault holds — never the user's imported identity. Apps see the
@@ -54,6 +59,11 @@ pub enum Decision {
 /// other method does, paired or not: the gate sees the whole
 /// consequential surface, which is where the activity log's complete
 /// answer comes from.
+///
+/// The future is awaited by the bunker worker with the daemon's lock
+/// released — that is the whole point of the plan/execute split: an Ask
+/// may wait on a person, and the person's answer arrives through a
+/// socket verb that needs the lock free.
 pub trait Gate {
     fn decide(
         &self,
@@ -63,10 +73,9 @@ pub trait Gate {
     ) -> impl std::future::Future<Output = Decision> + Send;
 }
 
-/// A gate that refuses everything consequential. What this tracer's
-/// tests run against — and the honest default for a daemon whose
-/// policy engine has not landed: a bunker that connects, pings, and
-/// signs nothing.
+/// A gate that refuses everything consequential. What the tests run
+/// against when the question is the choreography and not the policy,
+/// and the honest posture for a daemon nobody has configured yet.
 pub struct DenyAll;
 
 impl Gate for DenyAll {
@@ -78,6 +87,24 @@ impl Gate for DenyAll {
     ) -> Decision {
         Decision::Deny(format!("the {method:?} method waits for the policy engine to land"))
     }
+}
+
+/// What planning produced: a finished response event, or a request
+/// waiting on a gate. `Ignore` is the quiet path — noise, misdelivery,
+/// undecryptable — and is answered with nothing, because a refusal
+/// that names nothing helps nobody.
+#[derive(Debug)]
+pub enum Plan {
+    Ignore,
+    Answer(Event),
+    Ask {
+        /// The full request event: `execute` re-reads the app's pubkey
+        /// and the correlation id from it.
+        request: Event,
+        id: String,
+        method: NostrConnectMethod,
+        params: Vec<String>,
+    },
 }
 
 /// The bunker: the signer keys and the apps that have connected.
@@ -103,62 +130,81 @@ impl Bunker {
         self.sessions.contains_key(app)
     }
 
-    /// Process one event. Anything that is not a kind 24133 request
-    /// addressed to this bunker answers `None` — relays are noisy and
-    /// the pool will feed this everything it subscribes to, filtered
-    /// but not promised. An event that cannot be decrypted is also
-    /// `None`: there is no request id to answer, and a refusal that
-    /// names nothing helps nobody.
-    pub async fn process_event(&mut self, event: &Event, gate: &impl Gate) -> Option<Event> {
+    /// Plan one event: everything that is protocol answers immediately
+    /// (as a finished response event), everything consequential becomes
+    /// a [`Pending`] for the caller to decide outside any lock and hand
+    /// back through [`Bunker::execute`]. Noise is [`Plan::Ignore`] —
+    /// not a 24133, not addressed to this bunker, or undecryptable,
+    /// where there is no request id to answer and a refusal that names
+    /// nothing helps nobody.
+    pub fn plan(&mut self, event: &Event) -> Plan {
         if event.kind != Kind::NostrConnect {
-            return None;
+            return Plan::Ignore;
         }
         let self_pubkey = self.public_key();
         if !event.tags.public_keys().any(|p| p == self_pubkey) {
-            return None;
+            return Plan::Ignore;
         }
-        let plaintext = self.keys.nip44_decrypt(&event.pubkey, &event.content).ok()?;
-        let message = NostrConnectMessage::from_json(&plaintext).ok()?;
+        let Some(plaintext) = self.keys.nip44_decrypt(&event.pubkey, &event.content).ok() else {
+            return Plan::Ignore;
+        };
+        let Ok(message) = NostrConnectMessage::from_json(&plaintext) else {
+            return Plan::Ignore;
+        };
         let (id, method, params) = match message {
             NostrConnectMessage::Request { id, method, params } => (id, method, params),
-            NostrConnectMessage::Response { .. } => return None,
+            NostrConnectMessage::Response { .. } => return Plan::Ignore,
         };
-        let response = self.answer(event.pubkey, &method, &params, gate).await;
-        self.response_event(event, &id, response)
-    }
-
-    /// Method dispatch. Connect and ping are answered as protocol; the
-    /// rest goes to the gate and then to [`Bunker::run`], in that
-    /// order, because an unpaired app holding policy weight is a
-    /// decision the engine never made.
-    async fn answer(
-        &mut self,
-        app: PublicKey,
-        method: &NostrConnectMethod,
-        params: &[String],
-        gate: &impl Gate,
-    ) -> NostrConnectResponse {
-        match method {
+        let response = match method {
             NostrConnectMethod::Connect => {
                 // Params are [user_pubkey, secret?]; the secret rides
                 // back as the result when it was sent (nostrconnect://
                 // flow), and its absence is the bunker:// flow.
                 let secret = params.get(1).cloned();
-                self.sessions.entry(app).or_insert(Session { secret: secret.clone() });
-                let result = secret.map_or(ResponseResult::Ack, ResponseResult::ConnectSecret);
-                NostrConnectResponse::with_result(result)
+                self.sessions.entry(event.pubkey).or_insert(Session { secret: secret.clone() });
+                secret.map_or(ResponseResult::Ack, ResponseResult::ConnectSecret)
             }
-            NostrConnectMethod::Ping => NostrConnectResponse::with_result(ResponseResult::Pong),
-            _ => {
-                if !self.is_paired(&app) {
-                    return NostrConnectResponse::with_error("this app is not paired");
+            NostrConnectMethod::Ping => ResponseResult::Pong,
+            method => {
+                if !self.is_paired(&event.pubkey) {
+                    return match self.response_event(
+                        event,
+                        &id,
+                        NostrConnectResponse::with_error("this app is not paired"),
+                    ) {
+                        Some(answer) => Plan::Answer(answer),
+                        None => Plan::Ignore,
+                    };
                 }
-                match gate.decide(&app, method, params).await {
-                    Decision::Allow => self.run(method, params),
-                    Decision::Deny(reason) => NostrConnectResponse::with_error(reason),
-                }
+                return Plan::Ask { request: event.clone(), id, method, params };
             }
+        };
+        // The protocol answers and the refusal share one road out: a
+        // finished response event when the wrap succeeds, Ignore when
+        // it does not — an app whose channel broke sees silence and
+        // retries, which is what the retry is for.
+        match self.response_event(event, &id, NostrConnectResponse::with_result(response)) {
+            Some(answer) => Plan::Answer(answer),
+            None => Plan::Ignore,
         }
+    }
+
+    /// Run a planned method under its decided answer. The decision is
+    /// the gate's; the signing is the bunker's; the response event is
+    /// the app's half of the channel again.
+    pub fn execute(
+        &self,
+        request: &Event,
+        id: &str,
+        method: &NostrConnectMethod,
+        params: &[String],
+        decision: Decision,
+    ) -> Option<Event> {
+        let response = match decision {
+            Decision::Allow => self.run(method, params),
+            Decision::Deny(reason) => NostrConnectResponse::with_error(reason),
+        };
+        self.response_event(request, id, response)
     }
 
     /// The methods the gate allowed. One arm per method family, sharing
@@ -284,15 +330,6 @@ fn percent_decode(value: &str) -> Result<String> {
 mod tests {
     use super::*;
 
-    /// A gate that allows everything: the choreography tests want the
-    /// methods to run, and the deny path has its own test.
-    struct AllowAll;
-    impl Gate for AllowAll {
-        async fn decide(&self, _: &PublicKey, _: &NostrConnectMethod, _: &[String]) -> Decision {
-            Decision::Allow
-        }
-    }
-
     /// One keypair standing in for the paired app, with the pieces the
     /// tests need: a request event encrypted and signed as an app
     /// would, and the ability to decrypt what came back.
@@ -357,7 +394,10 @@ mod tests {
 
         let request =
             app.request_event_with_id(&bunker_pubkey, "ping-id-1", NostrConnectMethod::Ping, &[]);
-        let response = bunker.process_event(&request, &DenyAll).await.unwrap();
+        let response = match bunker.plan(&request) {
+            Plan::Answer(response) => response,
+            other => panic!("a ping is protocol, answered in the plan: {other:?}"),
+        };
 
         assert_eq!(response.kind, Kind::from_u16(24135));
         assert_eq!(response.pubkey, bunker_pubkey);
@@ -378,22 +418,19 @@ mod tests {
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
-        bunker
-            .process_event(
-                &app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[]),
-                &DenyAll,
-            )
-            .await
-            .unwrap();
+        match bunker.plan(&app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[])) {
+            Plan::Answer(_) => {}
+            other => panic!("connect is protocol: {other:?}"),
+        }
         assert!(bunker.is_paired(&app.pubkey()));
 
-        let response = bunker
-            .process_event(
-                &app.request_event(&bunker_pubkey, NostrConnectMethod::GetPublicKey, &[]),
-                &AllowAll,
-            )
-            .await
-            .unwrap();
+        let ask_event = app.request_event(&bunker_pubkey, NostrConnectMethod::GetPublicKey, &[]);
+        let response = match bunker.plan(&ask_event) {
+            Plan::Ask { request, id, method, params } => bunker
+                .execute(&request, &id, &method, &params, Decision::Allow)
+                .expect("an allowed method answers"),
+            other => panic!("get_public_key waits on the gate: {other:?}"),
+        };
         match app.decrypt_response(&response) {
             NostrConnectMessage::Response { result, error, .. } => {
                 assert_eq!(error, None);
@@ -409,13 +446,11 @@ mod tests {
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
-        let response = bunker
-            .process_event(
-                &app.request_event(&bunker_pubkey, NostrConnectMethod::GetPublicKey, &[]),
-                &DenyAll,
-            )
-            .await
-            .unwrap();
+        let ask_event = app.request_event(&bunker_pubkey, NostrConnectMethod::GetPublicKey, &[]);
+        let response = match bunker.plan(&ask_event) {
+            Plan::Answer(response) => response,
+            other => panic!("an unpaired app is refused in the plan: {other:?}"),
+        };
         match app.decrypt_response(&response) {
             NostrConnectMessage::Response { result, error, .. } => {
                 assert_eq!(result, None);
@@ -431,20 +466,20 @@ mod tests {
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
-        bunker
-            .process_event(
-                &app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[]),
-                &DenyAll,
-            )
-            .await
-            .unwrap();
-        let response = bunker
-            .process_event(
-                &app.request_event(&bunker_pubkey, NostrConnectMethod::GetPublicKey, &[]),
-                &DenyAll,
-            )
-            .await
-            .unwrap();
+        bunker.plan(&app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[]));
+        let ask_event = app.request_event(&bunker_pubkey, NostrConnectMethod::GetPublicKey, &[]);
+        let response = match bunker.plan(&ask_event) {
+            Plan::Ask { request, id, method, params } => bunker
+                .execute(
+                    &request,
+                    &id,
+                    &method,
+                    &params,
+                    DenyAll.decide(&app.pubkey(), &method, &params).await,
+                )
+                .expect("a denied method still answers"),
+            other => panic!("a paired app's ask goes to the gate: {other:?}"),
+        };
         match app.decrypt_response(&response) {
             NostrConnectMessage::Response { result, error, .. } => {
                 assert_eq!(result, None);
@@ -460,13 +495,7 @@ mod tests {
         let mut bunker = Bunker::new(Keys::generate());
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
-        bunker
-            .process_event(
-                &app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[]),
-                &AllowAll,
-            )
-            .await
-            .unwrap();
+        bunker.plan(&app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[]));
 
         let unsigned = UnsignedEvent::new(
             bunker_pubkey,
@@ -475,17 +504,16 @@ mod tests {
             [],
             "hello from the bunker",
         );
-        let response = bunker
-            .process_event(
-                &app.request_event(
-                    &bunker_pubkey,
-                    NostrConnectMethod::SignEvent,
-                    &[unsigned.as_json().as_str()],
-                ),
-                &AllowAll,
-            )
-            .await
-            .unwrap();
+        let response = match bunker.plan(&app.request_event(
+            &bunker_pubkey,
+            NostrConnectMethod::SignEvent,
+            &[unsigned.as_json().as_str()],
+        )) {
+            Plan::Ask { request, id, method, params } => bunker
+                .execute(&request, &id, &method, &params, Decision::Allow)
+                .expect("an allowed sign answers"),
+            other => panic!("sign_event waits on the gate: {other:?}"),
+        };
         match app.decrypt_response(&response) {
             NostrConnectMessage::Response { result, error, .. } => {
                 assert_eq!(error, None, "{error:?}");
@@ -508,19 +536,19 @@ mod tests {
             .tag(Tag::public_key(bunker_pubkey))
             .finalize(&app.keys)
             .unwrap();
-        assert!(bunker.process_event(&note, &DenyAll).await.is_none());
+        assert!(matches!(bunker.plan(&note), Plan::Ignore));
 
         // Addressed to the bunker but undecryptable — random content.
         let garbage = EventBuilder::new(Kind::NostrConnect, "not nip44")
             .tag(Tag::public_key(bunker_pubkey))
             .finalize(&app.keys)
             .unwrap();
-        assert!(bunker.process_event(&garbage, &DenyAll).await.is_none());
+        assert!(matches!(bunker.plan(&garbage), Plan::Ignore));
 
         // Decryptable but not addressed to this bunker.
         let stranger = App::new();
         let misplaced = stranger.request_event(&stranger.pubkey(), NostrConnectMethod::Ping, &[]);
-        assert!(bunker.process_event(&misplaced, &DenyAll).await.is_none());
+        assert!(matches!(bunker.plan(&misplaced), Plan::Ignore));
     }
 
     #[test]

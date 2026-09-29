@@ -51,6 +51,7 @@ fn main() -> anyhow::Result<()> {
         .context("building the keyring runtime")?;
 
     let (daemon, inbound_rx) = Daemon::new(Vault::new(KeyringStore), args.relays.clone());
+    let engine = daemon.engine();
     let mut daemon = daemon;
 
     // The startup posture: come up answering. A vault that will not
@@ -65,8 +66,11 @@ fn main() -> anyhow::Result<()> {
     let daemon = Arc::new(Mutex::new(daemon));
 
     // The bunker worker: relay-delivered events in, answers published
-    // out, under the same lock the socket verbs hold. It lives for the
-    // process; a lock just makes its answers None until the next
+    // out. The three beats are the lock story: plan under the lock,
+    // decide with the lock released (an Ask waits on a person, and the
+    // person's approve arrives through a socket verb that needs this
+    // lock free), execute under it again, publish after. It lives for
+    // the process; a lock just makes its answers None until the next
     // unlock.
     let worker = daemon.clone();
     let runtime_handle = runtime.handle().clone();
@@ -74,12 +78,27 @@ fn main() -> anyhow::Result<()> {
         let Ok(event) = inbound_rx.recv() else {
             return;
         };
-        let mut daemon = worker.lock().expect("the daemon lock");
-        if let Some(response) = runtime_handle
-            .block_on(daemon.process_bunker_event(event, &kuma::nostr::bunker::DenyAll))
-        {
-            if let Err(e) = daemon.publish(&response) {
-                eprintln!("kuma-nostrd: the answer was not published: {e:#}");
+        let plan = { worker.lock().expect("the daemon lock").plan_bunker_event(&event) };
+        let Some(plan) = plan else { continue };
+        match plan {
+            kuma::nostr::bunker::Plan::Ignore => continue,
+            kuma::nostr::bunker::Plan::Answer(answer) => {
+                if let Err(e) = worker.lock().expect("the daemon lock").publish(&answer) {
+                    eprintln!("kuma-nostrd: the answer was not published: {e:#}");
+                }
+            }
+            kuma::nostr::bunker::Plan::Ask { ref request, method, ref params, .. } => {
+                use kuma::nostr::bunker::Gate;
+                let decision =
+                    runtime_handle.block_on(engine.decide(&request.pubkey, &method, params));
+                let answer = {
+                    worker.lock().expect("the daemon lock").execute_bunker_event(plan, decision)
+                };
+                if let Some(answer) = answer {
+                    if let Err(e) = worker.lock().expect("the daemon lock").publish(&answer) {
+                        eprintln!("kuma-nostrd: the answer was not published: {e:#}");
+                    }
+                }
             }
         }
     });

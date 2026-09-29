@@ -15,6 +15,7 @@
 
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use nostr::event::Event;
@@ -23,7 +24,7 @@ use nostr::key::{Keys, SecretKey};
 use nostr::nips::nip19::ToBech32;
 use serde::{Deserialize, Serialize};
 
-use super::bunker::{Bunker, Gate};
+use super::bunker::Bunker;
 use super::keys;
 use super::pool::{RelayPool, RelayState, RelayStatus};
 use super::vault::Vault;
@@ -47,6 +48,26 @@ pub enum Request {
     Destroy {
         #[serde(default)]
         confirm: bool,
+    },
+    /// The pending asks, for the CLI's `prompts` and the panel.
+    Prompts,
+    /// Answer an ask with yes; `remember_hours` grants the method a
+    /// standing yes for that long — an hour at most by the verb's own
+    /// ceiling.
+    Approve {
+        id: String,
+        #[serde(default)]
+        remember_hours: Option<u64>,
+    },
+    /// Answer an ask with no.
+    Deny {
+        id: String,
+    },
+    /// The paired apps and their levels.
+    Apps,
+    /// Forget a paired app.
+    Revoke {
+        app: String,
     },
 }
 
@@ -84,6 +105,11 @@ pub enum OkResponse {
     Lock { ok: bool },
     DestroyDryRun { ok: bool, would: String },
     Destroy { ok: bool },
+    Prompts { ok: bool, prompts: Vec<super::policy::PromptView> },
+    Approve { ok: bool },
+    Deny { ok: bool },
+    Apps { ok: bool, apps: Vec<super::policy::Paired> },
+    Revoke { ok: bool, removed: bool },
 }
 
 /// What `status` says, and what `doctor` will grade through it later.
@@ -128,6 +154,7 @@ pub struct Daemon<S: super::vault::SecretStore> {
     relays: Vec<String>,
     bunker: Option<Bunker>,
     pool: Option<RelayPool>,
+    engine: super::policy::Engine,
     /// The sender every spawned pool gets a clone of, and the receiver
     /// the bunker worker consumes; made once in [`Daemon::new`], so a
     /// lock-unlock cycle spawns a fresh pool onto a channel the worker
@@ -154,6 +181,7 @@ impl<S: super::vault::SecretStore> Daemon<S> {
             relays,
             bunker: None,
             pool: None,
+            engine: super::policy::Engine::new(None),
             inbound,
             status_tx,
             status_rx,
@@ -223,6 +251,34 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                     Ok(()) => Response::Ok(OkResponse::Destroy { ok: true }),
                     Err(e) => err_response(e),
                 }
+            }
+            Request::Prompts => {
+                Response::Ok(OkResponse::Prompts { ok: true, prompts: self.engine.prompts() })
+            }
+            Request::Approve { id, remember_hours } => {
+                // The ceiling is the verb's own: more than an hour is
+                // not a remember, it is a Trust that forgot its name.
+                let remember = match remember_hours {
+                    Some(hours) if hours > 1 => {
+                        return err_response(anyhow!(
+                            "a remember is an hour at most; longer wants Trust"
+                        ));
+                    }
+                    Some(hours) => Some(Duration::from_secs(hours * 3600)),
+                    None => None,
+                };
+                match self.engine.approve(&id, remember) {
+                    Ok(()) => Response::Ok(OkResponse::Approve { ok: true }),
+                    Err(e) => err_response(anyhow!("{e}")),
+                }
+            }
+            Request::Deny { id } => match self.engine.deny(&id) {
+                Ok(()) => Response::Ok(OkResponse::Deny { ok: true }),
+                Err(e) => err_response(anyhow!("{e}")),
+            },
+            Request::Apps => Response::Ok(OkResponse::Apps { ok: true, apps: self.engine.apps() }),
+            Request::Revoke { app } => {
+                Response::Ok(OkResponse::Revoke { ok: true, removed: self.engine.revoke(&app) })
             }
         }
     }
@@ -297,13 +353,39 @@ impl<S: super::vault::SecretStore> Daemon<S> {
         }
     }
 
-    /// The bunker's answer to one relay-delivered event: the response
-    /// event to publish, or None when the bunker is not armed (locked)
-    /// or the event is noise. The worker calls this under the lock;
-    /// async because the gate's decision may wait.
-    pub async fn process_bunker_event(&mut self, event: Event, gate: &impl Gate) -> Option<Event> {
-        let bunker = self.bunker.as_mut()?;
-        bunker.process_event(&event, gate).await
+    /// Beat one of the bunker's answer: plan the event under the
+    /// caller's lock. The lock story is the point of the split — an
+    /// Ask waits on a person, and the person's answer arrives through
+    /// a socket verb that needs this lock free, so the worker releases
+    /// it before beat two and takes it again for
+    /// [`Daemon::execute_bunker_event`]. `None` is the quiet path: a
+    /// locked bunker, or noise.
+    pub fn plan_bunker_event(&mut self, event: &Event) -> Option<super::bunker::Plan> {
+        Some(self.bunker.as_mut()?.plan(event))
+    }
+
+    /// A handle to the engine for beat two — the decision — which the
+    /// worker awaits with no lock held. The engine's state is shared
+    /// through its own interior lock; this handle is a window, not a
+    /// fork.
+    pub fn engine(&self) -> super::policy::Engine {
+        self.engine.clone()
+    }
+
+    /// Beat three: run the decided ask under the caller's lock. The
+    /// parts are the Ask that beat one returned; `decision` is what
+    /// beat two waited for. `None` when the bunker went away between
+    /// beats (a lock during the wait) — the app sees its own timeout,
+    /// and the log still holds the decision.
+    pub fn execute_bunker_event(
+        &mut self,
+        ask: super::bunker::Plan,
+        decision: super::bunker::Decision,
+    ) -> Option<Event> {
+        let super::bunker::Plan::Ask { request, id, method, params } = ask else {
+            return None;
+        };
+        self.bunker.as_ref()?.execute(&request, &id, &method, &params, decision)
     }
 
     /// Publish a bunker answer to every relay that is up.

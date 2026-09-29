@@ -117,7 +117,7 @@ impl StubRelay {
 
 /// Wait until the closure is true, because a relay thread and a
 /// subscriber meet in the middle: neither side knows who arrived first.
-pub fn wait_for(description: &str, tries: u32, check: impl Fn() -> bool) {
+pub fn wait_for(description: &str, tries: u32, mut check: impl FnMut() -> bool) {
     for _ in 0..tries {
         if check() {
             return;
