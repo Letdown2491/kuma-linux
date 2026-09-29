@@ -33,11 +33,16 @@ struct Cli {
 #[derive(clap::Subcommand)]
 enum Command {
     /// Provision the vault: generate a key, or import one.
+    ///
+    /// The imported secret — an nsec, a hex secret key, or a NIP-06
+    /// mnemonic — is read from stdin, never a flag: a secret on the
+    /// command line lands in shell history and in `ps`, and neither
+    /// forgets. A terminal is prompted with echo off; a pipe is read
+    /// as one line, so a scripted setup stays scriptable.
     Setup {
-        /// An nsec, a hex secret key, or a NIP-06 mnemonic. Omit to
-        /// generate.
+        /// Read the secret from stdin instead of generating.
         #[arg(long)]
-        import: Option<String>,
+        import: bool,
     },
     /// Re-read the key from the keyring.
     Unlock,
@@ -87,13 +92,18 @@ fn main() -> Result<()> {
 
     let request = match &cli.command {
         Command::Setup { import } => match import {
-            Some(secret) => {
+            true => {
+                // The secret's one road: stdin. A terminal prompts with
+                // echo off; a pipe answers as one line, so a scripted
+                // setup stays scriptable. Either way it never touches
+                // argv, which is what shell history and `ps` read.
+                let secret = read_secret()?;
                 format!(
                     r#"{{"cmd":"setup","mode":{{"how":"import","secret":{}}}}}"#,
-                    json_string(secret)
+                    json_string(&secret)
                 )
             }
-            None => r#"{"cmd":"setup","mode":{"how":"generate"}}"#.to_string(),
+            false => r#"{"cmd":"setup","mode":{"how":"generate"}}"#.to_string(),
         },
         Command::Unlock => r#"{"cmd":"unlock"}"#.to_string(),
         Command::Lock => r#"{"cmd":"lock"}"#.to_string(),
@@ -132,6 +142,26 @@ fn main() -> Result<()> {
 /// are JSON strings through and through — never pasted, never echoed.
 fn json_string(value: &str) -> String {
     serde_json::to_string(value).expect("a string serializes")
+}
+
+/// The secret's one road in: stdin. A terminal prompts with echo off
+/// (rpassword); a pipe is read as one line, so the setup a script runs
+/// is the same setup a person runs. The trimmed value is what the
+/// parsers accept — a trailing newline is an editor's, not the key's.
+fn read_secret() -> Result<String> {
+    use std::io::IsTerminal;
+    let secret = if std::io::stdin().is_terminal() {
+        rpassword::prompt_password("paste the nsec, hex key, or mnemonic: ")?
+    } else {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        line
+    };
+    let trimmed = secret.trim().to_string();
+    if trimmed.is_empty() {
+        anyhow::bail!("no secret arrived on stdin");
+    }
+    Ok(trimmed)
 }
 
 fn render(value: &serde_json::Value) -> Result<()> {
