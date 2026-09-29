@@ -6,7 +6,8 @@
 //! is the daemon's, and that separation is what lets the plugin shell
 //! this binary without widening the trust boundary.
 //!
-//! The verbs the layer has so far: `setup`, `unlock`, `lock`, `status`,
+//! The verbs the layer has so far: `setup` (which asks rather than
+//! guesses), `generate`, `import`, `unlock`, `lock`, `status`,
 //! `destroy`. Pairing, prompts and the bunker arrive with the policy
 //! engine and ride the same socket.
 
@@ -32,18 +33,23 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum Command {
-    /// Provision the vault: generate a key, or import one.
+    /// Provision the vault. On a terminal this asks which road: a new
+    /// key, or one you already hold. It never guesses — in a pipe it
+    /// refuses and names the verbs that do the work.
+    Setup,
+    /// Create a new identity: a fresh key, generated and stored.
+    Generate,
+    /// Bring an existing key: an nsec, a hex secret key, a NIP-06
+    /// mnemonic, or an `ncryptsec` with the passphrase it was wrapped
+    /// in.
     ///
-    /// The imported secret — an nsec, a hex secret key, or a NIP-06
-    /// mnemonic — is read from stdin, never a flag: a secret on the
+    /// The secret is read from stdin, never a flag: a secret on the
     /// command line lands in shell history and in `ps`, and neither
     /// forgets. A terminal is prompted with echo off; a pipe is read
-    /// as one line, so a scripted setup stays scriptable.
-    Setup {
-        /// Read the secret from stdin instead of generating.
-        #[arg(long)]
-        import: bool,
-    },
+    /// as one line, so a scripted setup stays scriptable. An
+    /// `ncryptsec` is asked for its passphrase on a second prompt, or
+    /// a second line on a pipe.
+    Import,
     /// Re-read the key from the keyring.
     Unlock,
     /// Drop the key from memory; the stored vault stays.
@@ -90,21 +96,36 @@ fn main() -> Result<()> {
     let bunker_verb = matches!(cli.command, Command::Bunker { .. });
     let bunker_qr = matches!(cli.command, Command::Bunker { qr: true });
 
+    // The identity verbs share one pre-check, because the worst order is
+    // ask-then-refuse: the person pastes their secret key and only then
+    // hears that the daemon refuses it. Status first; the refusal, if
+    // there is one, costs nothing and names the verb that moves past it.
+    let mut client = kuma::nostr::client::connect(Some(&path))?;
+    let creates_identity =
+        matches!(cli.command, Command::Setup | Command::Generate | Command::Import);
+    if creates_identity {
+        let status = client.status()?;
+        if status["vault"]["exists"].as_bool() == Some(true) {
+            anyhow::bail!(
+                "a vault already exists; destroy it first (`kuma-nostr destroy --yes`) \
+                 — replacing a key is spelled"
+            );
+        }
+    }
+
     let request = match &cli.command {
-        Command::Setup { import } => match import {
-            true => {
-                // The secret's one road: stdin. A terminal prompts with
-                // echo off; a pipe answers as one line, so a scripted
-                // setup stays scriptable. Either way it never touches
-                // argv, which is what shell history and `ps` read.
-                let secret = read_secret()?;
-                format!(
-                    r#"{{"cmd":"setup","mode":{{"how":"import","secret":{}}}}}"#,
-                    json_string(&secret)
-                )
+        Command::Setup => {
+            // The umbrella stops being the decision. On a terminal it
+            // asks; in a pipe there is nobody to ask, and guessing
+            // "generate" would mint identities nobody chose — so it
+            // refuses and names the two verbs that do the work.
+            match ask_road()? {
+                Road::Generate => r#"{"cmd":"setup","mode":{"how":"generate"}}"#.to_string(),
+                Road::Import => import_request()?,
             }
-            false => r#"{"cmd":"setup","mode":{"how":"generate"}}"#.to_string(),
-        },
+        }
+        Command::Generate => r#"{"cmd":"setup","mode":{"how":"generate"}}"#.to_string(),
+        Command::Import => import_request()?,
         Command::Unlock => r#"{"cmd":"unlock"}"#.to_string(),
         Command::Lock => r#"{"cmd":"lock"}"#.to_string(),
         Command::Status => r#"{"cmd":"status"}"#.to_string(),
@@ -123,7 +144,6 @@ fn main() -> Result<()> {
         Command::Revoke { app } => format!(r#"{{"cmd":"revoke","app":{}}}"#, json_string(app)),
     };
 
-    let mut client = kuma::nostr::client::connect(Some(&path))?;
     let value = client.ask(&request)?;
 
     if bunker_verb {
@@ -162,6 +182,61 @@ fn read_secret() -> Result<String> {
         anyhow::bail!("no secret arrived on stdin");
     }
     Ok(trimmed)
+}
+
+/// The ncryptsec's other half, by the same road as the secret: a
+/// terminal prompts with echo off, a pipe is read as one line.
+fn read_passphrase() -> Result<String> {
+    use std::io::IsTerminal;
+    let passphrase = if std::io::stdin().is_terminal() {
+        rpassword::prompt_password("the passphrase the ncryptsec was wrapped with: ")?
+    } else {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        line
+    };
+    let trimmed = passphrase.trim().to_string();
+    if trimmed.is_empty() {
+        anyhow::bail!("an ncryptsec needs the passphrase it was wrapped with");
+    }
+    Ok(trimmed)
+}
+
+/// The two roads `setup` offers a person at a terminal. Enter alone is
+/// the default road — most setups have no key to bring.
+fn ask_road() -> Result<Road> {
+    use std::io::{IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        anyhow::bail!(
+            "say which: `kuma-nostr generate` mints a new identity, \
+             `kuma-nostr import` brings one you already hold"
+        );
+    }
+    print!("generate a new identity, or import one you already hold? [G/i] ");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    match line.trim().to_ascii_lowercase().as_str() {
+        "" | "g" | "generate" => Ok(Road::Generate),
+        "i" | "import" => Ok(Road::Import),
+        other => anyhow::bail!("that is not one of the two roads: {other:?}"),
+    }
+}
+
+enum Road {
+    Generate,
+    Import,
+}
+
+/// The import request line, shared by `import` and the `setup` umbrella.
+/// The secret's one road is stdin; an `ncryptsec` takes a second.
+fn import_request() -> Result<String> {
+    let secret = read_secret()?;
+    let mut mode = format!(r#"{{"how":"import","secret":{}}}"#, json_string(&secret));
+    if secret.starts_with("ncryptsec1") {
+        mode.push_str(&format!(r#","passphrase":{}"#, json_string(&read_passphrase()?)));
+    }
+    Ok(format!(r#"{{"cmd":"setup","mode":{mode}}}"#))
 }
 
 fn render(value: &serde_json::Value) -> Result<()> {

@@ -243,7 +243,7 @@ mod tests {
         (
             "nostr",
             "schema_version = 1\n[system]\ndesktop = \"niri\"\n[nostr]\nenable = true\n\
-             relays = [\"wss://relay.nip46.com\", \"ws://127.0.0.1:7777\"]\n",
+             serve = true\nrelays = [\"wss://relay.nip46.com\", \"ws://127.0.0.1:7777\"]\n",
         ),
         ("everything-on", EVERYTHING_ON),
         ("secrets", SECRETS),
@@ -289,6 +289,11 @@ mod tests {
             "the local relay leads and the declared set follows: {unit}"
         );
         assert!(unit.contains("ProtectSystem=strict"), "the sandbox is the point: {unit}");
+        assert!(
+            unit.contains("ExecStartPre=+/usr/bin/mkdir -p %h/.local/state/kuma-nostr"),
+            "the state dir exists before the sandbox mounts, or ReadWritePaths \
+             fails the namespace and the bunker never starts: {unit}"
+        );
         assert!(
             unit.contains("Restart=always"),
             "a bunker that exits zero still stopped answering"
@@ -1895,7 +1900,7 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
          [services]\nenable = [\"sshd.service\", \"tailscaled.service\"]\n\
          [snapshots]\nenable = true\n\
          [backup]\nenable = true\nrepo = \"b2:kuma\"\nnetwork_connections = true\n\
-         [nostr]\nenable = true\nrelays = [\"wss://relay.nip46.com\"]\n\
+         [nostr]\nenable = true\nserve = true\nrelays = [\"wss://relay.nip46.com\"]\n\
          [overrides.\"org.mozilla.firefox\"]\nsockets = [\"wayland\"]\n\
          [user]\nname = \"probe\"\nssh_keys = [\"ssh-ed25519 AAAAC3Nz probe@example\"]\n";
 

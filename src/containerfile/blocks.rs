@@ -4059,6 +4059,11 @@ After=graphical-session.target
 
 [Service]
 ExecStart=/usr/bin/kuma-nostrd{relay_args}
+# The state dir has to exist before the sandbox does: ReadWritePaths
+# names it, and a namespace that cannot mount a missing path fails the
+# unit before the daemon runs. The `+` runs this one command unsandboxed
+# — ProtectHome would refuse the write the daemon itself would need.
+ExecStartPre=+/usr/bin/mkdir -p %h/.local/state/kuma-nostr
 # A bunker that exits zero is still a bunker that stopped answering.
 Restart=always
 Slice=session.slice
@@ -4070,8 +4075,10 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
 # The pairing list and the activity log are the daemon's own state, and
-# the only thing it may write.
-ReadWritePaths=%h/.local/state/kuma-nostr
+# the socket it answers on, the only things it may write. The socket
+# lives in the session's runtime directory, which ProtectSystem=strict
+# would otherwise mount read-only.
+ReadWritePaths=%h/.local/state/kuma-nostr %t
 # A unix socket to answer on, and relays over the network.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 PrivateTmp=yes
@@ -4126,10 +4133,14 @@ fn nostr(e: &mut Emitter<'_>) {
         e.copy(&relay_unit, "/usr/lib/systemd/user/nip46-relay.service");
 
         // The tailnet exposure: a converge script and a oneshot, and
-        // only when the declaration runs tailscaled — the relay's
-        // reachability is the operator's business, and this is what
-        // "the declaration runs tailscaled" does with it.
-        if config.services.enable.iter().any(|s| s == "tailscaled.service") {
+        // only when the declaration says serve. The switch is the
+        // declaration's own, not an inference from the relay and
+        // tailscaled both being on — those two say the relay exists and
+        // that the machine talks to a tailnet, and neither says a
+        // loopback-only relay belongs on it. Serving also needs
+        // tailscaled; a declaration that says serve without it bakes
+        // nothing, and the doctor names the missing piece.
+        if config.nostr.serve && config.services.enable.iter().any(|s| s == "tailscaled.service") {
             let serve = e.stage("kuma-nostr-serve", NOSTR_SERVE_SCRIPT);
             let serve_unit = e.stage("kuma-nostr-serve.service", NOSTR_SERVE_SERVICE);
             e.copy_exec(&serve, "/usr/libexec/kuma-nostr-serve");

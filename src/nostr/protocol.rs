@@ -75,7 +75,14 @@ pub enum Request {
 #[serde(tag = "how", rename_all = "snake_case")]
 pub enum SetupMode {
     Generate,
-    Import { secret: String },
+    Import {
+        secret: String,
+        /// The passphrase an `ncryptsec` was wrapped in. Absent for the
+        /// formats whose key rides in the clear; required by the one
+        /// format that carries it wrapped.
+        #[serde(default)]
+        passphrase: Option<String>,
+    },
 }
 
 /// An answer, one line of JSON, `ok` first.
@@ -172,8 +179,14 @@ impl<S: super::vault::SecretStore> Daemon<S> {
     /// Build the daemon and hand back the receiver the bunker worker
     /// consumes. The split is explicit because the worker is the
     /// binary's to spawn — it needs the daemon's own `Arc` around it,
-    /// which does not exist until after construction.
-    pub fn new(vault: Vault<S>, relays: Vec<String>) -> (Self, Receiver<Event>) {
+    /// which does not exist until after construction. `state_dir` is
+    /// where pairings persist; `None` is memory-only, which is what the
+    /// offline tests run against.
+    pub fn new(
+        vault: Vault<S>,
+        relays: Vec<String>,
+        state_dir: Option<std::path::PathBuf>,
+    ) -> (Self, Receiver<Event>) {
         let (inbound, inbound_rx) = channel();
         let (status_tx, status_rx) = channel();
         let daemon = Self {
@@ -181,7 +194,7 @@ impl<S: super::vault::SecretStore> Daemon<S> {
             relays,
             bunker: None,
             pool: None,
-            engine: super::policy::Engine::new(None),
+            engine: super::policy::Engine::new(state_dir),
             inbound,
             status_tx,
             status_rx,
@@ -299,10 +312,26 @@ impl<S: super::vault::SecretStore> Daemon<S> {
     async fn setup(&mut self, mode: SetupMode) -> Response {
         let key = match mode {
             SetupMode::Generate => SecretKey::generate(),
-            SetupMode::Import { secret } => match keys::import(&secret) {
-                Ok(key) => key,
-                Err(e) => return err_response(anyhow!("import failed: {e}")),
-            },
+            SetupMode::Import { secret, passphrase } => {
+                let imported = match secret.trim().starts_with("ncryptsec1") {
+                    // The one import that carries its key wrapped: the
+                    // passphrase is not decoration, it is the second
+                    // half of the secret.
+                    true => match passphrase.as_deref() {
+                        Some(pass) => {
+                            keys::decrypt_ncryptsec(&secret, pass).map_err(|e| e.to_string())
+                        }
+                        None => {
+                            Err("an ncryptsec needs the passphrase it was wrapped with".to_string())
+                        }
+                    },
+                    false => keys::import(&secret).map_err(|e| e.to_string()),
+                };
+                match imported {
+                    Ok(key) => key,
+                    Err(e) => return err_response(anyhow!("import failed: {e}")),
+                }
+            }
         };
         match self.vault.setup(&key).await {
             Ok(()) => {
@@ -431,7 +460,7 @@ mod tests {
     use crate::nostr::vault::{MemoryStore, SecretStore, Vault};
 
     async fn daemon() -> Daemon<MemoryStore> {
-        Daemon::new(Vault::new(MemoryStore::default()), Vec::new()).0
+        Daemon::new(Vault::new(MemoryStore::default()), Vec::new(), None).0
     }
 
     async fn round_trip(request: &str) -> String {
@@ -501,7 +530,7 @@ mod tests {
                 Err(anyhow!("the keyring is not answering"))
             }
         }
-        let mut daemon = Daemon::new(Vault::new(FailingStore), Vec::new()).0;
+        let mut daemon = Daemon::new(Vault::new(FailingStore), Vec::new(), None).0;
         let response = daemon.handle(decode(r#"{"cmd":"status"}"#).unwrap()).await;
         let line = encode(&response);
         assert!(line.contains("\"ok\":false"), "{line}");

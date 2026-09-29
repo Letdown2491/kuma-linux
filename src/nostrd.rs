@@ -22,7 +22,12 @@ use kuma::nostr::socket;
 use kuma::nostr::vault::{KeyringStore, Vault};
 
 #[derive(Parser)]
-#[command(name = "kuma-nostrd", about = "The kumaOS nostr layer's daemon", version, verbatim_doc_comment)]
+#[command(
+    name = "kuma-nostrd",
+    about = "The kumaOS nostr layer's daemon",
+    version,
+    verbatim_doc_comment
+)]
 struct Args {
     /// The socket to answer on; the default is
     /// `$XDG_RUNTIME_DIR/kuma-nostr.sock`.
@@ -42,15 +47,28 @@ fn main() -> anyhow::Result<()> {
         None => socket::default_socket_path()?,
     };
 
-    // The runtime exists for oo7's keyring calls and the bunker's async
-    // decisions and nothing else: the socket loop is blocking threads,
-    // and each request bridges into this runtime for its duration.
+    // The runtime is the worker's: the startup unlock and the bunker's
+    // async decisions run on it, on this thread, where spawned tasks
+    // are polled. The socket loop is blocking threads; each connection
+    // builds a runtime of its own (socket::serve), because a keyring
+    // call bridged into a runtime another thread owns would never have
+    // its D-Bus executor polled — the daemon would hold its lock
+    // forever, listening and never answering.
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("building the keyring runtime")?;
 
-    let (daemon, inbound_rx) = Daemon::new(Vault::new(KeyringStore), args.relays.clone());
+    // The state dir is the daemon's own: where pairings persist. The
+    // path mirrors the unit's ReadWritePaths (%h/.local/state/kuma-nostr
+    // — %h is HOME), and the unit's ExecStartPre creates it before the
+    // sandbox mounts; the engine's own writes then land in a dir that
+    // exists and is the one the sandbox allows.
+    let state_dir = std::env::var("HOME")
+        .ok()
+        .map(|home| std::path::PathBuf::from(home).join(".local/state/kuma-nostr"));
+    let (daemon, inbound_rx) =
+        Daemon::new(Vault::new(KeyringStore), args.relays.clone(), state_dir);
     let engine = daemon.engine();
     let mut daemon = daemon;
 
@@ -105,7 +123,7 @@ fn main() -> anyhow::Result<()> {
 
     eprintln!("kuma-nostrd: listening on {}", socket_path.display());
     let listener = socket::bind(&socket_path)?;
-    socket::serve(listener, daemon, &runtime);
+    socket::serve(listener, daemon);
     // serve() only returns on an accept failure, which is fatal here.
     Ok(())
 }

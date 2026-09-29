@@ -69,6 +69,15 @@ pub struct Nostr {
     /// never removes it — removal is spelled here.
     #[serde(default)]
     pub relay: NostrRelay,
+    /// The tailnet exposure switch: serve the local relay on the
+    /// machine's ts.net name. Absent means local-only, because widening
+    /// who can reach the relay is a decision about the trust boundary
+    /// and the grammar does not make it for anyone — it is not implied
+    /// by the relay and tailscaled both being on, a pair of facts that
+    /// say nothing about intent. Serving needs the local relay and
+    /// tailscaled; the doctor says so when one is missing.
+    #[serde(default)]
+    pub serve: bool,
 }
 
 /// The local relay's switch. Absent means on — the default signing

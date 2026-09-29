@@ -16,7 +16,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context, Result};
-use tokio::runtime::Handle;
 
 use super::protocol::{self, Daemon};
 use super::vault::SecretStore;
@@ -55,24 +54,23 @@ pub fn bind(path: &Path) -> Result<UnixListener> {
 }
 
 /// Serve connections until the process is signalled. Each connection is
-/// one thread; the daemon behind them is a mutex, because the verbs are
-/// short and the vault's answer must be the vault's truth.
+/// one thread with a tokio runtime of its own; the daemon behind them
+/// is a mutex, because the verbs are short and the vault's answer must
+/// be the vault's truth.
 pub fn serve<S: SecretStore + Send + 'static>(
     listener: UnixListener,
     daemon: Arc<Mutex<Daemon<S>>>,
-    runtime: &tokio::runtime::Runtime,
 ) {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let daemon = daemon.clone();
-                let runtime = runtime.handle().clone();
                 if !peer_is_self(&stream) {
                     eprintln!("kuma-nostrd: refused a peer that is not this user");
                     continue;
                 }
                 std::thread::spawn(move || {
-                    if let Err(e) = one_connection(stream, daemon, &runtime) {
+                    if let Err(e) = one_connection(stream, daemon) {
                         eprintln!("kuma-nostrd: connection ended: {e}");
                     }
                 });
@@ -88,11 +86,23 @@ pub fn serve<S: SecretStore + Send + 'static>(
 /// One connection: lines until the peer hangs up. A read error ends the
 /// connection; a request error is *answered* — the caller is told their
 /// line was refused, and the connection lives.
-fn one_connection<S: SecretStore>(
-    stream: UnixStream,
-    daemon: Arc<Mutex<Daemon<S>>>,
-    runtime: &Handle,
-) -> Result<()> {
+///
+/// The runtime is the connection's own, built here and driven by
+/// `Runtime::block_on` from this thread. The vault's keyring calls are
+/// D-Bus calls whose executor tasks are spawned onto a runtime, and a
+/// current-thread runtime polls its spawned tasks only while its own
+/// thread is inside `block_on` — bridging into a runtime owned by
+/// another thread would never poll them, and the first keyring verb
+/// would wedge forever holding the daemon's lock. A runtime of one's
+/// own drives what the request spawns, and the vault's futures stay
+/// un-`Send`, as the vault intends. It matches the store's own shape:
+/// oo7 opens a new D-Bus connection per operation anyway, so nothing
+/// outlives the request that needed it.
+fn one_connection<S: SecretStore>(stream: UnixStream, daemon: Arc<Mutex<Daemon<S>>>) -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("building the connection runtime")?;
     let mut writer = stream.try_clone().context("cloning the socket for writing")?;
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -158,11 +168,11 @@ mod tests {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
 
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let daemon =
-            Arc::new(Mutex::new(Daemon::new(Vault::new(MemoryStore::default()), Vec::new()).0));
+        let daemon = Arc::new(Mutex::new(
+            Daemon::new(Vault::new(MemoryStore::default()), Vec::new(), None).0,
+        ));
         std::thread::spawn(move || {
-            serve(listener, daemon, &runtime);
+            serve(listener, daemon);
         });
 
         let mut client = UnixStream::connect(&path).unwrap();
@@ -217,7 +227,7 @@ mod tests {
         let listener = bind(&path).unwrap();
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let (daemon, inbound_rx) =
-            Daemon::new(Vault::new(MemoryStore::default()), vec![stub.url.clone()]);
+            Daemon::new(Vault::new(MemoryStore::default()), vec![stub.url.clone()], None);
         let engine = daemon.engine();
         let daemon = Arc::new(Mutex::new(daemon));
         // The worker, in the shape nostrd runs: plan under the lock,
@@ -252,7 +262,7 @@ mod tests {
         });
         std::thread::spawn({
             let daemon = daemon.clone();
-            move || serve(listener, daemon, &runtime)
+            move || serve(listener, daemon)
         });
 
         // The socket client arms the bunker by setting it up.

@@ -2765,9 +2765,22 @@ fn check_nostr(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     // fail three ways (no operator, daemon down, command missing) and
     // all three grade warn — a check that could not be made is not a
     // broken machine.
-    let serve_declared = config.nostr.relay.enable
-        && config.services.enable.iter().any(|s| s == "tailscaled.service");
-    if serve_declared {
+    let serve_declared = config.nostr.serve;
+    if serve_declared
+        && (!config.nostr.relay.enable
+            || !config.services.enable.iter().any(|s| s == "tailscaled.service"))
+    {
+        // A spoken serve with nothing to serve it: the relay is what
+        // gets mapped and tailscaled is what answers for the tailnet,
+        // and the unit that was not baked is the honest sign.
+        report(
+            Grade::Warn,
+            "nostr",
+            "the declaration says serve, but the local relay and tailscaled are what serving needs, and one of them is not enabled"
+                .into(),
+            None,
+        );
+    } else if serve_declared {
         match host_output(&["tailscale", "serve", "status"]) {
             Ok(status) if status.contains(":7777") => {
                 report(Grade::Ok, "nostr", "the local relay is served on the tailnet".into(), None);
@@ -2827,14 +2840,28 @@ fn check_nostr(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     match client.status() {
         Ok(status) => {
             let vault = &status["vault"];
-            match vault["unlocked"].as_bool() {
-                Some(true) => report(
+            match (vault["exists"].as_bool(), vault["unlocked"].as_bool()) {
+                // Locked and never set up are different facts with
+                // different roads: unlock on a missing vault is an
+                // error, and advice that names it turns a fresh machine
+                // into a dead end.
+                (Some(false), _) => report(
+                    Grade::Warn,
+                    "nostr",
+                    "the vault is not set up yet; setup creates the bunker's identity".into(),
+                    Some(Action::new(
+                        "setup",
+                        "kuma-nostr setup".to_string(),
+                        "it asks which road; `kuma-nostr import` brings a key you already hold",
+                    )),
+                ),
+                (_, Some(true)) => report(
                     Grade::Ok,
                     "nostr",
                     "the vault is open and the bunker answers".into(),
                     None,
                 ),
-                Some(false) => report(
+                (_, Some(false)) => report(
                     Grade::Warn,
                     "nostr",
                     "the bunker is locked; it pairs but signs nothing".into(),
@@ -2844,7 +2871,7 @@ fn check_nostr(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
                         "the keyring is open in this session, so unlocking costs nothing",
                     )),
                 ),
-                None => report(
+                _ => report(
                     Grade::Warn,
                     "nostr",
                     "the daemon's status did not say whether the vault is open".into(),
