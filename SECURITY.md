@@ -234,6 +234,80 @@ your declaration, and stay in your local container storage unless you push
 them somewhere. What these guarantees promise and what a release that ends a
 promise may change is stated in docs/contract.md.
 
+## The nostr key and its custody
+
+The `[nostr]` layer's daemon holds a signing key, and a key that answers
+requests from apps is a different custody problem from the one above:
+this one lives *on the machine it signs for*, and the questions are what
+holds it, what unlock means, and what an asking app can do.
+
+**What holds it: the login keyring, at rest.** The key is stored in the
+Secret Service's login collection — the same store your browser's
+certificates and wifi passwords use — as a NIP-49 `ncryptsec`, a
+passphrase-wrapped form whose passphrase sits beside it. That is stated
+plainly because it is the design: the keyring is the wall, the wrap is
+the stored format, and the wrap adds no second secret today. It exists
+so the upgrade to an independent-passphrase vault is a change of what
+fills the same blob, never a migration of anything.
+
+**The key that signs is not your identity.** The layer generates a
+dedicated remote-signer key and the bunker signs with that. An app
+paired to the bunker learns your nostr identity only if you import one
+and answer a `get_public_key` with it in hand — and the pubkey a relay
+operator watches answer is the bunker's, pseudonymous by construction.
+
+**What unlock means: a gate, not a wall.** The session's PAM unlocks
+the keyring at login, so the daemon reads the key unattended and comes
+up answering; `kuma-nostr lock` drops the key from memory and refuses
+everything until `unlock` re-reads it. The honest sentence: none of this
+protects against an attacker already running as your user inside your
+unlocked session, because nothing in that position can make that
+promise. What the lock is for is everything narrower — a guest at the
+keyboard, a script you did not watch, a moment you want the signer
+quiet.
+
+**What a paired app can do is the policy engine's answer, and the
+default is Ask.** Every consequential method waits on a prompt that
+names the app and shows the exact event before anything is signed; a
+newly paired app can do nothing unattended. Relaxing an app to Basic
+lets its everyday methods sign unattended while sensitive writes
+(profile, follows, relay and mute lists, deletions) and the decrypt
+methods still ask; Trust removes the asks, and is graded Warn by name
+by `kuma doctor`, because a standing grant is the loudest thing in the
+layer. An approved ask can be remembered for an hour at most — the
+ceiling is the verb itself, and nothing in the layer mints a longer
+standing grant. Every decision lands in an activity log whose privacy
+mode is structural: the record carries the method, the event kind, and
+the verdict, never a param.
+
+**What an app holds is a per-app pairing, not the key.** Pairing grants
+the right to *ask*; it never hands out key material. Revoking an app
+forgets its pairing and its remembered answers; the key is untouched.
+
+**What the sandbox bounds.** The daemon runs as a user unit under the
+graphical session with the full systemd sandbox: no new privileges, a
+read-only system and home, one writable directory for its own state, a
+reduced syscall filter, and an empty capability set. The socket it
+answers on is 0600 under the session's runtime directory, and a peer
+whose uid is not the daemon's own is dropped before its first byte is
+read. Reaching the socket grants nothing by itself — asking is what it
+buys, and the policy engine is still the decider.
+
+**What a relay sees: metadata, never content.** Relays carry only
+signing traffic (kinds 24133 and 24135), and every payload is NIP-44
+encrypted end to end, so a relay operator learns which app asked which
+bunker, how often, and how large — no feed, no profile, no signature
+content. The layer bakes a relay on the machine itself, loopback only,
+in memory; declared relays are fallbacks, `wss://` to the world or
+`ws://` to loopback, and a declaration asking for plaintext to the
+public internet is refused at build.
+
+**Losing the key costs the nostr identity, and nothing else on the
+machine.** The bunker's key is unrelated to the image-signing key above,
+to disk encryption, and to the account; deleting the vault (`destroy`)
+is unrecoverable for the nostr identity alone, and the destroy verb is
+a dry run until confirmed for exactly that reason.
+
 ## What runs as root
 
 `init`, `check`, `generate`, and `build` need only rootless podman.

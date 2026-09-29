@@ -10,6 +10,10 @@ never edits a running system.
 **Backup.** A copy of a snapshot in a restic repository somewhere else, made
 on a timer; snapshots survive a mistake, backups survive the disk.
 
+**Bunker.** A remote signer: a daemon holding a nostr key that answers
+signing requests from paired apps. The nostr layer runs one per session;
+see [the nostr layer](concepts.md#the-nostr-layer).
+
 **Base.** The foundation an image is built on. With `system.base` unset,
 kuma composes its own from Fedora's packages rather than starting from
 somebody else's image.
@@ -69,6 +73,16 @@ hibernation, and nothing kuma configures changes it.
 
 **LUKS.** Linux disk encryption; `kuma install` can put the root filesystem
 inside a LUKS container, unlocked by a passphrase at every boot.
+
+**nsec.** A nostr secret key, spelled `nsec1…` when encoded. The thing
+that *is* a nostr identity; everything else about the account is
+derivable from it. The nostr layer holds one in the login keyring and
+signs with it only through the policy engine.
+
+**ncryptsec.** An nsec wrapped by NIP-49 with a passphrase, spelled
+`ncryptsec1…`. The form the vault stores, so the stored format is the
+format an independent-passphrase vault needs, whatever the keyring
+itself proves to be worth.
 
 **Machine state.** What is true of one machine rather than of the system it
 runs — hostname, timezone, which wifi network, the volume. kuma

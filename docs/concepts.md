@@ -15,6 +15,7 @@ and [the glossary](glossary.md) defines the vocabulary.
 - [Why a file you edited by hand keeps winning](#why-a-file-you-edited-by-hand-keeps-winning)
 - [Permissions, and a file kuma does not own](#permissions-and-a-file-kuma-does-not-own)
 - [Backups, and the two things a restore needs](#backups-and-the-two-things-a-restore-needs)
+- [The nostr layer: a bunker, and who may ask it](#the-nostr-layer-a-bunker-and-who-may-ask-it)
   - [Getting a machine back](#getting-a-machine-back)
 - [What your machine trusts](#what-your-machine-trusts)
 - [What a declaration does not reproduce](#what-a-declaration-does-not-reproduce)
@@ -559,6 +560,69 @@ is what carries restic and the restore unit; installing your own image is the
 normal case. And restoring needs **two** things, this file and the credential
 it names, which is the whole practical consequence of the declaration not
 holding secrets.
+
+## The nostr layer: a bunker, and who may ask it
+
+`[nostr]` turns on a bunker: a daemon holding a nostr key that signs for
+apps that ask. A phone's nostr app pairs with it and its signing stops
+requiring the phone to hold anything; local programs reach it over a
+private socket. The key lives in your login keyring, which the session
+unlocks when you log in — the same place and mechanism your browser's
+certificates and wifi passwords already trust.
+
+**The keyring is the wall, and the vault is honest about that.** The
+stored blob is a NIP-49 `ncryptsec` — the key wrapped with a passphrase
+kept beside it — so the stored format is already the format an
+independent-passphrase vault needs. Today the wrap adds nothing the
+keyring does not provide, and the daemon's lock says so plainly: `lock`
+drops the key from memory and refuses to sign, and `unlock` re-reads it.
+Nobody claims the bunker survives an attacker already running as you in
+an unlocked session, because nothing running in your session can make
+that promise.
+
+**A newly paired app can ask for everything, and does.** The policy
+engine's default level is Ask: every consequential method waits on a
+prompt that names the app, the method, and — for a signature — the exact
+event, and nothing signs until a person answers. You relax an app to
+Basic when its everyday requests should stop asking; sensitive writes —
+profile, follows, relay and mute lists, deletions — and every decrypt
+still ask. Trust signs everything unattended, and the doctor grades any
+app holding it Warn by name, because a standing grant is the loudest
+thing in the layer. An approved ask can be remembered for an hour at
+most; that ceiling is the verb's own.
+
+**The key the bunker signs with is not your identity.** Pairing an app
+gives it the bunker's own key — a dedicated remote signer the layer
+generated — so an app learns your npub only by asking, and the pubkey a
+stranger watches answer on a relay is pseudonymous by construction. Your
+imported identity, if you import one, never signs through the bunker.
+
+**What a relay sees is metadata.** The bunker talks to relays; relays
+carry only kind 24133 and 24135 traffic — signing requests and answers —
+and every payload is NIP-44 encrypted end to end, so a relay operator
+sees which app asked which bunker, how often, and how big, and never a
+feed, a profile, or a signature's content. The layer's own default is to
+also run a relay on your machine, loopback only, holding nothing on
+disk: the bunker's first-boot reachability is your machine's own, and
+the relays you declare — `wss://` to the world, `ws://` to loopback
+only — are the fallbacks listed after it. The project runs a public one
+at `wss://relay.nip46.com`; declaring it is an opt-in, and its operator
+lives under exactly the metadata rule above.
+
+**Reaching the socket grants nothing by itself.** The daemon answers on
+a 0600 socket under your session's runtime directory, and a peer that is
+not your uid is dropped before its first byte is read. What the socket
+lets a local program do is ask — the policy engine decides what gets
+signed, the same engine and the same log for the CLI, a local app, and a
+paired phone.
+
+**A disable is reversible, and a toggle never destroys anything.** The
+key lives in your keyring and the pairings in the daemon's state — user
+state no image update touches — so `[nostr] enable = false` ships a
+machine without the layer and leaves your identity where it was;
+re-enabling finds the key and its pairings where they were left.
+SECURITY.md carries the full trust model, as it does for the signing
+key the image itself verifies.
 
 ## What your machine trusts
 
