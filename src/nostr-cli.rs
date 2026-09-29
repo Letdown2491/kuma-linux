@@ -12,8 +12,6 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 
 #[derive(Parser)]
 #[command(name = "kuma-nostr", about = "The kumaOS nostr layer's CLI")]
@@ -110,15 +108,8 @@ fn main() -> Result<()> {
         Command::Revoke { app } => format!(r#"{{"cmd":"revoke","app":{}}}"#, json_string(app)),
     };
 
-    let mut stream = UnixStream::connect(&path)
-        .with_context(|| format!("the daemon is not answering on {}", path.display()))?;
-    stream.write_all(request.as_bytes())?;
-    stream.write_all(b"\n")?;
-
-    let mut answer = String::new();
-    BufReader::new(stream).read_line(&mut answer)?;
-    let value: serde_json::Value = serde_json::from_str(answer.trim())
-        .context("the daemon's answer was not one JSON document")?;
+    let mut client = kuma::nostr::client::connect(Some(&path))?;
+    let value = client.ask(&request)?;
 
     if bunker_verb {
         return render_bunker(&value, bunker_qr);

@@ -3,6 +3,7 @@
 //! pool that carries it.
 
 pub mod bunker;
+pub mod client;
 pub mod keys;
 pub mod policy;
 pub mod pool;

@@ -405,7 +405,7 @@ fn remember_key(app: &PublicKey, method: &NostrConnectMethod) -> String {
     format!("{}:{method:?}", app)
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
 }
 

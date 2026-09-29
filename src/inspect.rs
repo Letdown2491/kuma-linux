@@ -820,6 +820,7 @@ pub fn doctor(json: bool, as_report: bool) -> Result<()> {
         check_shell_config(&mut report);
         check_niri_shadow(&mut report);
         check_backup(&mut report);
+        check_nostr(&mut report);
         check_boot_health(&mut report);
         check_boot_titles(Path::new(crate::bootentries::ENTRIES), Path::new("/"), &mut report);
         check_encryption(&mut report);
@@ -2727,6 +2728,161 @@ fn check_boot_titles(
     }
 }
 
+/// The nostr layer's grades, all informational-or-warn, absence silent:
+/// a machine whose declaration never enabled the layer says nothing
+/// here, because a feature somebody did not choose is not a finding.
+///
+/// The checks are the daemon's own answers read through its socket —
+/// the unit active, the vault open, which relays answer — and two
+/// things doctor is where they stay visible: an app holding Trust, the
+/// standing grant the plan calls the loudest thing in the layer, and
+/// the reachability fact, because an off-tailnet phone showing a dead
+/// bunker needs the why and not just the symptom.
+///
+/// Everything here assumes a socket that might not answer: the doctor
+/// runs as the user in the session, so the check is real, and a
+/// refusal is a Warn with the fix — never a Fail, never a crash.
+fn check_nostr(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
+    let Ok(config) = Config::load(Path::new(BAKED_CONFIG)) else {
+        // check_snapshots already named an unreadable baked declaration.
+        return;
+    };
+    if !config.nostr.enable {
+        return;
+    }
+
+    // The reachability fact, from the declaration rather than the
+    // daemon: the relay set is what the unit runs, and the local relay
+    // the layer bakes is this machine's own — so the fact is about
+    // what the public set is. A ts.net entry says the tailnet is a
+    // first-class caller; an empty list says the bunker is this
+    // machine's and the CLI's alone.
+    report(Grade::Ok, "nostr", reachability_wording(&config.nostr.relays), None);
+
+    // The daemon's own answers, through its socket. Every question is
+    // one ask; the socket not answering is the first finding, and the
+    // rest are not asked.
+    let mut client = match kuma::nostr::client::connect(None) {
+        Ok(client) => client,
+        Err(_) => {
+            let (grade, detail, fix) = match unit_active() {
+                Some(false) => (
+                    Grade::Warn,
+                    "the bunker's daemon is not running".to_string(),
+                    Some(Action::new(
+                        "start",
+                        "systemctl --user start kuma-nostrd.service".to_string(),
+                        "the unit is installed and enabled; it just is not running",
+                    )),
+                ),
+                _ => (
+                    Grade::Warn,
+                    "the bunker's daemon is not answering on its socket".to_string(),
+                    Some(Action::new(
+                        "restart",
+                        "systemctl --user restart kuma-nostrd.service".to_string(),
+                        "a daemon that is running but not answering is one to restart",
+                    )),
+                ),
+            };
+            report(grade, "nostr", detail, fix);
+            return;
+        }
+    };
+
+    // The vault and the gate, from the daemon's own status.
+    match client.status() {
+        Ok(status) => {
+            let vault = &status["vault"];
+            match vault["unlocked"].as_bool() {
+                Some(true) => report(
+                    Grade::Ok,
+                    "nostr",
+                    "the vault is open and the bunker answers".into(),
+                    None,
+                ),
+                Some(false) => report(
+                    Grade::Warn,
+                    "nostr",
+                    "the bunker is locked; it pairs but signs nothing".into(),
+                    Some(Action::new(
+                        "unlock",
+                        "kuma-nostr unlock".to_string(),
+                        "the keyring is open in this session, so unlocking costs nothing",
+                    )),
+                ),
+                None => report(
+                    Grade::Warn,
+                    "nostr",
+                    "the daemon's status did not say whether the vault is open".into(),
+                    None,
+                ),
+            }
+        }
+        Err(e) => report(
+            Grade::Warn,
+            "nostr",
+            format!("the daemon did not answer a status ask: {e}"),
+            None,
+        ),
+    }
+
+    // The loudest thing in the layer, by name.
+    if let Ok(apps) = client.apps() {
+        for trusted in trust_apps(&apps) {
+            report(
+                Grade::Warn,
+                "nostr",
+                format!("{trusted} holds Trust: a standing grant, signing without asking"),
+                Some(Action::new(
+                    "review",
+                    "kuma-nostr apps".to_string(),
+                    "the levels are the panel's toggles and the doctor keeps them visible",
+                )),
+            );
+        }
+    }
+}
+
+/// The reachability fact's wording: what a person with a phone that
+/// cannot reach the bunker needs first — the why, not the symptom.
+/// A ts.net entry in the declared set means the tailnet is a
+/// first-class caller; an empty set means the bunker is this
+/// machine's and the CLI's alone.
+fn reachability_wording(relays: &[String]) -> String {
+    let tailnet = relays.iter().any(|relay| relay.contains(".ts.net"));
+    if relays.is_empty() {
+        "the bunker is local-only: no relays declared, so only this machine can reach it".into()
+    } else if tailnet {
+        "the bunker answers on the tailnet and the declared relays".into()
+    } else {
+        "the bunker answers through the declared public relays".into()
+    }
+}
+
+/// Whether the bunker's user unit is active, as `Some(active)` — `None`
+/// when systemd could not be asked, which the caller renders as its
+/// own warn rather than as a unit verdict.
+fn unit_active() -> Option<bool> {
+    let out = host_output(&["systemctl", "--user", "is-active", "kuma-nostrd.service"]).ok()?;
+    Some(out.trim() == "active")
+}
+
+/// The apps holding Trust, named — the standing grants, by npub. A
+/// non-array answer is no apps rather than an error: the daemon said
+/// nothing, and doctor does not invent findings.
+fn trust_apps(apps: &serde_json::Value) -> Vec<String> {
+    apps["apps"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter(|app| app["level"] == "trust")
+                .filter_map(|app| app["pubkey"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn check_boot_health(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     if !Path::new("/usr/libexec/greenboot/greenboot").exists() {
         report(
@@ -3925,6 +4081,34 @@ mod tests {
         );
         assert_eq!(scan.owned, 0);
         assert!(scan.shadowed.is_empty() && scan.removed.is_empty());
+    }
+
+    #[test]
+    fn the_reachability_wording_says_what_a_dead_phone_needs() {
+        let none: Vec<String> = Vec::new();
+        assert!(reachability_wording(&none).contains("local-only"));
+        assert!(reachability_wording(&["wss://machine.tailnet.ts.net".into()]).contains("tailnet"));
+        assert!(
+            reachability_wording(&["wss://relay.nip46.com".into()]).contains("public relays"),
+            "a public set is named as one"
+        );
+    }
+
+    #[test]
+    fn trust_apps_names_only_the_standing_grants() {
+        let apps: serde_json::Value = serde_json::json!({
+            "apps": [
+                {"pubkey": "npub1basic", "level": "basic"},
+                {"pubkey": "npub1trusted", "level": "trust"},
+                {"pubkey": "npub1asking", "level": "ask"},
+            ]
+        });
+        assert_eq!(trust_apps(&apps), vec!["npub1trusted".to_string()]);
+        assert!(
+            trust_apps(&serde_json::json!({})).is_empty(),
+            "a broken answer invents no findings"
+        );
+        assert!(trust_apps(&serde_json::json!({"apps": []})).is_empty());
     }
 
     #[test]
