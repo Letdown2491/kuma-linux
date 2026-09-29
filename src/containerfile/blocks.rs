@@ -4320,26 +4320,24 @@ local function render()
 end
 
 -- The host's tick: update(), on the interval the plugin sets itself.
+-- runAsync is positional: a shell line (or an argv array) and the
+-- callback that gets the CommandResult — the {cmd=, args=, callback=}
+-- shape this file once carried was a table the host read as an argv of
+-- nothing, so the callback never ran and the host retired the widget
+-- for erroring on every tick.
 function update()
     noctalia.setUpdateInterval(5000)
-    noctalia.runAsync({
-        cmd = "kuma-nostr",
-        args = { "prompts", "--json" },
-        callback = function(out)
-            local doc = noctalia.json.decode(out.stdout or "{}")
-            local queue = doc.prompts or {}
-            local was = pending
-            pending = #queue
-            render()
-            if pending > was then
-                noctalia.notify({
-                    title = "kumaOS nostr",
-                    body = pending .. " ask" .. (pending == 1 and "" or "s")
-                        .. " waiting on you",
-                })
-            end
-        end,
-    })
+    noctalia.runAsync("kuma-nostr prompts --json", function(result)
+        local doc = noctalia.json.decode(result.stdout or "{}")
+        local queue = doc.prompts or {}
+        local was = pending
+        pending = #queue
+        render()
+        if pending > was then
+            noctalia.notify("kumaOS nostr", pending .. " ask"
+                .. (pending == 1 and "" or "s") .. " waiting on you")
+        end
+    end)
 end
 
 function onClick()
@@ -4358,19 +4356,17 @@ end
 local prompts = {}
 
 local function refresh()
-    noctalia.runAsync({
-        cmd = "kuma-nostr",
-        args = { "prompts", "--json" },
-        callback = function(out)
-            local doc = noctalia.json.decode(out.stdout or "{}")
-            prompts = doc.prompts or {}
-            render()
-        end,
-    })
+    noctalia.runAsync("kuma-nostr prompts --json", function(result)
+        local doc = noctalia.json.decode(result.stdout or "{}")
+        prompts = doc.prompts or {}
+        render()
+    end)
 end
 
+-- The args are ids and flags the daemon defines — no shell metachars
+-- ride in them, so the line is safe to join.
 local function cli(args)
-    noctalia.runAsync({ cmd = "kuma-nostr", args = args, callback = refresh })
+    noctalia.runAsync("kuma-nostr " .. table.concat(args, " "), refresh)
 end
 
 local function askRow(p)
