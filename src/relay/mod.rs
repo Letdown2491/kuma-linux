@@ -3,12 +3,18 @@
 //!
 //! The relay is deliberately small — it is not a general Nostr relay
 //! and does not pretend to be one. It carries only signing traffic
-//! (kinds 24133 and 24135), keeps it in memory only, evicts it after
-//! ten minutes, and rate-limits each connection. Everything here is
-//! clock-injectable so the offline suite can test the behaviors the
-//! plan names — kind filter, timestamp window, eviction, rate limits —
-//! without waiting ten real minutes for anything; the binary at the
-//! other end of the module tree is a thin server over these types.
+//! (kinds 24133 and 24135), verifies signatures before holding
+//! anything, keeps it in memory only, evicts it after ten minutes, and
+//! rate-limits by pubkey — the original's unit, not the connection's,
+//! because the pubkey is what an app is and a reconnect must not
+//! refresh a flood's budget. The defaults are the Go original's own
+//! (a one-minute accept window, ten minutes of retention, a hundred
+//! events a minute), and the binary exposes each as a flag so the
+//! interop lane can configure both implementations to one shape and
+//! assert the same behavior. Everything here is clock-injectable so
+//! the offline suite can test those behaviors without waiting ten real
+//! minutes for anything; the binary at the other end of the module
+//! tree is a thin server over these types.
 //!
 //! What a relay never does, and why the signer trusts it: it never
 //! listens for anything but these two kinds, it never touches disk, it
@@ -25,16 +31,45 @@ use nostr::key::PublicKey;
 /// of any other kind is refused at the door.
 pub const CARRIED_KINDS: [u16; 2] = [24133, 24135];
 
-/// How long an event stays in memory after arriving, in seconds. Ten
-/// minutes is the plan's number: enough for a phone on bad network to
+/// How long an event stays in memory after arriving, in minutes. Ten
+/// is the Go original's default: enough for a phone on bad network to
 /// come back and read its answer, short enough that the relay holds
 /// nothing worth subpoenaing.
-pub const EVENT_TTL: u64 = 600;
+pub const EVENT_TTL_MINUTES: u64 = 10;
 
 /// How far an event's `created_at` may sit from the relay's now, in
-/// seconds, before the door refuses it. A replayed request is stale by
-/// definition; the window bounds how stale.
-pub const TIMESTAMP_WINDOW: u64 = 600;
+/// minutes, before the door refuses it. One minute each way is the Go
+/// original's default, and the comparison is strict at the edges the
+/// way `IsInTimeWindow` is: a timestamp exactly `window` away is
+/// outside.
+pub const ACCEPT_WINDOW_MINUTES: u64 = 1;
+
+/// The rate limit's default, per pubkey per minute — the Go original's
+/// number.
+pub const RATE_LIMIT_PER_MINUTE: usize = 100;
+
+/// The largest `limit` a subscription may ask for — the Go original's
+/// NIP-11 MaxLimit; larger asks are clamped.
+pub const MAX_LIMIT: usize = 100;
+
+/// The door's config: the three numbers an operator or the interop
+/// lane can set, and the defaults the original carries.
+#[derive(Debug, Clone, Copy)]
+pub struct RelayConfig {
+    pub ttl_secs: u64,
+    pub accept_window_secs: u64,
+    pub rate_limit: usize,
+}
+
+impl Default for RelayConfig {
+    fn default() -> Self {
+        Self {
+            ttl_secs: EVENT_TTL_MINUTES * 60,
+            accept_window_secs: ACCEPT_WINDOW_MINUTES * 60,
+            rate_limit: RATE_LIMIT_PER_MINUTE,
+        }
+    }
+}
 
 /// Why the door refused an event. `Duplicate` is not a refusal — it is
 /// an acceptance that remembers — and the OK reply's boolean says so.
@@ -44,6 +79,9 @@ pub enum Rejected {
     Kind(u16),
     /// `created_at` outside the window in either direction.
     Timestamp,
+    /// The signature does not verify, or the id does not match the
+    /// content — khatru refuses both before storing, and so does this.
+    Signature,
     /// The event is already held; nothing was added.
     Duplicate,
 }
@@ -66,6 +104,8 @@ pub struct Stored {
 pub struct RelayFilter {
     pub kinds: Vec<u16>,
     pub p: Vec<PublicKey>,
+    pub authors: Vec<PublicKey>,
+    pub ids: Vec<String>,
     pub since: Option<u64>,
     pub until: Option<u64>,
     pub limit: Option<usize>,
@@ -91,10 +131,42 @@ impl RelayFilter {
                     .collect()
             })
             .unwrap_or_default();
+        let authors = value
+            .get("authors")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .filter_map(|s| PublicKey::parse(s).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let ids = value
+            .get("ids")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
         let since = value.get("since").and_then(|v| v.as_u64());
         let until = value.get("until").and_then(|v| v.as_u64());
         let limit = value.get("limit").and_then(|v| v.as_u64()).map(|l| l as usize);
-        Self { kinds, p, since, until, limit }
+        Self { kinds, p, authors, ids, since, until, limit }
+    }
+
+    /// The REQ-side door, and the Go original's `rejectFilter` spelled
+    /// the same way: a filter that could match NIP-46 traffic — an open
+    /// kinds list counts, because what this relay stores IS NIP-46 —
+    /// must be scoped by authors, #p, or ids, so nobody harvests a
+    /// firehose of everyone's signing traffic. A filter that matches
+    /// nothing the relay stores is allowed and answers empty: standard
+    /// relay behavior, and what lets relay monitors measure latency.
+    pub fn reject_reason(&self) -> Option<&'static str> {
+        let matches_nip46 =
+            self.kinds.is_empty() || self.kinds.iter().any(|k| *k == 24133 || *k == 24135);
+        let scoped = !self.authors.is_empty() || !self.p.is_empty() || !self.ids.is_empty();
+        if matches_nip46 && !scoped {
+            return Some("blocked: NIP-46 queries must be scoped by authors, #p, or ids");
+        }
+        None
     }
 
     /// Whether an event answers this subscription.
@@ -124,26 +196,52 @@ impl RelayFilter {
 
 /// The in-memory event store: what the relay is, minus the sockets.
 /// The lock is the caller's; this type is the memory and the rules.
-#[derive(Default)]
 pub struct EventStore {
     events: Vec<Stored>,
+    config: RelayConfig,
+}
+
+impl Default for EventStore {
+    fn default() -> Self {
+        Self::new(RelayConfig::default())
+    }
 }
 
 impl EventStore {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(config: RelayConfig) -> Self {
+        Self { events: Vec::new(), config }
     }
 
-    /// The door: dedup, kind filter, timestamp window, then hold. The
-    /// `now` is the relay's own clock, passed so the suite can wind it.
-    pub fn insert(&mut self, event: Event, now: u64) -> Result<bool, Rejected> {
+    /// The door's first questions — signature, kind, timestamp window
+    /// — asked before the rate limiter spends anything, the same order
+    /// the Go pipeline answers in: a stale event does not consume a
+    /// flood's budget, and an unsigned one does not reach the window.
+    /// The `now` is the relay's own clock, passed so the suite can
+    /// wind it.
+    pub fn admission(&self, event: &Event, now: u64) -> Result<(), Rejected> {
+        if event.verify().is_err() {
+            return Err(Rejected::Signature);
+        }
         if !CARRIED_KINDS.contains(&event.kind.as_u16()) {
             return Err(Rejected::Kind(event.kind.as_u16()));
         }
+        // The window is strict at the edges, the way IsInTimeWindow is:
+        // a timestamp exactly one window away is outside it.
         let created = event.created_at.as_secs();
-        if created.abs_diff(now) > TIMESTAMP_WINDOW {
+        let window = self.config.accept_window_secs;
+        let inside = created > now.saturating_sub(window) && created < now + window;
+        if !inside {
             return Err(Rejected::Timestamp);
         }
+        Ok(())
+    }
+
+    /// Hold the event: dedup, then store. The admission questions have
+    /// already been asked; they are cheap to re-ask and this entry
+    /// point stays a complete door for callers that have no separate
+    /// rate gate between the two beats.
+    pub fn insert(&mut self, event: Event, now: u64) -> Result<bool, Rejected> {
+        self.admission(&event, now)?;
         if self.events.iter().any(|s| s.event.id == event.id) {
             return Err(Rejected::Duplicate);
         }
@@ -154,10 +252,14 @@ impl EventStore {
     /// Drop everything older than the TTL. Called on the eviction
     /// beat; also cheap enough to call before every query.
     pub fn evict(&mut self, now: u64) {
-        self.events.retain(|stored| now.saturating_sub(stored.received_at) < EVENT_TTL);
+        let ttl = self.config.ttl_secs;
+        self.events.retain(|stored| now.saturating_sub(stored.received_at) < ttl);
     }
 
-    /// The events matching a filter, oldest first, newest `limit`.
+    /// The events matching a filter, newest first, newest `limit` —
+    /// the Go store's replay order, because a reconnecting client
+    /// wants the freshest answer first and a limit that kept the
+    /// oldest would keep the stalest.
     pub fn query(&self, filter: &RelayFilter) -> Vec<Event> {
         let mut matched: Vec<Event> = self
             .events
@@ -165,10 +267,10 @@ impl EventStore {
             .filter(|stored| filter.matches(&stored.event))
             .map(|stored| stored.event.clone())
             .collect();
-        if let Some(limit) = filter.limit {
-            if matched.len() > limit {
-                matched = matched.split_off(matched.len() - limit);
-            }
+        matched.sort_by_key(|event| std::cmp::Reverse(event.created_at.as_secs()));
+        let limit = filter.limit.unwrap_or(MAX_LIMIT).min(MAX_LIMIT);
+        if matched.len() > limit {
+            matched.truncate(limit);
         }
         matched
     }
@@ -240,7 +342,7 @@ mod tests {
     }
 
     fn held(event: &Event, now: u64) -> Result<bool, Rejected> {
-        let mut store = EventStore::new();
+        let mut store = EventStore::new(RelayConfig::default());
         store.insert(event.clone(), now)
     }
 
@@ -264,21 +366,53 @@ mod tests {
     #[test]
     fn the_timestamp_window_refuses_stale_and_future_alike() {
         let now = Timestamp::now().as_secs();
-        // Eleven minutes old: outside the window.
-        assert_eq!(held(&request_event(24133, 11), now).unwrap_err(), Rejected::Timestamp);
-        // Nine minutes old: inside it.
-        assert!(held(&request_event(24133, 9), now).is_ok());
+        // Two minutes old: outside the one-minute default window.
+        assert_eq!(held(&request_event(24133, 2), now).unwrap_err(), Rejected::Timestamp);
+        // Thirty seconds old — i.e. fresh — is inside it.
+        assert!(held(&request_event(24133, 0), now).is_ok());
         // The future beyond the window is the same refusal — a replay
         // from a clock-lying sender.
         assert_eq!(
-            held(&request_event(24133, 0), now + TIMESTAMP_WINDOW + 1).unwrap_err(),
+            held(&request_event(24133, 0), now + ACCEPT_WINDOW_MINUTES * 60 + 1).unwrap_err(),
             Rejected::Timestamp
         );
+        // The edge is strict: exactly one window away is outside, the
+        // way IsInTimeWindow's Before/After are strict.
+        let mut store =
+            EventStore::new(RelayConfig { accept_window_secs: 60, ..RelayConfig::default() });
+        let edge = EventBuilder::new(Kind::from_u16(24133), "payload")
+            .tag(Tag::public_key(Keys::generate().public_key()))
+            .custom_created_at(Timestamp::from(now - 60))
+            .finalize(&Keys::generate())
+            .unwrap();
+        assert_eq!(store.insert(edge, now).unwrap_err(), Rejected::Timestamp);
+    }
+
+    #[test]
+    fn a_forged_signature_is_refused_before_anything_else() {
+        // A real event with its content tampered after signing: the id
+        // no longer matches the content, and the door's first question
+        // is the signature's.
+        let mut event = request_event(24133, 0);
+        event.content = "tampered".to_string();
+        let now = Timestamp::now().as_secs();
+        assert_eq!(held(&event, now).unwrap_err(), Rejected::Signature);
+    }
+
+    #[test]
+    fn the_window_and_ttl_carry_the_config_the_lane_sets() {
+        // The interop lane configures both implementations to one
+        // shape; the store honors it.
+        let mut store =
+            EventStore::new(RelayConfig { accept_window_secs: 300, ..RelayConfig::default() });
+        let now = Timestamp::now().as_secs();
+        // Four minutes old: outside one minute, inside five.
+        assert!(store.insert(request_event(24133, 4), now).is_ok());
     }
 
     #[test]
     fn ttl_eviction_forgets_exactly_what_expired() {
-        let mut store = EventStore::new();
+        let mut store = EventStore::new(RelayConfig::default());
         let now = Timestamp::now().as_secs();
         store.insert(request_event(24133, 0), now).unwrap();
         store.insert(request_event(24133, 0), now + 1).unwrap();
@@ -292,7 +426,7 @@ mod tests {
 
     #[test]
     fn a_duplicate_is_recognized_and_not_held_twice() {
-        let mut store = EventStore::new();
+        let mut store = EventStore::new(RelayConfig::default());
         let event = request_event(24133, 0);
         let now = Timestamp::now().as_secs();
         assert!(store.insert(event.clone(), now).unwrap());
@@ -302,7 +436,7 @@ mod tests {
 
     #[test]
     fn query_matches_kinds_and_addresses_and_bounds() {
-        let mut store = EventStore::new();
+        let mut store = EventStore::new(RelayConfig::default());
         let now = Timestamp::now().as_secs();
         let bunker = Keys::generate().public_key();
         let other = Keys::generate().public_key();
@@ -323,6 +457,8 @@ mod tests {
         let filter = RelayFilter {
             kinds: vec![24133],
             p: vec![bunker],
+            authors: vec![],
+            ids: vec![],
             since: None,
             until: None,
             limit: None,
@@ -331,11 +467,25 @@ mod tests {
         assert_eq!(matched.len(), 1);
         assert_eq!(matched[0].id, addressed.id);
         assert!(matched[0].tags.public_keys().any(|tag| tag == bunker));
+
+        // The replay order is newest-first, the Go store's own: a
+        // reconnecting client wants the freshest answer first. The
+        // created_at is set explicitly because two events in one test
+        // second tie otherwise, and the order of a tie is nobody's.
+        let newer = EventBuilder::new(Kind::from_u16(24133), "newer")
+            .tag(Tag::public_key(bunker))
+            .custom_created_at(Timestamp::from(now + 10))
+            .finalize(&Keys::generate())
+            .unwrap();
+        store.insert(newer.clone(), now + 5).unwrap();
+        let matched = store.query(&filter);
+        assert_eq!(matched[0].id, newer.id, "newest first");
+        assert_eq!(matched.len(), 2);
     }
 
     #[test]
     fn the_rate_limiter_admits_a_burst_and_refuses_a_flood() {
-        let mut limiter = RateLimiter::new();
+        let mut limiter = RateLimiter::with_capacity(30);
         let now = Timestamp::now().as_secs();
         for _ in 0..30 {
             assert!(limiter.admit(now), "the first thirty of a minute pass");

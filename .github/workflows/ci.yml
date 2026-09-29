@@ -135,6 +135,56 @@ jobs:
         with:
           args: -color
 
+  interop:
+    # The plan's equivalence proof, green in CI: the same scripted
+    # NIP-46 client runs against both relays — the Go original at a
+    # pinned commit and this tree's Rust port — and the same behaviors
+    # must answer on both wires: the OK replies, the forwarding, the
+    # refusals with their rules named, the flood refused at the same
+    # budget, and the eviction emptying a one-minute store. Both runs
+    # configure the same knobs; the lane asserts structure, because a
+    # refusal's wording is an implementation's own voice.
+    #
+    # The Go relay's source is pinned by commit SHA — the same argument
+    # the action pins carry: a moving main silently decides what this
+    # gate means. Dependabot cannot see a raw git clone; the pin is
+    # bumped by hand, and the diff is the review.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      - name: build the Go relay at its pinned commit
+        run: |
+          set -euo pipefail
+          git clone --quiet https://github.com/Letdown2491/nip46-relay /tmp/go-relay
+          git -C /tmp/go-relay checkout --quiet 95b740a77bd279988913634b4605ecc3f68eab9d
+          cd /tmp/go-relay
+          go build -trimpath -ldflags="-s -w" -o /tmp/go-relay/nip46-relay .
+      - name: build the Rust port
+        run: cargo build --locked --bin nip46-relay
+      - name: the lane against the Go relay
+        run: |
+          set -euo pipefail
+          RELAY_PORT=":3339" \
+            KEEP_IN_MINUTES=1 ACCEPT_WINDOW_IN_MINUTES=1 RATE_LIMIT_PER_MINUTE=5 \
+            /tmp/go-relay/nip46-relay &
+          sleep 2
+          NIP46_RELAY_URL=ws://127.0.0.1:3339 \
+            NIP46_RATE_LIMIT=5 NIP46_EVICTION_WAIT_SECS=65 \
+            cargo test --locked --test interop -- --nocapture
+      - name: the lane against the Rust port
+        run: |
+          set -euo pipefail
+          ./target/debug/nip46-relay --bind 127.0.0.1:7778 \
+            --keep-minutes 1 --accept-window-minutes 1 --rate-limit 5 &
+          sleep 2
+          NIP46_RELAY_URL=ws://127.0.0.1:7778 \
+            NIP46_RATE_LIMIT=5 NIP46_EVICTION_WAIT_SECS=65 \
+            cargo test --locked --test interop -- --nocapture
+
   # The image stage: actually build every committed declaration with
   # podman and inspect the result.
   #

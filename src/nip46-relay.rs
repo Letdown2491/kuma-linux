@@ -51,6 +51,18 @@ struct Args {
     /// bunker behind it expects; widening it is a metadata decision.
     #[arg(long, default_value = "127.0.0.1:7777")]
     bind: String,
+    /// How many minutes an event stays in memory. The Go original's
+    /// default and this port's agree: ten.
+    #[arg(long, default_value_t = kuma::relay::EVENT_TTL_MINUTES)]
+    keep_minutes: u64,
+    /// How many minutes each way an event's created_at may sit from
+    /// now. The Go original's default and this port's agree: one.
+    #[arg(long, default_value_t = kuma::relay::ACCEPT_WINDOW_MINUTES)]
+    accept_window_minutes: u64,
+    /// Events per pubkey per minute. The Go original's default and
+    /// this port's agree: a hundred.
+    #[arg(long, default_value_t = kuma::relay::RATE_LIMIT_PER_MINUTE)]
+    rate_limit: usize,
 }
 
 fn main() -> Result<()> {
@@ -59,7 +71,11 @@ fn main() -> Result<()> {
         TcpListener::bind(&args.bind).with_context(|| format!("binding {}", args.bind))?;
     eprintln!("nip46-relay: carrying kinds 24133 and 24135 on {}", args.bind);
 
-    let store = Arc::new(Mutex::new(EventStore::new()));
+    let store = Arc::new(Mutex::new(EventStore::new(kuma::relay::RelayConfig {
+        ttl_secs: args.keep_minutes * 60,
+        accept_window_secs: args.accept_window_minutes * 60,
+        rate_limit: args.rate_limit,
+    })));
     // Each connection's outbound queue and subscription set, found by
     // its id; the counter hands the ids out.
     let outbound: Outbound = Arc::new(Mutex::new(HashMap::new()));
@@ -99,7 +115,11 @@ fn one_connection(
     socket.get_mut().set_read_timeout(Some(BEAT))?;
     let (tx, rx): (Sender<Message>, Receiver<Message>) = channel();
     outbound.lock().expect("the outbound map").insert(id, tx.clone());
-    let mut limiter = RateLimiter::new();
+    // The budget is the pubkey's, not the connection's: the same
+    // semantics as the Go original, so a reconnect does not refresh a
+    // flood's budget and two apps sharing a socket do not share one.
+    let limiters: Arc<Mutex<HashMap<nostr::key::PublicKey, RateLimiter>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let mut eviction_beat = 0u64;
 
     let result = serve_connection(
@@ -108,8 +128,8 @@ fn one_connection(
         &store,
         &outbound,
         &subscriptions,
+        &limiters,
         &rx,
-        &mut limiter,
         &mut eviction_beat,
     );
 
@@ -127,8 +147,8 @@ fn serve_connection(
     store: &Arc<Mutex<EventStore>>,
     outbound: &Outbound,
     subscriptions: &Subscriptions,
+    limiters: &Arc<Mutex<HashMap<nostr::key::PublicKey, RateLimiter>>>,
     rx: &Receiver<Message>,
-    limiter: &mut RateLimiter,
     eviction_beat: &mut u64,
 ) -> Result<()> {
     loop {
@@ -194,25 +214,57 @@ fn serve_connection(
                 let event_id = event.id.to_string();
                 let verdict = {
                     let now = now_secs();
-                    if !limiter.admit(now) {
-                        Err("rate-limited: signing traffic is single digits a minute".to_string())
+                    // The door's order is the Go pipeline's: the
+                    // admission questions (signature, kind, window)
+                    // first, the pubkey's budget second — a stale event
+                    // does not consume a flood's budget.
+                    let admission = store
+                        .lock()
+                        .expect("the event store")
+                        .admission(&event, now)
+                        .map_err(|rejected| match rejected {
+                            Rejected::Kind(kind) => {
+                                format!("this relay carries only kinds 24133 and 24135, not {kind}")
+                            }
+                            Rejected::Timestamp => {
+                                "the event is outside the timestamp window".to_string()
+                            }
+                            Rejected::Signature => {
+                                "invalid: the signature does not verify".to_string()
+                            }
+                            Rejected::Duplicate => String::new(),
+                        });
+                    if let Err(reason) = admission {
+                        Err(reason)
                     } else {
-                        store
-                            .lock()
-                            .expect("the event store")
-                            .insert(event.clone(), now)
-                            .map(|_fresh| ())
-                            .map_err(|rejected| match rejected {
-                                Rejected::Kind(kind) => {
-                                    format!(
+                        // The budget is the pubkey's, not the
+                        // connection's: a reconnect does not refresh a
+                        // flood's budget.
+                        let mut limiters = limiters.lock().expect("the rate limiter map");
+                        let limiter = limiters.entry(event.pubkey).or_default();
+                        if !limiter.admit(now) {
+                            Err("rate-limited: too many events, slow down".to_string())
+                        } else {
+                            store
+                                .lock()
+                                .expect("the event store")
+                                .insert(event.clone(), now)
+                                .map(|_fresh| ())
+                                .map_err(|rejected| match rejected {
+                                    Rejected::Kind(kind) => {
+                                        format!(
                                         "this relay carries only kinds 24133 and 24135, not {kind}"
                                     )
-                                }
-                                Rejected::Timestamp => {
-                                    "the event is outside the timestamp window".to_string()
-                                }
-                                Rejected::Duplicate => String::new(),
-                            })
+                                    }
+                                    Rejected::Timestamp => {
+                                        "the event is outside the timestamp window".to_string()
+                                    }
+                                    Rejected::Signature => {
+                                        "invalid: the signature does not verify".to_string()
+                                    }
+                                    Rejected::Duplicate => String::new(),
+                                })
+                        }
                     }
                 };
                 match verdict {
@@ -255,6 +307,11 @@ fn serve_connection(
                         serde_json::json!(["EVENT", subscription_id, event]).to_string(),
                     ))?;
                 }
+                // The frame that ends the catch-up: a client waits on
+                // it to know the replay is over and live frames begin.
+                socket.send(Message::text(
+                    serde_json::json!(["EOSE", subscription_id]).to_string(),
+                ))?;
                 subscriptions
                     .lock()
                     .expect("the subscription map")
@@ -309,6 +366,7 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kuma::relay::RelayConfig;
     use nostr::event::{EventBuilder, FinalizeEvent, Kind, Tag};
     use nostr::key::Keys;
 
@@ -334,9 +392,10 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let maps = (
-            Arc::new(Mutex::new(EventStore::new())),
+            Arc::new(Mutex::new(EventStore::new(RelayConfig::default()))),
             Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::<nostr::key::PublicKey, RateLimiter>::new())),
         );
         // Two connections before the test drives them: the bunker's
         // stand-in and the app's. The listener is shared across the
@@ -421,9 +480,10 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let maps = (
-            Arc::new(Mutex::new(EventStore::new())),
+            Arc::new(Mutex::new(EventStore::new(RelayConfig::default()))),
             Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::<nostr::key::PublicKey, RateLimiter>::new())),
         );
         std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
