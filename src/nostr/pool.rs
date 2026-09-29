@@ -185,7 +185,15 @@ fn connect_and_serve(
 
         match socket.read() {
             Ok(Message::Text(text)) => {
-                for event in events_from_relay_message(&text, SUBSCRIPTION_ID) {
+                eprintln!("kuma-nostrd: frame: {}", &text.chars().take(120).collect::<String>());
+                let events = events_from_relay_message(&text, SUBSCRIPTION_ID);
+                if !events.is_empty() {
+                    // One line per bunker-addressed event: when an app's
+                    // ask never becomes a prompt, this is the line that
+                    // says whether the relay ever spoke.
+                    eprintln!("kuma-nostrd: relayed {} event(s) from the wire", events.len());
+                }
+                for event in events {
                     let _ = inbound.send(event);
                 }
             }
@@ -291,7 +299,7 @@ mod tests {
 
         // The bunker's answer goes out through the pool and lands in
         // the stub's received pile as an EVENT frame.
-        let answer = EventBuilder::new(Kind::from_u16(24135), "answer-content")
+        let answer = EventBuilder::new(Kind::from_u16(24133), "answer-content")
             .tag(Tag::public_key(app.public_key()))
             .finalize(&signer)
             .unwrap();

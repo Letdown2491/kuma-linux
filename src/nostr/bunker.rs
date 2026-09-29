@@ -2,7 +2,7 @@
 //!
 //! What lives here is the part of NIP-46 that is protocol rather than
 //! policy: decrypting a kind 24133 request, dispatching its method,
-//! wrapping the answer as a kind 24135 response encrypted back to the
+//! wrapping the answer as a kind 24133 response encrypted back to the
 //! asking app. What does *not* live here is the decision of whether a
 //! consequential method runs — that is the [`Gate`]'s job, and the
 //! policy engine implements it.
@@ -43,6 +43,28 @@ pub struct Session {
     /// flow's secret is echoed back as the connect result, and the
     /// policy engine will compare it against what the pairing URI said.
     pub secret: Option<String>,
+}
+
+/// The client metadata a connect may carry (NIP-46's optional fourth
+/// param): the app's own name and image, unauthenticated — the panel's
+/// display hint, never an authorization input.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClientMeta {
+    pub name: Option<String>,
+    pub image: Option<String>,
+}
+
+impl ClientMeta {
+    /// Lenient by design: metadata is a courtesy, and a malformed or
+    /// absent blob pairs the same as an honest one.
+    fn parse(raw: Option<&String>) -> Option<Self> {
+        let raw = raw?;
+        let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+        Some(Self {
+            name: value["name"].as_str().map(str::to_string),
+            image: value["image"].as_str().map(str::to_string),
+        })
+    }
 }
 
 /// The decision a gate hands back for a consequential method. The
@@ -97,6 +119,14 @@ impl Gate for DenyAll {
 pub enum Plan {
     Ignore,
     Answer(Event),
+    /// A connect that verified: the ack rides in `answer`, and the
+    /// daemon records the pairing (with the app's own metadata, when
+    /// it claimed any) on its side of the wall.
+    Paired {
+        answer: Event,
+        app: PublicKey,
+        metadata: Option<ClientMeta>,
+    },
     Ask {
         /// The full request event: `execute` re-reads the app's pubkey
         /// and the correlation id from it.
@@ -178,6 +208,15 @@ impl Bunker {
                     (Some(_), None) => true,
                     (None, _) => false,
                 };
+                eprintln!(
+                    "kuma-nostrd: connect from {}: {}",
+                    event.pubkey,
+                    if refused {
+                        "refused, the connect did not echo the pairing nonce"
+                    } else {
+                        "paired"
+                    }
+                );
                 if refused {
                     return match self.response_event(
                         event,
@@ -191,7 +230,23 @@ impl Bunker {
                     };
                 }
                 self.sessions.entry(event.pubkey).or_insert(Session { secret: secret.clone() });
-                secret.map_or(ResponseResult::Ack, ResponseResult::ConnectSecret)
+                // The answer is ack, whatever the app echoed: the nonce
+                // was the bunker URI's own, the verify above is the
+                // proof of readership, and the result's job is the
+                // one word every client checks. (The echo-back-the-
+                // secret shape belongs to the nostrconnect:// flow,
+                // where the app minted the secret and the signer proves
+                // it read that URI instead.)
+                let answer = self.response_event(
+                    event,
+                    &id,
+                    NostrConnectResponse::with_result(ResponseResult::Ack),
+                );
+                let metadata = ClientMeta::parse(params.get(3));
+                return match answer {
+                    Some(answer) => Plan::Paired { answer, app: event.pubkey, metadata },
+                    None => Plan::Ignore,
+                };
             }
             NostrConnectMethod::Ping => ResponseResult::Pong,
             method => {
@@ -269,7 +324,11 @@ impl Bunker {
         }
     }
 
-    /// Wrap an answer: kind 24135, encrypted back to the app that asked,
+    /// Wrap an answer: kind 24133, encrypted back to the app that asked,
+    /// per NIP-46's own "Response Events `kind:24133`" — the request
+    /// and the answer share the kind, and a response on 24135 (the old
+    /// revision this crate's types grew up with) is a letter mailed to
+    /// a box nobody checks: every current client listens on 24133.
     /// p-tagged to them. The e-tag back to the request event is not
     /// written: the id inside the payload is the correlation, and a
     /// second one invites disagreement about which one counts.
@@ -281,7 +340,7 @@ impl Bunker {
     ) -> Option<Event> {
         let message = NostrConnectMessage::response(request_id, response);
         let content = self.keys.nip44_encrypt(&request.pubkey, &message.as_json()).ok()?;
-        EventBuilder::new(Kind::from_u16(24135), content)
+        EventBuilder::new(Kind::from_u16(24133), content)
             .tag(Tag::public_key(request.pubkey))
             .finalize(&self.keys)
             .ok()
@@ -453,7 +512,7 @@ mod tests {
             other => panic!("a ping is protocol, answered in the plan: {other:?}"),
         };
 
-        assert_eq!(response.kind, Kind::from_u16(24135));
+        assert_eq!(response.kind, Kind::from_u16(24133));
         assert_eq!(response.pubkey, bunker_pubkey);
         assert_eq!(response.tags.public_keys().collect::<Vec<_>>(), vec![app.pubkey()]);
         match app.decrypt_response(&response) {
@@ -473,7 +532,7 @@ mod tests {
         let bunker_pubkey = bunker.public_key();
 
         match bunker.plan(&app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[])) {
-            Plan::Answer(_) => {}
+            Plan::Paired { .. } => {}
             other => panic!("connect is protocol: {other:?}"),
         }
         assert!(bunker.is_paired(&app.pubkey()));
@@ -534,7 +593,7 @@ mod tests {
             &[bunker_pubkey.to_string().as_str(), "the-nonce"],
         );
         match bunker.plan(&request) {
-            Plan::Answer(_) => {}
+            Plan::Paired { .. } => {}
             other => panic!("the nonce's echo pairs: {other:?}"),
         }
         assert!(bunker.is_paired(&app.pubkey()));
@@ -553,7 +612,7 @@ mod tests {
         let bunker_pubkey = bunker.public_key();
 
         match bunker.plan(&app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[])) {
-            Plan::Answer(_) => {}
+            Plan::Paired { .. } => {}
             other => panic!("connect is protocol: {other:?}"),
         }
         assert!(bunker.is_paired(&app.pubkey()));

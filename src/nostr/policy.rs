@@ -77,11 +77,20 @@ fn is_sensitive(method: &NostrConnectMethod, params: &[String]) -> bool {
 /// form is what persists; the daemon restarts to find its pairings
 /// intact, because re-pairing every app after every reboot is how a
 /// person stops trusting the feature.
+///
+/// `name` and `image` are the client metadata the connect may carry
+/// (NIP-46's optional fourth param) — the app's own claim about
+/// itself, unauthenticated by the protocol's own word, so the panel
+/// renders it as a display hint and nothing authorizes by it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Paired {
     pub pubkey: String,
     pub level: Level,
     pub paired_at: u64,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub image: Option<String>,
 }
 
 /// What `prompts` shows: the ask, enough to decide on. `summary` is
@@ -183,14 +192,29 @@ impl Engine {
 
     /// Pair an app, or find it already paired. The default level is
     /// Ask, and no path changes a level except the panel's toggle —
-    /// pairing is not a decision the daemon makes for anyone.
-    fn pair(&self, app: &PublicKey) {
+    /// pairing is not a decision the daemon makes for anyone. The
+    /// metadata (the app's name and image, its own unverified claim)
+    /// lands on the first pairing and fills in on reconnects: an app
+    /// that ships a name later gets the better label.
+    pub fn pair_with_metadata(&self, app: &PublicKey, name: Option<String>, image: Option<String>) {
         let mut inner = self.inner.lock().expect("the policy lock");
         let hex = app.to_string();
-        if inner.apps.iter().any(|p| p.pubkey == hex) {
+        if let Some(paired) = inner.apps.iter_mut().find(|p| p.pubkey == hex) {
+            if paired.name.is_none() {
+                paired.name = name;
+            }
+            if paired.image.is_none() {
+                paired.image = image;
+            }
             return;
         }
-        inner.apps.push(Paired { pubkey: hex.clone(), level: Level::Ask, paired_at: unix_now() });
+        inner.apps.push(Paired {
+            pubkey: hex.clone(),
+            level: Level::Ask,
+            paired_at: unix_now(),
+            name,
+            image,
+        });
         inner.log.push(LogEntry {
             at: unix_now(),
             app: hex,
@@ -199,6 +223,10 @@ impl Engine {
             verdict: "paired at ask".into(),
         });
         self.persist_apps(&inner);
+    }
+
+    fn pair(&self, app: &PublicKey) {
+        self.pair_with_metadata(app, None, None);
     }
 
     /// The paired apps, for the `apps` verb.

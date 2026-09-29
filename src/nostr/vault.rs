@@ -272,6 +272,22 @@ impl<S: SecretStore> Vault<S> {
         self.key = None;
     }
 
+    /// Mint a fresh pairing nonce and persist it. The key is untouched
+    /// — rotation is a front-door surgery, not a re-provisioning — and
+    /// every URI printed before this call points at a nonce the bunker
+    /// no longer answers.
+    pub async fn rotate_secret(&mut self) -> Result<String> {
+        let bytes =
+            self.store.load().await?.ok_or_else(|| anyhow!("no vault exists in this store"))?;
+        let mut blob = VaultBlob::decode(&bytes)?;
+        let fresh = generate_wrap()?;
+        blob.secret = Some(fresh.clone());
+        blob.v = BLOB_VERSION;
+        self.store.save(&serde_json::to_vec(&blob).context("serializing the vault blob")?).await?;
+        self.secret = Some(fresh.clone());
+        Ok(fresh)
+    }
+
     /// Forget the vault: the stored blob and the in-memory key both go.
     /// The key is unrecoverable afterwards, which is the contract; the
     /// pairing nonce goes with it, because a URI that outlived its

@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use super::bunker::Bunker;
 use super::keys;
+use super::policy::Level;
 use super::pool::{RelayPool, RelayState, RelayStatus};
 use super::vault::Vault;
 
@@ -69,6 +70,18 @@ pub enum Request {
     Revoke {
         app: String,
     },
+    /// Set a paired app's policy level: ask, basic, or trust. Trust is
+    /// the indefinite approval — every method signs unattended — and
+    /// the panel is the only road that offers it.
+    Level {
+        app: String,
+        level: Level,
+    },
+    /// Mint a fresh pairing nonce and re-arm. Every URI printed before
+    /// this verb dies with it: stored copies point at a nonce the
+    /// bunker no longer answers, and the apps holding them must be
+    /// given the new URI. Pairings survive; the front door changes.
+    Rotate,
 }
 
 #[derive(Debug, Deserialize)]
@@ -117,6 +130,8 @@ pub enum OkResponse {
     Deny { ok: bool },
     Apps { ok: bool, apps: Vec<super::policy::Paired> },
     Revoke { ok: bool, removed: bool },
+    Level { ok: bool },
+    Rotate { ok: bool, uri: String },
 }
 
 /// What `status` says, and what `doctor` will grade through it later.
@@ -308,6 +323,14 @@ impl<S: super::vault::SecretStore> Daemon<S> {
             Request::Revoke { app } => {
                 Response::Ok(OkResponse::Revoke { ok: true, removed: self.engine.revoke(&app) })
             }
+            Request::Level { app, level } => match self.engine.set_level(&app, level) {
+                Ok(()) => Response::Ok(OkResponse::Level { ok: true }),
+                Err(e) => err_response(anyhow!("{e}")),
+            },
+            Request::Rotate => match self.rotate().await {
+                Ok(uri) => Response::Ok(OkResponse::Rotate { ok: true, uri }),
+                Err(e) => err_response(e),
+            },
         }
     }
 
@@ -387,6 +410,27 @@ impl<S: super::vault::SecretStore> Daemon<S> {
         ));
         self.bunker = Some(Bunker::new(keys, self.vault.secret().map(str::to_string)));
         public_key_bech32(&pubkey)
+    }
+
+    /// Mint a fresh pairing nonce, persist it, and re-arm the bunker
+    /// with it. The key is the vault's own — rotation is a URI surgery,
+    /// not a re-provisioning — and the old URI dies at the moment the
+    /// new one exists.
+    async fn rotate(&mut self) -> anyhow::Result<String> {
+        let key = self
+            .vault
+            .key()
+            .cloned()
+            .ok_or_else(|| anyhow!("the bunker is locked; unlock before rotating"))?;
+        let secret = self.vault.rotate_secret().await?;
+        let pubkey = self.arm_bunker(&key);
+        let _ = pubkey;
+        let npub = self
+            .vault
+            .stored_pubkey()
+            .await?
+            .ok_or_else(|| anyhow!("rotated and found no identity"))?;
+        Ok(super::bunker::bunker_uri(&npub, &self.relays, Some(&secret)))
     }
 
     /// Disarm: pool down, bunker dropped. A locked bunker holds no

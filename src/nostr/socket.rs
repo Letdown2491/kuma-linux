@@ -245,6 +245,14 @@ mod tests {
                 let Some(plan) = plan else { continue };
                 match plan {
                     crate::nostr::bunker::Plan::Ignore => continue,
+                    crate::nostr::bunker::Plan::Paired { answer, app, metadata } => {
+                        engine.pair_with_metadata(
+                            &app,
+                            metadata.as_ref().and_then(|m| m.name.clone()),
+                            metadata.as_ref().and_then(|m| m.image.clone()),
+                        );
+                        let _ = daemon.lock().unwrap().publish(&answer);
+                    }
                     crate::nostr::bunker::Plan::Answer(answer) => {
                         let _ = daemon.lock().unwrap().publish(&answer);
                     }
@@ -314,13 +322,13 @@ mod tests {
         // The bunker's answer comes back through the relay, and the
         // app's own half of the channel opens it.
         wait_for("the bunker's answer to come back through the relay", 100, || {
-            stub.received().iter().any(|frame| frame.contains(":24135"))
+            stub.received().iter().any(|frame| frame.contains(":24133"))
         });
         let answer_frame =
-            stub.received().into_iter().find(|frame| frame.contains(":24135")).unwrap();
+            stub.received().into_iter().find(|frame| frame.contains(":24133")).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&answer_frame).unwrap();
         let answer: Event = serde_json::from_value(parsed[1].clone()).unwrap();
-        assert_eq!(answer.kind, Kind::from_u16(24135));
+        assert_eq!(answer.kind, Kind::from_u16(24133));
         let plaintext = app.nip44_decrypt(&answer.pubkey, &answer.content).unwrap();
         let message = NostrConnectMessage::from_json(&plaintext).unwrap();
         assert!(
@@ -367,11 +375,11 @@ mod tests {
         // bunker identity — the get_public_key the gate allowed.
         wait_for("the allowed answer to come back through the relay", 100, || {
             let answers: Vec<String> =
-                stub.received().into_iter().filter(|frame| frame.contains(":24135")).collect();
+                stub.received().into_iter().filter(|frame| frame.contains(":24133")).collect();
             answers.len() >= 2
         });
         let answer_frame =
-            stub.received().into_iter().rfind(|frame| frame.contains(":24135")).unwrap();
+            stub.received().into_iter().rfind(|frame| frame.contains(":24133")).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&answer_frame).unwrap();
         let answer: Event = serde_json::from_value(parsed[1].clone()).unwrap();
         let plaintext = app.nip44_decrypt(&answer.pubkey, &answer.content).unwrap();

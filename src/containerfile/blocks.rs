@@ -4346,29 +4346,21 @@ end
     (
         "panel.lua",
         r#"--!nonstrict
--- The approval panel: the pending asks, and the pairing answer for the
--- moments nothing is waiting — the bunker URI an app logs in with, one
--- copy away, because pairing is the thing a person comes here for even
--- when the queue is empty. The ui tree is the whole face; the daemon
--- stays the policy and the CLI stays the transport. Buttons close over
--- the prompt they act on, and every action re-asks so the list is the
--- daemon's truth, not the last render's.
+-- The approval panel: the asks waiting on a person, the apps paired
+-- and their levels, and the pairing answer — the URI an app logs in
+-- with, one copy away, and the rotation that retires it. The ui tree
+-- is the whole face; the daemon stays the policy and the CLI stays the
+-- transport. Buttons close over the thing they act on, and every
+-- action re-asks so the panel is the daemon's truth, not the last
+-- render's.
 local prompts = {}
+local apps = {}
 local vault = nil
 local uri = nil
--- Forward-declared, because refresh runs before the file's bottom
--- assigns render: a body that names a local declared later in the same
--- scope reads the global of that name, which is nil, and the panel
--- dies in its own callback — blank, with an error only the journal
--- holds.
-local render
 
 local function refresh()
-    -- One ask carries everything: the status document has the vault's
-    -- state and the pairing URI in it, because the daemon builds the
-    -- URI and the CLI only ferries the answer. A second hop here was
-    -- one more spawn to fail, and its empty stdout crashed the decode
-    -- into nil — the blank the panel wore.
+    -- One ask carries the vault's state and the pairing URI, because
+    -- the daemon builds the URI where the nonce lives.
     noctalia.runAsync("kuma-nostr status --json", function(result)
         local doc = noctalia.json.decode(result.stdout or "{}")
         vault = doc.vault
@@ -4380,12 +4372,84 @@ local function refresh()
         prompts = doc.prompts or {}
         render()
     end)
+    noctalia.runAsync("kuma-nostr apps --json", function(result)
+        local doc = noctalia.json.decode(result.stdout or "{}")
+        apps = doc.apps or {}
+        render()
+    end)
 end
 
 -- The args are ids and flags the daemon defines — no shell metachars
 -- ride in them, so the line is safe to join.
 local function cli(args)
     noctalia.runAsync("kuma-nostr " .. table.concat(args, " "), refresh)
+end
+
+local function short(pk)
+    return pk:sub(1, 8) .. "…"
+end
+
+local function askRow(p)
+    local lines = {
+        ui.label({ text = p.method or "?", fontWeight = "bold", color = "on_surface" }),
+        ui.label({ text = p.app and short(p.app) or "?", color = "on_surface_variant" }),
+    }
+    if p.summary then
+        table.insert(lines, ui.label({ text = p.summary, color = "on_surface_variant" }))
+    end
+    if p.detail then
+        table.insert(lines, ui.label({ text = p.detail, color = "on_surface_variant" }))
+    end
+    table.insert(lines, ui.row({ gap = 8 }, {
+        ui.button({
+            text = "Approve",
+            variant = "primary",
+            glyph = "check",
+            onClick = function() cli({ "approve", p.id }) end,
+        }),
+        ui.button({
+            text = "An hour",
+            variant = "ghost",
+            onClick = function() cli({ "approve", p.id, "--remember", "1" }) end,
+        }),
+        ui.button({
+            text = "Deny",
+            variant = "ghost",
+            glyph = "close",
+            onClick = function() cli({ "deny", p.id }) end,
+        }),
+    }))
+    return ui.column({ gap = 8 }, lines)
+end
+
+-- The three levels a paired app can hold; the button for the level the
+-- app already holds renders primary, because a level that says nothing
+-- changed is noise.
+local LEVELS = { "ask", "basic", "trust" }
+
+local function appRow(a)
+    local label = a.name or short(a.pubkey)
+    local levelButtons = {}
+    for _, level in ipairs(LEVELS) do
+        table.insert(levelButtons, ui.button({
+            text = level,
+            variant = a.level == level and "primary" or "ghost",
+            onClick = function() cli({ "level", a.pubkey, level }) end,
+        }))
+    end
+    return ui.column({ gap = 6 }, {
+        ui.row({ gap = 10, align = "center" }, {
+            a.image and ui.image({ url = a.image, width = 28, height = 28, radius = 6 }) or nil,
+            ui.label({ text = label, fontWeight = "bold", color = "on_surface", flexGrow = 1 }),
+        }),
+        ui.row({ gap = 6 }, levelButtons),
+        ui.button({
+            text = "Revoke",
+            variant = "ghost",
+            glyph = "trash",
+            onClick = function() cli({ "revoke", a.pubkey }) end,
+        }),
+    })
 end
 
 local function pairingSection()
@@ -4410,64 +4474,36 @@ local function pairingSection()
             }),
         })
     end
-    local rows = {
+    return ui.column({ gap = 8 }, {
         ui.label({ text = "Pair an app", fontWeight = "bold", color = "on_surface" }),
         ui.label({
             text = "Copy the bunker URI into the app. Its connect ask lands here to approve.",
             color = "on_surface_variant",
         }),
-        ui.button({
-            text = "Copy URI",
-            glyph = "clipboard-copy",
-            onClick = function()
-                if uri then
-                    noctalia.copyToClipboard(uri, "text/plain")
-                end
-            end,
-        }),
-    }
-    -- The uri's relay is what the app must reach: a loopback relay
-    -- serves the apps on this machine, and a browser will not carry it
-    -- to a web app anywhere else. The way out is a relay with a name:
-    -- serve on the tailnet, or a declared wss:// relay.
-    if uri and uri.find(uri, "127.0.0.1", 1, true) then
-        table.insert(rows, ui.label({
-            text = "The relay in this URI is loopback-only; apps on this machine can reach it. For a web app or a phone, enable serve or declare a public relay.",
-            color = "on_surface_variant",
-        }))
-    end
-    return ui.column({ gap = 8 }, rows)
-end
-
-local function askRow(p)
-    return ui.column({ gap = 8 }, {
-        ui.label({ text = p.method or "?", fontWeight = "bold", color = "on_surface" }),
-        ui.label({ text = p.app or "?", color = "on_surface_variant" }),
-        p.summary and ui.label({ text = p.summary, color = "on_surface_variant" }) or nil,
-        p.detail and ui.label({ text = p.detail, color = "on_surface_variant" }) or nil,
         ui.row({ gap = 8 }, {
             ui.button({
-                text = "Approve",
-                variant = "primary",
-                glyph = "check",
-                onClick = function() cli({ "approve", p.id }) end,
+                text = "Copy URI",
+                glyph = "clipboard-copy",
+                onClick = function()
+                    if uri then
+                        noctalia.copyToClipboard(uri, "text/plain")
+                    end
+                end,
             }),
             ui.button({
-                text = "An hour",
-                variant = "ghost",
-                onClick = function() cli({ "approve", p.id, "--remember", "1" }) end,
+                text = "Rotate",
+                glyph = "refresh",
+                onClick = function() cli({ "rotate" }) end,
             }),
-            ui.button({
-                text = "Deny",
-                variant = "ghost",
-                glyph = "close",
-                onClick = function() cli({ "deny", p.id }) end,
-            }),
+        }),
+        ui.label({
+            text = "Rotation retires every URI printed before it; the apps holding old copies need the new one.",
+            color = "on_surface_variant",
         }),
     })
 end
 
-render = function()
+local function render()
     local children = {}
     local pairing = pairingSection()
     if pairing then
@@ -4482,6 +4518,17 @@ render = function()
     end
     for _, p in ipairs(prompts) do
         table.insert(children, askRow(p))
+    end
+    if #apps > 0 then
+        table.insert(children, ui.separator({}))
+        table.insert(children, ui.label({
+            text = "Paired apps",
+            fontWeight = "bold",
+            color = "on_surface",
+        }))
+        for _, a in ipairs(apps) do
+            table.insert(children, appRow(a))
+        end
     end
     panel.render(ui.scroll({ flexGrow = 1, gap = 16 }, children))
 end

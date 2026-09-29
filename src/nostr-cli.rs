@@ -87,6 +87,18 @@ enum Command {
     Apps,
     /// Forget a paired app: it answers as unpaired from then on.
     Revoke { app: String },
+    /// Set a paired app's policy level: `ask`, `basic`, or `trust`.
+    /// Trust is the indefinite approval — every method signs
+    /// unattended — and is graded loudly by the doctor.
+    Level {
+        app: String,
+        #[arg(default_value = "ask")]
+        level: String,
+    },
+    /// Mint a fresh pairing nonce and re-arm: every URI printed before
+    /// this dies with it, so the apps holding stored copies need the
+    /// new one.
+    Rotate,
 }
 
 fn main() -> Result<()> {
@@ -142,6 +154,12 @@ fn main() -> Result<()> {
         Command::Deny { id } => format!(r#"{{"cmd":"deny","id":{}}}"#, json_string(id)),
         Command::Apps => r#"{"cmd":"apps"}"#.to_string(),
         Command::Revoke { app } => format!(r#"{{"cmd":"revoke","app":{}}}"#, json_string(app)),
+        Command::Level { app, level } => format!(
+            r#"{{"cmd":"level","app":{},"level":{}}}"#,
+            json_string(app),
+            json_string(level)
+        ),
+        Command::Rotate => r#"{"cmd":"rotate"}"#.to_string(),
     };
 
     let value = client.ask(&request)?;
@@ -301,9 +319,12 @@ fn render(value: &serde_json::Value) -> Result<()> {
                 println!("no apps paired");
             }
             for app in apps {
+                let label = app["name"].as_str().map(str::to_string).unwrap_or_else(|| {
+                    format!("{}…", &app["pubkey"].as_str().unwrap_or("?")[..16])
+                });
                 println!(
                     "{}  {:?}  paired at {}",
-                    app["pubkey"].as_str().unwrap_or("?"),
+                    label,
                     app["level"],
                     app["paired_at"].as_u64().unwrap_or(0),
                 );
@@ -316,6 +337,11 @@ fn render(value: &serde_json::Value) -> Result<()> {
                 println!("no such app");
             }
         }
+        Some("level") => println!("level set"),
+        Some("rotate") => println!(
+            "new pairing URI:\n{}",
+            value["uri"].as_str().unwrap_or("(the uri did not come back)")
+        ),
         _ => println!("{value}"),
     }
     Ok(())

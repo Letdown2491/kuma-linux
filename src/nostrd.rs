@@ -110,6 +110,16 @@ fn main() -> anyhow::Result<()> {
         let Some(plan) = plan else { continue };
         match plan {
             kuma::nostr::bunker::Plan::Ignore => continue,
+            kuma::nostr::bunker::Plan::Paired { answer, app, metadata } => {
+                engine.pair_with_metadata(
+                    &app,
+                    metadata.as_ref().and_then(|m| m.name.clone()),
+                    metadata.as_ref().and_then(|m| m.image.clone()),
+                );
+                if let Err(e) = worker.lock().expect("the daemon lock").publish(&answer) {
+                    eprintln!("kuma-nostrd: the answer was not published: {e:#}");
+                }
+            }
             kuma::nostr::bunker::Plan::Answer(answer) => {
                 if let Err(e) = worker.lock().expect("the daemon lock").publish(&answer) {
                     eprintln!("kuma-nostrd: the answer was not published: {e:#}");
