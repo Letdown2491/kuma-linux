@@ -89,22 +89,6 @@ COPY kuma-flatpak-overrides-user.service /usr/lib/systemd/user/kuma-flatpak-over
 RUN systemctl enable kuma-flatpak-overrides.service \
     && systemctl --global enable kuma-flatpak-overrides.service
 
-RUN --mount=type=cache,target=/var/cache/libdnf5 \
-    dnf -y install --setopt=keepcache=1 git-core tar
-COPY --chmod=755 kuma-brew-setup /usr/libexec/kuma-brew-setup
-COPY kuma-brew-setup.service /usr/lib/systemd/system/kuma-brew-setup.service
-COPY brew-profile.sh /etc/profile.d/kuma-brew.sh
-COPY brew-profile.fish /etc/fish/conf.d/kuma-brew.fish
-COPY brews /usr/lib/kuma/brews
-COPY --chmod=755 kuma-brew-sync /usr/libexec/kuma-brew-sync
-COPY kuma-brew-sync.service /usr/lib/systemd/system/kuma-brew-sync.service
-COPY kuma-brew-sync.timer /usr/lib/systemd/system/kuma-brew-sync.timer
-COPY --chmod=755 kuma-converge-gate /usr/libexec/kuma-converge-gate
-COPY kuma-brew-sync-daily.service /usr/lib/systemd/system/kuma-brew-sync-daily.service
-RUN systemctl enable kuma-brew-setup.service kuma-brew-sync.service kuma-brew-sync.timer
-
-RUN systemctl enable sshd.service
-
 RUN systemctl enable sshd.service
 
 RUN --mount=type=cache,target=/var/cache/libdnf5 \
@@ -160,23 +144,6 @@ COPY containers-policy.json /etc/containers/policy.json
 COPY kuma-sigstore.yaml /etc/containers/registries.d/kuma-sigstore.yaml
 RUN systemctl enable fwupd-refresh.timer
 
-RUN --mount=type=cache,target=/var/cache/libdnf5 \
-    dnf -y install --setopt=keepcache=1 btrfs-progs
-COPY --chmod=755 kuma-snapshot /usr/libexec/kuma-snapshot
-COPY kuma-snapshot.service /usr/lib/systemd/system/kuma-snapshot.service
-COPY kuma-snapshot.timer /usr/lib/systemd/system/kuma-snapshot.timer
-RUN systemctl enable kuma-snapshot.timer
-
-RUN --mount=type=cache,target=/var/cache/libdnf5 \
-    dnf -y install --setopt=keepcache=1 restic
-COPY --chmod=755 kuma-backup /usr/libexec/kuma-backup
-COPY kuma-backup.service /usr/lib/systemd/system/kuma-backup.service
-COPY kuma-backup.timer /usr/lib/systemd/system/kuma-backup.timer
-RUN systemctl enable kuma-backup.timer
-COPY --chmod=755 kuma-restore /usr/libexec/kuma-restore
-COPY kuma-restore.service /usr/lib/systemd/system/kuma-restore.service
-RUN systemctl enable kuma-restore.service
-
 COPY --chmod=755 kuma-nostrd /usr/bin/kuma-nostrd
 COPY --chmod=755 kuma-nostr /usr/bin/kuma-nostr
 COPY kuma-nostrd.service /usr/lib/systemd/user/kuma-nostrd.service
@@ -187,8 +154,6 @@ COPY --chmod=755 kuma-vm-timezone /usr/libexec/kuma-vm-timezone
 COPY kuma-vm-timezone.service /usr/lib/systemd/system/kuma-vm-timezone.service
 RUN systemctl enable kuma-vm-timezone.service
 
-RUN test -e /usr/share/zoneinfo/Pacific/Auckland && ln -sfn /usr/share/zoneinfo/Pacific/Auckland /etc/localtime
-
 COPY --chmod=755 kuma-home-subvol /usr/libexec/kuma-home-subvol
 COPY kuma-home-subvol.service /usr/lib/systemd/system/kuma-home-subvol.service
 RUN systemctl enable kuma-home-subvol.service
@@ -196,9 +161,6 @@ RUN systemctl enable kuma-home-subvol.service
 COPY --chmod=755 kuma-user-sync /usr/libexec/kuma-user-sync
 COPY kuma-user-sync.service /usr/lib/systemd/system/kuma-user-sync.service
 RUN systemctl enable kuma-user-sync.service
-COPY --chmod=600 kuma-user /usr/lib/kuma/user
-COPY kuma-user-keys /etc/kuma/keys/probe
-COPY kuma-sshd-keys.conf /etc/ssh/sshd_config.d/40-kuma-keys.conf
 
 COPY hostname /etc/hostname
 

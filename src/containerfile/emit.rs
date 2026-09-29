@@ -179,6 +179,15 @@ impl<'c> Emitter<'c> {
         self.text.push_str(&format!("RUN systemctl enable {}\n", units.join(" ")));
     }
 
+    /// `RUN systemctl --global enable …` — the bunker's shape: a user
+    /// unit with no system-scope half.
+    pub(crate) fn enable_global(&mut self, units: &[&str]) {
+        for unit in units {
+            self.account(unit);
+        }
+        self.text.push_str(&format!("RUN systemctl --global enable {}\n", units.join(" ")));
+    }
+
     /// `--global` first, then system scope, in one RUN: the niri arm's
     /// compound shape, byte-exact.
     pub(crate) fn enable_global_then_system(&mut self, global: &[&str], system: &[&str]) {

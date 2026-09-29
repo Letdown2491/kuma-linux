@@ -150,6 +150,26 @@ pub fn write_context(
     std::fs::write(dir.join("kuma.toml"), config_text)?;
     std::fs::copy(kuma_binary, dir.join("kuma"))
         .with_context(|| format!("staging {} into the build context", kuma_binary.display()))?;
+    // The nostr layer's binaries ride the same road: they live beside
+    // the running kuma, because the release ships the three together
+    // and a build whose siblings are missing is a checkout, not a
+    // release. The failure is honest and early — the nostr block's
+    // COPY would otherwise name files the context never carried.
+    if config.nostr.enable {
+        let parent = kuma_binary
+            .parent()
+            .with_context(|| "the running kuma has no parent directory".to_string())?;
+        for name in ["kuma-nostrd", "kuma-nostr"] {
+            let sibling = parent.join(name);
+            std::fs::copy(&sibling, dir.join(name)).with_context(|| {
+                format!(
+                    "staging {name}: it is not beside the running kuma ({}); a \
+                     nostr-enabled image needs the release's binaries together",
+                    kuma_binary.display()
+                )
+            })?;
+        }
+    }
     let plan = plan(config);
     std::fs::write(dir.join("Containerfile"), &plan.text)?;
     emit::materialize(&plan.files, dir)?;
@@ -181,9 +201,20 @@ mod tests {
     /// the real one here would be the 42 MB test harness. Dot-prefixed so
     /// it cannot collide with a name the context actually uses.
     fn context(toml: &str, dir: &Path) {
-        let stub = dir.join(".stub-kuma");
+        // The binaries stage from beside the running one, which is
+        // nowhere near the context dir: a copy onto itself truncates
+        // to empty, and the manifest would pin the emptiness.
+        let bin_home = tempfile::tempdir().unwrap();
+        let stub = bin_home.path().join("stub-kuma");
         std::fs::write(&stub, b"not really a binary\n").unwrap();
-        write_context(&config(toml), toml, &stub, dir).unwrap();
+        let cfg = config(toml);
+        // The nostr siblings are as fake as the stub, and as stable.
+        if cfg.nostr.enable {
+            for name in ["kuma-nostrd", "kuma-nostr"] {
+                std::fs::write(bin_home.path().join(name), format!("not really {name}\n")).unwrap();
+            }
+        }
+        write_context(&cfg, toml, &stub, dir).unwrap();
     }
 
     /// The declaration matrix every structural change to the generator
@@ -201,6 +232,11 @@ mod tests {
         ("minimal", "schema_version = 1\n"),
         ("niri", "schema_version = 1\n[system]\ndesktop = \"niri\"\n"),
         ("cosmic", "schema_version = 1\n[system]\ndesktop = \"cosmic\"\n"),
+        (
+            "nostr",
+            "schema_version = 1\n[system]\ndesktop = \"niri\"\n[nostr]\nenable = true\n\
+             relays = [\"wss://relay.nip46.com\", \"ws://127.0.0.1:7777\"]\n",
+        ),
         ("everything-on", EVERYTHING_ON),
         ("secrets", SECRETS),
     ];
@@ -224,6 +260,29 @@ mod tests {
             let expected = normalize_builder(&std::fs::read_to_string(&golden).unwrap_or_default());
             assert_eq!(out, expected, "golden for {name} moved; see the test's doc");
         }
+    }
+
+    #[test]
+    fn the_nostr_unit_carries_the_relay_set_and_the_sandbox() {
+        let dir = tempfile::tempdir().unwrap();
+        context(
+            "schema_version = 1\n[system]\ndesktop = \"niri\"\n[nostr]\nenable = true\n\
+             relays = [\"wss://relay.nip46.com\", \"ws://127.0.0.1:7777\"]\n",
+            dir.path(),
+        );
+        let unit = std::fs::read_to_string(dir.path().join("kuma-nostrd.service")).unwrap();
+        assert!(
+            unit.contains(
+                "ExecStart=/usr/bin/kuma-nostrd --relay wss://relay.nip46.com --relay ws://127.0.0.1:7777"
+            ),
+            "the relay set rides the exec line: {unit}"
+        );
+        assert!(unit.contains("ProtectSystem=strict"), "the sandbox is the point: {unit}");
+        assert!(
+            unit.contains("Restart=always"),
+            "a bunker that exits zero still stopped answering"
+        );
+        assert!(unit.contains("WantedBy=graphical-session.target"));
     }
 
     /// The builder label carries `git describe`, so it moves with every
@@ -1825,6 +1884,7 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
          [services]\nenable = [\"sshd.service\"]\n\
          [snapshots]\nenable = true\n\
          [backup]\nenable = true\nrepo = \"b2:kuma\"\nnetwork_connections = true\n\
+         [nostr]\nenable = true\nrelays = [\"wss://relay.nip46.com\"]\n\
          [overrides.\"org.mozilla.firefox\"]\nsockets = [\"wayland\"]\n\
          [user]\nname = \"probe\"\nssh_keys = [\"ssh-ed25519 AAAAC3Nz probe@example\"]\n";
 

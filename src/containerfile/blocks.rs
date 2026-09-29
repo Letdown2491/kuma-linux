@@ -3998,6 +3998,90 @@ pub(super) fn live_masks() -> Vec<&'static str> {
 /// The registry. Order IS emission order: the layer order of every
 /// image kuma builds. A reorder here is a golden-visible diff, which
 /// is the point — it is a reviewable decision, not an accident.
+/// The nostr layer's daemon unit: the first user unit with the full
+/// sandbox (docs/unit-sandboxing.md carries the reasoning). The relay
+/// set rides the exec line — `--relay` per entry — because the daemon
+/// takes no declaration of its own: the declaration is kuma's, and the
+/// unit is the spelling of it systemd can run.
+fn nostrd_service(relays: &[String]) -> String {
+    let relay_args = relays.iter().map(|r| format!(" --relay {r}")).collect::<String>();
+    format!(
+        r#"[Unit]
+Description=kumaOS nostr bunker
+# The bunker is session furniture: it starts and stops with the
+# graphical session, and its socket lives under the session's runtime
+# directory.
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/kuma-nostrd{relay_args}
+# A bunker that exits zero is still a bunker that stopped answering.
+Restart=always
+Slice=session.slice
+
+# The sandbox. A bunker holds a signing key; the unit is the reason an
+# attacker already inside the session is the only attacker it matters
+# against, and these lines are what keep it that way.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# The pairing list and the activity log are the daemon's own state, and
+# the only thing it may write.
+ReadWritePaths=%h/.local/state/kuma-nostr
+# A unix socket to answer on, and relays over the network.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=graphical-session.target
+"#
+    )
+}
+
+/// The nostr block: the daemon and CLI binaries, the hardened unit, and
+/// the guard that refuses to bake a bunker that cannot run. The relay
+/// set is the declaration's own; the local relay joins the list when
+/// the port lands.
+fn nostr(e: &mut Emitter<'_>) {
+    let config = e.config;
+    if !config.nostr.enable {
+        return;
+    }
+    let unit = e.stage("kuma-nostrd.service", nostrd_service(&config.nostr.relays));
+    // Supplied by write_context from beside the running binary: the
+    // release carries the three together, and a build that cannot find
+    // the siblings fails here rather than baking a unit whose
+    // ExecStart names nothing.
+    let nostrd = e.supplied("kuma-nostrd");
+    let cli = e.supplied("kuma-nostr");
+    e.raw("\n");
+    e.copy_exec(&nostrd, "/usr/bin/kuma-nostrd");
+    e.copy_exec(&cli, "/usr/bin/kuma-nostr");
+    e.copy(&unit, "/usr/lib/systemd/user/kuma-nostrd.service");
+    // --global because the bunker is session furniture for every
+    // account: the first login arms it without each user opting in
+    // again.
+    e.enable_global(&["kuma-nostrd.service"]);
+    // The version guard is the binary-runs proof the kuma COPY carries:
+    // a musl-host binary on a glibc base shows up here, at build, where
+    // it costs a build, not at boot, where it costs the session.
+    e.raw("RUN /usr/bin/kuma-nostrd --version\n");
+}
+
 pub(super) static BLOCKS: &[Block] = &[
     Block { name: "header", emit: header, units: &[] },
     Block {
@@ -4076,6 +4160,11 @@ pub(super) static BLOCKS: &[Block] = &[
             ("kuma-backup.timer", Live::Masked("nothing in a live session should be armed on a schedule")),
             ("kuma-restore.service", Live::Conditioned("waits for a restore request nobody writes on media: ConditionPathExists=/var/lib/kuma/restore-request")),
         ],
+    },
+    Block {
+        name: "nostr",
+        emit: nostr,
+        units: &[("kuma-nostrd.service", Live::Runs("a live session is a person at a desktop, and the bunker answers its socket either way; its vault is as ephemeral as the session"))],
     },
     Block {
         name: "vm-timezone",

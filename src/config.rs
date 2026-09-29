@@ -32,6 +32,37 @@ pub struct Config {
     /// deleting each other's lines.
     #[serde(default)]
     pub overrides: Overrides,
+    /// The nostr layer: a bunker daemon, its CLI, and the relays they
+    /// talk to.
+    #[serde(default)]
+    pub nostr: Nostr,
+}
+
+/// The nostr layer's declaration (notes/44.4.0-plan.md, item 4).
+///
+/// `enable` gates the whole render: the daemon and CLI binaries, the
+/// hardened user unit, the plugin and its bind when they land. Absent
+/// and `enable = false` ship nothing — the same grammar as [backup],
+/// and a toggle never destroys anything: the vault lives in the login
+/// keyring, which is user state an image update does not touch, so a
+/// disable is reversible by construction.
+///
+/// The relays are the public fallbacks, listed after the local relay
+/// the layer bakes; the daemon's list is `[local, …declared]`, and a
+/// declared set never removes the local one — removing is spelled,
+/// which is the relay sub-block's own switch when it lands.
+#[derive(Debug, Deserialize, Default, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Nostr {
+    #[serde(default)]
+    pub enable: bool,
+    /// The relays the bunker talks to, `wss://` to the world and
+    /// `ws://` only to loopback — plaintext kind 24133 traffic to
+    /// anything else is exactly the shape of mistake a validator
+    /// exists to catch. Every entry is validated here, at build: a
+    /// typo is a build failure rather than a shrug.
+    #[serde(default)]
+    pub relays: Vec<String>,
 }
 
 /// Local btrfs snapshots of the machine state a declaration cannot
@@ -717,8 +748,66 @@ impl Config {
                 validate_name(path, "backup.exclude", &['/', '.', '-', '_', '~', '*', ' '])?;
             }
         }
+        if self.nostr.enable {
+            // The daemon's unit is a user unit under the graphical
+            // session; on a declaration with no desktop it would ship
+            // and never run, which is a silent pass by another name.
+            // A system-level always-on bunker is a deployment mode worth
+            // wanting and is tracked, not smuggled into this one.
+            if matches!(self.system.desktop, Desktop::None) {
+                bail!(
+                    "nostr.enable requires a desktop: the bunker's unit is a user unit \\
+                     under the graphical session, and a headless machine has none"
+                );
+            }
+            for relay in &self.nostr.relays {
+                validate_relay(relay)?;
+            }
+        }
         Ok(())
     }
+}
+
+/// A relay address, validated at build: `wss://` to the world, and
+/// `ws://` only to loopback. The rule is not encryption theater —
+/// NIP-44 already encrypts the payload end to end — it is metadata: a
+/// plaintext WebSocket announces to the network path which app is
+/// talking to which bunker, how often, and how big. A declaration that
+/// leaks kind 24133 traffic by configuration is exactly the shape of
+/// mistake a validator exists to catch.
+fn validate_relay(relay: &str) -> Result<()> {
+    let (scheme, rest) = match relay.split_once("://") {
+        Some((scheme, rest)) => (scheme, rest),
+        None => {
+            bail!("nostr relay {relay:?} has no scheme; relays are wss:// or ws:// to loopback")
+        }
+    };
+    match scheme {
+        "wss" => {}
+        "ws" => {
+            let authority = rest.split('/').next().unwrap_or_default();
+            let host = match authority.strip_prefix('[') {
+                // [::1]:7777 — the bracketed form, where the port's
+                // colon is not the host's.
+                Some(bracketed) => bracketed.split(']').next().unwrap_or_default(),
+                None => authority.split(':').next().unwrap_or(authority),
+            };
+            let loopback = matches!(host, "127.0.0.1" | "::1" | "localhost");
+            if !loopback {
+                bail!(
+                    "nostr relay {relay:?} is ws:// to a non-loopback host: that is \\
+                     plaintext on the wire, and the metadata alone (which app, which \\
+                     bunker, how often) is not kuma's to leak. Point wss:// at it, or \\
+                     ws:// at 127.0.0.1, ::1, or localhost only"
+                );
+            }
+        }
+        other => bail!(
+            "nostr relay {relay:?} has scheme {other:?}; relays are wss://, or ws:// \\
+             to loopback only"
+        ),
+    }
+    Ok(())
 }
 
 /// Entries end up inside generated RUN instructions, so restrict them to a
@@ -818,6 +907,54 @@ pub(crate) mod tests {
     /// be pulled into a test that asserts what a *committed* example says.
     pub(crate) fn is_local_declaration(path: &Path) -> bool {
         path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with("kuma.toml"))
+    }
+
+    #[test]
+    fn the_nostr_block_validates_its_relay_list_at_build() {
+        let base = "schema_version = 1\n[system]\ndesktop = \"niri\"\n";
+        let valid = |relays: &str| {
+            let toml = format!("{base}[nostr]\nenable = true\nrelays = [{relays}]\n");
+            let config: Config = toml::from_str(&toml).unwrap();
+            config.validate()
+        };
+        assert!(valid("\"wss://relay.nip46.com\"").is_ok());
+        assert!(valid("\"ws://127.0.0.1:7777\"").is_ok());
+        assert!(valid("\"ws://localhost:7777\"").is_ok());
+        assert!(valid("\"ws://[::1]:7777\"").is_ok());
+        // Mixed sets are the normal case: local first, fallbacks after.
+        assert!(valid("\"wss://relay.nip46.com\", \"ws://127.0.0.1:7777\"").is_ok());
+
+        // The rule is metadata, not encryption theater: NIP-44 already
+        // encrypts the payload, and the wire still announces which app
+        // talks to which bunker, how often, and how big.
+        let plaintext = valid("\"ws://relay.example.com\"").unwrap_err();
+        assert!(plaintext.to_string().contains("plaintext on the wire"));
+        assert!(valid("\"http://relay.example.com\"").is_err());
+        assert!(valid("\"relay.example.com\"").is_err());
+    }
+
+    #[test]
+    fn nostr_enable_is_refused_headless_and_defaults_to_nothing() {
+        // Headless: the unit is a user unit under the graphical session,
+        // so shipping it to a machine with no desktop is shipping a
+        // daemon that can never run — a silent pass by another name.
+        let headless: Config = toml::from_str(
+            "schema_version = 1\n[nostr]\nenable = true\nrelays = [\"wss://relay.nip46.com\"]\n",
+        )
+        .unwrap();
+        let error = headless.validate().unwrap_err();
+        assert!(error.to_string().contains("requires a desktop"));
+
+        // Absent and enable = false both ship nothing, and validate
+        // without a desktop fine.
+        let off: Config = toml::from_str(
+            "schema_version = 1\n[nostr]\nenable = false\nrelays = [\"wss://relay.nip46.com\"]\n",
+        )
+        .unwrap();
+        off.validate().unwrap();
+        let absent: Config = toml::from_str("schema_version = 1\n").unwrap();
+        absent.validate().unwrap();
+        assert!(!absent.nostr.enable);
     }
 
     #[test]
@@ -1434,6 +1571,11 @@ pub(crate) mod tests {
             ("the declared account", Declared("user")),
             ("local btrfs snapshots", Declared("snapshots")),
             ("offsite copies of what snapshots keep", Declared("backup")),
+            // The nostr layer's identity: the vault lives in the login
+            // keyring (user state, not the image's), the pairings and
+            // the activity log in the daemon's own state dir — all of
+            // it user state an image update does not touch.
+            ("the nostr vault and pairings", Declared("nostr")),
             // New with [backup], and a kind of its own: a secret the
             // declaration names and deliberately does not hold, sitting
             // in /var where it survives every rebuild. Graded rather
