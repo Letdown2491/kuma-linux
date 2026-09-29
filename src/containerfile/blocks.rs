@@ -4346,40 +4346,49 @@ end
     (
         "panel.lua",
         r#"--!nonstrict
--- The approval panel: the asks waiting on a person, the apps paired
--- and their levels, and the pairing answer — the URI an app logs in
--- with, one copy away, and the rotation that retires it. The ui tree
--- is the whole face; the daemon stays the policy and the CLI stays the
--- transport. Buttons close over the thing they act on, and every
--- action re-asks so the panel is the daemon's truth, not the last
--- render's.
+-- The bunker's face, built like the shell's own panels: a rail of
+-- sections on the left, the section's content on the right, cards
+-- where a decision happens, and glyphs wherever a word would shout.
+-- The daemon stays the policy; the CLI stays the transport; this file
+-- is only the shape the answers wear.
+--
+-- The vocabulary is noctalia's ui tree: palette roles for every color
+-- (never hex), radii and gaps from the shell's own scale, buttons at
+-- the control sizes. App icons arrive as remote URLs and ui.image
+-- takes local paths only, so the first render shows a glyph and the
+-- download lands in the cache for the next one.
+
+local PROMPTS_URL = "kuma-nostr prompts --json"
+local APPS_URL = "kuma-nostr apps --json"
+local STATUS_URL = "kuma-nostr status --json"
+local ICON_DIR = "icons"
+
 local prompts = {}
 local apps = {}
 local vault = nil
 local uri = nil
--- Forward-declared: refresh's callbacks call render before the file's
--- bottom assigns it, and a name read before its local exists resolves
--- to the global — nil — which is the blank panel and the retirement
--- that followed. The notes plugin's own panel does the same thing.
-local render
+local tab = "asks" -- asks | apps | pair
+local render -- forward-declared: refresh's callbacks call it before the
+              -- file's bottom assigns it, and a name read before its
+              -- local exists resolves to the global — nil.
+
+-- ── data ──────────────────────────────────────────────────────────────
 
 local function refresh()
-    -- One ask carries the vault's state and the pairing URI, because
-    -- the daemon builds the URI where the nonce lives.
-    noctalia.runAsync("kuma-nostr status --json", function(result)
+    noctalia.runAsync(STATUS_URL, function(result)
         local doc = noctalia.json.decode(result.stdout or "{}")
-        vault = doc.vault
+        vault = doc and doc.vault or nil
         uri = vault and vault.uri or nil
         render()
     end)
-    noctalia.runAsync("kuma-nostr prompts --json", function(result)
+    noctalia.runAsync(PROMPTS_URL, function(result)
         local doc = noctalia.json.decode(result.stdout or "{}")
-        prompts = doc.prompts or {}
+        prompts = (doc and doc.prompts) or {}
         render()
     end)
-    noctalia.runAsync("kuma-nostr apps --json", function(result)
+    noctalia.runAsync(APPS_URL, function(result)
         local doc = noctalia.json.decode(result.stdout or "{}")
-        apps = doc.apps or {}
+        apps = (doc and doc.apps) or {}
         render()
     end)
 end
@@ -4390,152 +4399,230 @@ local function cli(args)
     noctalia.runAsync("kuma-nostr " .. table.concat(args, " "), refresh)
 end
 
+-- ── small vocabulary ─────────────────────────────────────────────────
+
+local METHOD_GLYPHS = {
+    get_public_key = "key",
+    sign_event = "pencil",
+    nip04_decrypt = "lock",
+    nip44_decrypt = "lock",
+}
+
 local function short(pk)
-    return pk:sub(1, 8) .. "…"
+    return (pk or "?"):sub(1, 8) .. "…"
 end
 
-local function askRow(p)
+local function sectionTitle(text, badge)
+    local row = {
+        ui.label({ text = text, fontSize = 15, fontWeight = "bold", color = "on_surface" }),
+    }
+    if badge then
+        table.insert(row, ui.box({
+            width = 20, height = 20, radius = 10, fill = "primary",
+        }, { ui.label({
+            text = tostring(badge), fontSize = 11, fontWeight = "bold",
+            color = "on_primary",
+        }) }))
+        -- the box centers its child by the row around it
+    end
+    return ui.row({ gap = 8, align = "center" }, row)
+end
+
+local function emptyState(glyph, title, subtitle)
+    return ui.column({ gap = 10, align = "center", flexGrow = 1 }, {
+        ui.spacer({ height = 30 }),
+        ui.glyph({ name = glyph, size = 42, color = "primary/0.45" }),
+        ui.label({ text = title, fontSize = 14, fontWeight = "medium", color = "on_surface" }),
+        subtitle and ui.label({ text = subtitle, fontSize = 12, color = "on_surface_variant" }) or nil,
+    })
+end
+
+-- An app's icon: the cached download when it exists, the download
+-- started once when it does not, and a glyph chip either way until the
+-- file lands.
+local function avatar(pubkey, image)
+    local dest = ICON_DIR .. "/" .. pubkey:sub(1, 16) .. ".img"
+    if noctalia.readFile(dest) then
+        return ui.image({ path = dest, width = 34, height = 34, radius = 9, fit = "cover" })
+    end
+    if image then
+        noctalia.download(image, dest, function() render() end)
+    end
+    return ui.box({ width = 34, height = 34, radius = 9, fill = "primary/0.14" }, {
+        ui.glyph({ name = "puzzle", size = 17, color = "primary" }),
+    })
+end
+
+-- ── the rail ─────────────────────────────────────────────────────────
+
+local TABS = {
+    { id = "asks", glyph = "bell", title = "Requests" },
+    { id = "apps", glyph = "apps", title = "Apps" },
+    { id = "pair", glyph = "link", title = "Pair" },
+}
+
+local function railButton(t)
+    local active = tab == t.id
+    -- The pending count rides in the button's own text: the rail is
+    -- 44px wide, and a badge floating beside the glyph is a second
+    -- layout problem nobody needs.
+    local count = t.id == "asks" and #prompts > 0 and tostring(#prompts) or nil
+    return ui.button({
+        variant = active and "secondary" or "ghost",
+        controlSize = "sm",
+        width = 44,
+        glyph = t.glyph,
+        text = count,
+        onClick = function()
+            tab = t.id
+            render()
+        end,
+    })
+end
+
+-- ── the panes ────────────────────────────────────────────────────────
+
+local function askCard(p)
+    local appName = p.app and short(p.app) or "?"
     local lines = {
-        ui.label({ text = p.method or "?", fontWeight = "bold", color = "on_surface" }),
-        ui.label({ text = p.app and short(p.app) or "?", color = "on_surface_variant" }),
+        ui.row({ gap = 10, align = "center" }, {
+            ui.box({ width = 30, height = 30, radius = 8, fill = "primary/0.14" }, {
+                ui.glyph({ name = METHOD_GLYPHS[(p.method or ""):lower()] or "shield-lock", size = 15, color = "primary" }),
+            }),
+            ui.label({ text = p.method or "?", fontWeight = "semibold", color = "on_surface", flexGrow = 1 }),
+        }),
+        ui.label({ text = "from " .. appName, fontSize = 12, color = "on_surface_variant" }),
     }
     if p.summary then
-        table.insert(lines, ui.label({ text = p.summary, color = "on_surface_variant" }))
+        table.insert(lines, ui.label({ text = p.summary, fontSize = 12, color = "on_surface_variant", maxLines = 3 }))
     end
     if p.detail then
-        table.insert(lines, ui.label({ text = p.detail, color = "on_surface_variant" }))
+        table.insert(lines, ui.label({ text = p.detail, fontSize = 11, color = "on_surface_variant/0.8", maxLines = 4 }))
     end
     table.insert(lines, ui.row({ gap = 8 }, {
-        ui.button({
-            text = "Approve",
-            variant = "primary",
-            glyph = "check",
-            onClick = function() cli({ "approve", p.id }) end,
-        }),
-        ui.button({
-            text = "An hour",
-            variant = "ghost",
-            onClick = function() cli({ "approve", p.id, "--remember", "1" }) end,
-        }),
-        ui.button({
-            text = "Deny",
-            variant = "ghost",
-            glyph = "close",
-            onClick = function() cli({ "deny", p.id }) end,
-        }),
+        ui.button({ text = "Approve", variant = "primary", controlSize = "sm", glyph = "check",
+            onClick = function() cli({ "approve", p.id }) end }),
+        ui.button({ text = "An hour", variant = "ghost", controlSize = "sm",
+            onClick = function() cli({ "approve", p.id, "--remember", "1" }) end }),
+        ui.button({ text = "Deny", variant = "ghost", controlSize = "sm", glyph = "x",
+            onClick = function() cli({ "deny", p.id }) end }),
     }))
-    return ui.column({ gap = 8 }, lines)
+    return ui.box({ fill = "surface_variant/0.45", radius = 12, padding = 12 }, {
+        ui.column({ gap = 8 }, lines),
+    })
 end
 
--- The three levels a paired app can hold; the button for the level the
--- app already holds renders primary, because a level that says nothing
--- changed is noise.
 local LEVELS = { "ask", "basic", "trust" }
 
-local function appRow(a)
-    local label = a.name or short(a.pubkey)
+local function appCard(a)
     local levelButtons = {}
     for _, level in ipairs(LEVELS) do
         table.insert(levelButtons, ui.button({
             text = level,
+            controlSize = "sm",
             variant = a.level == level and "primary" or "ghost",
             onClick = function() cli({ "level", a.pubkey, level }) end,
         }))
     end
-    return ui.column({ gap = 6 }, {
-        ui.row({ gap = 10, align = "center" }, {
-            a.image and ui.image({ url = a.image, width = 28, height = 28, radius = 6 }) or nil,
-            ui.label({ text = label, fontWeight = "bold", color = "on_surface", flexGrow = 1 }),
-        }),
-        ui.row({ gap = 6 }, levelButtons),
-        ui.button({
-            text = "Revoke",
-            variant = "ghost",
-            glyph = "trash",
-            onClick = function() cli({ "revoke", a.pubkey }) end,
+    return ui.box({ fill = "surface_variant/0.45", radius = 12, padding = 12 }, {
+        ui.column({ gap = 8 }, {
+            ui.row({ gap = 10, align = "center" }, {
+                avatar(a.pubkey, a.image),
+                ui.column({ gap = 2, flexGrow = 1 }, {
+                    ui.label({ text = a.name or short(a.pubkey), fontWeight = "semibold", color = "on_surface" }),
+                    ui.label({ text = short(a.pubkey), fontSize = 11, color = "on_surface_variant" }),
+                }),
+            }),
+            ui.row({ gap = 6, align = "center" }, levelButtons),
+            ui.button({ text = "Revoke", variant = "ghost", controlSize = "sm", glyph = "trash",
+                onClick = function() cli({ "revoke", a.pubkey }) end }),
         }),
     })
 end
 
-local function pairingSection()
-    if vault == nil then
-        return nil
-    end
-    if not vault.exists then
-        return ui.column({ gap = 8 }, {
-            ui.label({ text = "No vault yet.", fontWeight = "bold", color = "on_surface" }),
-            ui.label({
-                text = "Provision one from a terminal: kuma-nostr setup asks; kuma-nostr import brings a key you already hold.",
-                color = "on_surface_variant",
-            }),
-        })
-    end
-    if not vault.unlocked then
-        return ui.column({ gap = 8 }, {
-            ui.label({ text = "The bunker is locked.", fontWeight = "bold", color = "on_surface" }),
-            ui.label({
-                text = "Unlock from a terminal: kuma-nostr unlock. It pairs while locked, and signs nothing.",
-                color = "on_surface_variant",
-            }),
-        })
-    end
-    return ui.column({ gap = 8 }, {
-        ui.label({ text = "Pair an app", fontWeight = "bold", color = "on_surface" }),
+local function pairPane()
+    local children = {
+        sectionTitle("Pair an app"),
         ui.label({
-            text = "Copy the bunker URI into the app. Its connect ask lands here to approve.",
-            color = "on_surface_variant",
+            text = "Copy the URI into any NIP-46 app. Its connect lands as a request here.",
+            fontSize = 12, color = "on_surface_variant",
         }),
         ui.row({ gap = 8 }, {
-            ui.button({
-                text = "Copy URI",
-                glyph = "clipboard-copy",
-                onClick = function()
-                    if uri then
-                        noctalia.copyToClipboard(uri, "text/plain")
-                    end
-                end,
-            }),
-            ui.button({
-                text = "Rotate",
-                glyph = "refresh",
-                onClick = function() cli({ "rotate" }) end,
-            }),
+            ui.button({ text = "Copy URI", variant = "primary", glyph = "clipboard-copy", onClick = function()
+                if uri then noctalia.copyToClipboard(uri, "text/plain") end
+            end }),
+            ui.button({ text = "Rotate", variant = "outline", glyph = "refresh", onClick = function()
+                cli({ "rotate" })
+            end }),
         }),
         ui.label({
-            text = "Rotation retires every URI printed before it; the apps holding old copies need the new one.",
-            color = "on_surface_variant",
+            text = "Rotation retires every URI printed before it.",
+            fontSize = 11, color = "on_surface_variant/0.8",
         }),
-    })
+    }
+    return ui.column({ gap = 12 }, children)
 end
 
-render = function()
-    local children = {}
-    local pairing = pairingSection()
-    if pairing then
-        table.insert(children, pairing)
+local function asksPane()
+    if #prompts == 0 then
+        return emptyState("check", "Nothing is waiting on you",
+            "Sign-in and signing asks land here")
     end
-    if #prompts > 0 then
-        table.insert(children, ui.label({
-            text = "Waiting on you",
-            fontWeight = "bold",
-            color = "on_surface",
-        }))
-    end
+    local cards = {}
     for _, p in ipairs(prompts) do
-        table.insert(children, askRow(p))
+        table.insert(cards, askCard(p))
     end
-    if #apps > 0 then
-        table.insert(children, ui.separator({}))
-        table.insert(children, ui.label({
-            text = "Paired apps",
-            fontWeight = "bold",
-            color = "on_surface",
-        }))
-        for _, a in ipairs(apps) do
-            table.insert(children, appRow(a))
-        end
+    return ui.column({ gap = 10 }, cards)
+end
+
+local function appsPane()
+    if #apps == 0 then
+        return emptyState("apps", "No apps paired yet",
+            "Pair one from the Pair tab")
     end
-    panel.render(ui.scroll({ flexGrow = 1, gap = 16 }, children))
+    local cards = {}
+    for _, a in ipairs(apps) do
+        table.insert(cards, appCard(a))
+    end
+    return ui.column({ gap = 10 }, cards)
+end
+
+-- ── the frame ────────────────────────────────────────────────────────
+
+render = function()
+    local rail = {}
+    for _, t in ipairs(TABS) do
+        local btn = railButton(t)
+        table.insert(rail, btn)
+    end
+
+    local title, body
+    if tab == "asks" then
+        title, body = "Requests", asksPane()
+    elseif tab == "apps" then
+        title, body = "Paired apps", appsPane()
+    else
+        title, body = "Pair", pairPane()
+    end
+
+    local headerRow = {
+        ui.label({ text = title, fontSize = 16, fontWeight = "bold", color = "on_surface", flexGrow = 1 }),
+    }
+    if vault and vault.unlocked then
+        table.insert(headerRow, ui.glyph({ name = "shield-lock", size = 15, color = "primary/0.7" }))
+    else
+        table.insert(headerRow, ui.glyph({ name = "lock", size = 15, color = "on_surface_variant/0.7" }))
+    end
+
+    panel.render(ui.row({ gap = 12, padding = 12 }, {
+        -- the rail: the shell's panels keep their sections on a slim
+        -- column, and so does this one
+        ui.column({ gap = 6, width = 48, align = "center" }, rail),
+        ui.column({ gap = 10, flexGrow = 1 }, {
+            ui.row({ gap = 8, align = "center" }, headerRow),
+            ui.scroll({ flexGrow = 1, gap = 10 }, { body }),
+        }),
+    }))
 end
 
 function onOpen(_context)
