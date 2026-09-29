@@ -6,6 +6,44 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+## v44.4.0 (2026-09-28)
+
+### Added
+
+- **The nostr layer.** A declaration with `[nostr]` enabled turns on a
+  bunker: `kuma-nostrd`, a daemon holding a nostr signing key in your
+  login keyring and answering paired apps over the relays; `kuma-nostr`,
+  the CLI (`setup`, `unlock`, `lock`, `status`, `prompts`, `approve`,
+  `deny`, `apps`, `revoke`, `bunker --qr`, `destroy`); the noctalia
+  plugin (a bar glyph that counts pending asks, and the approval panel
+  behind it — `Mod+Ctrl+N` opens it, and a `nostrconnect://` link
+  clicked anywhere lands there). A freshly paired app can ask for
+  everything and signs nothing until a person answers; relaxing an app
+  to Basic lets its everyday methods sign unattended while sensitive
+  writes and the decrypt methods still ask; Trust signs everything and
+  `kuma doctor` grades it Warn by name. An approved ask can be
+  remembered for an hour at most. Nothing to do differently unless the
+  layer is wanted — absent or off, the image ships none of it — and a
+  toggle never destroys anything: the key lives in your keyring, user
+  state no image update touches, so a disable is reversible. The
+  release now carries the layer's two binaries beside kuma, because a
+  nostr-enabled image stages them from beside the running binary:
+  install them to the same place when the layer is wanted. The trust
+  model is written down in SECURITY.md.
+
+- **A local relay, and the tailnet mode.** The bunker's first
+  subscription is a relay on the machine itself — `nip46-relay`, ported
+  from the Go original and carrying only kind 24133/24135 traffic,
+  in-memory, evicted after ten minutes, bound to loopback. The daemon's
+  relay list is local first, the declared fallbacks after; declaring
+  relays never removes the local one, and `[nostr.relay] enable =
+  false` is the spoken way to. When the declaration runs
+  `tailscaled.service`, a converge script exposes the local relay to
+  the tailnet under the machine's ts.net name — the relay is then
+  reachable by a paired phone with no third party at all. Absent
+  tailscale nothing is refused: the bunker is local-only, and doctor
+  says so.
+
 ### Changed
 
 - **The system calls itself kumaOS.** The display name — os-release `NAME`
