@@ -134,6 +134,19 @@ $ chmod +x kuma-x86_64-unknown-linux-musl
 $ sudo mv kuma-x86_64-unknown-linux-musl /usr/local/bin/kuma
 ```
 
+The release carries the [nostr layer](concepts.md#the-nostr-layer)'s two
+binaries the same way, and an image built from a declaration with
+`[nostr]` enabled stages them from beside the running kuma — so they
+install to the same place when the layer is wanted:
+
+```console
+$ curl -LO https://github.com/Letdown2491/kumaos/releases/latest/download/kuma-nostrd-x86_64-unknown-linux-musl
+$ curl -LO https://github.com/Letdown2491/kumaos/releases/latest/download/kuma-nostr-x86_64-unknown-linux-musl
+$ chmod +x kuma-nostrd-x86_64-unknown-linux-musl kuma-nostr-x86_64-unknown-linux-musl
+$ sudo mv kuma-nostrd-x86_64-unknown-linux-musl /usr/local/bin/kuma-nostrd
+$ sudo mv kuma-nostr-x86_64-unknown-linux-musl /usr/local/bin/kuma-nostr
+```
+
 The file is the whole interface. This is a complete one:
 
 ```toml

@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(name = "kuma-nostr", about = "The kumaOS nostr layer's CLI")]
+#[command(name = "kuma-nostr", about = "The kumaOS nostr layer's CLI", version)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

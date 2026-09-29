@@ -130,12 +130,20 @@ jobs:
         run: |
           set -euo pipefail
           name='${{ steps.what.outputs.name }}'
-          cp "target/${TARGET}/release/kuma" "$name"
-          strip "$name"
-          sha256sum "$name" > "${name}.sha256"
-          # Prove the artifact runs before publishing it. A binary that
-          # cannot answer --version on a clean runner is not a release.
-          "./$name" --version
+          # The layer's binaries ride the same packaging as the tool
+          # that stages them into images: a nostr-enabled declaration
+          # stages kuma-nostrd and kuma-nostr from beside the running
+          # kuma, so a release carrying one of the three is a release
+          # whose nostr block fails honestly at build time.
+          for bin in kuma kuma-nostrd kuma-nostr; do
+            cp "target/${TARGET}/release/$bin" "$bin"
+            strip "$bin"
+            sha256sum "$bin" > "${bin}.sha256"
+            # Prove each artifact runs before publishing it. A binary
+            # that cannot answer --version on a clean runner is not a
+            # release.
+            "./$bin" --version
+          done
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
@@ -149,6 +157,9 @@ jobs:
       - name: sign
         run: |
           set -euo pipefail
+          for bin in kuma-nostrd kuma-nostr; do
+            cosign sign-blob --yes --bundle "${bin}.bundle" "$bin"
+          done
           cosign sign-blob --yes \
             --bundle '${{ steps.pkg.outputs.name }}.bundle' \
             '${{ steps.pkg.outputs.name }}'
@@ -165,9 +176,15 @@ jobs:
         with:
           name: ${{ steps.pkg.outputs.name }}
           path: |
-            ${{ steps.pkg.outputs.name }}
-            ${{ steps.pkg.outputs.name }}.sha256
-            ${{ steps.pkg.outputs.name }}.bundle
+            kuma
+            kuma.sha256
+            kuma.bundle
+            kuma-nostrd
+            kuma-nostrd.sha256
+            kuma-nostrd.bundle
+            kuma-nostr
+            kuma-nostr.sha256
+            kuma-nostr.bundle
           if-no-files-found: error
 
       # The notes used to be identical for every release, so the page a
@@ -255,6 +272,18 @@ jobs:
           $ chmod +x ${{ steps.pkg.outputs.name }} && sudo mv ${{ steps.pkg.outputs.name }} /usr/local/bin/kuma
           ```
 
+          A declaration with `[nostr]` enabled stages the layer's two
+          binaries from beside the running kuma, so they install to the
+          same place:
+
+          ```console
+          $ curl -LO ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ steps.what.outputs.tag }}/kuma-nostrd-x86_64-unknown-linux-musl
+          $ curl -LO ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ steps.what.outputs.tag }}/kuma-nostr-x86_64-unknown-linux-musl
+          $ chmod +x kuma-nostrd-x86_64-unknown-linux-musl kuma-nostr-x86_64-unknown-linux-musl
+          $ sudo mv kuma-nostrd-x86_64-unknown-linux-musl /usr/local/bin/kuma-nostrd
+          $ sudo mv kuma-nostr-x86_64-unknown-linux-musl /usr/local/bin/kuma-nostr
+          ```
+
           Verify it came from this workflow:
 
           ```console
@@ -285,9 +314,15 @@ jobs:
           fi
           )" \
             --target '${{ github.sha }}' \
-            '${{ steps.pkg.outputs.name }}' \
-            '${{ steps.pkg.outputs.name }}.sha256' \
-            '${{ steps.pkg.outputs.name }}.bundle'
+            kuma \
+            kuma.sha256 \
+            kuma.bundle \
+            kuma-nostrd \
+            kuma-nostrd.sha256 \
+            kuma-nostrd.bundle \
+            kuma-nostr \
+            kuma-nostr.sha256 \
+            kuma-nostr.bundle
         env:
           GH_TOKEN: ${{ github.token }}
 

@@ -1246,6 +1246,19 @@ pub(crate) mod tests {
         ),
         ("chmod +x kuma-x86_64-unknown-linux-musl", Proof::Unexecuted("plain shell, nothing of kuma's to prove")),
         ("sudo mv kuma-x86_64-unknown-linux-musl /usr/local/bin/kuma", Proof::Unexecuted("plain shell, nothing of kuma's to prove")),
+        // The nostr layer's pair, the release carrying them beside kuma
+        // the same way the image build stages them from beside it.
+        (
+            "curl -LO https://github.com/Letdown2491/kumaos/releases/latest/download/kuma-nostrd-x86_64-unknown-linux-musl",
+            Proof::Unexecuted("the asset name is asserted by the sibling test; the download itself is not run"),
+        ),
+        (
+            "curl -LO https://github.com/Letdown2491/kumaos/releases/latest/download/kuma-nostr-x86_64-unknown-linux-musl",
+            Proof::Unexecuted("the asset name is asserted by the sibling test; the download itself is not run"),
+        ),
+        ("chmod +x kuma-nostrd-x86_64-unknown-linux-musl kuma-nostr-x86_64-unknown-linux-musl", Proof::Unexecuted("plain shell, nothing of kuma's to prove")),
+        ("sudo mv kuma-nostrd-x86_64-unknown-linux-musl /usr/local/bin/kuma-nostrd", Proof::Unexecuted("plain shell, nothing of kuma's to prove")),
+        ("sudo mv kuma-nostr-x86_64-unknown-linux-musl /usr/local/bin/kuma-nostr", Proof::Unexecuted("plain shell, nothing of kuma's to prove")),
         // Both of these the dead-disk stage runs for real, which is the
         // only place in the project where "a backup works" is a fact
         // rather than a claim: it seeds a repository, destroys the disk,
