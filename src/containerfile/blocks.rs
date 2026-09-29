@@ -4356,6 +4356,12 @@ end
 local prompts = {}
 local vault = nil
 local uri = nil
+-- Forward-declared, because refresh runs before the file's bottom
+-- assigns render: a body that names a local declared later in the same
+-- scope reads the global of that name, which is nil, and the panel
+-- dies in its own callback — blank, with an error only the journal
+-- holds.
+local render
 
 local function refresh()
     noctalia.runAsync("kuma-nostr status --json", function(result)
@@ -4371,6 +4377,11 @@ local function refresh()
             uri = nil
             render()
         end
+    end)
+    noctalia.runAsync("kuma-nostr prompts --json", function(result)
+        local doc = noctalia.json.decode(result.stdout or "{}")
+        prompts = doc.prompts or {}
+        render()
     end)
 end
 
@@ -4449,7 +4460,7 @@ local function askRow(p)
     })
 end
 
-local function render()
+render = function()
     local children = {}
     local pairing = pairingSection()
     if pairing then
