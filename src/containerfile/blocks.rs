@@ -3035,7 +3035,12 @@ fn desktop_niri(e: &mut Emitter<'_>) {
             with_bar != injected,
             "the bar's end list moved in KUMA_NOCTALIA; the bunker's widget has nowhere to sit"
         );
-        with_bar + NOSTR_PLUGIN_SOURCE
+        let with_instance = with_bar.replace(NOSTR_BAR_INSTANCE_ANCHOR, NOSTR_BAR_INSTANCE);
+        assert!(
+            with_instance != with_bar,
+            "the battery widget's section moved in KUMA_NOCTALIA; the bunker instance has nowhere to declare itself"
+        );
+        with_instance + NOSTR_PLUGIN_SOURCE
     } else {
         KUMA_NOCTALIA.to_string()
     };
@@ -4441,12 +4446,18 @@ location = "/usr/lib/kuma/noctalia/plugins"
 enabled = true
 "#;
 
-/// The bar's end list closes on the control centre; the bunker's glyph
-/// joins after it, in the nostr-enabled render only. The address is the
-/// plugin id and the widget id the plugin.toml declares.
+/// The bar's end list closes on the control centre, and the bunker's
+/// glyph joins after it — as an instance: a plugin's bar widget is
+/// `[widget.<name>]` whose `type` names the plugin entry, and the bar's
+/// list carries the instance's name, not the plugin's id. Both halves
+/// are the nostr-enabled render's; the anchor on the battery widget's
+/// section is where the instance declaration lands.
 pub(crate) const NOSTR_BAR_ANCHOR: &str = "    \"control-center\"\n]";
 pub(crate) const NOSTR_BAR_WIDGET: &str =
-    "    \"control-center\",\n    \"kuma/nostr:bunker\"\n]";
+    "    \"control-center\",\n    \"bunker\"\n]";
+pub(crate) const NOSTR_BAR_INSTANCE_ANCHOR: &str = "[widget.battery]";
+pub(crate) const NOSTR_BAR_INSTANCE: &str =
+    "[widget.bunker]\ntype = \"kuma/nostr:bunker\"\n\n[widget.battery]";
 
 /// The enabled key's spelling inside the existing `[plugins]` section,
 /// and the line it joins.
