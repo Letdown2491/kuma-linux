@@ -4364,19 +4364,16 @@ local uri = nil
 local render
 
 local function refresh()
+    -- One ask carries everything: the status document has the vault's
+    -- state and the pairing URI in it, because the daemon builds the
+    -- URI and the CLI only ferries the answer. A second hop here was
+    -- one more spawn to fail, and its empty stdout crashed the decode
+    -- into nil — the blank the panel wore.
     noctalia.runAsync("kuma-nostr status --json", function(result)
         local doc = noctalia.json.decode(result.stdout or "{}")
         vault = doc.vault
-        if vault and vault.unlocked and vault.pubkey then
-            noctalia.runAsync("kuma-nostr bunker --json", function(second)
-                local pair = noctalia.json.decode(second.stdout or "{}")
-                uri = pair.uri
-                render()
-            end)
-        else
-            uri = nil
-            render()
-        end
+        uri = vault and vault.uri or nil
+        render()
     end)
     noctalia.runAsync("kuma-nostr prompts --json", function(result)
         local doc = noctalia.json.decode(result.stdout or "{}")
