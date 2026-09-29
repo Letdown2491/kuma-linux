@@ -4347,16 +4347,16 @@ end
         "panel.lua",
         r#"--!nonstrict
 -- The bunker's face, built like the shell's own panels: a rail of
--- sections on the left, the section's content on the right, cards
--- where a decision happens, and glyphs wherever a word would shout.
--- The daemon stays the policy; the CLI stays the transport; this file
--- is only the shape the answers wear.
+-- sections on the left, the pane's content on the right, cards where
+-- a decision happens, and glyphs wherever a word would shout.
 --
--- The vocabulary is noctalia's ui tree: palette roles for every color
--- (never hex), radii and gaps from the shell's own scale, buttons at
--- the control sizes. App icons arrive as remote URLs and ui.image
--- takes local paths only, so the first render shows a glyph and the
--- download lands in the cache for the next one.
+-- The layout's two load-bearing facts, both learned the hard way:
+-- the host sizes the root node, so the root is a column with
+-- flexGrow and everything under it fills toward that height — a root
+-- row of natural height is a panel that clips at its middle; and
+-- ui.box is a leaf, so every card is a column wearing fill and
+-- radius. The daemon stays the policy, the CLI stays the transport,
+-- and this file is only the shape the answers wear.
 
 local PROMPTS_URL = "kuma-nostr prompts --json"
 local APPS_URL = "kuma-nostr apps --json"
@@ -4368,7 +4368,7 @@ local apps = {}
 local vault = nil
 local uri = nil
 local tab = "asks" -- asks | apps | pair
-local tab_chosen = false -- the person's click wins over the onboarding default
+local tab_chosen = false -- the person's click wins over onboarding
 local render -- forward-declared: refresh's callbacks call it before the
               -- file's bottom assigns it, and a name read before its
               -- local exists resolves to the global — nil.
@@ -4418,17 +4418,62 @@ local function short(pk)
     return (pk or "?"):sub(1, 8) .. "…"
 end
 
--- A section's header: the title, and the count chip when there is
--- one. No subtitles — the rail already says where you are, and a
--- second line of filler is noise wearing a font.
+-- The app behind an ask: the pairings carry the name and the icon the
+-- connect's metadata claimed, and an ask that names nothing is a
+-- stranger's fingerprint — the one thing this panel must never show.
+local function appOf(pk)
+    for _, a in ipairs(apps) do
+        if a.pubkey == pk then
+            return a
+        end
+    end
+    return nil
+end
+
+local function appName(pk)
+    local a = appOf(pk)
+    return a and a.name or nil
+end
+
+-- An identity chip: the app's icon when one landed in the cache, the
+-- download started once when the app claims one, and the shield glyph
+-- either way until a file exists.
+local function avatar(pubkey, image, size)
+    local dest = ICON_DIR .. "/" .. pubkey:sub(1, 16) .. ".img"
+    if noctalia.readFile(dest) then
+        return ui.image({
+            path = dest, width = size, height = size, radius = size / 3, fit = "cover",
+        })
+    end
+    if image then
+        noctalia.download(image, dest, function() render() end)
+    end
+    return ui.column({
+        width = size, height = size, radius = size / 3,
+        fill = "primary/0.14", align = "center", justify = "center",
+    }, { ui.glyph({ name = "puzzle", size = size / 2, color = "primary" }) })
+end
+
+-- A card: the one surface vocabulary every pane shares. A column
+-- wearing fill and radius — ui.box is a leaf, and a leaf cannot hold
+-- the card's contents.
+local function card(children)
+    return ui.column({
+        fill = "surface_variant/0.35", radius = 14, padding = 14, gap = 10,
+    }, children)
+end
+
 local function paneHeader(title, badge)
     local row = {
         ui.label({ text = title, fontSize = 17, fontWeight = "bold", color = "on_surface", flexGrow = 1 }),
     }
     if badge then
-        table.insert(row, ui.column({ align = "center", justify = "center", fill = "primary", radius = 9, paddingH = 8, paddingV = 1 }, {
-            ui.label({ text = tostring(badge), fontSize = 11, fontWeight = "bold", color = "on_primary" }),
-        }))
+        table.insert(row, ui.column({
+            fill = "primary", radius = 9, paddingH = 8, paddingV = 1,
+            align = "center", justify = "center",
+        }, { ui.label({
+            text = tostring(badge), fontSize = 11, fontWeight = "bold", color = "on_primary",
+        }) }))
     end
     table.insert(row, ui.glyph({
         name = vault and vault.unlocked and "shield-lock" or "lock",
@@ -4443,23 +4488,9 @@ local function emptyState(glyph, title, subtitle)
         ui.spacer({ height = 56 }),
         ui.glyph({ name = glyph, size = 46, color = "primary/0.4" }),
         ui.label({ text = title, fontSize = 14, fontWeight = "medium", color = "on_surface" }),
-        subtitle and ui.label({ text = subtitle, fontSize = 12, color = "on_surface_variant" }) or nil,
-    })
-end
-
--- An app's icon: the cached download when it exists, the download
--- started once when it does not, and a glyph chip either way until the
--- file lands.
-local function avatar(pubkey, image)
-    local dest = ICON_DIR .. "/" .. pubkey:sub(1, 16) .. ".img"
-    if noctalia.readFile(dest) then
-        return ui.image({ path = dest, width = 38, height = 38, radius = 10, fit = "cover" })
-    end
-    if image then
-        noctalia.download(image, dest, function() render() end)
-    end
-    return ui.column({ width = 38, height = 38, radius = 10, fill = "primary/0.14", align = "center", justify = "center" }, {
-        ui.glyph({ name = "puzzle", size = 19, color = "primary" }),
+        subtitle and ui.label({
+            text = subtitle, fontSize = 12, color = "on_surface_variant", maxLines = 2,
+        }) or nil,
     })
 end
 
@@ -4474,13 +4505,13 @@ local TABS = {
 local function railButton(t)
     local active = tab == t.id
     -- The pending count rides in the button's own text: the rail is
-    -- narrow, and a badge floating beside the glyph is a second layout
-    -- problem nobody needs.
+    -- narrow, and a floating badge is a second layout problem nobody
+    -- needs.
     local count = t.id == "asks" and #prompts > 0 and tostring(#prompts) or nil
     return ui.button({
         variant = active and "secondary" or "ghost",
         controlSize = "md",
-        width = 48,
+        width = 46,
         glyph = t.glyph,
         text = count,
         onClick = function()
@@ -4491,26 +4522,34 @@ local function railButton(t)
     })
 end
 
--- ── cards ────────────────────────────────────────────────────────────
+-- ── the panes ────────────────────────────────────────────────────────
 
 local function askCard(p)
+    local known = appOf(p.app)
+    local label = (known and known.name) or (p.app and short(p.app) or "?")
     local glyph = METHOD_GLYPHS[(p.method or ""):lower()] or "shield-lock"
+
     local lines = {
         ui.row({ gap = 12, align = "center" }, {
-            ui.column({ width = 36, height = 36, radius = 10, fill = "primary/0.14", align = "center", justify = "center" }, {
-                ui.glyph({ name = glyph, size = 18, color = "primary" }),
-            }),
+            avatar(p.app, known and known.image or nil, 38),
             ui.column({ gap = 1, flexGrow = 1 }, {
-                ui.label({ text = p.method or "?", fontWeight = "semibold", color = "on_surface" }),
-                ui.label({ text = "from " .. (p.app and short(p.app) or "?"), fontSize = 11, color = "on_surface_variant" }),
+                ui.label({ text = label, fontWeight = "semibold", color = "on_surface" }),
+                ui.label({
+                    text = (p.method or "?"):gsub("(%l)(%u)", function(a, b) return a .. " " .. b:lower() end),
+                    fontSize = 12, color = "on_surface_variant",
+                }),
             }),
         }),
     }
     if p.summary then
-        table.insert(lines, ui.label({ text = p.summary, fontSize = 12, color = "on_surface_variant", maxLines = 3 }))
+        table.insert(lines, ui.label({
+            text = p.summary, fontSize = 12, color = "on_surface_variant", maxLines = 3,
+        }))
     end
     if p.detail then
-        table.insert(lines, ui.label({ text = p.detail, fontSize = 11, color = "on_surface_variant/0.8", maxLines = 4 }))
+        table.insert(lines, ui.label({
+            text = p.detail, fontSize = 11, color = "on_surface_variant/0.8", maxLines = 4,
+        }))
     end
     table.insert(lines, ui.row({ gap = 8 }, {
         ui.button({ text = "Approve", variant = "primary", controlSize = "sm", glyph = "check",
@@ -4520,7 +4559,7 @@ local function askCard(p)
         ui.button({ text = "Deny", variant = "ghost", controlSize = "sm", glyph = "x",
             onClick = function() cli({ "deny", p.id }) end }),
     }))
-    return ui.column({ fill = "surface_variant/0.35", radius = 14, padding = 14, gap = 10 }, lines)
+    return card(lines)
 end
 
 local LEVELS = { "ask", "basic", "trust" }
@@ -4543,26 +4582,24 @@ local function levelSwitch(a)
 end
 
 local function appCard(a)
-    return ui.column({ fill = "surface_variant/0.35", radius = 14, padding = 14, gap = 10 }, {
-        ui.column({ gap = 10 }, {
-            ui.row({ gap = 12, align = "center" }, {
-                avatar(a.pubkey, a.image),
-                ui.column({ gap = 1, flexGrow = 1 }, {
-                    ui.label({ text = a.name or short(a.pubkey), fontWeight = "semibold", color = "on_surface" }),
-                    ui.label({ text = short(a.pubkey), fontSize = 11, color = "on_surface_variant" }),
-                }),
+    return card({
+        ui.row({ gap = 12, align = "center" }, {
+            avatar(a.pubkey, a.image, 40),
+            ui.column({ gap = 1, flexGrow = 1 }, {
+                ui.label({ text = a.name or short(a.pubkey), fontWeight = "semibold", color = "on_surface" }),
+                ui.label({ text = short(a.pubkey), fontSize = 11, color = "on_surface_variant" }),
             }),
-            levelSwitch(a),
-            ui.button({ text = "Revoke", variant = "ghost", controlSize = "sm", glyph = "trash",
+            ui.button({ variant = "ghost", controlSize = "sm", glyph = "trash",
+                tooltip = "revoke",
                 onClick = function() cli({ "revoke", a.pubkey }) end }),
         }),
+        levelSwitch(a),
     })
 end
 
 local function pairPane()
-    local locked = vault and not vault.unlocked
-    if locked then
-        return ui.column({ gap = 12 }, {
+    if vault and not vault.unlocked then
+        return ui.column({ gap = 10 }, {
             ui.label({ text = "The bunker is locked.", fontWeight = "semibold", color = "on_surface" }),
             ui.label({
                 text = "Unlock from a terminal: kuma-nostr unlock. It pairs while locked, and signs nothing.",
@@ -4570,26 +4607,22 @@ local function pairPane()
             }),
         })
     end
-    return ui.column({ gap = 12 }, {
-        ui.column({ fill = "surface_variant/0.35", radius = 14, padding = 14, gap = 10 }, {
-            ui.column({ gap = 10 }, {
-                ui.label({
-                    text = "Copy the URI into any NIP-46 app. Its connect lands as a request here.",
-                    fontSize = 12, color = "on_surface_variant", maxLines = 3,
-                }),
-                ui.row({ gap = 8 }, {
-                    ui.button({ text = "Copy URI", variant = "primary", glyph = "clipboard-copy", onClick = function()
-                        if uri then noctalia.copyToClipboard(uri, "text/plain") end
-                    end }),
-                    ui.button({ text = "Rotate", variant = "outline", glyph = "refresh", onClick = function()
-                        cli({ "rotate" })
-                    end }),
-                }),
-                ui.label({
-                    text = "Rotation retires every URI printed before it.",
-                    fontSize = 11, color = "on_surface_variant/0.8", maxLines = 2,
-                }),
-            }),
+    return card({
+        ui.label({
+            text = "Copy the URI into any NIP-46 app. Its connect lands as a request here.",
+            fontSize = 12, color = "on_surface_variant", maxLines = 3,
+        }),
+        ui.row({ gap = 8 }, {
+            ui.button({ text = "Copy URI", variant = "primary", glyph = "clipboard-copy", onClick = function()
+                if uri then noctalia.copyToClipboard(uri, "text/plain") end
+            end }),
+            ui.button({ text = "Rotate", variant = "outline", glyph = "refresh", onClick = function()
+                cli({ "rotate" })
+            end }),
+        }),
+        ui.label({
+            text = "Rotation retires every URI printed before it; apps holding old copies need the new one.",
+            fontSize = 11, color = "on_surface_variant/0.8", maxLines = 3,
         }),
     })
 end
@@ -4608,8 +4641,7 @@ end
 
 local function appsPane()
     if #apps == 0 then
-        return emptyState("apps", "No apps paired yet",
-            "Pair one from the Pair tab")
+        return emptyState("apps", "No apps paired yet", "Pair one from the Pair tab")
     end
     local cards = {}
     for _, a in ipairs(apps) do
@@ -4620,14 +4652,16 @@ end
 
 -- ── the frame ────────────────────────────────────────────────────────
 
+-- The root is a column, because the host sizes the root node and only
+-- a column's children fill toward that height the way the scroll
+-- needs; the row inside carries the rail and the pane.
 render = function()
     local rail = {}
     for _, t in ipairs(TABS) do
         table.insert(rail, railButton(t))
     end
 
-    local title, subtitle, body
-    local badge = nil
+    local title, badge, body
     if tab == "asks" then
         title = "Requests"
         badge = #prompts > 0 and #prompts or nil
@@ -4640,16 +4674,16 @@ render = function()
         body = pairPane()
     end
 
-    local headerRow = paneHeader(title, badge)
+    local pane = ui.column({ gap = 10, flexGrow = 1 }, {
+        paneHeader(title, badge),
+        ui.separator({ color = "on_surface_variant/0.25" }),
+        ui.scroll({ flexGrow = 1, gap = 12 }, { body }),
+    })
 
-    panel.render(ui.row({ gap = 14, padding = 14 }, {
-        -- the rail: the shell's panels keep their sections on a slim
-        -- column, and so does this one
-        ui.column({ gap = 8, width = 52, align = "center" }, rail),
-        ui.column({ gap = 12, width = 470 }, {
-            ui.row({ gap = 10, align = "center" }, headerRow),
-            ui.separator({}),
-            ui.scroll({ flexGrow = 1, gap = 12 }, { body }),
+    panel.render(ui.column({ flexGrow = 1 }, {
+        ui.row({ gap = 12, flexGrow = 1 }, {
+            ui.column({ gap = 8, width = 48 }, rail),
+            pane,
         }),
     }))
 end
