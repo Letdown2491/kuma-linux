@@ -4294,8 +4294,8 @@ entry = "widget.lua"
 [[panel]]
 id = "panel"
 entry = "panel.lua"
-width = 420
-height = 410
+width = 560
+height = 520
 placement = "attached"
 "#,
     ),
@@ -4412,26 +4412,29 @@ local function short(pk)
     return (pk or "?"):sub(1, 8) .. "…"
 end
 
-local function sectionTitle(text, badge)
-    local row = {
-        ui.label({ text = text, fontSize = 15, fontWeight = "bold", color = "on_surface" }),
+-- A section's header: the title, and the one line under it that says
+-- what the pane is about today — a count, a state, a nudge.
+local function paneHeader(title, subtitle, badge)
+    local head = {
+        ui.row({ gap = 10, align = "center" }, {
+            ui.label({ text = title, fontSize = 17, fontWeight = "bold", color = "on_surface" }),
+            badge and ui.box({ radius = 9, fill = "primary", paddingH = 8 }) and ui.box({
+                radius = 9, fill = "primary", paddingH = 8, paddingV = 1,
+            }, { ui.label({
+                text = tostring(badge), fontSize = 11, fontWeight = "bold", color = "on_primary",
+            }) }) or nil,
+        }),
     }
-    if badge then
-        table.insert(row, ui.box({
-            width = 20, height = 20, radius = 10, fill = "primary",
-        }, { ui.label({
-            text = tostring(badge), fontSize = 11, fontWeight = "bold",
-            color = "on_primary",
-        }) }))
-        -- the box centers its child by the row around it
+    if subtitle then
+        table.insert(head, ui.label({ text = subtitle, fontSize = 12, color = "on_surface_variant" }))
     end
-    return ui.row({ gap = 8, align = "center" }, row)
+    return ui.column({ gap = 2 }, head)
 end
 
 local function emptyState(glyph, title, subtitle)
     return ui.column({ gap = 10, align = "center", flexGrow = 1 }, {
-        ui.spacer({ height = 30 }),
-        ui.glyph({ name = glyph, size = 42, color = "primary/0.45" }),
+        ui.spacer({ height = 56 }),
+        ui.glyph({ name = glyph, size = 46, color = "primary/0.4" }),
         ui.label({ text = title, fontSize = 14, fontWeight = "medium", color = "on_surface" }),
         subtitle and ui.label({ text = subtitle, fontSize = 12, color = "on_surface_variant" }) or nil,
     })
@@ -4443,13 +4446,13 @@ end
 local function avatar(pubkey, image)
     local dest = ICON_DIR .. "/" .. pubkey:sub(1, 16) .. ".img"
     if noctalia.readFile(dest) then
-        return ui.image({ path = dest, width = 34, height = 34, radius = 9, fit = "cover" })
+        return ui.image({ path = dest, width = 38, height = 38, radius = 10, fit = "cover" })
     end
     if image then
         noctalia.download(image, dest, function() render() end)
     end
-    return ui.box({ width = 34, height = 34, radius = 9, fill = "primary/0.14" }, {
-        ui.glyph({ name = "puzzle", size = 17, color = "primary" }),
+    return ui.box({ width = 38, height = 38, radius = 10, fill = "primary/0.14" }, {
+        ui.glyph({ name = "puzzle", size = 19, color = "primary" }),
     })
 end
 
@@ -4457,20 +4460,20 @@ end
 
 local TABS = {
     { id = "asks", glyph = "bell", title = "Requests" },
-    { id = "apps", glyph = "apps", title = "Apps" },
+    { id = "apps", glyph = "apps", title = "Paired apps" },
     { id = "pair", glyph = "link", title = "Pair" },
 }
 
 local function railButton(t)
     local active = tab == t.id
     -- The pending count rides in the button's own text: the rail is
-    -- 44px wide, and a badge floating beside the glyph is a second
-    -- layout problem nobody needs.
+    -- narrow, and a badge floating beside the glyph is a second layout
+    -- problem nobody needs.
     local count = t.id == "asks" and #prompts > 0 and tostring(#prompts) or nil
     return ui.button({
         variant = active and "secondary" or "ghost",
-        controlSize = "sm",
-        width = 44,
+        controlSize = "md",
+        width = 48,
         glyph = t.glyph,
         text = count,
         onClick = function()
@@ -4480,18 +4483,20 @@ local function railButton(t)
     })
 end
 
--- ── the panes ────────────────────────────────────────────────────────
+-- ── cards ────────────────────────────────────────────────────────────
 
 local function askCard(p)
-    local appName = p.app and short(p.app) or "?"
+    local glyph = METHOD_GLYPHS[(p.method or ""):lower()] or "shield-lock"
     local lines = {
-        ui.row({ gap = 10, align = "center" }, {
-            ui.box({ width = 30, height = 30, radius = 8, fill = "primary/0.14" }, {
-                ui.glyph({ name = METHOD_GLYPHS[(p.method or ""):lower()] or "shield-lock", size = 15, color = "primary" }),
+        ui.row({ gap = 12, align = "center" }, {
+            ui.box({ width = 36, height = 36, radius = 10, fill = "primary/0.14" }, {
+                ui.glyph({ name = glyph, size = 18, color = "primary" }),
             }),
-            ui.label({ text = p.method or "?", fontWeight = "semibold", color = "on_surface", flexGrow = 1 }),
+            ui.column({ gap = 1, flexGrow = 1 }, {
+                ui.label({ text = p.method or "?", fontWeight = "semibold", color = "on_surface" }),
+                ui.label({ text = "from " .. (p.app and short(p.app) or "?"), fontSize = 11, color = "on_surface_variant" }),
+            }),
         }),
-        ui.label({ text = "from " .. appName, fontSize = 12, color = "on_surface_variant" }),
     }
     if p.summary then
         table.insert(lines, ui.label({ text = p.summary, fontSize = 12, color = "on_surface_variant", maxLines = 3 }))
@@ -4507,33 +4512,41 @@ local function askCard(p)
         ui.button({ text = "Deny", variant = "ghost", controlSize = "sm", glyph = "x",
             onClick = function() cli({ "deny", p.id }) end }),
     }))
-    return ui.box({ fill = "surface_variant/0.45", radius = 12, padding = 12 }, {
-        ui.column({ gap = 8 }, lines),
+    return ui.box({ fill = "surface_variant/0.35", radius = 14, padding = 14 }, {
+        ui.column({ gap = 10 }, lines),
     })
 end
 
 local LEVELS = { "ask", "basic", "trust" }
 
-local function appCard(a)
-    local levelButtons = {}
+-- The segmented control: the three levels in one pill, the app's
+-- current level the lit segment — a toggle the eye reads as one
+-- question instead of three buttons arguing.
+local function levelSwitch(a)
+    local segments = {}
     for _, level in ipairs(LEVELS) do
-        table.insert(levelButtons, ui.button({
+        table.insert(segments, ui.button({
             text = level,
             controlSize = "sm",
             variant = a.level == level and "primary" or "ghost",
+            flexGrow = 1,
             onClick = function() cli({ "level", a.pubkey, level }) end,
         }))
     end
-    return ui.box({ fill = "surface_variant/0.45", radius = 12, padding = 12 }, {
-        ui.column({ gap = 8 }, {
-            ui.row({ gap = 10, align = "center" }, {
+    return ui.row({ gap = 2, fill = "surface_variant/0.5", radius = 10, padding = 3 }, segments)
+end
+
+local function appCard(a)
+    return ui.box({ fill = "surface_variant/0.35", radius = 14, padding = 14 }, {
+        ui.column({ gap = 10 }, {
+            ui.row({ gap = 12, align = "center" }, {
                 avatar(a.pubkey, a.image),
-                ui.column({ gap = 2, flexGrow = 1 }, {
+                ui.column({ gap = 1, flexGrow = 1 }, {
                     ui.label({ text = a.name or short(a.pubkey), fontWeight = "semibold", color = "on_surface" }),
                     ui.label({ text = short(a.pubkey), fontSize = 11, color = "on_surface_variant" }),
                 }),
             }),
-            ui.row({ gap = 6, align = "center" }, levelButtons),
+            levelSwitch(a),
             ui.button({ text = "Revoke", variant = "ghost", controlSize = "sm", glyph = "trash",
                 onClick = function() cli({ "revoke", a.pubkey }) end }),
         }),
@@ -4541,26 +4554,30 @@ local function appCard(a)
 end
 
 local function pairPane()
-    local children = {
-        sectionTitle("Pair an app"),
-        ui.label({
-            text = "Copy the URI into any NIP-46 app. Its connect lands as a request here.",
-            fontSize = 12, color = "on_surface_variant",
+    local locked = vault and not vault.unlocked
+    return ui.column({ gap = 12 }, {
+        paneHeader("Pair an app", locked and "the bunker is locked" or "the front door"),
+        ui.box({ fill = "surface_variant/0.35", radius = 14, padding = 14 }, {
+            ui.column({ gap = 10 }, {
+                ui.label({
+                    text = "Copy the URI into any NIP-46 app. Its connect lands as a request here.",
+                    fontSize = 12, color = "on_surface_variant",
+                }),
+                ui.row({ gap = 8 }, {
+                    ui.button({ text = "Copy URI", variant = "primary", glyph = "clipboard-copy", onClick = function()
+                        if uri then noctalia.copyToClipboard(uri, "text/plain") end
+                    end }),
+                    ui.button({ text = "Rotate", variant = "outline", glyph = "refresh", onClick = function()
+                        cli({ "rotate" })
+                    end }),
+                }),
+                ui.label({
+                    text = "Rotation retires every URI printed before it.",
+                    fontSize = 11, color = "on_surface_variant/0.8",
+                }),
+            }),
         }),
-        ui.row({ gap = 8 }, {
-            ui.button({ text = "Copy URI", variant = "primary", glyph = "clipboard-copy", onClick = function()
-                if uri then noctalia.copyToClipboard(uri, "text/plain") end
-            end }),
-            ui.button({ text = "Rotate", variant = "outline", glyph = "refresh", onClick = function()
-                cli({ "rotate" })
-            end }),
-        }),
-        ui.label({
-            text = "Rotation retires every URI printed before it.",
-            fontSize = 11, color = "on_surface_variant/0.8",
-        }),
-    }
-    return ui.column({ gap = 12 }, children)
+    })
 end
 
 local function asksPane()
@@ -4572,7 +4589,7 @@ local function asksPane()
     for _, p in ipairs(prompts) do
         table.insert(cards, askCard(p))
     end
-    return ui.column({ gap = 10 }, cards)
+    return ui.column({ gap = 12 }, cards)
 end
 
 local function appsPane()
@@ -4584,7 +4601,7 @@ local function appsPane()
     for _, a in ipairs(apps) do
         table.insert(cards, appCard(a))
     end
-    return ui.column({ gap = 10 }, cards)
+    return ui.column({ gap = 12 }, cards)
 end
 
 -- ── the frame ────────────────────────────────────────────────────────
@@ -4592,35 +4609,44 @@ end
 render = function()
     local rail = {}
     for _, t in ipairs(TABS) do
-        local btn = railButton(t)
-        table.insert(rail, btn)
+        table.insert(rail, railButton(t))
     end
 
-    local title, body
+    local title, subtitle, body
     if tab == "asks" then
-        title, body = "Requests", asksPane()
+        title = "Requests"
+        subtitle = #prompts > 0 and (#prompts .. " waiting on you") or "the queue is clear"
+        body = asksPane()
     elseif tab == "apps" then
-        title, body = "Paired apps", appsPane()
+        title = "Paired apps"
+        subtitle = #apps > 0 and (#apps .. " hold the vault's trust") or "nobody yet"
+        body = appsPane()
     else
-        title, body = "Pair", pairPane()
+        title = "Pair"
+        subtitle = nil
+        body = pairPane()
     end
 
     local headerRow = {
-        ui.label({ text = title, fontSize = 16, fontWeight = "bold", color = "on_surface", flexGrow = 1 }),
+        ui.column({ gap = 2, flexGrow = 1 }, {
+            ui.label({ text = title, fontSize = 17, fontWeight = "bold", color = "on_surface" }),
+            subtitle and ui.label({ text = subtitle, fontSize = 12, color = "on_surface_variant" }) or nil,
+        }),
+        ui.glyph({
+            name = vault and vault.unlocked and "shield-lock" or "lock",
+            size = 16,
+            color = vault and vault.unlocked and "primary/0.7" or "on_surface_variant/0.7",
+        }),
     }
-    if vault and vault.unlocked then
-        table.insert(headerRow, ui.glyph({ name = "shield-lock", size = 15, color = "primary/0.7" }))
-    else
-        table.insert(headerRow, ui.glyph({ name = "lock", size = 15, color = "on_surface_variant/0.7" }))
-    end
 
-    panel.render(ui.row({ gap = 12, padding = 12 }, {
+    panel.render(ui.row({ gap = 14, padding = 14 }, {
         -- the rail: the shell's panels keep their sections on a slim
         -- column, and so does this one
-        ui.column({ gap = 6, width = 48, align = "center" }, rail),
-        ui.column({ gap = 10, flexGrow = 1 }, {
-            ui.row({ gap = 8, align = "center" }, headerRow),
-            ui.scroll({ flexGrow = 1, gap = 10 }, { body }),
+        ui.column({ gap = 8, width = 52, align = "center" }, rail),
+        ui.column({ gap = 12, flexGrow = 1 }, {
+            ui.row({ gap = 10, align = "center" }, headerRow),
+            ui.separator({}),
+            ui.scroll({ flexGrow = 1, gap = 12 }, { body }),
         }),
     }))
 end
