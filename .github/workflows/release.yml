@@ -96,6 +96,13 @@ jobs:
           targets: x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
+      # The relay's ring (rustls's crypto) needs a C compiler for the
+      # musl target, and the runner ships gcc without the musl variant.
+      # This arrived with the nostr layer's relay port; before it, the
+      # tree was pure Rust and this line was not needed.
+      - name: install the musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
       # ci.yml runs on this same push, but nothing makes this job wait for
       # it, so without a gate here a red tree still publishes a binary.
       # Testing on the release target rather than the host's costs nothing

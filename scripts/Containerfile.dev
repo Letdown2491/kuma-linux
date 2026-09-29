@@ -22,4 +22,7 @@
 # rather than by a subuid nobody can write to afterwards.
 FROM registry.fedoraproject.org/fedora-toolbox:42
 
-RUN dnf -y install gcc && dnf clean all
+# musl-gcc: the relay's ring (rustls's crypto) needs a C compiler for
+# the musl target, which is the release's target; a gnu-only container
+# builds the tree and not the release.
+RUN dnf -y install gcc musl-gcc && dnf clean all
