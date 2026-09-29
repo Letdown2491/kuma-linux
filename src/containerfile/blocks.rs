@@ -4564,21 +4564,34 @@ end
 
 local LEVELS = { "ask", "basic", "trust" }
 
--- The segmented control: the three levels in one pill, the app's
--- current level the lit segment — a toggle the eye reads as one
--- question instead of three buttons arguing.
-local function levelSwitch(a)
-    local segments = {}
-    for _, level in ipairs(LEVELS) do
-        table.insert(segments, ui.button({
-            text = level,
-            controlSize = "sm",
-            variant = a.level == level and "primary" or "ghost",
-            flexGrow = 1,
-            onClick = function() cli({ "level", a.pubkey, level }) end,
-        }))
+local function nextLevel(level)
+    for i, l in ipairs(LEVELS) do
+        if l == level then
+            return LEVELS[i % #LEVELS + 1]
+        end
     end
-    return ui.row({ gap = 2, fill = "surface_variant/0.5", radius = 10, padding = 3 }, segments)
+    return "ask"
+end
+
+-- The level control is one button that tells the truth twice: its
+-- text is the standing answer, and its weight is the level's
+-- seriousness — trust renders primary, because that is the loudest
+-- thing in the layer and the button should look like what it hands
+-- out. A tap advances the cycle; the daemon logs the change.
+local function levelButton(a)
+    local variant = "ghost"
+    if a.level == "trust" then
+        variant = "primary"
+    elseif a.level == "basic" then
+        variant = "secondary"
+    end
+    return ui.button({
+        text = "level: " .. (a.level or "ask"),
+        controlSize = "sm",
+        variant = variant,
+        tooltip = "tap to cycle ask, basic, trust",
+        onClick = function() cli({ "level", a.pubkey, nextLevel(a.level) }) end,
+    })
 end
 
 local function appCard(a)
@@ -4593,7 +4606,7 @@ local function appCard(a)
                 tooltip = "revoke",
                 onClick = function() cli({ "revoke", a.pubkey }) end }),
         }),
-        levelSwitch(a),
+        levelButton(a),
     })
 end
 
