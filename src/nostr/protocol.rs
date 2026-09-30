@@ -518,6 +518,7 @@ pub fn err_response(error: anyhow::Error) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nostr::prelude::*;
     use crate::nostr::vault::{MemoryStore, SecretStore, Vault};
 
     async fn daemon() -> Daemon<MemoryStore> {
