@@ -163,17 +163,42 @@ struct Inner {
 /// `apps`, `revoke`) drive. Cloneable on purpose — the handle is cheap
 /// and the state is shared — because the verbs and the gate are two
 /// roads into one decision record.
+/// How long an Ask waits for a person before it denies itself. A
+/// prompt that waited forever was a signature waiting to happen —
+/// approved a week later, it executed. Five minutes is what the app
+/// on the other side is willing to wait anyway.
+const PROMPT_TTL_SECS: u64 = 300;
+
 #[derive(Clone)]
 pub struct Engine {
     inner: Arc<Mutex<Inner>>,
     state_path: Option<PathBuf>,
+    /// How long an ask waits. The constant in production; the test
+    /// seam shrinks it to something a test can wait out.
+    prompt_ttl: Duration,
 }
 
 impl Engine {
     /// `state_dir` is where `apps.json` lives; `None` makes the engine
     /// memory-only, which is what the offline tests run against.
     pub fn new(state_dir: Option<PathBuf>) -> Self {
-        let engine = Self { inner: Arc::new(Mutex::new(Inner::default())), state_path: state_dir };
+        let engine = Self {
+            inner: Arc::new(Mutex::new(Inner::default())),
+            state_path: state_dir,
+            prompt_ttl: Duration::from_secs(PROMPT_TTL_SECS),
+        };
+        engine.load_apps();
+        engine
+    }
+
+    /// The same engine with a window a test can afford to wait out.
+    #[cfg(test)]
+    fn with_prompt_ttl(state_dir: Option<PathBuf>, ttl: Duration) -> Self {
+        let engine = Self {
+            inner: Arc::new(Mutex::new(Inner::default())),
+            state_path: state_dir,
+            prompt_ttl: ttl,
+        };
         engine.load_apps();
         engine
     }
@@ -414,9 +439,26 @@ impl super::bunker::Gate for Engine {
             id
         };
         eprintln!("kuma-nostrd: asking {id}: {summary}");
-        match rx.await {
-            Ok(decision) => decision,
-            Err(_) => Decision::Deny("the prompt was dropped".into()),
+        // The window: a prompt that waited forever was a signature
+        // waiting to happen. On expiry the ask denies itself, leaves
+        // the queue, and the log records it — the app on the other
+        // side gets its refusal, and approving the stale id later is
+        // the honest error.
+        match tokio::time::timeout(self.prompt_ttl, rx).await {
+            Ok(Ok(decision)) => decision,
+            Ok(Err(_)) => Decision::Deny("the prompt was dropped".into()),
+            Err(_) => {
+                let mut inner = self.inner.lock().expect("the policy lock");
+                inner.prompts.retain(|(prompt_id, _)| prompt_id != &id);
+                inner.log.push(LogEntry {
+                    at: unix_now(),
+                    app: app.to_string(),
+                    method: format!("{method:?}"),
+                    summary,
+                    verdict: "expired unanswered".into(),
+                });
+                Decision::Deny("the ask timed out unanswered".into())
+            }
         }
     }
 }
