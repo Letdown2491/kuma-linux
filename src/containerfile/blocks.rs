@@ -4684,7 +4684,11 @@ end
 -- The list's card is a read, not a write: two lines — who the app is
 -- and what it has been doing — and a tap opens the detail where the
 -- acts live. Signet's shape: the list shows state, the sheet holds
--- the buttons, and no card is a control panel unto itself.
+-- the buttons, and no card is a control panel unto itself. The click
+-- rides the inner row, not the card: the host wraps a clickable
+-- column content-sized (small and centered, the layout this card
+-- shipped with once), and a row is stretched full width by its
+-- parent for free.
 local function appCard(a)
     local line2 = { "paired " .. (relative(a.paired_at) or "?") }
     if a.request_count and a.request_count > 0 then
@@ -4696,12 +4700,11 @@ local function appCard(a)
     return ui.column({
         key = "app-" .. a.pubkey,
         fill = "surface_variant/0.35", radius = 14, padding = 14, gap = 4,
-        onClick = function()
+    }, {
+        ui.row({ gap = 12, align = "center", onClick = function()
             selected_app = a.pubkey
             render()
-        end,
-    }, {
-        ui.row({ gap = 12, align = "center" }, {
+        end }, {
             avatar(a.pubkey, a.image, 40),
             ui.label({
                 text = a.name or short(a.pubkey), fontWeight = "semibold", flexGrow = 1,
