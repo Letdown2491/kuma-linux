@@ -18,7 +18,10 @@ differently. Why it changed belongs in the commit that made it.
   `apps`, `revoke`, `unrevoke`, `level`, `rotate`, `destroy`); the
   noctalia plugin (a bar glyph that counts pending asks, and the approval
   panel behind it — `Mod+Ctrl+N` opens it, and a `nostrconnect://` link
-  clicked anywhere lands there). A freshly paired app can ask for
+  clicked anywhere lands there as an offer the person pairs or ignores;
+  the panel keeps the vault's keep-alive while it is in use, mints a
+  fresh pairing URI on copy, shows the revoked state with its undo, and
+  carries each app's requested permissions). A freshly paired app can ask for
   everything and signs nothing until a person answers; relaxing an app
   to Basic signs only the kinds an explicit safe list vouches for —
   notes, reposts, reactions, long-form, the everyday social surface —
