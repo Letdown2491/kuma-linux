@@ -453,6 +453,7 @@ fn set_read_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
     use crate::nostr::test_relay::{wait_for, StubRelay};
 
     #[test]
