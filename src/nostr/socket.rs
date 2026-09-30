@@ -379,7 +379,7 @@ mod tests {
     /// and revoking tears the client's roads down.
     #[test]
     fn a_nostrconnect_app_s_road_is_its_own_and_teardown_stops_it() {
-        use crate::nostr::test_relay::{StubRelay, wait_for};
+        use crate::nostr::test_relay::{wait_for, StubRelay};
         use nostr::nips::nip46::{NostrConnectMessage, NostrConnectRequest};
 
         // Two relays: the bunker's own (stub1) and the client's (stub2).
@@ -415,13 +415,12 @@ mod tests {
                         use crate::nostr::bunker::Gate;
                         // The client's first ask: approved here, so the
                         // answer's road is what carries it.
-                        let decision = if method
-                            == nostr::nips::nip46::NostrConnectMethod::GetPublicKey
-                        {
-                            crate::nostr::bunker::Decision::Allow
-                        } else {
-                            handle.block_on(engine.decide(&request.pubkey, &method, params))
-                        };
+                        let decision =
+                            if method == nostr::nips::nip46::NostrConnectMethod::GetPublicKey {
+                                crate::nostr::bunker::Decision::Allow
+                            } else {
+                                handle.block_on(engine.decide(&request.pubkey, &method, params))
+                            };
                         let answer =
                             { daemon.lock().unwrap().execute_bunker_event(plan, decision) };
                         if let Some(answer) = answer {
@@ -465,11 +464,8 @@ mod tests {
             !own_relay.received().iter().any(|frame| frame.contains(":24133")),
             "the handshake is the client's road's business, not the declared set's"
         );
-        let frame = client_relay
-            .received()
-            .into_iter()
-            .find(|frame| frame.contains(":24133"))
-            .unwrap();
+        let frame =
+            client_relay.received().into_iter().find(|frame| frame.contains(":24133")).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&frame).unwrap();
         let handshake: Event = serde_json::from_value(parsed[1].clone()).unwrap();
         let bunker_pubkey = handshake.pubkey;
@@ -499,7 +495,9 @@ mod tests {
         client_relay.inject(&request);
 
         wait_for("the answer on the client's relay", 100, || {
-            client_relay.received().iter().any(|frame| frame.contains(":24133") && frame.contains(&handshake.id.to_string()) == false)
+            client_relay.received().iter().any(|frame| {
+                frame.contains(":24133") && frame.contains(&handshake.id.to_string()) == false
+            })
         });
         wait_for("the answer on the declared set's relay", 100, || {
             own_relay.received().iter().any(|frame| frame.contains(":24133"))
@@ -511,14 +509,10 @@ mod tests {
         let apps: serde_json::Value =
             serde_json::from_str(ask(&mut client, r#"{"cmd":"apps"}"#).trim()).unwrap();
         let app_hex = apps["apps"][0]["pubkey"].as_str().unwrap().to_string();
-        assert!(ask(
-            &mut client,
-            &format!(r#"{{"cmd":"revoke","app":"{app_hex}"}}"#)
-        )
-        .contains("\"ok\":true"));
+        assert!(ask(&mut client, &format!(r#"{{"cmd":"revoke","app":"{app_hex}"}}"#))
+            .contains("\"ok\":true"));
         wait_for("the client's roads to tear down", 100, || {
-            let daemon = daemon.lock().unwrap();
-            daemon.pool.as_ref().expect("armed").app_road_count(&app.public_key()) == 0
+            daemon.lock().unwrap().app_road_count(&app.public_key()) == 0
         });
     }
 

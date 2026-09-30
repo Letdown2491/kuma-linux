@@ -711,6 +711,13 @@ impl<S: super::vault::SecretStore> Daemon<S> {
         Ok(())
     }
 
+    /// Whether an app's relay roads are still threaded — what the
+    /// teardown test reads.
+    #[cfg(test)]
+    pub(crate) fn app_road_count(&self, app: &PublicKey) -> usize {
+        self.pool.as_ref().map_or(0, |pool| pool.app_road_count(app))
+    }
+
     /// A handle to the engine for beat two — the decision — which the
     /// worker awaits with no lock held. The engine's state is shared
     /// through its own interior lock; this handle is a window, not a
