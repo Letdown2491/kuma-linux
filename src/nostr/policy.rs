@@ -13,8 +13,9 @@
 //!   doctor grades any app holding it Warn by name.
 //!
 //! Sensitive — the plan's list: profile and follow writes, relay-list
-//! and mute-list writes, deletions, and the decrypt methods, which read
-//! what was meant to be private. A sensitive ask may be remembered for
+//! and mute-list writes, deletions, the decrypt methods, which read
+//! what was meant to be private, and NIP-04 encryption, whose whole
+//! job is private messages. A sensitive ask may be remembered for
 //! at most an hour; that is the longest standing grant the engine can
 //! mint, and `approve --remember` is how.
 //!
@@ -63,6 +64,10 @@ const SENSITIVE_KINDS: &[u16] = &[0, 3, 5, 10000, 10002];
 fn is_sensitive(method: &NostrConnectMethod, params: &[String]) -> bool {
     match method {
         NostrConnectMethod::Nip04Decrypt | NostrConnectMethod::Nip44Decrypt => true,
+        // NIP-04's whole job is private messages: encrypting one is
+        // writing one. NIP-44 is general-purpose — blossom auth,
+        // arbitrary blobs — and rides at Basic like an everyday sign.
+        NostrConnectMethod::Nip04Encrypt => true,
         NostrConnectMethod::SignEvent => params
             .first()
             .and_then(|json| nostr::event::UnsignedEvent::from_json(json).ok())

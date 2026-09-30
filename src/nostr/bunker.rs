@@ -318,8 +318,63 @@ impl Bunker {
                     Err(e) => NostrConnectResponse::with_error(format!("signing failed: {e}")),
                 }
             }
+            NostrConnectMethod::Nip04Encrypt
+            | NostrConnectMethod::Nip04Decrypt
+            | NostrConnectMethod::Nip44Encrypt
+            | NostrConnectMethod::Nip44Decrypt => self.third_party_crypto(method, params),
             other => {
                 NostrConnectResponse::with_error(format!("the {other:?} method is not implemented"))
+            }
+        }
+    }
+
+    /// The third-party crypto surface: transform a payload for someone
+    /// who is not the asking app. Params are [pubkey, payload]; the
+    /// answer carries the transformed payload and nothing else — a
+    /// ciphertext the peer can open, or a plaintext the app handed
+    /// over, never both halves of the same conversation.
+    fn third_party_crypto(
+        &self,
+        method: &NostrConnectMethod,
+        params: &[String],
+    ) -> NostrConnectResponse {
+        use nostr::nips::nip04::Nip04;
+        let (peer, payload) = match params {
+            [pk, payload] => match PublicKey::parse(pk) {
+                Ok(peer) => (peer, payload.clone()),
+                Err(e) => {
+                    return NostrConnectResponse::with_error(format!("unreadable pubkey: {e}"))
+                }
+            },
+            _ => {
+                return NostrConnectResponse::with_error(
+                    "the method wants [pubkey, payload]",
+                )
+            }
+        };
+        let attempt = match method {
+            NostrConnectMethod::Nip04Encrypt => self
+                .keys
+                .nip04_encrypt(&peer, &payload)
+                .map(|ciphertext| ResponseResult::Nip04Encrypt { ciphertext }),
+            NostrConnectMethod::Nip04Decrypt => self
+                .keys
+                .nip04_decrypt(&peer, &payload)
+                .map(|plaintext| ResponseResult::Nip04Decrypt { plaintext }),
+            NostrConnectMethod::Nip44Encrypt => self
+                .keys
+                .nip44_encrypt(&peer, &payload)
+                .map(|ciphertext| ResponseResult::Nip44Encrypt { ciphertext }),
+            NostrConnectMethod::Nip44Decrypt => self
+                .keys
+                .nip44_decrypt(&peer, &payload)
+                .map(|plaintext| ResponseResult::Nip44Decrypt { plaintext }),
+            _ => return NostrConnectResponse::with_error("not a third-party crypto method"),
+        };
+        match attempt {
+            Ok(result) => NostrConnectResponse::with_result(result),
+            Err(e) => {
+                NostrConnectResponse::with_error(format!("the payload did not transform: {e}"))
             }
         }
     }
