@@ -4493,6 +4493,24 @@ local function short(pk)
     return (pk or "?"):sub(1, 12) .. "…"
 end
 
+-- The display name, the daemon's claim order: the name the client
+-- claimed, then the name derived from the url it claimed (last two
+-- host labels — account.nostr.build is nostr.build), then the pubkey
+-- fragment. All of it is the client's own word; none of it decides
+-- anything.
+local function displayName(a)
+    if not a then return "?" end
+    if a.name and a.name ~= "" then return a.name end
+    if a.url and a.url ~= "" then
+        local host = a.url:match("^[^/]+://([^/:?#]+)") or a.url:match("^([^/:?#]+)")
+        if host then
+            local a1, b1 = host:match("([^.]+)%.([^.]+)$")
+            if a1 then return (a1 .. "." .. b1):lower() end
+        end
+    end
+    return short(a.pubkey)
+end
+
 -- A relative time, the list's second line: paired and last asked as
 -- ago-words, not unix numbers.
 local function relative(ts)
@@ -4627,7 +4645,8 @@ end
 
 local function askCard(p)
     local known = appOf(p.app)
-    local label = (known and known.name) or (p.app and short(p.app) or "?")
+    local record = appOf(p.app)
+    local label = record and displayName(record) or (p.app and short(p.app) or "?")
     local glyph = METHOD_GLYPHS[(p.method or ""):lower()] or "shield-lock"
 
     local lines = {
@@ -4723,7 +4742,7 @@ local function appCard(a)
         ui.row({ gap = 12, align = "center" }, {
             avatar(a.pubkey, a.image, 40),
             ui.label({
-                text = a.name or short(a.pubkey), fontWeight = "semibold", flexGrow = 1,
+                text = displayName(a), fontWeight = "semibold", flexGrow = 1,
                 color = a.revoked_at and "on_surface_variant" or "on_surface",
             }),
             levelBadge(a.level),
@@ -4883,7 +4902,7 @@ local function appDetail(a)
             ui.row({ gap = 12, align = "center" }, {
                 avatar(a.pubkey, a.image, 48),
                 ui.column({ gap = 1, flexGrow = 1 }, {
-                    ui.label({ text = a.name or short(a.pubkey), fontWeight = "semibold", color = "on_surface" }),
+                    ui.label({ text = displayName(a), fontWeight = "semibold", color = "on_surface" }),
                     ui.label({ text = a.pubkey, fontSize = 11, color = "on_surface_variant", maxLines = 2 }),
                 }),
             }),
@@ -4961,7 +4980,7 @@ local function logPane()
     for i = #log_entries, 1, -1 do
         local e = log_entries[i]
         local known = appOf(e.app)
-        local who = (known and known.name) or short(e.app)
+        local who = known and displayName(known) or short(e.app)
         local verdict = e.verdict or ""
         local color = (verdict:find("^denied") or verdict:find("expired")) and "error"
             or (verdict:find("^allowed") and "primary" or "on_surface_variant/0.8")

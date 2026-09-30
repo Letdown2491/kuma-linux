@@ -118,6 +118,13 @@ pub struct Paired {
     /// and the perms never widen anything.
     #[serde(default)]
     pub perms: Option<String>,
+    /// The client's canonical url, when it claimed one — where a name
+    /// is derived at display time for a client that never named
+    /// itself. Stored rather than derived-at-pairing so a real name
+    /// arriving later still wins: the derivation runs in the views,
+    /// name first, url second, fragment last.
+    #[serde(default)]
+    pub url: Option<String>,
     /// The tombstone: when the person revoked this app. Revocation is
     /// a state, not a deletion — the record stays so the refusal has
     /// teeth across restarts and the panel can offer the way back.
@@ -350,6 +357,7 @@ impl Engine {
         name: Option<String>,
         image: Option<String>,
         perms: Option<String>,
+        url: Option<String>,
     ) {
         let mut inner = self.inner.lock().expect("the policy lock");
         let hex = app.to_string();
@@ -365,6 +373,9 @@ impl Engine {
             if paired.perms.is_none() {
                 paired.perms = perms;
             }
+            if paired.url.is_none() {
+                paired.url = url;
+            }
             return;
         }
         inner.apps.push(Paired {
@@ -374,6 +385,7 @@ impl Engine {
             name,
             image,
             perms,
+            url,
             revoked_at: None,
             request_count: 0,
             last_used_at: None,
@@ -389,7 +401,7 @@ impl Engine {
     }
 
     fn pair(&self, app: &PublicKey) {
-        self.pair_with_metadata(app, None, None, None);
+        self.pair_with_metadata(app, None, None, None, None);
     }
 
     /// The paired apps, for the `apps` verb.
@@ -1382,7 +1394,7 @@ mod tests {
     fn rename_sets_the_persons_word() {
         let engine = engine();
         let app = app();
-        engine.pair_with_metadata(&app, Some("the client's claim".into()), None, None);
+        engine.pair_with_metadata(&app, Some("the client's claim".into()), None, None, None);
 
         // The person's label sets — it does not fill-if-empty, because
         // the person's word outranks the client's own claim.

@@ -547,6 +547,10 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                             parts.name.clone(),
                             None,
                             parts.perms.clone(),
+                            // The url is stored, not derived here: the
+                            // derivation runs in the views, so a real
+                            // name arriving later still wins.
+                            parts.url.clone(),
                         );
                         let published = match self.pool.as_ref() {
                             Some(pool) => pool.publish_only_to(&handshake, &parts.client_pubkey),
@@ -887,7 +891,7 @@ mod tests {
 
         // An app pairs — the engine's record is the durable side.
         let app_keys = Keys::generate();
-        daemon.engine.pair_with_metadata(&app_keys.public_key(), None, None, None);
+        daemon.engine.pair_with_metadata(&app_keys.public_key(), None, None, None, None);
         drop(daemon);
 
         // A fresh daemon over the same state: the restart, with the
@@ -923,7 +927,7 @@ mod tests {
         daemon.handle(decode(r#"{"cmd":"setup","mode":{"how":"generate"}}"#).unwrap()).await;
 
         let app_keys = Keys::generate();
-        daemon.engine.pair_with_metadata(&app_keys.public_key(), None, None, None);
+        daemon.engine.pair_with_metadata(&app_keys.public_key(), None, None, None, None);
 
         // The cycle: lock tears the bunker down, unlock arms it fresh.
         daemon.handle(decode(r#"{"cmd":"lock"}"#).unwrap()).await;
@@ -956,7 +960,7 @@ mod tests {
 
         let app_keys = Keys::generate();
         let app = app_keys.public_key();
-        daemon.engine.pair_with_metadata(&app, None, None, None);
+        daemon.engine.pair_with_metadata(&app, None, None, None, None);
 
         // The app connects, so the bunker holds a live session too —
         // the engine's record is not the only place "paired" lives.
@@ -1021,7 +1025,7 @@ mod tests {
 
         let app_keys = Keys::generate();
         let app = app_keys.public_key();
-        daemon.engine.pair_with_metadata(&app, None, None, None);
+        daemon.engine.pair_with_metadata(&app, None, None, None, None);
 
         // The app connects, so the delete has a live session to take.
         let bunker_pubkey = daemon.bunker.as_ref().expect("armed").public_key();
@@ -1110,7 +1114,7 @@ mod tests {
 
         let app_keys = Keys::generate();
         let app = app_keys.public_key();
-        daemon.engine.pair_with_metadata(&app, None, None, None);
+        daemon.engine.pair_with_metadata(&app, None, None, None, None);
         assert!(daemon.engine.revoke(&app.to_string()));
         drop(daemon);
 

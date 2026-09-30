@@ -409,9 +409,20 @@ fn render(value: &serde_json::Value) -> Result<()> {
                 println!("no apps paired");
             }
             for app in apps {
-                let label = app["name"].as_str().map(str::to_string).unwrap_or_else(|| {
-                    format!("{}…", &app["pubkey"].as_str().unwrap_or("?")[..16])
-                });
+                // The claim order: the name, then the name derived from
+                // the url, then the fragment.
+                let label = match app["name"].as_str() {
+                    Some(name) => name.to_string(),
+                    None => {
+                        match app["url"].as_str().and_then(kuma::nostr::bunker::name_from_url) {
+                            Some(derived) => derived,
+                            None => format!(
+                                "{}…",
+                                &app["pubkey"].as_str().unwrap_or("?")[..16]
+                            ),
+                        }
+                    }
+                };
                 println!(
                     "{}  {:?}  paired at {}",
                     label,

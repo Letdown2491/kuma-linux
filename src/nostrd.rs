@@ -152,11 +152,20 @@ fn main() -> anyhow::Result<()> {
                     // minted onto the URI outranks the client's own
                     // metadata claim — and the client's self-report
                     // second. Neither is an authorization input; both
-                    // are what the ask cards show.
+                    // are what the ask cards show. The url is stored,
+                    // not derived here: the views derive the display
+                    // name from it, so a real name arriving later
+                    // still wins.
                     let name = burned.as_ref().and_then(|o| o.label.clone())
                         .or_else(|| metadata.as_ref().and_then(|m| m.name.clone()));
                     let image = metadata.as_ref().and_then(|m| m.image.clone());
-                    engine.pair_with_metadata(&app, name, image, perms);
+                    engine.pair_with_metadata(
+                        &app,
+                        name,
+                        image,
+                        perms,
+                        metadata.as_ref().and_then(|m| m.url.clone()),
+                    );
                     if let Some(burned) = burned {
                         if let Err(e) = worker_runtime.block_on(
                             worker.lock().expect("the daemon lock").burn(&burned.secret),

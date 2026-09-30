@@ -36,11 +36,12 @@ use nostr::prelude::*;
 use super::policy::unix_now;
 
 /// The client metadata a connect may carry (NIP-46's optional fourth
-/// param): the app's own name and image, unauthenticated — the panel's
-/// display hint, never an authorization input.
+/// param): the app's own name, url and image, unauthenticated — the
+/// panel's display hint, never an authorization input.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClientMeta {
     pub name: Option<String>,
+    pub url: Option<String>,
     pub image: Option<String>,
 }
 
@@ -52,9 +53,35 @@ impl ClientMeta {
         let value: serde_json::Value = serde_json::from_str(raw).ok()?;
         Some(Self {
             name: value["name"].as_str().map(str::to_string),
+            url: value["url"].as_str().map(str::to_string),
             image: value["image"].as_str().map(str::to_string),
         })
     }
+}
+
+/// A name derived from a URL's host, last two labels, lowercased: the
+/// name a client never claimed, read off the address it did claim.
+/// `https://account.nostr.build/login` derives `nostr.build`; an IP
+/// literal, a bare host or a single label derives nothing, because a
+/// wrong-looking name is a hint and a wrong-confident one is a lie.
+/// The naive last-two-labels rule mislabels multi-part suffixes
+/// (account.bbc.co.uk derives `co.uk`) — cosmetic, rare, and the PSL
+/// is a dependency's worth of correctness the wild has not asked for.
+pub fn name_from_url(url: &str) -> Option<String> {
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let host = rest.split('/').next()?;
+    let host = host.rsplit_once('@').map(|(_, h)| h).unwrap_or(host);
+    let host = host.split(':').next()?;
+    let labels: Vec<&str> = host.split('.').collect();
+    if labels.len() < 2 {
+        return None;
+    }
+    // An IPv4 literal is four labels and no name; the numeric check
+    // also refuses a dotted-decimal masquerading as a domain.
+    if labels.iter().all(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_digit())) {
+        return None;
+    }
+    Some(labels[labels.len() - 2..].join(".").to_lowercase())
 }
 
 /// An outstanding pairing secret, with the name the person gave the
@@ -79,6 +106,7 @@ pub struct NostrConnectParts {
     pub secret: String,
     pub perms: Option<String>,
     pub name: Option<String>,
+    pub url: Option<String>,
 }
 
 /// Parse and validate a `nostrconnect://` URI. Every failure names
@@ -102,6 +130,7 @@ pub fn parse_nostrconnect_uri(uri: &str) -> Result<NostrConnectParts> {
     let mut secret = None;
     let mut perms = None;
     let mut name = None;
+    let mut url = None;
     for pair in query.split('&') {
         let (key, value) = match pair.split_once('=') {
             Some(kv) => kv,
@@ -112,8 +141,11 @@ pub fn parse_nostrconnect_uri(uri: &str) -> Result<NostrConnectParts> {
             "secret" => secret = Some(percent_decode(value)?),
             "perms" => perms = Some(percent_decode(value)?),
             "name" => name = Some(percent_decode(value)?),
-            // url and image ride along unnamed: the panel's display
-            // hint, not the daemon's business.
+            // The url rides captured, not discarded: it is where a
+            // name is derived from when the client claims none.
+            "url" => url = Some(percent_decode(value)?),
+            // image rides along unnamed: the panel's display hint, not
+            // the daemon's business.
             _ => {}
         }
     }
@@ -149,7 +181,7 @@ pub fn parse_nostrconnect_uri(uri: &str) -> Result<NostrConnectParts> {
     let secret = secret.ok_or_else(|| {
         anyhow!("the URI carries no secret, and a connect without one is a spoofed one")
     })?;
-    Ok(NostrConnectParts { client_pubkey, relays, secret, perms, name })
+    Ok(NostrConnectParts { client_pubkey, relays, secret, perms, name, url })
 }
 
 /// The decision a gate hands back for a consequential method. The
@@ -1906,7 +1938,7 @@ mod tests {
         let client = Keys::generate().public_key();
         let uri = format!(
             "nostrconnect://{client}?relay=wss%3A%2F%2Frelay.example&secret=the-secret\
-             &perms=sign_event%3A1%2Cnip44_encrypt&name=My+Client"
+             &perms=sign_event%3A1%2Cnip44_encrypt&name=My+Client&url=https%3A%2F%2Fmy.client"
         );
         let parts = parse_nostrconnect_uri(&uri).unwrap();
         assert_eq!(parts.client_pubkey, client);
@@ -1914,6 +1946,7 @@ mod tests {
         assert_eq!(parts.secret, "the-secret");
         assert_eq!(parts.perms.as_deref(), Some("sign_event:1,nip44_encrypt"));
         assert_eq!(parts.name.as_deref(), Some("My Client"));
+        assert_eq!(parts.url.as_deref(), Some("https://my.client"));
 
         // Every failure names itself, because the person holding the
         // URI is the one who can fix it.
@@ -1927,6 +1960,27 @@ mod tests {
         let plaintext_relay =
             format!("nostrconnect://{client}?relay=http://relay.example&secret=x");
         assert!(reason(&plaintext_relay).contains("wss"));
+    }
+
+    #[test]
+    fn a_name_derives_from_the_url_a_client_claimed() {
+        // The person's example: the login page of a subdomain derives
+        // the domain.
+        assert_eq!(
+            name_from_url("https://account.nostr.build/login"),
+            Some("nostr.build".into())
+        );
+        assert_eq!(name_from_url("https://x21.social"), Some("x21.social".into()));
+        // Ports, paths, userinfo and case do not leak into the name.
+        assert_eq!(
+            name_from_url("https://app.example.com:8080/p/a?x=1"),
+            Some("example.com".into())
+        );
+        assert_eq!(name_from_url("HTTPS://WWW.Yes.Party/"), Some("yes.party".into()));
+        // Nothing to derive from: an IP literal, a bare host, junk.
+        assert_eq!(name_from_url("https://127.0.0.1"), None);
+        assert_eq!(name_from_url("http://localhost:3000"), None);
+        assert_eq!(name_from_url(""), None);
     }
 
     #[tokio::test]
