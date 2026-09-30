@@ -825,47 +825,6 @@ impl Config {
     }
 }
 
-/// A relay address, validated at build: `wss://` to the world, and
-/// `ws://` only to loopback. The rule is not encryption theater —
-/// NIP-44 already encrypts the payload end to end — it is metadata: a
-/// plaintext WebSocket announces to the network path which app is
-/// talking to which bunker, how often, and how big. A declaration that
-/// leaks kind 24133 traffic by configuration is exactly the shape of
-/// mistake a validator exists to catch.
-pub(crate) fn validate_relay(relay: &str) -> Result<()> {
-    let (scheme, rest) = match relay.split_once("://") {
-        Some((scheme, rest)) => (scheme, rest),
-        None => {
-            bail!("nostr relay {relay:?} has no scheme; relays are wss:// or ws:// to loopback")
-        }
-    };
-    match scheme {
-        "wss" => {}
-        "ws" => {
-            let authority = rest.split('/').next().unwrap_or_default();
-            let host = match authority.strip_prefix('[') {
-                // [::1]:7777 — the bracketed form, where the port's
-                // colon is not the host's.
-                Some(bracketed) => bracketed.split(']').next().unwrap_or_default(),
-                None => authority.split(':').next().unwrap_or(authority),
-            };
-            let loopback = matches!(host, "127.0.0.1" | "::1" | "localhost");
-            if !loopback {
-                bail!(
-                    "nostr relay {relay:?} is ws:// to a non-loopback host: that is \\
-                     plaintext on the wire, and the metadata alone (which app, which \\
-                     bunker, how often) is not kuma's to leak. Point wss:// at it, or \\
-                     ws:// at 127.0.0.1, ::1, or localhost only"
-                );
-            }
-        }
-        other => bail!(
-            "nostr relay {relay:?} has scheme {other:?}; relays are wss://, or ws:// \\
-             to loopback only"
-        ),
-    }
-    Ok(())
-}
 
 /// Entries end up inside generated RUN instructions, so restrict them to a
 /// conservative character set rather than trusting shell quoting.

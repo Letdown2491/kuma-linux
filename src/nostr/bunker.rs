@@ -110,7 +110,30 @@ pub fn parse_nostrconnect_uri(uri: &str) -> Result<NostrConnectParts> {
         bail!("the URI carries no relay to answer the client on");
     }
     for relay in &relays {
-        crate::config::validate_relay(relay)?;
+        // The declaration's own metadata rule, restated here rather
+        // than linked: the lib's posture is that the system tool does
+        // not link this layer, so the rule lives on both sides, with
+        // twin tests proving the same behavior on each. A client
+        // relay the URI invites gets no wider a rule than the
+        // declaration that runs the bunker — plaintext kind 24133
+        // traffic to a non-loopback host announces which app talks to
+        // which bunker, and that is not kuma's to leak.
+        let (scheme, rest) = relay
+            .split_once("://")
+            .ok_or_else(|| anyhow!("relay {relay:?} has no scheme; relays are wss:// or ws:// to loopback"))?;
+        match scheme {
+            "wss" => {}
+            "ws" => {
+                let authority = rest.split('/').next().unwrap_or_default();
+                let host = authority.split(':').next().unwrap_or(authority);
+                let loopback = matches!(host, "127.0.0.1" | "::1" | "localhost");
+                if !loopback {
+                    bail!("relay {relay:?} is ws:// to a non-loopback host: that is plaintext \
+                           on the wire, and the metadata alone is not kuma's to leak");
+                }
+            }
+            other => bail!("relay {relay:?} has scheme {other:?}; relays are wss://, or ws:// to loopback only"),
+        }
     }
     let secret = secret.ok_or_else(|| {
         anyhow!("the URI carries no secret, and a connect without one is a spoofed one")
@@ -400,8 +423,7 @@ impl Bunker {
             result: Some(parts.secret.clone()),
             error: None,
         };
-        let content =
-            self.keys.nip44_encrypt(&parts.client_pubkey, &message.as_json())?;
+        let content = self.keys.nip44_encrypt(&parts.client_pubkey, &message.as_json())?;
         let event = EventBuilder::new(Kind::from_u16(24133), content)
             .tag(Tag::public_key(parts.client_pubkey))
             .finalize(&self.keys)?;
@@ -1699,7 +1721,7 @@ mod tests {
         // the proof the client validates.
         assert_eq!(handshake.kind, Kind::from_u16(24133));
         assert_eq!(handshake.pubkey, bunker.public_key());
-        let plaintext = client.keys.nip44_decrypt(&handshake.pubkey, &handshake.content).unwrap();
+        let plaintext = client.nip44_decrypt(&handshake.pubkey, &handshake.content).unwrap();
         match NostrConnectMessage::from_json(&plaintext).unwrap() {
             NostrConnectMessage::Response { result, .. } => {
                 assert_eq!(result.as_deref(), Some("the-secret"));

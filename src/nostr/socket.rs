@@ -316,7 +316,7 @@ mod tests {
         let apps: serde_json::Value =
             serde_json::from_str(ask(&mut client, r#"{"cmd":"apps"}"#).trim()).unwrap();
         let record = &apps["apps"][0];
-        assert_eq!(record["pubkey"].as_str(), Some(&app.public_key().to_string()));
+        assert_eq!(record["pubkey"].as_str(), Some(app.public_key().to_string().as_str()));
         assert_eq!(record["name"].as_str(), Some("Pasted"));
         assert_eq!(record["perms"].as_str(), Some("sign_event:1"));
 

@@ -319,10 +319,7 @@ fn render(value: &serde_json::Value) -> Result<()> {
         Some("touch") => println!("kept alive"),
         Some("connect") => println!(
             "the handshake went out{}; the pairing lands when the client answers",
-            value["name"]
-                .as_str()
-                .map(|n| format!(" to {n}"))
-                .unwrap_or_else(|| "".to_string())
+            value["name"].as_str().map(|n| format!(" to {n}")).unwrap_or_else(|| "".to_string())
         ),
         Some("destroy_dry_run") => println!(
             "dry run: {}",
