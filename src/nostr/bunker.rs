@@ -655,11 +655,10 @@ impl Bunker {
                 // failed would disagree with the stored list, and a
                 // restart would flip the disagreement back open.
                 let mut burn_at = match (&secret, known) {
-                    (Some(provided), false) => {
-                        self.expected_secrets
-                            .iter()
-                            .position(|s| constant_time_eq(&s.secret, provided))
-                    }
+                    (Some(provided), false) => self
+                        .expected_secrets
+                        .iter()
+                        .position(|s| constant_time_eq(&s.secret, provided)),
                     _ => None,
                 };
                 let verified = known || burn_at.is_some();
@@ -790,23 +789,23 @@ impl Bunker {
                 };
                 let kind = match kind {
                     Some(kind) => kind,
-                    None => {
-                        return NostrConnectResponse::with_error("the event carries no kind")
-                    }
+                    None => return NostrConnectResponse::with_error("the event carries no kind"),
                 };
                 let content =
                     parsed.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
                 let tags = match parsed.get("tags") {
-                    Some(value) => match serde_json::from_value::<Vec<Vec<String>>>(value.clone()) {
-                        Ok(list) => Tags::parse(list).map_err(|e| {
-                            NostrConnectResponse::with_error(format!(
+                    Some(value) => {
+                        match serde_json::from_value::<Vec<Vec<String>>>(value.clone()) {
+                            Ok(list) => Tags::parse(list).map_err(|e| {
+                                NostrConnectResponse::with_error(format!(
+                                    "the event's tags do not parse: {e}"
+                                ))
+                            }),
+                            Err(e) => Err(NostrConnectResponse::with_error(format!(
                                 "the event's tags do not parse: {e}"
-                            ))
-                        }),
-                        Err(e) => Err(NostrConnectResponse::with_error(format!(
-                            "the event's tags do not parse: {e}"
-                        ))),
-                    },
+                            ))),
+                        }
+                    }
                     None => Ok(Tags::new()),
                 };
                 let tags = match tags {
@@ -818,7 +817,8 @@ impl Bunker {
                     .and_then(|t| t.as_u64())
                     .map(Timestamp::from)
                     .unwrap_or_else(Timestamp::now);
-                let unsigned = UnsignedEvent::new(self.public_key(), created_at, kind, tags, content);
+                let unsigned =
+                    UnsignedEvent::new(self.public_key(), created_at, kind, tags, content);
                 match self.keys.sign_event(unsigned) {
                     Ok(signed) => NostrConnectResponse::with_result(ResponseResult::SignEvent(
                         Box::new(signed),
@@ -1158,15 +1158,6 @@ mod tests {
         }
 
         /// The connect, with the app's own request id.
-        fn connect_with_id(&self, bunker: &Bunker, secret: &str, id: &str) -> Event {
-            self.request_event_with_id(
-                &bunker.public_key(),
-                id,
-                NostrConnectMethod::Connect,
-                &[bunker.public_key().to_string().as_str(), secret],
-            )
-        }
-
         fn request_event(
             &self,
             bunker: &PublicKey,
@@ -1232,7 +1223,7 @@ mod tests {
 
     #[tokio::test]
     async fn ping_round_trips_the_crypto_choreography() {
-        let (mut bunker, secret) = bunker_for_tests();
+        let (mut bunker, _secret) = bunker_for_tests();
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
@@ -1292,7 +1283,7 @@ mod tests {
         );
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
-        let secret = "the-nonce";
+        let _secret = "the-nonce";
 
         // No echo at all: the app that never read the URI.
         let request = app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[]);
@@ -1415,11 +1406,7 @@ mod tests {
         let request = app.request_event(
             &bunker_pubkey,
             NostrConnectMethod::Connect,
-            &[
-                bunker_pubkey.to_string().as_str(),
-                "the-nonce",
-                r#"{"name":"Odd Client"}"#,
-            ],
+            &[bunker_pubkey.to_string().as_str(), "the-nonce", r#"{"name":"Odd Client"}"#],
         );
         match bunker.plan(&request) {
             Plan::Paired { metadata, perms, .. } => {
@@ -1460,7 +1447,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unpaired_app_gets_refused() {
-        let (mut bunker, secret) = bunker_for_tests();
+        let (mut bunker, _secret) = bunker_for_tests();
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
@@ -1778,7 +1765,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_redelivered_request_is_answered_once() {
-        let (mut bunker, secret) = bunker_for_tests();
+        let (mut bunker, _secret) = bunker_for_tests();
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
@@ -1792,7 +1779,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_stale_or_future_request_is_dropped() {
-        let (mut bunker, secret) = bunker_for_tests();
+        let (mut bunker, _secret) = bunker_for_tests();
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
         let now = unix_now();
@@ -1816,7 +1803,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_replay_below_the_senders_watermark_is_dropped() {
-        let (mut bunker, secret) = bunker_for_tests();
+        let (mut bunker, _secret) = bunker_for_tests();
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
         let now = unix_now();
@@ -2065,10 +2052,7 @@ mod tests {
     fn a_name_derives_from_the_url_a_client_claimed() {
         // The person's example: the login page of a subdomain derives
         // the domain.
-        assert_eq!(
-            name_from_url("https://account.nostr.build/login"),
-            Some("nostr.build".into())
-        );
+        assert_eq!(name_from_url("https://account.nostr.build/login"), Some("nostr.build".into()));
         assert_eq!(name_from_url("https://x21.social"), Some("x21.social".into()));
         // Ports, paths, userinfo and case do not leak into the name.
         assert_eq!(
@@ -2084,7 +2068,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_handshake_is_a_connect_response_the_client_validates() {
-        let (mut bunker, secret) = bunker_for_tests();
+        let (mut bunker, _secret) = bunker_for_tests();
         let client = Keys::generate();
         let uri = format!(
             "nostrconnect://{}?relay=wss%3A%2F%2Frelay.example&secret=the-secret&name=Test",
@@ -2181,7 +2165,7 @@ mod tests {
         // first pairing. The pairing is the bond: the same pubkey's
         // connect acks without a secret, because the request's own
         // signature is the proof of who is asking.
-        let request = app.connect(&bunker, &secret);
+        let request = app.connect(&bunker, secret);
         match bunker.plan(&request) {
             Plan::Paired { burned, .. } => {
                 assert_eq!(burned, None, "an identity reconnect burns nothing");

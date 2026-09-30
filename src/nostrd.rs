@@ -156,7 +156,9 @@ fn main() -> anyhow::Result<()> {
                     // not derived here: the views derive the display
                     // name from it, so a real name arriving later
                     // still wins.
-                    let name = burned.as_ref().and_then(|o| o.label.clone())
+                    let name = burned
+                        .as_ref()
+                        .and_then(|o| o.label.clone())
                         .or_else(|| metadata.as_ref().and_then(|m| m.name.clone()));
                     let image = metadata.as_ref().and_then(|m| m.image.clone());
                     engine.pair_with_metadata(
@@ -167,9 +169,9 @@ fn main() -> anyhow::Result<()> {
                         metadata.as_ref().and_then(|m| m.url.clone()),
                     );
                     if let Some(burned) = burned {
-                        if let Err(e) = worker_runtime.block_on(
-                            worker.lock().expect("the daemon lock").burn(&burned.secret),
-                        ) {
+                        if let Err(e) = worker_runtime
+                            .block_on(worker.lock().expect("the daemon lock").burn(&burned.secret))
+                        {
                             eprintln!("kuma-nostrd: the burned secret did not persist: {e:#}");
                         }
                     }
@@ -204,8 +206,8 @@ fn main() -> anyhow::Result<()> {
                 }
                 kuma::nostr::bunker::Plan::Ask { ref request, method, ref params, .. } => {
                     use kuma::nostr::bunker::Gate;
-                    let decision = worker_runtime
-                        .block_on(engine.decide(&request.pubkey, &method, params));
+                    let decision =
+                        worker_runtime.block_on(engine.decide(&request.pubkey, &method, params));
                     let answer = {
                         worker.lock().expect("the daemon lock").execute_bunker_event(plan, decision)
                     };

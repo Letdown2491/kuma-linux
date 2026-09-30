@@ -95,17 +95,11 @@ pub struct Nostr {
 /// The local relay's switch. Absent means off — the public relay is
 /// the default signing road, and the loopback relay is the machine
 /// that asks for it by name.
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NostrRelay {
     #[serde(default)]
     pub enable: bool,
-}
-
-impl Default for NostrRelay {
-    fn default() -> Self {
-        Self { enable: false }
-    }
 }
 
 /// The serde default that says what absence means: the public relay

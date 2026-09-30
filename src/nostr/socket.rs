@@ -495,9 +495,10 @@ mod tests {
         client_relay.inject(&request);
 
         wait_for("the answer on the client's relay", 100, || {
-            client_relay.received().iter().any(|frame| {
-                frame.contains(":24133") && frame.contains(&handshake.id.to_string()) == false
-            })
+            client_relay
+                .received()
+                .iter()
+                .any(|frame| frame.contains(":24133") && !frame.contains(&handshake.id.to_string()))
         });
         wait_for("the answer on the declared set's relay", 100, || {
             own_relay.received().iter().any(|frame| frame.contains(":24133"))
@@ -555,7 +556,9 @@ mod tests {
                 match plan {
                     crate::nostr::bunker::Plan::Ignore => continue,
                     crate::nostr::bunker::Plan::Paired { answer, app, metadata, burned, perms } => {
-                        let name = burned.as_ref().and_then(|o| o.label.clone())
+                        let name = burned
+                            .as_ref()
+                            .and_then(|o| o.label.clone())
                             .or_else(|| metadata.as_ref().and_then(|m| m.name.clone()));
                         let image = metadata.as_ref().and_then(|m| m.image.clone());
                         engine.pair_with_metadata(

@@ -11,7 +11,7 @@
 //! `destroy`. Pairing, prompts and the bunker arrive with the policy
 //! engine and ride the same socket.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 
 #[derive(Parser)]
@@ -183,9 +183,10 @@ fn main() -> Result<()> {
         }
         Command::Status => r#"{"cmd":"status"}"#.to_string(),
         Command::Bunker { for_app, .. } => {
-            let label = for_app.as_deref().map(|name| {
-                format!(r#","label":{}"#, json_string(name))
-            }).unwrap_or_default();
+            let label = for_app
+                .as_deref()
+                .map(|name| format!(r#","label":{}"#, json_string(name)))
+                .unwrap_or_default();
             format!(r#"{{"cmd":"mint"{label}}}"#)
         }
         Command::Destroy { yes } => format!(r#"{{"cmd":"destroy","confirm":{yes}}}"#),
@@ -210,11 +211,9 @@ fn main() -> Result<()> {
             json_string(app),
             json_string(level)
         ),
-        Command::Label { app, name } => format!(
-            r#"{{"cmd":"label","app":{},"name":{}}}"#,
-            json_string(app),
-            json_string(name)
-        ),
+        Command::Label { app, name } => {
+            format!(r#"{{"cmd":"label","app":{},"name":{}}}"#, json_string(app), json_string(name))
+        }
         Command::Rotate => r#"{"cmd":"rotate"}"#.to_string(),
     };
 
@@ -361,7 +360,7 @@ fn render(value: &serde_json::Value) -> Result<()> {
         Some("touch") => println!("kept alive"),
         Some("connect") => println!(
             "the handshake went out{}; the pairing lands when the client answers",
-            value["name"].as_str().map(|n| format!(" to {n}")).unwrap_or_else(|| "".to_string())
+            value["name"].as_str().map(|n| format!(" to {n}")).unwrap_or_default()
         ),
         Some("destroy_dry_run") => println!(
             "dry run: {}",
@@ -416,10 +415,7 @@ fn render(value: &serde_json::Value) -> Result<()> {
                     None => {
                         match app["url"].as_str().and_then(kuma::nostr::bunker::name_from_url) {
                             Some(derived) => derived,
-                            None => format!(
-                                "{}…",
-                                &app["pubkey"].as_str().unwrap_or("?")[..16]
-                            ),
+                            None => format!("{}…", &app["pubkey"].as_str().unwrap_or("?")[..16]),
                         }
                     }
                 };

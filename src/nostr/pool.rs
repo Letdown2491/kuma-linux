@@ -100,7 +100,6 @@ struct Road {
     app: Option<PublicKey>,
     stop: Arc<AtomicBool>,
     handle: std::thread::JoinHandle<()>,
-    outbound: Sender<(Event, Fan)>,
 }
 
 /// The pool: owns the relay roads, hands bunker-bound events to the
@@ -145,6 +144,7 @@ impl RelayPool {
         pool
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_road(
         &mut self,
         url: String,
@@ -162,10 +162,10 @@ impl RelayPool {
             let inbound = inbound.clone();
             let status = status.clone();
             move || {
-                one_relay(url, own, app, bunker_pubkey, inbound, status, outbound_rx, stop, timing);
+                one_relay(url, bunker_pubkey, inbound, status, outbound_rx, stop, timing);
             }
         });
-        self.roads.push((Road { own, app, stop, handle, outbound: outbound.clone() }, outbound));
+        self.roads.push((Road { own, app, stop, handle }, outbound));
     }
 
     fn spawn_own(
@@ -300,8 +300,6 @@ impl RelayPool {
 /// to find the bunker waiting.
 fn one_relay(
     url: String,
-    own: bool,
-    app: Option<PublicKey>,
     bunker_pubkey: PublicKey,
     inbound: Sender<Event>,
     status: Sender<RelayStatus>,
@@ -314,17 +312,7 @@ fn one_relay(
         if stop.load(Ordering::SeqCst) {
             return;
         }
-        match connect_and_serve(
-            &url,
-            own,
-            app,
-            bunker_pubkey,
-            &inbound,
-            &status,
-            &outbound,
-            &stop,
-            timing,
-        ) {
+        match connect_and_serve(&url, bunker_pubkey, &inbound, &status, &outbound, &stop, timing) {
             Ok(()) => return,
             Err(e) => {
                 let _ =
@@ -344,8 +332,6 @@ fn one_relay(
 
 fn connect_and_serve(
     url: &str,
-    own: bool,
-    app: Option<PublicKey>,
     bunker_pubkey: PublicKey,
     inbound: &Sender<Event>,
     status: &Sender<RelayStatus>,
@@ -393,7 +379,7 @@ fn connect_and_serve(
         match socket.read() {
             Ok(Message::Text(text)) => {
                 unanswered = 0;
-                eprintln!("kuma-nostrd: frame: {}", &text.chars().take(120).collect::<String>());
+                eprintln!("kuma-nostrd: frame: {}", text.chars().take(120).collect::<String>());
                 let events = events_from_relay_message(&text, SUBSCRIPTION_ID);
                 if !events.is_empty() {
                     // One line per bunker-addressed event: when an app's

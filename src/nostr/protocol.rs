@@ -352,9 +352,9 @@ impl<S: super::vault::SecretStore> Daemon<S> {
     where
         S: std::marker::Send + 'static,
     {
-        if daemon.lock().expect("the daemon lock").inactivity.is_none() {
-            return None;
-        }
+        // A switch that is off spawns no thread, because a switch
+        // nobody configured has nothing to watch.
+        daemon.lock().expect("the daemon lock").inactivity.as_ref()?;
         let daemon = Arc::clone(daemon);
         Some(std::thread::spawn(move || loop {
             std::thread::sleep(beat);
@@ -444,9 +444,7 @@ impl<S: super::vault::SecretStore> Daemon<S> {
             Request::Prompts => {
                 Response::Ok(OkResponse::Prompts { ok: true, prompts: self.engine.prompts() })
             }
-            Request::Log => {
-                Response::Ok(OkResponse::Log { ok: true, log: self.engine.log() })
-            }
+            Request::Log => Response::Ok(OkResponse::Log { ok: true, log: self.engine.log() }),
             Request::Approve { id, remember_hours } => {
                 // The ceiling is the verb's own: more than an hour is
                 // not a remember, it is a Trust that forgot its name.
@@ -1079,12 +1077,8 @@ mod tests {
         // And the way back needs no un-revoke: a freshly minted URI
         // pairs the same app again. Deletion forgot; it did not ban.
         daemon.handle(decode(r#"{"cmd":"mint"}"#).unwrap()).await;
-        let fresh = daemon
-            .vault
-            .secrets()
-            .last()
-            .expect("the mint's outstanding secret")
-            .to_string();
+        let fresh =
+            daemon.vault.secrets().last().expect("the mint's outstanding secret").to_string();
         let reconnect = NostrConnectMessage::Request {
             id: "reconnect".into(),
             method: NostrConnectMethod::Connect,
@@ -1180,6 +1174,11 @@ mod tests {
         assert!(line.contains("\"unlocked\":true"), "a touch did not lock: {line}");
     }
 
+    // The guard is held across the handle's await on purpose: the ask
+    // runs on the machine the test owns, and the watchdog's own beat
+    // merely waits for the lock — there is no other task in this
+    // test's runtime to starve.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn the_watchdog_locks_when_the_window_passes() {
         let mut daemon = daemon().await;

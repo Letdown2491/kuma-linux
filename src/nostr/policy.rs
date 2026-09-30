@@ -274,7 +274,9 @@ impl Engine {
             Ok(log) => {
                 self.inner.lock().expect("the policy lock").log = log;
             }
-            Err(e) => eprintln!("kuma-nostrd: {file:?} did not parse; starting with an empty log: {e}"),
+            Err(e) => {
+                eprintln!("kuma-nostrd: {file:?} did not parse; starting with an empty log: {e}")
+            }
         }
     }
 
@@ -390,13 +392,16 @@ impl Engine {
             request_count: 0,
             last_used_at: None,
         });
-        self.record_log(&mut *inner, LogEntry {
-            at: unix_now(),
-            app: hex,
-            method: "connect".into(),
-            summary: "paired".into(),
-            verdict: "paired at ask".into(),
-        });
+        self.record_log(
+            &mut inner,
+            LogEntry {
+                at: unix_now(),
+                app: hex,
+                method: "connect".into(),
+                summary: "paired".into(),
+                verdict: "paired at ask".into(),
+            },
+        );
         self.persist_apps(&inner);
     }
 
@@ -426,13 +431,16 @@ impl Engine {
         paired.revoked_at = Some(unix_now());
         inner.remembered.retain(|key, _| !key.starts_with(&format!("{app}:")));
         if fresh {
-            self.record_log(&mut *inner, LogEntry {
-                at: unix_now(),
-                app: app.to_string(),
-                method: "revoke".into(),
-                summary: "the person revoked the app".into(),
-                verdict: "tombstoned".into(),
-            });
+            self.record_log(
+                &mut inner,
+                LogEntry {
+                    at: unix_now(),
+                    app: app.to_string(),
+                    method: "revoke".into(),
+                    summary: "the person revoked the app".into(),
+                    verdict: "tombstoned".into(),
+                },
+            );
         }
         self.persist_apps(&inner);
         true
@@ -452,13 +460,16 @@ impl Engine {
             return false;
         }
         paired.revoked_at = None;
-        self.record_log(&mut *inner, LogEntry {
-            at: unix_now(),
-            app: app.to_string(),
-            method: "unrevoke".into(),
-            summary: "the person un-revoked the app".into(),
-            verdict: "cleared".into(),
-        });
+        self.record_log(
+            &mut inner,
+            LogEntry {
+                at: unix_now(),
+                app: app.to_string(),
+                method: "unrevoke".into(),
+                summary: "the person un-revoked the app".into(),
+                verdict: "cleared".into(),
+            },
+        );
         self.persist_apps(&inner);
         true
     }
@@ -473,13 +484,16 @@ impl Engine {
             return false;
         };
         paired.name = Some(name.to_string());
-        self.record_log(&mut *inner, LogEntry {
-            at: unix_now(),
-            app: app.to_string(),
-            method: "label".into(),
-            summary: "the person named the app".into(),
-            verdict: "named".into(),
-        });
+        self.record_log(
+            &mut inner,
+            LogEntry {
+                at: unix_now(),
+                app: app.to_string(),
+                method: "label".into(),
+                summary: "the person named the app".into(),
+                verdict: "named".into(),
+            },
+        );
         self.persist_apps(&inner);
         true
     }
@@ -493,13 +507,16 @@ impl Engine {
         let mut inner = self.inner.lock().expect("the policy lock");
         let removed = remove_app(&mut inner, app);
         if removed {
-            self.record_log(&mut *inner, LogEntry {
-                at: unix_now(),
-                app: app.to_string(),
-                method: "delete".into(),
-                summary: "the person deleted the app".into(),
-                verdict: "removed".into(),
-            });
+            self.record_log(
+                &mut inner,
+                LogEntry {
+                    at: unix_now(),
+                    app: app.to_string(),
+                    method: "delete".into(),
+                    summary: "the person deleted the app".into(),
+                    verdict: "removed".into(),
+                },
+            );
             self.persist_apps(&inner);
         }
         removed
@@ -514,13 +531,16 @@ impl Engine {
         let mut inner = self.inner.lock().expect("the policy lock");
         let removed = remove_app(&mut inner, app);
         if removed {
-            self.record_log(&mut *inner, LogEntry {
-                at: unix_now(),
-                app: app.to_string(),
-                method: "logout".into(),
-                summary: "the app ended its own session".into(),
-                verdict: "removed".into(),
-            });
+            self.record_log(
+                &mut inner,
+                LogEntry {
+                    at: unix_now(),
+                    app: app.to_string(),
+                    method: "logout".into(),
+                    summary: "the app ended its own session".into(),
+                    verdict: "removed".into(),
+                },
+            );
             self.persist_apps(&inner);
         }
         removed
@@ -533,13 +553,16 @@ impl Engine {
     /// fact here, not a decision.
     pub fn noted(&self, app: &str, method: &str, summary: String, verdict: &str) {
         let mut inner = self.inner.lock().expect("the policy lock");
-        self.record_log(&mut *inner, LogEntry {
-            at: unix_now(),
-            app: app.to_string(),
-            method: method.into(),
-            summary,
-            verdict: verdict.into(),
-        });
+        self.record_log(
+            &mut inner,
+            LogEntry {
+                at: unix_now(),
+                app: app.to_string(),
+                method: method.into(),
+                summary,
+                verdict: verdict.into(),
+            },
+        );
     }
 
     /// The pending asks, for the `prompts` verb and the panel. The
@@ -612,15 +635,21 @@ impl Engine {
                 received = true;
             }
         }
-        let verdict =
-            if received { answer_verdict } else { "an answer came after the window closed".to_string() };
-        self.record_log(&mut *inner, LogEntry {
-            at: unix_now(),
-            app: prompt.app.to_string(),
-            method: format!("{:?}", prompt.method),
-            summary: prompt.summary.clone(),
-            verdict,
-        });
+        let verdict = if received {
+            answer_verdict
+        } else {
+            "an answer came after the window closed".to_string()
+        };
+        self.record_log(
+            &mut inner,
+            LogEntry {
+                at: unix_now(),
+                app: prompt.app.to_string(),
+                method: format!("{:?}", prompt.method),
+                summary: prompt.summary.clone(),
+                verdict,
+            },
+        );
         Ok(())
     }
 
@@ -686,13 +715,16 @@ impl super::bunker::Gate for Engine {
                 } else {
                     "allowed (basic)"
                 };
-                self.record_log(&mut *inner, LogEntry {
-                    at: unix_now(),
-                    app: app.to_string(),
-                    method: format!("{method:?}"),
-                    summary: summary.clone(),
-                    verdict: verdict.into(),
-                });
+                self.record_log(
+                    &mut inner,
+                    LogEntry {
+                        at: unix_now(),
+                        app: app.to_string(),
+                        method: format!("{method:?}"),
+                        summary: summary.clone(),
+                        verdict: verdict.into(),
+                    },
+                );
                 self.persist_apps(&inner);
                 return Decision::Allow;
             }
@@ -754,13 +786,16 @@ impl super::bunker::Gate for Engine {
                 // answered — this arm logs the expiry for that one.
                 if inner.prompts.iter().any(|(prompt_id, _)| prompt_id == &id) {
                     inner.prompts.retain(|(prompt_id, _)| prompt_id != &id);
-                    self.record_log(&mut *inner, LogEntry {
-                        at: unix_now(),
-                        app: app.to_string(),
-                        method: format!("{method:?}"),
-                        summary,
-                        verdict: "expired unanswered".into(),
-                    });
+                    self.record_log(
+                        &mut inner,
+                        LogEntry {
+                            at: unix_now(),
+                            app: app.to_string(),
+                            method: format!("{method:?}"),
+                            summary,
+                            verdict: "expired unanswered".into(),
+                        },
+                    );
                 }
                 Decision::Deny("the ask timed out unanswered".into())
             }
@@ -1331,7 +1366,10 @@ mod tests {
             "Sign event (kind 34567)"
         );
         let not_an_event = "hello";
-        assert_eq!(summarize(&NostrConnectMethod::SignEvent, &[not_an_event.to_string()]), "Sign event");
+        assert_eq!(
+            summarize(&NostrConnectMethod::SignEvent, &[not_an_event.to_string()]),
+            "Sign event"
+        );
 
         // The other methods answer in words too — the Debug spelling
         // ("getpublickey") is machine food, not a decision's headline.
@@ -1354,8 +1392,9 @@ mod tests {
         let params = vec![r#"{"kind":1,"content":"Hello, I'm signing remotely","tags":[]}"#.into()];
         let waiter = {
             let engine = engine.clone();
-            let app = app;
-            tokio::spawn(async move { engine.decide(&app, &NostrConnectMethod::SignEvent, &params).await })
+            tokio::spawn(async move {
+                engine.decide(&app, &NostrConnectMethod::SignEvent, &params).await
+            })
         };
 
         // The decide task and this test share one thread: yield until
@@ -1387,7 +1426,10 @@ mod tests {
         let params = vec![r#"{"kind":10002,"content":"","tags":[]}"#.into()];
         assert!(is_sensitive(&NostrConnectMethod::SignEvent, &params));
         let params = vec!["not an event".to_string()];
-        assert!(is_sensitive(&NostrConnectMethod::SignEvent, &params), "the unreadable fails open into ask");
+        assert!(
+            is_sensitive(&NostrConnectMethod::SignEvent, &params),
+            "the unreadable fails open into ask"
+        );
     }
 
     #[test]
@@ -1417,9 +1459,10 @@ mod tests {
         let waiters: Vec<_> = (0..3)
             .map(|_| {
                 let engine = engine.clone();
-                let app = app;
                 let params = params.clone();
-                tokio::spawn(async move { engine.decide(&app, &NostrConnectMethod::SignEvent, &params).await })
+                tokio::spawn(async move {
+                    engine.decide(&app, &NostrConnectMethod::SignEvent, &params).await
+                })
             })
             .collect();
         let views = loop {
