@@ -335,8 +335,19 @@ impl Bunker {
         let Some(plaintext) = self.keys.nip44_decrypt(&event.pubkey, &event.content).ok() else {
             return Plan::Ignore;
         };
+        // A request whose method the crate's enum does not know parses
+        // as a typed *response* — every field optional but the id. The
+        // method field's own name is the tell: a response carries
+        // none, so a plaintext that says `method` first gets the raw
+        // path before the typed parse can bury it.
+        let Ok(plain) = serde_json::from_str::<serde_json::Value>(&plaintext) else {
+            return Plan::Ignore;
+        };
+        if matches!(plain["method"].as_str(), Some("switch_relays") | Some("logout")) {
+            return self.plan_raw(event, plain);
+        }
         let Ok(message) = NostrConnectMessage::from_json(&plaintext) else {
-            return self.plan_raw(event, &plaintext);
+            return Plan::Ignore;
         };
         let (id, method, params) = match message {
             NostrConnectMessage::Request { id, method, params } => (id, method, params),
@@ -530,10 +541,7 @@ impl Bunker {
     /// grew up with. Parsed as raw JSON, answered as raw responses: a
     /// paired app gets the bunker's relay list, a goodbye removes its
     /// own pairing, and anything else is the noise it looks like.
-    fn plan_raw(&mut self, event: &Event, plaintext: &str) -> Plan {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(plaintext) else {
-            return Plan::Ignore;
-        };
+    fn plan_raw(&mut self, event: &Event, value: serde_json::Value) -> Plan {
         let (Some(id), Some(method)) = (
             value["id"].as_str().map(str::to_string),
             value["method"].as_str().map(str::to_string),
