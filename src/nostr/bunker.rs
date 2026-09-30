@@ -703,6 +703,176 @@ mod tests {
         }
     }
 
+    /// Pair the app, then run one ask through the gate with an Allow,
+    /// returning the decrypted response message. The shape the
+    /// third-party crypto tests all share.
+    fn allowed_ask(
+        bunker: &mut Bunker,
+        app: &App,
+        method: NostrConnectMethod,
+        params: &[&str],
+    ) -> NostrConnectMessage {
+        let bunker_pubkey = bunker.public_key();
+        match bunker.plan(&app.request_event(&bunker_pubkey, method, params)) {
+            Plan::Ask { request, id, method, params } => {
+                let response = bunker
+                    .execute(&request, &id, &method, &params, Decision::Allow)
+                    .expect("an allowed method answers");
+                app.decrypt_response(&response)
+            }
+            other => panic!("the method waits on the gate: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn nip44_encrypt_round_trips_to_the_third_party() {
+        let mut bunker = Bunker::new(Keys::generate(), None);
+        let app = App::new();
+        let third = App::new();
+        bunker.plan(&app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
+
+        let message = allowed_ask(
+            &mut bunker,
+            &app,
+            NostrConnectMethod::Nip44Encrypt,
+            &[third.pubkey().to_string().as_str(), "a secret for the third party"],
+        );
+        match message {
+            NostrConnectMessage::Response { result, error, .. } => {
+                assert_eq!(error, None, "{error:?}");
+                let ciphertext = result.expect("an encrypt answers with a result");
+                let plaintext = third.keys.nip44_decrypt(&bunker.public_key(), &ciphertext).unwrap();
+                assert_eq!(plaintext, "a secret for the third party");
+            }
+            other => panic!("a response came back: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn nip44_decrypt_round_trips_from_the_third_party() {
+        let mut bunker = Bunker::new(Keys::generate(), None);
+        let app = App::new();
+        let third = App::new();
+        let bunker_pubkey = bunker.public_key();
+        bunker.plan(&app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[]));
+
+        let ciphertext = third.keys.nip44_encrypt(&bunker_pubkey, "wire secret").unwrap();
+        let message = allowed_ask(
+            &mut bunker,
+            &app,
+            NostrConnectMethod::Nip44Decrypt,
+            &[third.pubkey().to_string().as_str(), ciphertext.as_str()],
+        );
+        match message {
+            NostrConnectMessage::Response { result, error, .. } => {
+                assert_eq!(error, None, "{error:?}");
+                assert_eq!(result.as_deref(), Some("wire secret"));
+            }
+            other => panic!("a response came back: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn nip04_encrypt_round_trips_to_the_third_party() {
+        let mut bunker = Bunker::new(Keys::generate(), None);
+        let app = App::new();
+        let third = App::new();
+        bunker.plan(&app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
+
+        let message = allowed_ask(
+            &mut bunker,
+            &app,
+            NostrConnectMethod::Nip04Encrypt,
+            &[third.pubkey().to_string().as_str(), "an old-fashioned secret"],
+        );
+        match message {
+            NostrConnectMessage::Response { result, error, .. } => {
+                assert_eq!(error, None, "{error:?}");
+                let ciphertext = result.expect("an encrypt answers with a result");
+                let plaintext = third.keys.nip04_decrypt(&bunker.public_key(), &ciphertext).unwrap();
+                assert_eq!(plaintext, "an old-fashioned secret");
+            }
+            other => panic!("a response came back: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn nip04_decrypt_round_trips_from_the_third_party() {
+        let mut bunker = Bunker::new(Keys::generate(), None);
+        let app = App::new();
+        let third = App::new();
+        let bunker_pubkey = bunker.public_key();
+        bunker.plan(&app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[]));
+
+        let ciphertext = third.keys.nip04_encrypt(&bunker_pubkey, "an old wire secret").unwrap();
+        let message = allowed_ask(
+            &mut bunker,
+            &app,
+            NostrConnectMethod::Nip04Decrypt,
+            &[third.pubkey().to_string().as_str(), ciphertext.as_str()],
+        );
+        match message {
+            NostrConnectMessage::Response { result, error, .. } => {
+                assert_eq!(error, None, "{error:?}");
+                assert_eq!(result.as_deref(), Some("an old wire secret"));
+            }
+            other => panic!("a response came back: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_crypto_methods_refuse_malformed_params() {
+        let mut bunker = Bunker::new(Keys::generate(), None);
+        let app = App::new();
+        let third = App::new();
+        bunker.plan(&app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
+
+        // A payload missing: one param is not a method call.
+        let message = allowed_ask(
+            &mut bunker,
+            &app,
+            NostrConnectMethod::Nip44Encrypt,
+            &[third.pubkey().to_string().as_str()],
+        );
+        match message {
+            NostrConnectMessage::Response { result, error, .. } => {
+                assert_eq!(result, None);
+                assert!(error.unwrap().contains("pubkey, payload"), "{error:?}");
+            }
+            other => panic!("a response came back: {other:?}"),
+        }
+
+        // A pubkey that parses as nothing.
+        let message = allowed_ask(
+            &mut bunker,
+            &app,
+            NostrConnectMethod::Nip44Decrypt,
+            &["not-a-pubkey", "payload"],
+        );
+        match message {
+            NostrConnectMessage::Response { result, error, .. } => {
+                assert_eq!(result, None);
+                assert!(error.unwrap().contains("unreadable pubkey"), "{error:?}");
+            }
+            other => panic!("a response came back: {other:?}"),
+        }
+
+        // A ciphertext that decrypts as nothing.
+        let message = allowed_ask(
+            &mut bunker,
+            &app,
+            NostrConnectMethod::Nip44Decrypt,
+            &[third.pubkey().to_string().as_str(), "not-a-ciphertext"],
+        );
+        match message {
+            NostrConnectMessage::Response { result, error, .. } => {
+                assert_eq!(result, None);
+                assert!(error.unwrap().contains("did not transform"), "{error:?}");
+            }
+            other => panic!("a response came back: {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn noise_is_none_and_never_a_response() {
         let mut bunker = Bunker::new(Keys::generate(), None);

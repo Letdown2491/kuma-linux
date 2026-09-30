@@ -615,6 +615,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn at_basic_nip44_encrypt_runs_unattended_and_nip04_encrypt_asks() {
+        let engine = engine();
+        let app = app();
+        // Pair by asking once, then relax to Basic the way the panel will.
+        let engine_for_ask = engine.clone();
+        let ask = tokio::spawn(async move {
+            engine_for_ask.decide(&app, &NostrConnectMethod::GetPublicKey, &[]).await
+        });
+        tokio::task::yield_now().await;
+        engine.approve(&engine.prompts()[0].id, None).unwrap();
+        ask.await.unwrap();
+        engine.set_level(&app.to_string(), Level::Basic).unwrap();
+
+        // NIP-44 is general-purpose encryption: it runs without a prompt.
+        let allowed = engine
+            .decide(
+                &app,
+                &NostrConnectMethod::Nip44Encrypt,
+                &[app.pubkey().to_string(), "text".into()],
+            )
+            .await;
+        assert!(matches!(allowed, Decision::Allow));
+        assert!(engine.prompts().is_empty());
+
+        // NIP-04's job is private messages; encrypting one is writing one.
+        let engine_for_ask = engine.clone();
+        let ask = tokio::spawn(async move {
+            engine_for_ask.decide(
+                &app,
+                &NostrConnectMethod::Nip04Encrypt,
+                &[app.pubkey().to_string(), "text".into()],
+            )
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(engine.prompts().len(), 1, "nip04_encrypt asks at Basic");
+        engine.approve(&engine.prompts()[0].id, None).unwrap();
+        assert!(matches!(ask.await.unwrap(), Decision::Allow));
+    }
+
+    #[tokio::test]
     async fn pairings_persist_through_a_reboot_of_the_engine() {
         let dir = tempfile::tempdir().unwrap();
         let app = app();
