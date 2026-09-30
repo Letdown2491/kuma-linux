@@ -4618,6 +4618,23 @@ local TABS = {
     { id = "pair", glyph = "link", title = "Pair" },
 }
 
+-- Landing on Pair reads the clipboard, once per panel open: most web
+-- apps ship a copy button, not a clickable link, so the copied URI is
+-- the common case and the paste step is a toll. Only the prefix is
+-- matched, nothing is stored, and the offer card it fills is still
+-- the person's question to answer — the tap on Pair remains the
+-- approval. Defined beside the state, ABOVE the rail whose buttons
+-- call it: a local read before its declaration exists is the global,
+-- which is nil, and a nil call is the crash that retired the panel.
+local function checkClipboard()
+    if clipboard_checked or offered_uri then return end
+    clipboard_checked = true
+    local text = noctalia.clipboardText()
+    if text and text:find("^nostrconnect://") then
+        offered_uri = text
+    end
+end
+
 local function railButton(t)
     local active = tab == t.id
     -- The pending count rides in the button's own text: the rail is
@@ -4787,23 +4804,6 @@ local function offerCard()
             end }),
         }),
     })
-end
-
--- Landing on Pair reads the clipboard, once per panel open: most web
--- apps ship a copy button, not a clickable link, so the copied URI is
--- the common case and the paste step is a toll. Only the prefix is
--- matched, nothing is stored, and the offer card it fills is still
--- the person's question to answer — the tap on Pair remains the
--- approval. Defined beside the state, ABOVE the rail whose buttons
--- call it: a local read before its declaration exists is the global,
--- which is nil, and a nil call is the crash that retired the panel.
-local function checkClipboard()
-    if clipboard_checked or offered_uri then return end
-    clipboard_checked = true
-    local text = noctalia.clipboardText()
-    if text and text:find("^nostrconnect://") then
-        offered_uri = text
-    end
 end
 
 local function pairPane()
