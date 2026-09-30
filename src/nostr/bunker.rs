@@ -320,6 +320,13 @@ impl Bunker {
         self.relays = relays;
     }
 
+    /// The outstanding secrets, refreshed: a mint adds a door, a burn
+    /// closes one, and the vault's own list is the durable side this
+    /// mirrors. Arming hands the first list in.
+    pub fn with_secrets(&mut self, secrets: Vec<String>) {
+        self.expected_secrets = secrets;
+    }
+
     /// The rate a test can afford to exercise: the same bucket shape
     /// at a size the test sees shed.
     #[cfg(test)]

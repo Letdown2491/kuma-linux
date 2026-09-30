@@ -465,6 +465,12 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                 }
                 match self.vault.mint_secret().await {
                     Ok(secret) => {
+                        // The bunker hears about the new door now — a
+                        // secret the live list never saw would refuse
+                        // the very connect the URI invites.
+                        if let Some(bunker) = self.bunker.as_mut() {
+                            bunker.with_secrets(self.vault.secrets().to_vec());
+                        }
                         let pubkey = self.bunker.as_ref().expect("the armed bunker").public_key();
                         Response::Ok(OkResponse::Mint {
                             ok: true,
