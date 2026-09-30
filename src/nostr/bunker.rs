@@ -939,7 +939,8 @@ fn percent_decode(value: &str) -> Result<String> {
                 }
                 let hex = std::str::from_utf8(&bytes[i + 1..i + 3])
                     .map_err(|_| anyhow!("bad percent-encoding"))?;
-                let byte = u8::from_str_radix(hex, 16).map_err(|_| anyhow!("bad percent-encoding"))?;
+                let byte =
+                    u8::from_str_radix(hex, 16).map_err(|_| anyhow!("bad percent-encoding"))?;
                 out.push(byte);
                 i += 3;
                 continue;
