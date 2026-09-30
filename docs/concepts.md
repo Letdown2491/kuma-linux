@@ -582,8 +582,11 @@ that promise.
 
 **A newly paired app can ask for everything, and does.** The policy
 engine's default level is Ask: every consequential method waits on a
-prompt that names the app, the method, and — for a signature — the exact
-event, and nothing signs until a person answers. You relax an app to
+prompt that names the app, the method, and — for a signature — what the
+event would do, in words the spec's kind numbers map to ("post a note",
+"replace your relay list"), with the event's own content and tags
+beneath for the judgment itself, and nothing signs until a person
+answers. You relax an app to
 Basic when its everyday requests should stop asking — and everyday is
 an explicit safe list: notes, reposts, reactions, long-form, the
 social kinds the list vouches for. Everything else asks: sensitive
@@ -614,7 +617,11 @@ switch — the gate it guards is the one left open afterwards.
 its own one-time secret, and the connect that echoes it burns it: a
 second connect with the same secret is refused. `kuma-nostr bunker`
 mints a fresh URI per call — one per app, re-minted for each new
-pairing — and `rotate` still invalidates every outstanding secret
+pairing — and names the app at the door with `--for` ("Damus on my
+phone"), which the panel's Pair tab holds a field for: the connect
+that burns that secret pairs under the name, because the person who
+minted the URI knows who it was for and the client may never say.
+`rotate` still invalidates every outstanding secret
 at a stroke. The connect's echo is constant-time compared, because
 a comparison that leaks its own progress is a lock that shows its
 keys; the URI-less door — a bunker with nothing outstanding — stays
@@ -627,7 +634,13 @@ is the approval, the handshake goes out on the client's own relays,
 and the URI's secret echoes back as the result the client validates.
 The client's name and its requested permissions ride the pairing
 record as display hints, never authorization; the levels above are
-the only thing that decides. Every refusal names itself — a missing
+the only thing that decides. The same hints arrive the other way
+round in the `bunker://` flow: the spec's connect method carries
+optional requested permissions and optional client metadata, and the
+bunker reads both, again as display hints only. What the person says
+outranks what the client claims — `kuma-nostr label <app> <name>`
+(the panel's pencil) renames an app, and the mint label outranks the
+client's own metadata. Every refusal names itself — a missing
 secret, no relay, a plaintext relay to a non-loopback host — because
 the person holding the URI is the one who can fix it.
 

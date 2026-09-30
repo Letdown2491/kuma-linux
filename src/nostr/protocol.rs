@@ -90,8 +90,12 @@ pub enum Request {
     Rotate,
     /// Mint a one-time pairing secret and answer the URI that carries
     /// it. The act of creating a pairing URI; the connect that uses
-    /// it burns it.
-    Mint,
+    /// it burns it. The label is the person's name for the app the
+    /// URI is for, which the connect pairs under.
+    Mint {
+        #[serde(default)]
+        label: Option<String>,
+    },
     /// Begin a `nostrconnect://` pairing from the client's URI — the
     /// person's paste is the approval, the handshake the daemon's act.
     Connect {
@@ -108,6 +112,12 @@ pub enum Request {
     /// tombstone — revoke is the ban, delete is the removal.
     Delete {
         app: String,
+    },
+    /// Name a paired app: the person's word, which outranks the
+    /// client's own metadata claim on every surface after it.
+    Label {
+        app: String,
+        name: String,
     },
 }
 
@@ -164,6 +174,7 @@ pub enum OkResponse {
     Connect { ok: bool, name: Option<String>, relays: Vec<String> },
     Unrevoke { ok: bool, cleared: bool },
     Delete { ok: bool, removed: bool },
+    Label { ok: bool, named: bool },
 }
 
 /// What `status` says, and what `doctor` will grade through it later.
@@ -550,7 +561,7 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                 Ok(uri) => Response::Ok(OkResponse::Rotate { ok: true, uri }),
                 Err(e) => err_response(e),
             },
-            Request::Mint => {
+            Request::Mint { label } => {
                 // A mint is the act of creating a pairing URI: one
                 // secret, one URI, one connect. Status shows the
                 // latest mint while it lives; it does not mint,
@@ -562,13 +573,13 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                         "the bunker is locked; unlock it and the pairing URI comes with it"
                     ));
                 }
-                match self.vault.mint_secret().await {
+                match self.vault.mint_secret(label).await {
                     Ok(secret) => {
                         // The bunker hears about the new door now — a
                         // secret the live list never saw would refuse
                         // the very connect the URI invites.
                         if let Some(bunker) = self.bunker.as_mut() {
-                            bunker.with_secrets(self.vault.secrets().to_vec());
+                            bunker.with_secrets(self.vault.outstanding());
                         }
                         let pubkey = self.bunker.as_ref().expect("the armed bunker").public_key();
                         Response::Ok(OkResponse::Mint {
@@ -578,6 +589,10 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                     }
                     Err(e) => err_response(e),
                 }
+            }
+            Request::Label { app, name } => {
+                let named = self.engine.rename(&app, &name);
+                Response::Ok(OkResponse::Label { ok: true, named })
             }
         }
     }
@@ -658,7 +673,7 @@ impl<S: super::vault::SecretStore> Daemon<S> {
             self.inbound.clone(),
             self.status_tx.clone(),
         ));
-        let mut bunker = Bunker::new(keys, self.vault.secrets().to_vec());
+        let mut bunker = Bunker::new(keys, self.vault.outstanding());
         // The persisted pairings ride in: a fresh session set is not
         // a forgetting, and the restart is invisible to a paired app.
         // One source of truth answers "paired" — the engine's record,

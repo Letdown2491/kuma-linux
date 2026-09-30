@@ -8,6 +8,24 @@ differently. Why it changed belongs in the commit that made it.
 
 ### Added
 
+- **Asks and pairings speak in names.** `kuma-nostr bunker --for
+  "Damus on my phone"` names the URI at mint — the connect that burns
+  it pairs under the name — and `kuma-nostr label <app> <name>` (the
+  panel's pencil) names one after the fact; the person's word
+  outranks the client's own metadata claim. The spec's connect
+  metadata and requested permissions (the third and fourth connect
+  params, the display hints the `bunker://` flow never had a source
+  for) are read now too, and an off-spec client's metadata blob at
+  the third position is recognized rather than dropped.
+- **Ask prompts read like decisions.** A signature ask says what the
+  event would do in words the kind numbers map to — "post a note",
+  "replace your relay list" — with the content whole and the tags'
+  names beneath; the strict event parse that turned every
+  odd-shaped event into "sign an unreadable event" is retired, and
+  an event that truly cannot be read shows itself instead of a
+  verdict-shaped shrug. The name at mint rides the vault blob (now
+  version 4); a 44.4.0 blob reads unchanged.
+
 - **`kuma-nostr delete <app>` removes a paired app outright.** The
   record and its standing answers go, the live session goes with them,
   and a freshly minted URI pairs the same app again — no un-revoke,

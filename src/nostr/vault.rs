@@ -63,6 +63,13 @@ pub const VAULT_ATTRIBUTES: [(&str, &str); 2] = [("app", "kuma"), ("account", "n
 /// secret is refused. A version 2 blob migrates on first read — its
 /// nonce becomes one outstanding secret, so a URI printed before the
 /// upgrade still works, once.
+///
+/// `labels` (version 4) name the app a minted URI is for — the
+/// person's word at mint time, which the connect that burns the
+/// secret pairs under. A map beside the secrets, not a second list:
+/// a secret without a label is the common case, and the client's own
+/// metadata claim is the fallback. Version 3 blobs read with an
+/// empty map and need no migration.
 #[derive(Serialize, Deserialize)]
 struct VaultBlob {
     v: u8,
@@ -71,12 +78,16 @@ struct VaultBlob {
     pubkey: String,
     #[serde(default)]
     secrets: Vec<String>,
+    #[serde(default)]
+    labels: std::collections::HashMap<String, String>,
 }
 
-const BLOB_VERSION: u8 = 3;
-/// The versions this binary reads and migrates: 2 carried one reusable
-/// nonce, 1 carried none at all. Anything else is refused, because a
-/// future format read as this one is a key silently misread.
+const BLOB_VERSION: u8 = 4;
+/// The versions this binary reads and migrates: 3 made every URI
+/// one-shot (its blobs read with an empty label map), 2 carried one
+/// reusable nonce, 1 carried none at all. Anything else is refused,
+/// because a future format read as this one is a key silently misread.
+const BLOB_VERSION_THREE: u8 = 3;
 const BLOB_VERSION_TWO: u8 = 2;
 const BLOB_VERSION_ONE: u8 = 1;
 
@@ -84,12 +95,23 @@ impl VaultBlob {
     fn new(key: &SecretKey, wrap: String, secrets: Vec<String>) -> Result<Self> {
         let ncryptsec = keys::to_ncryptsec(key, &wrap)?.to_bech32()?;
         let pubkey = keys::public_key_hex(key);
-        Ok(Self { v: BLOB_VERSION, wrap, ncryptsec, pubkey, secrets })
+        Ok(Self {
+            v: BLOB_VERSION,
+            wrap,
+            ncryptsec,
+            pubkey,
+            secrets,
+            labels: std::collections::HashMap::new(),
+        })
     }
 
     fn decode(bytes: &[u8]) -> Result<Self> {
         let blob: Self = serde_json::from_slice(bytes)?;
-        if blob.v != BLOB_VERSION && blob.v != BLOB_VERSION_TWO && blob.v != BLOB_VERSION_ONE {
+        if blob.v != BLOB_VERSION
+            && blob.v != BLOB_VERSION_THREE
+            && blob.v != BLOB_VERSION_TWO
+            && blob.v != BLOB_VERSION_ONE
+        {
             bail!("vault blob is version {}, this binary reads {BLOB_VERSION}", blob.v);
         }
         Ok(blob)
@@ -180,11 +202,15 @@ pub struct Vault<S: SecretStore> {
     /// Not deep secrets — they ride in URIs a person copies — but they
     /// are the daemon's to mint and burn, and nobody else's to guess.
     secrets: Vec<String>,
+    /// The names the person gave outstanding secrets at mint, as the
+    /// blob last said. A secret without an entry here pairs under the
+    /// client's own metadata claim, or under nothing.
+    labels: std::collections::HashMap<String, String>,
 }
 
 impl<S: SecretStore> Vault<S> {
     pub fn new(store: S) -> Self {
-        Self { store, key: None, secrets: Vec::new() }
+        Self { store, key: None, secrets: Vec::new(), labels: std::collections::HashMap::new() }
     }
 
     pub fn is_unlocked(&self) -> bool {
@@ -198,6 +224,21 @@ impl<S: SecretStore> Vault<S> {
     /// behavior the layer has always had.
     pub fn secrets(&self) -> &[String] {
         &self.secrets
+    }
+
+    /// The outstanding secrets with the names the person minted them
+    /// under, in pair order — what the bunker arms against, so a
+    /// connect that burns a secret pairs under the name the URI
+    /// carried. An unlabeled secret pairs under the client's own
+    /// metadata claim, or under nothing.
+    pub fn outstanding(&self) -> Vec<super::bunker::Outstanding> {
+        self.secrets
+            .iter()
+            .map(|secret| super::bunker::Outstanding {
+                secret: secret.clone(),
+                label: self.labels.get(secret).cloned(),
+            })
+            .collect()
     }
 
     /// The secret the pairing URI advertises: the latest mint, while
@@ -251,9 +292,10 @@ impl<S: SecretStore> Vault<S> {
     /// Re-read the key from storage. Idempotent on an already-unlocked
     /// vault — the CLI verb answers "already unlocked" the same way.
     /// A version 1 blob migrates (a nonce minted and persisted beside
-    /// the key) and a version 2 blob migrates (its reusable nonce
+    /// the key), a version 2 blob migrates (its reusable nonce
     /// becomes one outstanding one-time secret, so an old URI works
-    /// once more — exactly once).
+    /// once more — exactly once), and a version 3 blob migrates by
+    /// gaining the label map, empty.
     pub async fn unlock(&mut self) -> Result<()> {
         if self.key.is_some() {
             return Ok(());
@@ -280,6 +322,10 @@ impl<S: SecretStore> Vault<S> {
                 // The v1 shape had no nonce at all: one is minted now,
                 // so a URI exists for the bunker to verify against.
                 BLOB_VERSION_ONE => blob.secrets = vec![generate_wrap()?],
+                // The v3 shape is this one without the label map: the
+                // empty map the decode defaulted in is the whole
+                // migration. Nothing to move.
+                BLOB_VERSION_THREE => {}
                 _ => bail!("a blob version decoded but cannot migrate"),
             }
             blob.v = BLOB_VERSION;
@@ -289,6 +335,7 @@ impl<S: SecretStore> Vault<S> {
         }
         self.store.save(&serde_json::to_vec(&blob).context("serializing the vault blob")?).await?;
         self.secrets = blob.secrets;
+        self.labels = blob.labels;
         self.key = Some(key);
         Ok(())
     }
@@ -303,21 +350,28 @@ impl<S: SecretStore> Vault<S> {
     /// Mint a fresh one-time pairing secret and persist it. The secret
     /// is what the new URI carries and the connect burns; minting does
     /// not touch the key, the outstanding others, or anything else —
-    /// a second URI is a second door, not a replacement.
-    pub async fn mint_secret(&mut self) -> Result<String> {
+    /// a second URI is a second door, not a replacement. The label is
+    /// the person's name for the app the URI is for, riding the secret
+    /// so the connect that burns it pairs under that name.
+    pub async fn mint_secret(&mut self, label: Option<String>) -> Result<String> {
         let bytes =
             self.store.load().await?.ok_or_else(|| anyhow!("no vault exists in this store"))?;
         let mut blob = VaultBlob::decode(&bytes)?;
         let fresh = generate_wrap()?;
+        if let Some(label) = &label {
+            blob.labels.insert(fresh.clone(), label.clone());
+        }
         blob.secrets.push(fresh.clone());
         self.store.save(&serde_json::to_vec(&blob).context("serializing the vault blob")?).await?;
         self.secrets = blob.secrets;
+        self.labels = blob.labels;
         Ok(fresh)
     }
 
     /// Burn a one-time secret: the connect that verified against it
     /// used it up. Answers whether it was outstanding, so the caller
-    /// can tell an honest burn from a repeat.
+    /// can tell an honest burn from a repeat. The label goes with it —
+    /// a burned URI's name is not anyone's business.
     pub async fn burn_secret(&mut self, secret: &str) -> Result<bool> {
         let bytes =
             self.store.load().await?.ok_or_else(|| anyhow!("no vault exists in this store"))?;
@@ -327,24 +381,29 @@ impl<S: SecretStore> Vault<S> {
         if blob.secrets.len() == before {
             return Ok(false);
         }
+        blob.labels.remove(secret);
         self.store.save(&serde_json::to_vec(&blob).context("serializing the vault blob")?).await?;
         self.secrets = blob.secrets;
+        self.labels = blob.labels;
         Ok(true)
     }
 
     /// Mint a fresh one-time secret and invalidate every outstanding
     /// one: every URI printed before this call points at a secret the
     /// bunker no longer answers. The key is untouched — rotation is a
-    /// front-door surgery, not a re-provisioning.
+    /// front-door surgery, not a re-provisioning. The labels go with
+    /// the secrets they named; the fresh URI has no name yet.
     pub async fn rotate_secret(&mut self) -> Result<String> {
         let bytes =
             self.store.load().await?.ok_or_else(|| anyhow!("no vault exists in this store"))?;
         let mut blob = VaultBlob::decode(&bytes)?;
         let fresh = generate_wrap()?;
         blob.secrets = vec![fresh.clone()];
+        blob.labels = std::collections::HashMap::new();
         blob.v = BLOB_VERSION;
         self.store.save(&serde_json::to_vec(&blob).context("serializing the vault blob")?).await?;
         self.secrets = blob.secrets;
+        self.labels = blob.labels;
         Ok(fresh)
     }
 
@@ -355,6 +414,7 @@ impl<S: SecretStore> Vault<S> {
     pub async fn destroy(&mut self) -> Result<()> {
         self.lock();
         self.secrets = Vec::new();
+        self.labels = std::collections::HashMap::new();
         self.store.remove().await
     }
 
@@ -530,7 +590,7 @@ mod tests {
 
         let blob: serde_json::Value =
             serde_json::from_slice(&store.peek().expect("the migration wrote a blob")).unwrap();
-        assert_eq!(blob["v"], 3, "the migrated blob is the current version");
+        assert_eq!(blob["v"], 4, "the migrated blob is the current version");
         assert_eq!(blob["secrets"][0], "the-old-reusable-nonce");
     }
 
@@ -538,8 +598,8 @@ mod tests {
     async fn a_minted_secret_burns_once_and_is_not_twice() {
         let key = SecretKey::generate();
         let mut vault = unlocked_vault(&key).await;
-        let first = vault.mint_secret().await.unwrap();
-        let second = vault.mint_secret().await.unwrap();
+        let first = vault.mint_secret(None).await.unwrap();
+        let second = vault.mint_secret(None).await.unwrap();
         assert_ne!(first, second);
         assert_eq!(vault.secrets().len(), 3, "the provisioning secret and two mints");
 
@@ -559,8 +619,8 @@ mod tests {
     async fn rotation_invalidates_every_outstanding_secret() {
         let key = SecretKey::generate();
         let mut vault = unlocked_vault(&key).await;
-        vault.mint_secret().await.unwrap();
-        vault.mint_secret().await.unwrap();
+        vault.mint_secret(None).await.unwrap();
+        vault.mint_secret(None).await.unwrap();
         assert_eq!(vault.secrets().len(), 3);
 
         let fresh = vault.rotate_secret().await.unwrap();
@@ -595,7 +655,70 @@ mod tests {
         // stored URI keeps telling the truth across restarts.
         let blob: serde_json::Value =
             serde_json::from_slice(&store.peek().expect("the migration wrote a blob")).unwrap();
-        assert_eq!(blob["v"], 3, "the migrated blob is the current version");
+        assert_eq!(blob["v"], 4, "the migrated blob is the current version");
         assert_eq!(blob["secrets"][0], minted.as_str(), "the stored secret is the vault's own");
+    }
+
+    #[tokio::test]
+    async fn a_minted_label_rides_its_secret_and_dies_with_it() {
+        let key = SecretKey::generate();
+        let mut vault = unlocked_vault(&key).await;
+
+        // The person named the URI at mint: the label answers from the
+        // vault's own outstanding list, and the stored blob carries it.
+        let labeled = vault.mint_secret(Some("Damus on my phone".into())).await.unwrap();
+        assert_eq!(
+            vault.outstanding().iter().find(|o| o.secret == labeled).and_then(|o| o.label.clone()),
+            Some("Damus on my phone".into()),
+            "the label answers beside its secret"
+        );
+        let blob: serde_json::Value =
+            serde_json::from_slice(&vault.store.peek().expect("the mint persisted")).unwrap();
+        assert_eq!(blob["labels"][&labeled], "Damus on my phone");
+
+        // A burn takes the label with it: a spent URI's name is not
+        // anyone's business.
+        assert!(vault.burn_secret(&labeled).await.unwrap());
+        let blob: serde_json::Value =
+            serde_json::from_slice(&vault.store.peek().expect("the burn persisted")).unwrap();
+        assert!(blob["labels"].get(&labeled).is_none(), "the burned label is gone");
+
+        // Rotation clears the map whole: the fresh URI has no name yet.
+        vault.mint_secret(Some("a name".into())).await.unwrap();
+        let fresh = vault.rotate_secret().await.unwrap();
+        assert!(vault.outstanding().iter().all(|o| o.label.is_none()));
+        let blob: serde_json::Value =
+            serde_json::from_slice(&vault.store.peek().expect("the rotation persisted")).unwrap();
+        assert_eq!(blob["labels"].as_object().map(|m| m.len()), Some(0));
+        assert_eq!(blob["secrets"][0], fresh.as_str());
+    }
+
+    #[tokio::test]
+    async fn a_version_three_blob_reads_with_an_empty_label_map() {
+        // The 44.4.0 shape: one-shot secrets, no labels. It reads as-is
+        // — an absent map is an empty one, and no URI loses its door.
+        let key = SecretKey::generate();
+        let wrap = generate_wrap().unwrap();
+        let ncryptsec = keys::to_ncryptsec(&key, &wrap).unwrap().to_bech32().unwrap();
+        let v3 = serde_json::json!({
+            "v": 3,
+            "wrap": wrap,
+            "ncryptsec": ncryptsec,
+            "pubkey": keys::public_key_hex(&key),
+            "secrets": ["the-v3-secret"],
+        });
+        let store = std::sync::Arc::new(MemoryStore::default());
+        store.save(&serde_json::to_vec(&v3).unwrap()).await.unwrap();
+
+        let mut vault = Vault::new(store.clone());
+        vault.unlock().await.unwrap();
+        assert_eq!(vault.secrets(), ["the-v3-secret"]);
+        assert!(vault.outstanding().iter().all(|o| o.label.is_none()));
+
+        // The next write is the current version, labels included.
+        let blob: serde_json::Value =
+            serde_json::from_slice(&vault.store.peek().expect("the unlock persisted")).unwrap();
+        assert_eq!(blob["v"], 4);
+        assert_eq!(blob["labels"].as_object().map(|m| m.len()), Some(0));
     }
 }

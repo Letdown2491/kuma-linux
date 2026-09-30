@@ -554,15 +554,13 @@ mod tests {
                 let Some(plan) = plan else { continue };
                 match plan {
                     crate::nostr::bunker::Plan::Ignore => continue,
-                    crate::nostr::bunker::Plan::Paired { answer, app, metadata, burned } => {
-                        engine.pair_with_metadata(
-                            &app,
-                            metadata.as_ref().and_then(|m| m.name.clone()),
-                            metadata.as_ref().and_then(|m| m.image.clone()),
-                            None,
-                        );
+                    crate::nostr::bunker::Plan::Paired { answer, app, metadata, burned, perms } => {
+                        let name = burned.as_ref().and_then(|o| o.label.clone())
+                            .or_else(|| metadata.as_ref().and_then(|m| m.name.clone()));
+                        let image = metadata.as_ref().and_then(|m| m.image.clone());
+                        engine.pair_with_metadata(&app, name, image, perms);
                         if let Some(burned) = burned {
-                            let _ = handle.block_on(daemon.lock().unwrap().burn(&burned));
+                            let _ = handle.block_on(daemon.lock().unwrap().burn(&burned.secret));
                         }
                         let _ = daemon.lock().unwrap().publish(&answer);
                     }

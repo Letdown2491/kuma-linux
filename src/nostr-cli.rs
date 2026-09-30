@@ -71,11 +71,16 @@ enum Command {
     Status,
     /// The `bunker://` URI a remote app pairs with — as text, and as a
     /// QR when asked. The URI carries the bunker pubkey and the relay
-    /// set the daemon is running.
+    /// set the daemon is running. Naming the app here is the person's
+    /// word at the door: the connect that burns this URI's secret
+    /// pairs under the name.
     Bunker {
         /// Render a QR beside the URI line.
         #[arg(long)]
         qr: bool,
+        /// The name the pairing records — what the ask cards show.
+        #[arg(long = "for")]
+        for_app: Option<String>,
     },
     /// Delete the vault. The key is unrecoverable afterwards.
     Destroy {
@@ -117,6 +122,9 @@ enum Command {
         #[arg(default_value = "ask")]
         level: String,
     },
+    /// Name a paired app: the person's word, which outranks the
+    /// client's own metadata claim on every surface after it.
+    Label { app: String, name: String },
     /// Mint a fresh pairing nonce and re-arm: every URI printed before
     /// this dies with it, so the apps holding stored copies need the
     /// new one.
@@ -128,7 +136,7 @@ fn main() -> Result<()> {
     let path = cli.socket.map(Ok).unwrap_or_else(kuma::nostr::socket::default_socket_path)?;
 
     let bunker_verb = matches!(cli.command, Command::Bunker { .. });
-    let bunker_qr = matches!(cli.command, Command::Bunker { qr: true });
+    let bunker_qr = matches!(cli.command, Command::Bunker { qr: true, .. });
 
     // The identity verbs share one pre-check, because the worst order is
     // ask-then-refuse: the person pastes their secret key and only then
@@ -171,7 +179,12 @@ fn main() -> Result<()> {
             serde_json::json!({ "cmd": "connect", "uri": uri }).to_string()
         }
         Command::Status => r#"{"cmd":"status"}"#.to_string(),
-        Command::Bunker { .. } => r#"{"cmd":"mint"}"#.to_string(),
+        Command::Bunker { for_app, .. } => {
+            let label = for_app.as_deref().map(|name| {
+                format!(r#","label":{}"#, json_string(name))
+            }).unwrap_or_default();
+            format!(r#"{{"cmd":"mint"{label}}}"#)
+        }
         Command::Destroy { yes } => format!(r#"{{"cmd":"destroy","confirm":{yes}}}"#),
         Command::Prompts => r#"{"cmd":"prompts"}"#.to_string(),
         Command::Approve { id, remember } => {
@@ -192,6 +205,11 @@ fn main() -> Result<()> {
             r#"{{"cmd":"level","app":{},"level":{}}}"#,
             json_string(app),
             json_string(level)
+        ),
+        Command::Label { app, name } => format!(
+            r#"{{"cmd":"label","app":{},"name":{}}}"#,
+            json_string(app),
+            json_string(name)
         ),
         Command::Rotate => r#"{"cmd":"rotate"}"#.to_string(),
     };
@@ -405,6 +423,13 @@ fn render(value: &serde_json::Value) -> Result<()> {
             }
         }
         Some("level") => println!("level set"),
+        Some("label") => {
+            if value["named"].as_bool() == Some(true) {
+                println!("labeled");
+            } else {
+                println!("no such app");
+            }
+        }
         Some("rotate") => println!(
             "new pairing URI:\n{}",
             value["uri"].as_str().unwrap_or("(the uri did not come back)")

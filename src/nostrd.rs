@@ -147,16 +147,19 @@ fn main() -> anyhow::Result<()> {
             let Some(plan) = plan else { continue };
             match plan {
                 kuma::nostr::bunker::Plan::Ignore => continue,
-                kuma::nostr::bunker::Plan::Paired { answer, app, metadata, burned } => {
-                    engine.pair_with_metadata(
-                        &app,
-                        metadata.as_ref().and_then(|m| m.name.clone()),
-                        metadata.as_ref().and_then(|m| m.image.clone()),
-                        None,
-                    );
+                kuma::nostr::bunker::Plan::Paired { answer, app, metadata, burned, perms } => {
+                    // The name is the person's word first — a label
+                    // minted onto the URI outranks the client's own
+                    // metadata claim — and the client's self-report
+                    // second. Neither is an authorization input; both
+                    // are what the ask cards show.
+                    let name = burned.as_ref().and_then(|o| o.label.clone())
+                        .or_else(|| metadata.as_ref().and_then(|m| m.name.clone()));
+                    let image = metadata.as_ref().and_then(|m| m.image.clone());
+                    engine.pair_with_metadata(&app, name, image, perms);
                     if let Some(burned) = burned {
                         if let Err(e) = worker_runtime.block_on(
-                            worker.lock().expect("the daemon lock").burn(&burned),
+                            worker.lock().expect("the daemon lock").burn(&burned.secret),
                         ) {
                             eprintln!("kuma-nostrd: the burned secret did not persist: {e:#}");
                         }

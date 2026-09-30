@@ -4293,8 +4293,11 @@ description = "Bunker widget for Niri."
 # without `version`, or with an `plugin_api` the host does not speak,
 # loads nothing and says nothing on the bar. Shaped against
 # `noctalia plugins lint` and a loading shell, not against guesses.
+# 9 is where callbacks become functions; 24 is where runAsync accepts
+# an argv array — the road free text takes, because a name the person
+# typed has no business being parsed by a shell.
 version = "1.0.0"
-plugin_api = 9
+plugin_api = 24
 
 [[widget]]
 # The bar addresses the widget by plugin-id:widget-id; without an id
@@ -4387,6 +4390,9 @@ local tab = "asks" -- asks | apps | pair
 local tab_chosen = false -- the person's click wins over onboarding
 local panel_open = false -- the frame tick only polls while this is true
 local frame_acc = 0 -- milliseconds since the last poll, from the tick
+local mint_label = nil -- the person's name for the URI they are about to mint
+local renaming = nil -- the pubkey whose card shows the name editor
+local rename_text = nil -- the editor's current text
 local render -- forward-declared: refresh's callbacks call it before the
               -- file's bottom assigns it, and a name read before its
               -- local exists resolves to the global — nil.
@@ -4636,6 +4642,52 @@ local function levelButton(a)
 end
 
 local function appCard(a)
+    -- The name editor replaces the card while it is open: the person's
+    -- word for the app, which outranks the client's own metadata
+    -- claim on every surface after it. Save and submit run the same
+    -- act, and the free text rides the argv form — a name the person
+    -- typed has no business being parsed by a shell.
+    if renaming == a.pubkey then
+        local function save()
+            local name = (rename_text and rename_text ~= "" and rename_text) or nil
+            if not name then
+                renaming = nil
+                render()
+                return
+            end
+            noctalia.runAsync({ "kuma-nostr", "label", a.pubkey, name }, function(result)
+                if result.exitCode ~= 0 then
+                    noctalia.notifyError("kumaOS nostr",
+                        (result.stderr and result.stderr ~= "" and result.stderr) or "the label failed")
+                end
+                renaming = nil
+                refresh()
+            end)
+        end
+        return card({
+            ui.label({ text = "Name this app", fontSize = 13, fontWeight = "semibold", color = "on_surface" }),
+            ui.row({ gap = 8 }, {
+                ui.input({
+                    key = "rename-" .. a.pubkey,
+                    value = a.name or "",
+                    placeholder = "what do you call this app?",
+                    controlSize = "sm",
+                    flexGrow = 1,
+                    onChange = function(text) rename_text = text end,
+                    onSubmit = function(text)
+                        rename_text = text
+                        save()
+                    end,
+                }),
+                ui.button({ text = "Save", variant = "primary", controlSize = "sm", glyph = "check", onClick = save }),
+                ui.button({ variant = "ghost", controlSize = "sm", glyph = "x",
+                    onClick = function()
+                        renaming = nil
+                        render()
+                    end }),
+            }),
+        })
+    end
     -- Revocation is a state: the tombstone stays until the person
     -- clears it, so the card says so and offers the way back instead
     -- of a second revoke that would only find the tombstone again.
@@ -4653,6 +4705,13 @@ local function appCard(a)
                 ui.button({ variant = "ghost", controlSize = "sm", glyph = "undo",
                     tooltip = "un-revoke; a freshly minted URI pairs it again",
                     onClick = function() cli({ "unrevoke", a.pubkey }) end }),
+                ui.button({ variant = "ghost", controlSize = "sm", glyph = "pencil",
+                    tooltip = "name this app; ask cards show it",
+                    onClick = function()
+                        renaming = a.pubkey
+                        rename_text = a.name or ""
+                        render()
+                    end }),
                 ui.button({ variant = "ghost", controlSize = "sm", glyph = "trash",
                     tooltip = "delete; the record goes, and a fresh URI pairs it again",
                     onClick = function() cli({ "delete", a.pubkey }) end }),
@@ -4673,6 +4732,13 @@ local function appCard(a)
             ui.button({ variant = "ghost", controlSize = "sm", glyph = "shield-off",
                 tooltip = "revoke; refused even with its old URI until you un-revoke",
                 onClick = function() cli({ "revoke", a.pubkey }) end }),
+            ui.button({ variant = "ghost", controlSize = "sm", glyph = "pencil",
+                tooltip = "name this app; ask cards show it",
+                onClick = function()
+                    renaming = a.pubkey
+                    rename_text = a.name or ""
+                    render()
+                end }),
             ui.button({ variant = "ghost", controlSize = "sm", glyph = "trash",
                 tooltip = "delete; a freshly minted URI pairs it again",
                 onClick = function() cli({ "delete", a.pubkey }) end }),
@@ -4737,20 +4803,31 @@ local function pairPane()
     return card({
         offered,
         ui.label({
-            text = "Copy a fresh URI into any NIP-46 app. It pairs one app once — the connect burns it — so mint another for the next app.",
+            text = "Copy a fresh URI into any NIP-46 app. It pairs one app once — the connect burns it — so mint another for the next app. Name the app first and its asks show the name.",
             fontSize = 12, color = "on_surface_variant", maxLines = 3,
+        }),
+        ui.input({
+            key = "mint-label",
+            placeholder = "what app is this URI for? (optional)",
+            controlSize = "sm",
+            onChange = function(text) mint_label = text end,
         }),
         ui.row({ gap = 8 }, {
             ui.button({ text = "Copy fresh URI", variant = "primary", glyph = "clipboard-copy", onClick = function()
                 -- Minting is the act: the copy takes a URI that has
                 -- never been spent, not the last one — which a used
-                -- pairing already burned. Every arm says something:
-                -- the copy, the daemon's refusal, or an answer with
-                -- no URI in it. Silence here once ate URIs whole —
-                -- the clipboard kept its last tenant and the panel
-                -- looked fine.
-                noctalia.runAsync("kuma-nostr bunker --json", function(result)
-                    local doc = noctalia.json.decode(result.stdout or "{}")
+                -- pairing already burned. The name the person typed
+                -- rides the mint and pairs with it; the argv form
+                -- carries it, because free text is not shell text.
+                -- Every arm says something: the copy, the daemon's
+                -- refusal, or an answer with no URI in it.
+                local args = { "kuma-nostr", "bunker", "--json" }
+                if mint_label and mint_label ~= "" then
+                    table.insert(args, "--for")
+                    table.insert(args, mint_label)
+                end
+                noctalia.runAsync(args, function(result)
+                    local doc = noctalia.json.decode(result.stdout ~= "" and result.stdout or "{}")
                     if doc and doc.uri then
                         noctalia.copyToClipboard(doc.uri, "text/plain")
                     elseif result.exitCode == 0 then

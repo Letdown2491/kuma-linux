@@ -357,6 +357,27 @@ impl Engine {
         true
     }
 
+    /// The person's label for an app: what the ask cards and the
+    /// pairing list show instead of a pubkey fragment. The person's
+    /// word outranks the client's own metadata claim, so this sets
+    /// rather than fills. Answers whether a paired app was found.
+    pub fn rename(&self, app: &str, name: &str) -> bool {
+        let mut inner = self.inner.lock().expect("the policy lock");
+        let Some(paired) = inner.apps.iter_mut().find(|p| p.pubkey == app) else {
+            return false;
+        };
+        paired.name = Some(name.to_string());
+        inner.log.push(LogEntry {
+            at: unix_now(),
+            app: app.to_string(),
+            method: "label".into(),
+            summary: "the person named the app".into(),
+            verdict: "named".into(),
+        });
+        self.persist_apps(&inner);
+        true
+    }
+
     /// The person's delete: the record and its standing answers go
     /// together — the same deletion the app's own goodbye performs,
     /// logged as the person's act. Not a tombstone: revoke is the
@@ -609,12 +630,14 @@ fn remove_app(inner: &mut Inner, app: &str) -> bool {
 }
 
 /// The exact event an approval shows, privacy mode's one exception: a
-/// signature cannot be judged blind, so the unsigned event rides in
-/// full. The decrypt methods name their scope without their payload —
-/// the payload is the secret, and the prompt is rendered on screens.
+/// signature cannot be judged blind, so the event's content rides in
+/// whole. The render is for reading — what kind of act it is, the
+/// content itself, the tags' names — not a JSON wall. The decrypt
+/// methods name their scope without their payload — the payload is
+/// the secret, and the prompt is rendered on screens.
 fn detail(method: &NostrConnectMethod, params: &[String]) -> Option<String> {
     match method {
-        NostrConnectMethod::SignEvent => params.first().cloned(),
+        NostrConnectMethod::SignEvent => params.first().map(|json| sign_event_detail(json)),
         NostrConnectMethod::Nip04Decrypt | NostrConnectMethod::Nip44Decrypt => {
             params.first().map(|pk| format!("decrypt for {pk}"))
         }
@@ -623,19 +646,89 @@ fn detail(method: &NostrConnectMethod, params: &[String]) -> Option<String> {
     }
 }
 
-/// What a glance decides on: the method, and for a sign_event the kind
-/// it writes. Never the params, never the content — the summary that
-/// names nothing private is the one that goes in the log and the
-/// prompt list alike.
+/// The kind number an event JSON carries, read leniently — a number or
+/// a numeric string, and nothing else about the shape matters. The
+/// strict typed parse refused whole events over fields it did not
+/// expect, and every one of them became "unreadable" to the one person
+/// whose decision was being asked.
+fn event_kind(json: &str) -> Option<u64> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    match value.get("kind")? {
+        serde_json::Value::Number(n) => n.as_u64(),
+        serde_json::Value::String(s) => s.parse().ok(),
+        _ => None,
+    }
+}
+
+/// What a kind number means, for the kinds whose meaning is common
+/// enough to promise. The unknown kinds stay honest with their number
+/// rather than pretending to a phrase.
+fn kind_phrase(kind: u64) -> Option<&'static str> {
+    Some(match kind {
+        0 => "edit your profile",
+        1 => "post a note",
+        3 => "update your follows",
+        4 => "send a direct message",
+        5 => "delete events",
+        6 => "repost",
+        7 => "react",
+        1984 => "report content",
+        10000 => "replace your mute list",
+        10002 => "replace your relay list",
+        22242 => "authenticate a client",
+        30023 => "publish an article",
+        30078 => "replace app data",
+        _ => return None,
+    })
+}
+
+/// The ask's one line: what the signature would do. Never the content —
+/// the summary goes in the log, and a log that carries every signed
+/// sentence is a diary nobody asked for.
 fn summarize(method: &NostrConnectMethod, params: &[String]) -> String {
     match method {
-        NostrConnectMethod::SignEvent => params
-            .first()
-            .and_then(|json| nostr::event::UnsignedEvent::from_json(json).ok())
-            .map(|event| format!("sign a kind {} event", u16::from(event.kind)))
-            .unwrap_or_else(|| "sign an unreadable event".into()),
+        NostrConnectMethod::SignEvent => match params.first().and_then(|json| event_kind(json)) {
+            Some(kind) => match kind_phrase(kind) {
+                Some(phrase) => format!("sign: {phrase} (kind {kind})"),
+                None => format!("sign a kind {kind} event"),
+            },
+            None => "sign an event this prompt could not read".into(),
+        },
         other => format!("{other:?}").to_lowercase(),
     }
+}
+
+/// The prompt's detail, for reading before deciding: the kind in
+/// words, the content whole — the person's judgment is about these
+/// words — and the tags' names, so a note wearing a hidden `p` tag is
+/// a visible fact. The raw JSON is the fallback, because a shape this
+/// cannot parse is exactly the shape to show rather than hide.
+fn sign_event_detail(json: &str) -> String {
+    let Some(value) = serde_json::from_str::<serde_json::Value>(json).ok() else {
+        return format!("an event this prompt cannot parse:\n{json}");
+    };
+    let kind = value.get("kind").and_then(|k| k.as_u64());
+    let head = match kind {
+        Some(kind) => match kind_phrase(kind) {
+            Some(phrase) => format!("{phrase} (kind {kind})"),
+            None => format!("a kind {kind} event"),
+        },
+        None => "an event".to_string(),
+    };
+    let content = value.get("content").and_then(|c| c.as_str()).unwrap_or("");
+    let tags: Vec<&str> = value
+        .get("tags")
+        .and_then(|t| t.as_array())
+        .map(|tags| {
+            tags.iter().filter_map(|t| t.get(0).and_then(|n| n.as_str())).collect()
+        })
+        .unwrap_or_default();
+    let tag_line = if tags.is_empty() {
+        String::new()
+    } else {
+        format!("\n\ntags: {}", tags.join(", "))
+    };
+    format!("{head}\n\n{content}{tag_line}")
 }
 
 fn remember_key(app: &PublicKey, method: &NostrConnectMethod) -> String {
@@ -1057,5 +1150,65 @@ mod tests {
         let paired = engine.apps();
         assert_eq!(paired.len(), 1);
         assert!(paired[0].revoked_at.is_none(), "a re-paired app is not born revoked");
+    }
+
+    #[test]
+    fn the_summary_speaks_kinds_and_reads_leniently() {
+        // The strict typed parse refused whole events over fields it
+        // did not expect; the summary needs one integer, read with
+        // that much honesty.
+        let event = r#"{"kind":1,"content":"hello","tags":[]}"#;
+        assert_eq!(
+            summarize(&NostrConnectMethod::SignEvent, &[event.to_string()]),
+            "sign: post a note (kind 1)"
+        );
+
+        // A kind as a string and a kind with no phrase: each says what
+        // it is rather than "unreadable".
+        let string_kind = r#"{"kind":"10002","content":"","tags":[]}"#;
+        assert_eq!(
+            summarize(&NostrConnectMethod::SignEvent, &[string_kind.to_string()]),
+            "sign: replace your relay list (kind 10002)"
+        );
+        let unknown = r#"{"kind":34567,"content":"","tags":[]}"#;
+        assert_eq!(
+            summarize(&NostrConnectMethod::SignEvent, &[unknown.to_string()]),
+            "sign a kind 34567 event"
+        );
+        let not_an_event = "hello";
+        assert_eq!(
+            summarize(&NostrConnectMethod::SignEvent, &[not_an_event.to_string()]),
+            "sign an event this prompt could not read"
+        );
+    }
+
+    #[test]
+    fn the_detail_reads_like_a_decision_not_a_json_wall() {
+        let event = r#"{"kind":1,"content":"Hello, I'm signing remotely","tags":[["p","3f7a"]]}"#;
+        let shown = detail(&NostrConnectMethod::SignEvent, &[event.to_string()]).unwrap();
+        assert!(shown.starts_with("post a note (kind 1)"), "{shown}");
+        assert!(shown.contains("Hello, I'm signing remotely"), "{shown}");
+        assert!(shown.contains("tags: p"), "{shown}");
+
+        // The unparsable shape shows itself: the raw bytes are the
+        // fallback, not a silence.
+        let shown = detail(&NostrConnectMethod::SignEvent, &["<not json>".to_string()]).unwrap();
+        assert!(shown.contains("cannot parse"), "{shown}");
+        assert!(shown.contains("<not json>"));
+    }
+
+    #[test]
+    fn rename_sets_the_persons_word() {
+        let engine = engine();
+        let app = app();
+        engine.pair_with_metadata(&app, Some("the client's claim".into()), None, None);
+
+        // The person's label sets — it does not fill-if-empty, because
+        // the person's word outranks the client's own claim.
+        assert!(engine.rename(&app.to_string(), "Damus on my phone"));
+        assert_eq!(engine.apps()[0].name.as_deref(), Some("Damus on my phone"));
+
+        let stranger = nostr::key::Keys::generate().public_key();
+        assert!(!engine.rename(&stranger.to_string(), "x"), "renaming a stranger names nobody");
     }
 }

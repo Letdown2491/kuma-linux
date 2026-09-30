@@ -341,7 +341,9 @@ from a terminal:
 
 ```console
 $ kuma-nostr bunker --qr      # mints a one-time pairing URI, as text and QR
+$ kuma-nostr bunker --for "Damus on my phone"   # named: its asks show the name
 $ kuma-nostr connect <uri>    # or: pair a client's own nostrconnect:// invite
+$ kuma-nostr label <app> <name>   # or: name a paired app after the fact
 $ kuma-nostr prompts          # what is waiting on you
 $ kuma-nostr approve <id>
 ```
@@ -351,7 +353,9 @@ for the next app. The panel does all of this with buttons, keeps the
 bunker's keep-alive fed while you are using it, watches for new asks
 while it is open, shows the revoked state with its undo, and offers
 both ways out: revoke (a ban an app cannot cross until you un-revoke)
-and delete (the record goes; a fresh URI pairs it again). `kuma
+and delete (the record goes; a fresh URI pairs it again). Naming an
+app — at mint, or the card's pencil — is what turns its asks from
+pubkey fragments into sentences. `kuma
 doctor` grades the whole layer, and says so
 before setup too.
 hibernate --yes` on a machine that already has a swapfile repairs what

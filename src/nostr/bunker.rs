@@ -57,6 +57,17 @@ impl ClientMeta {
     }
 }
 
+/// An outstanding pairing secret, with the name the person gave the
+/// URI it rides in — `--for` at mint, empty when the URI was minted
+/// unnamed. The connect that burns the secret pairs under its label,
+/// which outranks the client's own metadata claim: the person named
+/// the door, and the app walking through it does not get to rename it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Outstanding {
+    pub secret: String,
+    pub label: Option<String>,
+}
+
 /// A `nostrconnect://` URI, parsed: the client-initiated pairing the
 /// NIP defines — the client's pubkey, the relays it listens on, the
 /// secret the signer must echo, and the optional metadata the client
@@ -194,14 +205,17 @@ pub enum Plan {
     Ignore,
     Answer(Event),
     /// A connect that verified: the ack rides in `answer`, the daemon
-    /// records the pairing (with the app's own metadata, when it
-    /// claimed any) and burns the secret the connect used — one-time,
-    /// so the second connect with the same secret is refused.
+    /// records the pairing — named by the person's mint label when the
+    /// secret carried one, the client's own metadata otherwise — with
+    /// the perms the connect requested, and burns the secret the
+    /// connect used — one-time, so the second connect with the same
+    /// secret is refused.
     Paired {
         answer: Event,
         app: PublicKey,
         metadata: Option<ClientMeta>,
-        burned: Option<String>,
+        burned: Option<Outstanding>,
+        perms: Option<String>,
     },
     /// A relay list the bunker served a paired app — `switch_relays`,
     /// a newer method than this tree's types carry, so it travels as
@@ -364,7 +378,7 @@ pub struct Bunker {
     /// them. A connect's echo that verifies burns itself here; the
     /// daemon burns the stored copy when the `Paired` answer lands,
     /// so the two halves agree.
-    expected_secrets: Vec<String>,
+    expected_secrets: Vec<Outstanding>,
     /// The tombstoned pubkeys — the apps the person revoked. The
     /// teeth of revocation: a connect from one of these is refused
     /// whatever secret it carries, because the person's word outranks
@@ -390,7 +404,7 @@ pub struct Bunker {
 }
 
 impl Bunker {
-    pub fn new(keys: Keys, expected_secrets: Vec<String>) -> Self {
+    pub fn new(keys: Keys, expected_secrets: Vec<Outstanding>) -> Self {
         Self {
             keys,
             sessions: HashSet::new(),
@@ -440,7 +454,7 @@ impl Bunker {
     /// The outstanding secrets, refreshed: a mint adds a door, a burn
     /// closes one, and the vault's own list is the durable side this
     /// mirrors. Arming hands the first list in.
-    pub fn with_secrets(&mut self, secrets: Vec<String>) {
+    pub fn with_secrets(&mut self, secrets: Vec<Outstanding>) {
         self.expected_secrets = secrets;
     }
 
@@ -573,6 +587,22 @@ impl Bunker {
                 // mints a fresh URI when they want a new pairing,
                 // and nothing pairs until they do.
                 let secret = params.get(1).cloned();
+                // The third param is the requested perms (a comma list
+                // of method[:kind]); the fourth is the client's own
+                // metadata — the spec puts metadata at four with an
+                // empty-string placeholder at three when there are no
+                // perms to ask for. Off-spec clients have been seen
+                // putting the metadata blob at three, so a third param
+                // that opens a brace parses as metadata and the perms
+                // read is what falls through empty. Both are display
+                // hints; neither is an authorization input.
+                let perms = params.get(2).and_then(|raw| {
+                    let trimmed = raw.trim();
+                    let is_meta = trimmed.starts_with('{');
+                    (!trimmed.is_empty() && !is_meta).then(|| trimmed.to_string())
+                });
+                let metadata =
+                    ClientMeta::parse(params.get(3)).or_else(|| ClientMeta::parse(params.get(2)));
                 if self.revoked.contains(&event.pubkey) {
                     eprintln!(
                         "kuma-nostrd: connect from {}: refused, the app is revoked",
@@ -594,7 +624,9 @@ impl Bunker {
                 // restart would flip the disagreement back open.
                 let mut burn_at = match (&secret, known) {
                     (Some(provided), false) => {
-                        self.expected_secrets.iter().position(|s| constant_time_eq(s, provided))
+                        self.expected_secrets
+                            .iter()
+                            .position(|s| constant_time_eq(&s.secret, provided))
                     }
                     _ => None,
                 };
@@ -628,17 +660,18 @@ impl Bunker {
                 // secret shape belongs to the nostrconnect:// flow,
                 // where the app minted the secret and the signer proves
                 // it read that URI instead.) The burned secret rides
-                // out to the daemon, whose stored copy dies with it.
+                // out to the daemon — with the name the person minted
+                // it under, when it carried one — whose stored copy
+                // dies with it.
                 let answer = self.response_event(
                     event,
                     &id,
                     NostrConnectResponse::with_result(ResponseResult::Ack),
                 );
-                let metadata = ClientMeta::parse(params.get(3));
                 return match answer {
                     Some(answer) => {
                         let burned = burn_at.take().map(|at| self.expected_secrets.remove(at));
-                        Plan::Paired { answer, app: event.pubkey, metadata, burned }
+                        Plan::Paired { answer, app: event.pubkey, metadata, burned, perms }
                     }
                     None => Plan::Ignore,
                 };
@@ -1008,7 +1041,13 @@ mod tests {
     /// the URI.
     fn bunker_for_tests() -> (Bunker, String) {
         let secret = "the-test-nonce".to_string();
-        (Bunker::new(Keys::generate(), vec![secret.clone()]), secret)
+        (
+            Bunker::new(
+                Keys::generate(),
+                vec![Outstanding { secret: secret.clone(), label: None }],
+            ),
+            secret,
+        )
     }
 
     /// One keypair standing in for the paired app, with the pieces the
@@ -1167,7 +1206,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_connect_without_the_nonce_opens_nothing() {
-        let mut bunker = Bunker::new(Keys::generate(), vec!["the-nonce".into()]);
+        let mut bunker = Bunker::new(
+            Keys::generate(),
+            vec![Outstanding { secret: "the-nonce".into(), label: None }],
+        );
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
         let secret = "the-nonce";
@@ -1210,7 +1252,11 @@ mod tests {
         );
         match bunker.plan(&request) {
             Plan::Paired { burned, .. } => {
-                assert_eq!(burned.as_deref(), Some("the-nonce"), "the echo burned");
+                assert_eq!(
+                    burned.as_ref().map(|o| o.secret.as_str()),
+                    Some("the-nonce"),
+                    "the echo burned"
+                );
             }
             other => panic!("the nonce's echo pairs: {other:?}"),
         }
@@ -1235,6 +1281,73 @@ mod tests {
             other => panic!("a burned secret is refused: {other:?}"),
         }
         assert!(!bunker.is_paired(&second.pubkey()), "a burned URI pairs nobody");
+    }
+
+    #[tokio::test]
+    async fn a_connects_metadata_and_perms_ride_the_pairing() {
+        // The spec's four-param connect: [bunker, secret, perms,
+        // metadata]. The metadata is the app's own claim — a display
+        // hint; the perms ride the record too. The person's mint
+        // label, when the secret carried one, is what outranks the
+        // claim — the worker's name choice, tested by priority there.
+        let mut bunker = Bunker::new(
+            Keys::generate(),
+            vec![Outstanding {
+                secret: "the-nonce".into(),
+                label: Some("Damus on my phone".into()),
+            }],
+        );
+        let app = App::new();
+        let bunker_pubkey = bunker.public_key();
+
+        let request = app.request_event(
+            &bunker_pubkey,
+            NostrConnectMethod::Connect,
+            &[
+                bunker_pubkey.to_string().as_str(),
+                "the-nonce",
+                "sign_event:1,nip44_decrypt",
+                r#"{"name":"Damus","image":"https://example/daemon.png"}"#,
+            ],
+        );
+        match bunker.plan(&request) {
+            Plan::Paired { burned, metadata, perms, .. } => {
+                assert_eq!(
+                    burned.as_ref().and_then(|o| o.label.clone()),
+                    Some("Damus on my phone".into()),
+                    "the mint label rides the burn"
+                );
+                assert_eq!(perms.as_deref(), Some("sign_event:1,nip44_decrypt"));
+                assert_eq!(metadata.and_then(|m| m.name), Some("Damus".into()));
+            }
+            other => panic!("the four-param connect pairs: {other:?}"),
+        }
+
+        // The off-spec shape some clients ship: the metadata blob at
+        // the third position, no perms anywhere. The brace gives it
+        // away, and the perms read falls through empty.
+        let mut bunker = Bunker::new(
+            Keys::generate(),
+            vec![Outstanding { secret: "the-nonce".into(), label: None }],
+        );
+        let app = App::new();
+        let bunker_pubkey = bunker.public_key();
+        let request = app.request_event(
+            &bunker_pubkey,
+            NostrConnectMethod::Connect,
+            &[
+                bunker_pubkey.to_string().as_str(),
+                "the-nonce",
+                r#"{"name":"Odd Client"}"#,
+            ],
+        );
+        match bunker.plan(&request) {
+            Plan::Paired { metadata, perms, .. } => {
+                assert_eq!(perms, None, "a metadata blob is not a perms list");
+                assert_eq!(metadata.and_then(|m| m.name), Some("Odd Client".into()));
+            }
+            other => panic!("the shifted metadata still pairs: {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -1656,7 +1769,10 @@ mod tests {
         let other = App::new();
         // Two apps, two doors: the one-time secret burned at the
         // first app's connect does not serve the second.
-        bunker.with_secrets(vec![secret.clone(), "the-second-nonce".into()]);
+        bunker.with_secrets(vec![
+            Outstanding { secret: secret.clone(), label: None },
+            Outstanding { secret: "the-second-nonce".into(), label: None },
+        ]);
         bunker.plan(&app.connect(&bunker, &secret));
         bunker.plan(&other.connect(&bunker, "the-second-nonce"));
 
@@ -1729,7 +1845,10 @@ mod tests {
         // the connect spends one, one ping spends the last, and the
         // next ping is the sender's own rate talking.
         bunker.with_rate(0.0, 2.0);
-        bunker.with_secrets(vec![secret.clone(), "the-second-nonce".into()]);
+        bunker.with_secrets(vec![
+            Outstanding { secret: secret.clone(), label: None },
+            Outstanding { secret: "the-second-nonce".into(), label: None },
+        ]);
         let app = App::new();
         let other = App::new();
         bunker.plan(&app.connect(&bunker, &secret));
@@ -1845,7 +1964,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_revoked_app_is_refused_even_with_a_live_secret() {
-        let mut bunker = Bunker::new(Keys::generate(), vec!["the-nonce".into()]);
+        let mut bunker = Bunker::new(
+            Keys::generate(),
+            vec![Outstanding { secret: "the-nonce".into(), label: None }],
+        );
         let app = App::new();
         let request = app.request_event(
             &bunker.public_key(),
@@ -1858,7 +1980,7 @@ mod tests {
         // read it. The tombstone's teeth: revoked beats a live
         // secret, because the person's word outranks any URI.
         bunker.mark_revoked(&app.pubkey());
-        bunker.with_secrets(vec!["a-fresh-nonce".into()]);
+        bunker.with_secrets(vec![Outstanding { secret: "a-fresh-nonce".into(), label: None }]);
         let request = app.request_event(
             &bunker.public_key(),
             NostrConnectMethod::Connect,
@@ -1889,7 +2011,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_known_app_reconnects_by_its_identity_not_its_secret() {
-        let mut bunker = Bunker::new(Keys::generate(), vec!["the-nonce".into()]);
+        let mut bunker = Bunker::new(
+            Keys::generate(),
+            vec![Outstanding { secret: "the-nonce".into(), label: None }],
+        );
         let app = App::new();
         let secret = "the-nonce";
         let request = app.request_event(
