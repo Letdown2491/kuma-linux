@@ -526,8 +526,8 @@ pub fn err_response(error: anyhow::Error) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nostr::prelude::*;
     use crate::nostr::vault::{MemoryStore, SecretStore, Vault};
+    use nostr::prelude::*;
 
     async fn daemon() -> Daemon<MemoryStore> {
         Daemon::new(Vault::new(MemoryStore::default()), Vec::new(), None).0
@@ -663,8 +663,7 @@ mod tests {
             .unwrap();
         match daemon.plan_bunker_event(&request) {
             Some(crate::nostr::bunker::Plan::Answer(response)) => {
-                let plaintext =
-                    app_keys.nip44_decrypt(&bunker_pubkey, &response.content).unwrap();
+                let plaintext = app_keys.nip44_decrypt(&bunker_pubkey, &response.content).unwrap();
                 assert!(plaintext.contains("not paired"), "{plaintext}");
             }
             other => panic!("a revoked app is refused, not gated: {other:?}"),

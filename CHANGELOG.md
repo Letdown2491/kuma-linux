@@ -32,6 +32,13 @@ differently. Why it changed belongs in the commit that made it.
   it signed kinds beyond notes and reactions — those now ask, and the
   fix is the panel's toggle or an approval.**
 
+- **A restart no longer de-pairs the apps.** Arming the bunker built a
+  fresh session map, so after a daemon restart or a lock/unlock cycle
+  every previously paired app was refused until its client happened
+  to re-connect. The persisted pairings now ride in at arm time, and
+  a revoked app stays refused through the same door. Nothing to do
+  differently.
+
 ## v44.4.0 (2026-09-28)
 
 ### Added
