@@ -630,6 +630,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_revoked_app_is_refused_midrun_not_repaired_by_its_own_traffic() {
+        use nostr::nips::nip44::Nip44;
+        use nostr::nips::nip46::{NostrConnectMessage, NostrConnectMethod};
+
+        let mut daemon = daemon().await;
+        daemon.handle(decode(r#"{"cmd":"setup","mode":{"how":"generate"}}"#).unwrap()).await;
+
+        let app_keys = Keys::generate();
+        let app = app_keys.public_key();
+        daemon.engine.pair_with_metadata(&app, None, None);
+
+        // The revoke verb takes the session with it, live: the next
+        // request is a refusal, not a gate — and nothing the app does
+        // afterwards re-pairs it.
+        assert!(daemon
+            .handle(decode(&format!(r#"{{"cmd":"revoke","app":"{}"}}"#, app)).unwrap())
+            .ok());
+        let bunker_pubkey = daemon.bunker.as_ref().expect("armed").public_key();
+        let message = NostrConnectMessage::Request {
+            id: "after-revoke".into(),
+            method: NostrConnectMethod::GetPublicKey,
+            params: vec![],
+        };
+        let content = app_keys.nip44_encrypt(&bunker_pubkey, &message.as_json()).unwrap();
+        let request = EventBuilder::new(Kind::NostrConnect, content)
+            .tag(Tag::public_key(bunker_pubkey))
+            .finalize(&app_keys)
+            .unwrap();
+        match daemon.plan_bunker_event(&request) {
+            Some(crate::nostr::bunker::Plan::Answer(response)) => {
+                let plaintext =
+                    app_keys.nip44_decrypt(&bunker_pubkey, &response.content).unwrap();
+                assert!(plaintext.contains("not paired"), "{plaintext}");
+            }
+            other => panic!("a revoked app is refused live, not gated: {other:?}"),
+        }
+        // And the engine's record did not come back from the ask.
+        assert!(daemon.engine.apps().is_empty(), "the ask re-paired a revoked app");
+    }
+
+    #[tokio::test]
     async fn a_revoked_app_stays_refused_after_a_restart() {
         use nostr::nips::nip44::Nip44;
         use nostr::nips::nip46::{NostrConnectMessage, NostrConnectMethod};
