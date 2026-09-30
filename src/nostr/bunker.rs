@@ -32,6 +32,8 @@ use nostr::nips::nip46::{
 };
 use nostr::prelude::*;
 
+use super::policy::unix_now;
+
 /// The bunker session for one paired app: what `connect` opens and the
 /// policy engine will decorate with policy, prompts, and an activity
 /// log. Kept at identity-only in this tracer on purpose — inventing the
@@ -137,6 +139,95 @@ pub enum Plan {
     },
 }
 
+/// The replay gates. A NIP-46 request arrives through relays that
+/// redeliver what they hold — a reconnect re-floods the subscription's
+/// backlog — and a request captured once can be re-fed forever. Three
+/// cheap plaintext gates stand before any crypto: the id was not
+/// processed inside the window, the created_at is plausible, and the
+/// request does not travel backwards in its own sender's time.
+/// Marking happens before dispatch, so a redelivery while an Ask is
+/// pending cannot queue a second prompt.
+const DEDUP_TTL_SECS: u64 = 600;
+/// The freshness window is also the residual replay exposure: a
+/// request older than this is refused even by an empty dedup cache,
+/// so a cache eviction under flood opens no long-lived door.
+const FRESHNESS_WINDOW_SECS: u64 = 600;
+const FUTURE_DRIFT_SECS: u64 = 120;
+/// How far behind a sender's own newest request a still-fresh one may
+/// sit — relay reordering and client clock skew, nothing more.
+const WATERMARK_SLACK_SECS: u64 = 60;
+/// The bound both caches shed to. Five thousand ids cover ten minutes
+/// of heavy use; the shed keeps the bound honest under a flood.
+const REPLAY_CACHE_MAX: usize = 5000;
+
+#[derive(Default)]
+struct Replay {
+    /// Event id → expiry. What a relay redelivering its backlog hits.
+    seen: HashMap<String, u64>,
+    /// Sender → (its newest created_at, expiry). What a replay survives
+    /// dedup-cache eviction to hit: the sender's own time cannot go
+    /// backwards, and the mark is keyed by the verified pubkey, so a
+    /// flood cannot abuse it across senders.
+    watermark: HashMap<PublicKey, (u64, u64)>,
+}
+
+impl Replay {
+    /// Whether this is a first, fresh sighting of the event. Anything
+    /// else — duplicate, stale, future, or backwards in its sender's
+    /// time — is false, and the caller answers it with nothing.
+    fn first_sighting(&mut self, event: &Event) -> bool {
+        let now = unix_now();
+        if self.seen.get(&event.id.to_string()).is_some_and(|&expires| expires > now) {
+            return false;
+        }
+        let created_at = event.created_at.as_secs();
+        if created_at + FRESHNESS_WINDOW_SECS < now || created_at > now + FUTURE_DRIFT_SECS {
+            return false;
+        }
+        match self.watermark.get(&event.pubkey) {
+            Some(&(newest, expires))
+                if expires > now && created_at + WATERMARK_SLACK_SECS < newest =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+        self.make_room(now);
+        self.seen.insert(event.id.to_string(), now + DEDUP_TTL_SECS);
+        match self.watermark.get_mut(&event.pubkey) {
+            // Still alive and not behind this event: the mark stays.
+            Some(entry) if entry.1 > now && created_at < entry.0 => {}
+            Some(entry) => *entry = (created_at, now + DEDUP_TTL_SECS),
+            None => {
+                self.watermark.insert(event.pubkey, (created_at, now + DEDUP_TTL_SECS));
+            }
+        }
+        true
+    }
+
+    /// Room for one more: expired entries shed first, then — a flood
+    /// of fresh ids — the soonest-expiring eighth. A dedup miss under
+    /// flood costs one recheck; the freshness gate and the watermark
+    /// carry what the cache sheds.
+    fn make_room(&mut self, now: u64) {
+        fn shed<V, F: Fn(&V) -> u64>(map: &mut HashMap<impl Eq + std::hash::Hash, V>, now: u64, expiry: F) {
+            if map.len() < REPLAY_CACHE_MAX {
+                return;
+            }
+            map.retain(|_, v| expiry(v) > now);
+            if map.len() < REPLAY_CACHE_MAX {
+                return;
+            }
+            let mut expiries: Vec<u64> = map.values().map(&expiry).collect();
+            expiries.sort_unstable();
+            let cutoff = expiries[expiries.len() / 8];
+            map.retain(|_, v| expiry(v) > cutoff);
+        }
+        shed(&mut self.seen, now, |&expires| expires);
+        shed(&mut self.watermark, now, |&(_, expires)| expires);
+    }
+}
+
 /// The bunker: the signer keys, the apps that have connected, and the
 /// pairing nonce the URI carries.
 pub struct Bunker {
@@ -148,11 +239,13 @@ pub struct Bunker {
     /// this is the door that invitation does not open. `None` only
     /// before the vault's first read, when there is no URI yet either.
     expected_secret: Option<String>,
+    /// The replay gates every request passes before any crypto runs.
+    replay: Replay,
 }
 
 impl Bunker {
     pub fn new(keys: Keys, expected_secret: Option<String>) -> Self {
-        Self { keys, sessions: HashMap::new(), expected_secret }
+        Self { keys, sessions: HashMap::new(), expected_secret, replay: Replay::default() }
     }
 
     /// The bunker's public identity, hex — what `get_public_key`
@@ -180,6 +273,12 @@ impl Bunker {
         }
         let self_pubkey = self.public_key();
         if !event.tags.public_keys().any(|p| p == self_pubkey) {
+            return Plan::Ignore;
+        }
+        // The replay gates: a request is answered at most once, only
+        // while fresh, and never backwards in its sender's own time.
+        // A refusal here names nothing, like the noise below.
+        if !self.replay.first_sighting(event) {
             return Plan::Ignore;
         }
         let Some(plaintext) = self.keys.nip44_decrypt(&event.pubkey, &event.content).ok() else {
