@@ -4393,6 +4393,7 @@ local tab_chosen = false -- the person's click wins over onboarding
 local panel_open = false -- the frame tick only polls while this is true
 local frame_acc = 0 -- milliseconds since the last poll, from the tick
 local selected_app = nil -- the pubkey whose detail view is open
+local clipboard_checked = false -- the clipboard is read once per open
 local render -- forward-declared: refresh's callbacks call it before the
               -- file's bottom assigns it, and a name read before its
               -- local exists resolves to the global — nil.
@@ -4774,8 +4775,9 @@ end
 -- the common case and the paste step is a toll. Only the prefix is
 -- matched, nothing is stored, and the offer card it fills is still
 -- the person's question to answer — the tap on Pair remains the
--- approval.
-local clipboard_checked = false
+-- approval. Defined beside the state, ABOVE the rail whose buttons
+-- call it: a local read before its declaration exists is the global,
+-- which is nil, and a nil call is the crash that retired the panel.
 local function checkClipboard()
     if clipboard_checked or offered_uri then return end
     clipboard_checked = true
