@@ -408,6 +408,11 @@ mod tests {
                             }
                             i += 1;
                         }
+                        // The closing quote is consumed here, or the
+                        // next scan starts on it and the string's end
+                        // becomes the next string's beginning — half
+                        // the file swallowed into phantom strings.
+                        i += 1;
                     }
                     b'(' | b'[' | b'{' => {
                         stack.push(bytes[i]);
