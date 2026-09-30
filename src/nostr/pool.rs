@@ -344,7 +344,6 @@ fn connect_and_serve(
     stop: &AtomicBool,
     timing: Timing,
 ) -> Result<()> {
-    let _ = timing;
     let (mut socket, _response) =
         tungstenite::connect(url).with_context(|| format!("connecting to {url}"))?;
     set_read_timeout(&mut socket, Some(Duration::from_secs(1)))?;
@@ -355,6 +354,13 @@ fn connect_and_serve(
     });
     socket.send(Message::text(serde_json::json!(["REQ", SUBSCRIPTION_ID, filter]).to_string()))?;
     let _ = status.send(RelayStatus { url: url.to_string(), state: RelayState::Connected });
+
+    // The probe's books: the beat counter since the last ping, and the
+    // pings sent with no inbound frame between them. Any frame at all
+    // — pong, event, notice — is proof the wire lives, and zeroes the
+    // unanswered count.
+    let mut beats_since_ping: u32 = 0;
+    let mut unanswered: u32 = 0;
 
     loop {
         if stop.load(Ordering::SeqCst) {
@@ -377,6 +383,7 @@ fn connect_and_serve(
 
         match socket.read() {
             Ok(Message::Text(text)) => {
+                unanswered = 0;
                 eprintln!("kuma-nostrd: frame: {}", &text.chars().take(120).collect::<String>());
                 let events = events_from_relay_message(&text, SUBSCRIPTION_ID);
                 if !events.is_empty() {
@@ -389,13 +396,36 @@ fn connect_and_serve(
                     let _ = inbound.send(event);
                 }
             }
-            Ok(Message::Ping(payload)) => socket.send(Message::Pong(payload))?,
-            Ok(Message::Pong(_)) => {}
-            Ok(_) => {}
+            Ok(Message::Ping(payload)) => {
+                unanswered = 0;
+                socket.send(Message::Pong(payload))?;
+            }
+            Ok(Message::Pong(_)) => unanswered = 0,
+            Ok(_) => unanswered = 0,
             Err(tungstenite::Error::Io(e))
                 if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut =>
             {
-                // The read timeout: the loop's heartbeat, not a fault.
+                // The read timeout: the loop's heartbeat. What the
+                // beat is for: a connection that died in silence —
+                // the state every socket is in after the machine
+                // sleeps, where the relay's FIN was lost mid-suspend —
+                // never errors on read. The kernel still calls it
+                // ESTABLISHED; only our own probe can learn the truth.
+                // So the beat pings, and pings with no answer at all
+                // are the fuse: past the deadline, the road calls the
+                // connection dead and the backoff outside reconnects
+                // it.
+                beats_since_ping += 1;
+                if beats_since_ping >= timing.beats_per_ping {
+                    beats_since_ping = 0;
+                    unanswered += 1;
+                    if unanswered > timing.max_unanswered {
+                        return Err(anyhow!(
+                            "the relay went quiet: {unanswered} pings with no answer"
+                        ));
+                    }
+                    socket.send(Message::Ping(Vec::new()))?;
+                }
             }
             Err(tungstenite::Error::Protocol(
                 tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
