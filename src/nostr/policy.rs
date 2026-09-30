@@ -681,7 +681,7 @@ mod tests {
 
         // A safe kind — a text note — signs unattended.
         let allowed = engine
-            .decide(&app, &NostrConnectMethod::SignEvent, kind_write(1))
+            .decide(&app, &NostrConnectMethod::SignEvent, &kind_write(1))
             .await;
         assert!(matches!(allowed, Decision::Allow), "a safe kind rides at Basic");
         assert!(engine.prompts().is_empty());
@@ -689,7 +689,7 @@ mod tests {
         // An unknown kind asks: safe by default is the direction.
         let engine_for_ask = engine.clone();
         let ask = tokio::spawn(async move {
-            engine_for_ask.decide(&app, &NostrConnectMethod::SignEvent, kind_write(9999)).await
+            engine_for_ask.decide(&app, &NostrConnectMethod::SignEvent, &kind_write(9999)).await
         });
         tokio::task::yield_now().await;
         assert_eq!(engine.prompts().len(), 1, "an unknown kind asks at Basic");
@@ -716,7 +716,7 @@ mod tests {
         for kind in [4, 22242, 24133, 13194, 23194, 23195] {
             let engine_for_ask = engine.clone();
             let ask = tokio::spawn(async move {
-                engine_for_ask.decide(&app, &NostrConnectMethod::SignEvent, kind_write(kind)).await
+                engine_for_ask.decide(&app, &NostrConnectMethod::SignEvent, &kind_write(kind)).await
             });
             tokio::task::yield_now().await;
             assert_eq!(engine.prompts().len(), 1, "kind {kind} asks at Basic");
