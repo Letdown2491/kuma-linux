@@ -321,7 +321,16 @@ impl<S: super::vault::SecretStore> Daemon<S> {
             },
             Request::Apps => Response::Ok(OkResponse::Apps { ok: true, apps: self.engine.apps() }),
             Request::Revoke { app } => {
-                Response::Ok(OkResponse::Revoke { ok: true, removed: self.engine.revoke(&app) })
+                let removed = self.engine.revoke(&app);
+                // The record goes with the session: a refusal is
+                // live, and the app's own traffic cannot re-pair
+                // what the person removed.
+                if removed {
+                    if let Some(bunker) = self.bunker.as_mut() {
+                        bunker.evict(&app);
+                    }
+                }
+                Response::Ok(OkResponse::Revoke { ok: true, removed })
             }
             Request::Level { app, level } => match self.engine.set_level(&app, level) {
                 Ok(()) => Response::Ok(OkResponse::Level { ok: true }),
@@ -409,13 +418,19 @@ impl<S: super::vault::SecretStore> Daemon<S> {
             self.status_tx.clone(),
         ));
         let mut bunker = Bunker::new(keys, self.vault.secret().map(str::to_string));
-        // The persisted pairings ride in: a fresh session map is not
+        // The persisted pairings ride in: a fresh session set is not
         // a forgetting, and the restart is invisible to a paired app.
         // One source of truth answers "paired" — the engine's record,
-        // which revocation edits.
-        bunker.seed(
-            self.engine.apps().iter().filter_map(|paired| PublicKey::parse(&paired.pubkey).ok()),
-        );
+        // which revocation edits. A stored pubkey that does not parse
+        // says so instead of vanishing.
+        let mut seeded = Vec::new();
+        for paired in self.engine.apps() {
+            match PublicKey::parse(&paired.pubkey) {
+                Ok(pubkey) => seeded.push(pubkey),
+                Err(e) => eprintln!("kuma-nostrd: a persisted pairing's pubkey did not parse: {e}"),
+            }
+        }
+        bunker.seed(seeded);
         self.bunker = Some(bunker);
         public_key_bech32(&pubkey)
     }

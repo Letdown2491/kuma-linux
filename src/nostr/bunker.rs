@@ -22,7 +22,7 @@
 //! them; that is the opinion the plan holds one layer down, and it is
 //! why `get_public_key` answers with the signer key's public half.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, Result};
 use nostr::key::{Keys, PublicKey};
@@ -33,19 +33,6 @@ use nostr::nips::nip46::{
 use nostr::prelude::*;
 
 use super::policy::unix_now;
-
-/// The bunker session for one paired app: what `connect` opens and the
-/// policy engine will decorate with policy, prompts, and an activity
-/// log. Kept at identity-only in this tracer on purpose — inventing the
-/// policy fields before the engine exists is how a schema gets designed
-/// twice.
-#[derive(Debug, Clone)]
-pub struct Session {
-    /// The secret a connect may carry. Per NIP-46 a `nostrconnect://`
-    /// flow's secret is echoed back as the connect result, and the
-    /// policy engine will compare it against what the pairing URI said.
-    pub secret: Option<String>,
-}
 
 /// The client metadata a connect may carry (NIP-46's optional fourth
 /// param): the app's own name and image, unauthenticated — the panel's
@@ -236,7 +223,11 @@ impl Replay {
 /// pairing nonce the URI carries.
 pub struct Bunker {
     keys: Keys,
-    sessions: HashMap<PublicKey, Session>,
+    /// The paired apps — the live half of "paired", the engine's
+    /// record the durable half. A connect opens a session, arming
+    /// seeds it from the record, and revocation evicts it, so the
+    /// two halves agree at every moment one of them changes.
+    sessions: HashSet<PublicKey>,
     /// The pairing nonce the bunker URI carries, when the vault has
     /// one. A connect that does not echo it is refused before it pairs:
     /// on a public relay, a pubkey in the clear is an invitation, and
@@ -249,7 +240,7 @@ pub struct Bunker {
 
 impl Bunker {
     pub fn new(keys: Keys, expected_secret: Option<String>) -> Self {
-        Self { keys, sessions: HashMap::new(), expected_secret, replay: Replay::default() }
+        Self { keys, sessions: HashSet::new(), expected_secret, replay: Replay::default() }
     }
 
     /// The bunker's public identity, hex — what `get_public_key`
@@ -259,21 +250,30 @@ impl Bunker {
     }
 
     /// Seed the sessions from the persisted pairings — what arming
-    /// hands the bunker so a fresh map is not a forgetting. Each
+    /// hands the bunker so a fresh set is not a forgetting. Each
     /// seeded app reaches the gate without re-connecting; a connect
     /// still pairs on its own for the apps the state has never seen.
     /// The durable side stays the policy engine's record: a revoked
     /// app is not in it, and so is not seeded.
     pub fn seed(&mut self, paired: impl IntoIterator<Item = PublicKey>) {
-        for pubkey in paired {
-            self.sessions.entry(pubkey).or_insert(Session { secret: None });
+        self.sessions.extend(paired);
+    }
+
+    /// Forget one app's session — what the revoke verb does the
+    /// moment the engine's record goes, so the refusal is live and
+    /// the app's own traffic cannot re-pair what the person removed.
+    /// An unparsable id evicts nothing; the verb already answered
+    /// "no such app" for anything the record did not know.
+    pub fn evict(&mut self, app: &str) {
+        if let Ok(pubkey) = PublicKey::parse(app) {
+            self.sessions.remove(&pubkey);
         }
     }
 
     /// Whether an app is paired. The policy engine replaces the storage
     /// with per-app policy and persisted pairing; the question stays.
     pub fn is_paired(&self, app: &PublicKey) -> bool {
-        self.sessions.contains_key(app)
+        self.sessions.contains(app)
     }
 
     /// Plan one event: everything that is protocol answers immediately
@@ -344,7 +344,7 @@ impl Bunker {
                         None => Plan::Ignore,
                     };
                 }
-                self.sessions.entry(event.pubkey).or_insert(Session { secret: secret.clone() });
+                self.sessions.insert(event.pubkey);
                 // The answer is ack, whatever the app echoed: the nonce
                 // was the bunker URI's own, the verify above is the
                 // proof of readership, and the result's job is the
