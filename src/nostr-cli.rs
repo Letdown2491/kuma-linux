@@ -146,7 +146,7 @@ fn main() -> Result<()> {
         Command::Lock => r#"{"cmd":"lock"}"#.to_string(),
         Command::Touch => r#"{"cmd":"touch"}"#.to_string(),
         Command::Status => r#"{"cmd":"status"}"#.to_string(),
-        Command::Bunker { .. } => r#"{"cmd":"status"}"#.to_string(),
+        Command::Bunker { .. } => r#"{"cmd":"mint"}"#.to_string(),
         Command::Destroy { yes } => format!(r#"{{"cmd":"destroy","confirm":{yes}}}"#),
         Command::Prompts => r#"{"cmd":"prompts"}"#.to_string(),
         Command::Approve { id, remember } => {
@@ -373,14 +373,8 @@ fn bunker_verb_render(value: &serde_json::Value, qr: bool, json: bool) -> Result
             value["error"].as_str().unwrap_or("no reason given")
         );
     }
-    let vault = &value["vault"];
-    if vault["unlocked"].as_bool() != Some(true) {
-        anyhow::bail!("the bunker is locked; unlock it and the pairing URI comes with it");
-    }
-    // The daemon builds the URI — the pairing nonce is the vault's to
-    // hand out, and a URI built anywhere else is a URI that lies about
-    // what the connect path will verify.
-    let uri = vault["uri"].as_str().ok_or_else(|| {
+    // The mint verb refused, or the URI is the answer.
+    let uri = value["uri"].as_str().ok_or_else(|| {
         anyhow::anyhow!("the daemon has no pairing URI yet; run `kuma-nostr setup`")
     })?;
 

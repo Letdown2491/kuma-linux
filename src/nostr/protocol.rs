@@ -88,6 +88,10 @@ pub enum Request {
     /// bunker no longer answers, and the apps holding them must be
     /// given the new URI. Pairings survive; the front door changes.
     Rotate,
+    /// Mint a one-time pairing secret and answer the URI that carries
+    /// it. The act of creating a pairing URI; the connect that uses
+    /// it burns it.
+    Mint,
 }
 
 #[derive(Debug, Deserialize)]
@@ -139,6 +143,7 @@ pub enum OkResponse {
     Revoke { ok: bool, removed: bool },
     Level { ok: bool },
     Rotate { ok: bool, uri: String },
+    Mint { ok: bool, uri: String },
 }
 
 /// What `status` says, and what `doctor` will grade through it later.
@@ -343,12 +348,11 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                         }
                         let unlocked = self.vault.is_unlocked();
                         let pubkey = self.bunker_pubkey().await;
-                        let uri = match (&pubkey, self.vault.secret(), self.bunker.is_some()) {
-                            (Some(npub), Some(secret), true) => {
-                                PublicKey::parse(npub).ok().map(|pk| {
-                                    super::bunker::bunker_uri(&pk, &self.relays, Some(secret))
-                                })
-                            }
+                        let uri = match (&pubkey, self.vault.uri_secret(), self.bunker.is_some())
+                        {
+                            (Some(npub), Some(secret), true) => PublicKey::parse(npub).ok().map(
+                                |pk| super::bunker::bunker_uri(&pk, &self.relays, Some(secret)),
+                            ),
                             _ => None,
                         };
                         let connected = self
@@ -446,6 +450,30 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                 Ok(uri) => Response::Ok(OkResponse::Rotate { ok: true, uri }),
                 Err(e) => err_response(e),
             },
+            Request::Mint => {
+                // A mint is the act of creating a pairing URI: one
+                // secret, one URI, one connect. Status shows the
+                // latest mint while it lives; it does not mint,
+                // because a status with side effects lies about its
+                // own name. A locked bunker refuses — a URI minted
+                // beside a closed gate is a URI nobody can answer.
+                if self.bunker.is_none() {
+                    return err_response(anyhow!(
+                        "the bunker is locked; unlock it and the pairing URI comes with it"
+                    ));
+                }
+                match self.vault.mint_secret().await {
+                    Ok(secret) => {
+                        let pubkey =
+                            self.bunker.as_ref().expect("the armed bunker").public_key();
+                        Response::Ok(OkResponse::Mint {
+                            ok: true,
+                            uri: super::bunker::bunker_uri(&pubkey, &self.relays, Some(&secret)),
+                        })
+                    }
+                    Err(e) => err_response(e),
+                }
+            }
         }
     }
 
@@ -525,7 +553,7 @@ impl<S: super::vault::SecretStore> Daemon<S> {
             self.inbound.clone(),
             self.status_tx.clone(),
         ));
-        let mut bunker = Bunker::new(keys, self.vault.secret().map(str::to_string));
+        let mut bunker = Bunker::new(keys, self.vault.secrets().to_vec());
         // The persisted pairings ride in: a fresh session set is not
         // a forgetting, and the restart is invisible to a paired app.
         // One source of truth answers "paired" — the engine's record,
@@ -584,6 +612,13 @@ impl<S: super::vault::SecretStore> Daemon<S> {
     /// locked bunker, or noise.
     pub fn plan_bunker_event(&mut self, event: &Event) -> Option<super::bunker::Plan> {
         Some(self.bunker.as_mut()?.plan(event))
+    }
+
+    /// The connect's other half: the secret the bunker burned live
+    /// dies in the stored blob too, so a restart cannot resurrect it.
+    pub async fn burn(&mut self, secret: &str) -> Result<()> {
+        self.vault.burn_secret(secret).await?;
+        Ok(())
     }
 
     /// A handle to the engine for beat two — the decision — which the
@@ -775,7 +810,12 @@ mod tests {
         // The app connects, so the bunker holds a live session too —
         // the engine's record is not the only place "paired" lives.
         let bunker_pubkey = daemon.bunker.as_ref().expect("armed").public_key();
-        let secret = daemon.vault.secret().expect("the armed vault's nonce").to_string();
+        let secret = daemon
+            .vault
+            .secrets()
+            .last()
+            .expect("the armed vault's outstanding secret")
+            .to_string();
         let connect = NostrConnectMessage::Request {
             id: "connect".into(),
             method: NostrConnectMethod::Connect,
