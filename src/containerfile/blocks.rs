@@ -4680,11 +4680,23 @@ local function offerCard()
 end
 
 local function pairPane()
+    if vault and not vault.exists then
+        -- The fresh machine: no identity yet, and unlock is not the
+        -- road — it fails with "no vault exists" and the person is
+        -- stuck. Setup is the road, and it asks which one.
+        return ui.column({ gap = 10 }, {
+            ui.label({ text = "No identity yet.", fontWeight = "semibold", color = "on_surface" }),
+            ui.label({
+                text = "Run kuma-nostr setup — it asks which road: a fresh key, or one you already hold (nsec, hex, a recovery phrase, or an ncryptsec and its passphrase).",
+                fontSize = 12, color = "on_surface_variant", maxLines = 4,
+            }),
+        })
+    end
     if vault and not vault.unlocked then
         return ui.column({ gap = 10 }, {
             ui.label({ text = "The bunker is locked.", fontWeight = "semibold", color = "on_surface" }),
             ui.label({
-                text = "Unlock from a terminal: kuma-nostr unlock. It pairs while locked, and signs nothing.",
+                text = "Unlock from a terminal: kuma-nostr unlock. The keyring is open in this session, so it costs nothing — and the pairing URI comes with the unlock.",
                 fontSize = 12, color = "on_surface_variant", maxLines = 3,
             }),
         })
