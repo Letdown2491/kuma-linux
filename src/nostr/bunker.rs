@@ -210,7 +210,11 @@ impl Replay {
     /// flood costs one recheck; the freshness gate and the watermark
     /// carry what the cache sheds.
     fn make_room(&mut self, now: u64) {
-        fn shed<V, F: Fn(&V) -> u64>(map: &mut HashMap<impl Eq + std::hash::Hash, V>, now: u64, expiry: F) {
+        fn shed<V, F: Fn(&V) -> u64>(
+            map: &mut HashMap<impl Eq + std::hash::Hash, V>,
+            now: u64,
+            expiry: F,
+        ) {
             if map.len() < REPLAY_CACHE_MAX {
                 return;
             }
@@ -1074,7 +1078,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_stale_or_future_request_is_dropped() {
-
         let mut bunker = Bunker::new(Keys::generate(), None);
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
@@ -1082,13 +1085,8 @@ mod tests {
 
         // Eleven minutes old and never seen: past the freshness
         // window, dropped before any crypto runs.
-        let stale = app.request_event_at(
-            &bunker_pubkey,
-            "stale",
-            NostrConnectMethod::Ping,
-            &[],
-            now - 660,
-        );
+        let stale =
+            app.request_event_at(&bunker_pubkey, "stale", NostrConnectMethod::Ping, &[], now - 660);
         assert!(matches!(bunker.plan(&stale), Plan::Ignore));
 
         // Five minutes into the future: a clock that lies.
@@ -1104,15 +1102,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_replay_below_the_senders_watermark_is_dropped() {
-
         let mut bunker = Bunker::new(Keys::generate(), None);
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
         let now = unix_now();
 
         // The live request: answered, and it sets the sender's mark.
-        let live =
-            app.request_event_at(&bunker_pubkey, "live", NostrConnectMethod::Ping, &[], now);
+        let live = app.request_event_at(&bunker_pubkey, "live", NostrConnectMethod::Ping, &[], now);
         assert!(matches!(bunker.plan(&live), Plan::Answer(_)));
 
         // A different id, three hundred seconds behind the sender's
@@ -1127,19 +1123,13 @@ mod tests {
         assert!(matches!(bunker.plan(&behind), Plan::Ignore));
 
         // Within the slack a clock skew tolerates: admitted.
-        let skewy = app.request_event_at(
-            &bunker_pubkey,
-            "skewy",
-            NostrConnectMethod::Ping,
-            &[],
-            now - 30,
-        );
+        let skewy =
+            app.request_event_at(&bunker_pubkey, "skewy", NostrConnectMethod::Ping, &[], now - 30);
         assert!(matches!(bunker.plan(&skewy), Plan::Answer(_)));
     }
 
     #[test]
     fn the_replay_cache_sheds_to_its_bound_under_a_flood() {
-
         let mut replay = Replay::default();
         let now = unix_now();
         // Twice the bound in fresh first sightings, room made after
