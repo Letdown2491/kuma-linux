@@ -5110,12 +5110,16 @@ pub(crate) const NIRI_NOSTR_BIND: &str = r#"    Mod+Ctrl+N allow-when-locked=tru
 /// the approval panel rather than in nothing. The desktop file is the
 /// handler; the mimeapps line names it. The verb is panel-open, not
 /// panel-toggle — a clicked link while the panel is already open must
-/// land the offer, not close the panel over it.
+/// land the offer, not close the panel over it. And NoDisplay is
+/// deliberately absent: a flatpak browser's scheme clicks go through
+/// the portal, whose chooser filters NoDisplay apps to nothing — a
+/// hidden handler is a handler no browser can reach. The cost is one
+/// honest entry in the app grid; the alternative is the feature not
+/// working at all.
 pub(crate) const NOSTR_PANEL_DESKTOP: &str = r#"[Desktop Entry]
 Type=Application
 Name=kumaOS Nostr approvals
 Exec=noctalia msg panel-open kuma/nostr:panel %u
-NoDisplay=true
 MimeType=x-scheme-handler/nostrconnect;
 "#;
 
