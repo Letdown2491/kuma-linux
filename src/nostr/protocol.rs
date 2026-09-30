@@ -871,14 +871,17 @@ mod tests {
         let line = encode(&daemon.handle(decode(r#"{"cmd":"status"}"#).unwrap()).await);
         assert!(line.contains("inactivity"), "the status carries the switch: {line}");
         let vault = &decode_status_vault(&line);
-        assert_eq!(vault["window_secs"].as_u64(), Some(3600));
-        assert!(vault["remaining_secs"].as_u64().unwrap_or(0) > 3590, "{vault}");
+        assert_eq!(vault["inactivity"]["window_secs"].as_u64(), Some(3600));
+        assert!(
+            vault["inactivity"]["remaining_secs"].as_u64().unwrap_or(0) > 3590,
+            "{vault}"
+        );
 
         // The keep-alive resets the clock without unlocking.
         std::thread::sleep(Duration::from_millis(1200));
         let before = decode_status_vault(&encode(
             &daemon.handle(decode(r#"{"cmd":"status"}"#).unwrap()).await,
-        ))["remaining_secs"]
+        ))["inactivity"]["remaining_secs"]
             .as_u64()
             .unwrap_or(0);
         assert!(matches!(
@@ -887,7 +890,7 @@ mod tests {
         ));
         let after = decode_status_vault(&encode(
             &daemon.handle(decode(r#"{"cmd":"status"}"#).unwrap()).await,
-        ))["remaining_secs"]
+        ))["inactivity"]["remaining_secs"]
             .as_u64()
             .unwrap_or(0);
         assert!(after > before, "a touch leaves more time on the clock: {before} → {after}");
