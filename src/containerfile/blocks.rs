@@ -4378,7 +4378,7 @@ local ICON_DIR = "icons"
 local prompts = {}
 local apps = {}
 local vault = nil
-local uri = nil
+local offered_uri = nil -- a nostrconnect:// link the handler handed in
 local tab = "asks" -- asks | apps | pair
 local tab_chosen = false -- the person's click wins over onboarding
 local render -- forward-declared: refresh's callbacks call it before the
@@ -4391,7 +4391,6 @@ local function refresh()
     noctalia.runAsync(STATUS_URL, function(result)
         local doc = noctalia.json.decode(result.stdout or "{}")
         vault = doc and doc.vault or nil
-        uri = vault and vault.uri or nil
         render()
     end)
     noctalia.runAsync(PROMPTS_URL, function(result)
@@ -4414,6 +4413,10 @@ end
 -- The args are ids and flags the daemon defines — no shell metachars
 -- ride in them, so the line is safe to join.
 local function cli(args)
+    -- Every act in this panel is a person present: the keep-alive
+    -- rides along, so answering a prompt four minutes in does not
+    -- race the vault's own lock.
+    noctalia.runAsync("kuma-nostr touch", nil)
     noctalia.runAsync("kuma-nostr " .. table.concat(args, " "), refresh)
 end
 
@@ -4424,6 +4427,10 @@ local METHOD_GLYPHS = {
     sign_event = "pencil",
     nip04_decrypt = "lock",
     nip44_decrypt = "lock",
+    nip04_encrypt = "lock",
+    nip44_encrypt = "lock",
+    switch_relays = "refresh",
+    logout = "logout",
 }
 
 local function short(pk)
@@ -4607,6 +4614,27 @@ local function levelButton(a)
 end
 
 local function appCard(a)
+    -- Revocation is a state: the tombstone stays until the person
+    -- clears it, so the card says so and offers the way back instead
+    -- of a second revoke that would only find the tombstone again.
+    if a.revoked_at then
+        return card({
+            ui.row({ gap = 12, align = "center" }, {
+                avatar(a.pubkey, a.image, 40),
+                ui.column({ gap = 1, flexGrow = 1 }, {
+                    ui.label({ text = a.name or short(a.pubkey), fontWeight = "semibold", color = "on_surface_variant" }),
+                    ui.label({ text = short(a.pubkey) .. " · revoked", fontSize = 11, color = "error" }),
+                }),
+                ui.button({ variant = "ghost", controlSize = "sm", glyph = "undo",
+                    tooltip = "un-revoke; a freshly minted URI pairs it again",
+                    onClick = function() cli({ "unrevoke", a.pubkey }) end }),
+            }),
+        })
+    end
+    local permLine = a.perms and ui.label({
+        text = "asks for: " .. a.perms, fontSize = 11,
+        color = "on_surface_variant/0.8", maxLines = 2,
+    }) or nil
     return card({
         ui.row({ gap = 12, align = "center" }, {
             avatar(a.pubkey, a.image, 40),
@@ -4618,7 +4646,36 @@ local function appCard(a)
                 tooltip = "revoke",
                 onClick = function() cli({ "revoke", a.pubkey }) end }),
         }),
+        permLine,
         levelButton(a),
+    })
+end
+
+-- The scheme handler's offering: a nostrconnect:// link clicked
+-- anywhere lands here as a question, never as a pairing — a click is
+-- not an approval, and the person's tap on Pair is.
+local function offerCard()
+    local name = offered_uri and offered_uri:match("name=([^&]+)") or nil
+    if name then
+        name = name:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
+        name = name:gsub("%+", " ")
+    end
+    return card({
+        ui.label({ text = "A client asked to pair" .. (name and (": " .. name) or ""), fontWeight = "semibold", color = "on_surface" }),
+        ui.label({
+            text = "Pairing it signs nothing until you answer its asks. Ignore throws the invite away.",
+            fontSize = 12, color = "on_surface_variant", maxLines = 3,
+        }),
+        ui.row({ gap = 8 }, {
+            ui.button({ text = "Pair", variant = "primary", glyph = "check", onClick = function()
+                cli({ "connect", offered_uri })
+                offered_uri = nil
+            end }),
+            ui.button({ text = "Ignore", variant = "ghost", glyph = "x", onClick = function()
+                offered_uri = nil
+                render()
+            end }),
+        }),
     })
 end
 
@@ -4632,23 +4689,40 @@ local function pairPane()
             }),
         })
     end
+    local offered = offered_uri and offerCard() or nil
+    local inactivity = vault and vault.inactivity or nil
     return card({
+        offered,
         ui.label({
-            text = "Copy the URI into any NIP-46 app. Its connect lands as a request here.",
+            text = "Copy a fresh URI into any NIP-46 app. It pairs one app once — the connect burns it — so mint another for the next app.",
             fontSize = 12, color = "on_surface_variant", maxLines = 3,
         }),
         ui.row({ gap = 8 }, {
-            ui.button({ text = "Copy URI", variant = "primary", glyph = "clipboard-copy", onClick = function()
-                if uri then noctalia.copyToClipboard(uri, "text/plain") end
+            ui.button({ text = "Copy fresh URI", variant = "primary", glyph = "clipboard-copy", onClick = function()
+                -- Minting is the act: the copy takes a URI that has
+                -- never been spent, not the last one — which a used
+                -- pairing already burned.
+                noctalia.runAsync("kuma-nostr bunker --json", function(result)
+                    local doc = noctalia.json.decode(result.stdout or "{}")
+                    if doc and doc.uri then
+                        noctalia.copyToClipboard(doc.uri, "text/plain")
+                    end
+                    refresh()
+                end)
             end }),
             ui.button({ text = "Rotate", variant = "outline", glyph = "refresh", onClick = function()
                 cli({ "rotate" })
             end }),
         }),
         ui.label({
-            text = "Rotation retires every URI printed before it; apps holding old copies need the new one.",
+            text = "Rotation retires every outstanding URI at once; apps holding old copies need a fresh one.",
             fontSize = 11, color = "on_surface_variant/0.8", maxLines = 3,
         }),
+        inactivity and ui.label({
+            text = "the vault locks itself after " .. inactivity.remaining_secs
+                .. "s of no unlock and no keep-alive — this panel keeps it alive while you are here",
+            fontSize = 11, color = "on_surface_variant/0.8", maxLines = 3,
+        }) or nil,
     })
 end
 
@@ -4713,7 +4787,14 @@ render = function()
     }))
 end
 
-function onOpen(_context)
+function onOpen(context)
+    if context and context:find("^nostrconnect://") then
+        offered_uri = context
+        tab = "pair"
+        tab_chosen = true
+    end
+    -- Open or act, the panel says a person is here.
+    noctalia.runAsync("kuma-nostr touch", nil)
     refresh()
 end
 "#,
@@ -4774,7 +4855,7 @@ pub(crate) const NIRI_NOSTR_BIND: &str = r#"    Mod+Ctrl+N allow-when-locked=tru
 pub(crate) const NOSTR_PANEL_DESKTOP: &str = r#"[Desktop Entry]
 Type=Application
 Name=kumaOS Nostr approvals
-Exec=noctalia msg panel-toggle kuma/nostr:panel
+Exec=noctalia msg panel-toggle kuma/nostr:panel %u
 NoDisplay=true
 MimeType=x-scheme-handler/nostrconnect;
 "#;
