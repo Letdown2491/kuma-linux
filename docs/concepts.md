@@ -593,7 +593,9 @@ kind the list does not name. Trust signs everything
 unattended, and the doctor grades any
 app holding it Warn by name, because a standing grant is the loudest
 thing in the layer. An approved ask can be remembered for an hour at
-most; that ceiling is the verb's own.
+most; that ceiling is the verb's own. An unanswered ask times out
+after five minutes — the refusal travels back to the app, and the log
+keeps the expiry.
 
 **The key the bunker signs with is not your identity.** Pairing an app
 gives it the bunker's own key — a dedicated remote signer the layer

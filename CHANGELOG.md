@@ -39,6 +39,12 @@ differently. Why it changed belongs in the commit that made it.
   a revoked app stays refused through the same door. Nothing to do
   differently.
 
+- **Prompts expire.** A pending ask denied itself into existence
+  problems: one approved a week later still executed. An ask now
+  times out after five minutes — the app gets its refusal, the queue
+  forgets it, and the log records the expiry. Nothing to do
+  differently.
+
 ## v44.4.0 (2026-09-28)
 
 ### Added
