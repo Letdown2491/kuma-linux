@@ -25,7 +25,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use nostr::key::{Keys, PublicKey};
 use nostr::nips::nip44::Nip44;
 use nostr::nips::nip46::{
@@ -118,9 +118,9 @@ pub fn parse_nostrconnect_uri(uri: &str) -> Result<NostrConnectParts> {
         // declaration that runs the bunker — plaintext kind 24133
         // traffic to a non-loopback host announces which app talks to
         // which bunker, and that is not kuma's to leak.
-        let (scheme, rest) = relay
-            .split_once("://")
-            .ok_or_else(|| anyhow!("relay {relay:?} has no scheme; relays are wss:// or ws:// to loopback"))?;
+        let (scheme, rest) = relay.split_once("://").ok_or_else(|| {
+            anyhow!("relay {relay:?} has no scheme; relays are wss:// or ws:// to loopback")
+        })?;
         match scheme {
             "wss" => {}
             "ws" => {

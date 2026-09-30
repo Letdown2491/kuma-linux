@@ -825,7 +825,6 @@ impl Config {
     }
 }
 
-
 /// Entries end up inside generated RUN instructions, so restrict them to a
 /// conservative character set rather than trusting shell quoting.
 /// A password hash that crypt can never accept has to fail here, at
