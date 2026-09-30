@@ -542,6 +542,29 @@ mod tests {
                 .unwrap()
         }
 
+        /// A request carrying its own created_at — what the replay
+        /// tests need to stand still or lie about the clock.
+        fn request_event_at(
+            &self,
+            bunker: &PublicKey,
+            id: &str,
+            method: NostrConnectMethod,
+            params: &[&str],
+            created_at: u64,
+        ) -> Event {
+            let message = NostrConnectMessage::Request {
+                id: id.to_string(),
+                method,
+                params: params.iter().map(|s| s.to_string()).collect(),
+            };
+            let content = self.keys.nip44_encrypt(bunker, &message.as_json()).unwrap();
+            EventBuilder::new(Kind::NostrConnect, content)
+                .custom_created_at(nostr::types::Timestamp::from(created_at))
+                .tag(Tag::public_key(*bunker))
+                .finalize(&self.keys)
+                .unwrap()
+        }
+
         /// The response the bunker sent, decrypted with the app's own
         /// half of the channel.
         fn decrypt_response(&self, response: &Event) -> NostrConnectMessage {
@@ -934,6 +957,85 @@ mod tests {
             }
             other => panic!("a response came back: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_redelivered_request_is_answered_once() {
+        let mut bunker = Bunker::new(Keys::generate(), None);
+        let app = App::new();
+        let bunker_pubkey = bunker.public_key();
+
+        let request =
+            app.request_event_with_id(&bunker_pubkey, "ping-dedup", NostrConnectMethod::Ping, &[]);
+        assert!(matches!(bunker.plan(&request), Plan::Answer(_)));
+        // The same event again — a relay's redelivery, or a capture
+        // re-fed: answered with nothing the second time.
+        assert!(matches!(bunker.plan(&request), Plan::Ignore));
+    }
+
+    #[tokio::test]
+    async fn a_stale_or_future_request_is_dropped() {
+        use crate::nostr::policy::unix_now;
+        let mut bunker = Bunker::new(Keys::generate(), None);
+        let app = App::new();
+        let bunker_pubkey = bunker.public_key();
+        let now = unix_now();
+
+        // Eleven minutes old and never seen: past the freshness
+        // window, dropped before any crypto runs.
+        let stale = app.request_event_at(
+            &bunker_pubkey,
+            "stale",
+            NostrConnectMethod::Ping,
+            &[],
+            now - 660,
+        );
+        assert!(matches!(bunker.plan(&stale), Plan::Ignore));
+
+        // Five minutes into the future: a clock that lies.
+        let future = app.request_event_at(
+            &bunker_pubkey,
+            "future",
+            NostrConnectMethod::Ping,
+            &[],
+            now + 300,
+        );
+        assert!(matches!(bunker.plan(&future), Plan::Ignore));
+    }
+
+    #[tokio::test]
+    async fn a_replay_below_the_senders_watermark_is_dropped() {
+        use crate::nostr::policy::unix_now;
+        let mut bunker = Bunker::new(Keys::generate(), None);
+        let app = App::new();
+        let bunker_pubkey = bunker.public_key();
+        let now = unix_now();
+
+        // The live request: answered, and it sets the sender's mark.
+        let live =
+            app.request_event_at(&bunker_pubkey, "live", NostrConnectMethod::Ping, &[], now);
+        assert!(matches!(bunker.plan(&live), Plan::Answer(_)));
+
+        // A different id, three hundred seconds behind the sender's
+        // own newest: a replay the dedup cache need not catch.
+        let behind = app.request_event_at(
+            &bunker_pubkey,
+            "behind",
+            NostrConnectMethod::Ping,
+            &[],
+            now - 300,
+        );
+        assert!(matches!(bunker.plan(&behind), Plan::Ignore));
+
+        // Within the slack a clock skew tolerates: admitted.
+        let skewy = app.request_event_at(
+            &bunker_pubkey,
+            "skewy",
+            NostrConnectMethod::Ping,
+            &[],
+            now - 30,
+        );
+        assert!(matches!(bunker.plan(&skewy), Plan::Answer(_)));
     }
 
     #[tokio::test]
