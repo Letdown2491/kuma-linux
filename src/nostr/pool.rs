@@ -15,6 +15,7 @@
 //! the truth about connection state, which is why every state change
 //! is visible on the status channel rather than swallowed.
 
+use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -183,10 +184,14 @@ impl RelayPool {
                 continue;
             }
             urls.push(url.clone());
-            self.apps
-                .entry(*app)
-                .or_default()
-                .push(self.spawn_road(url, false, Some(*app), bunker_pubkey, inbound, status));
+            self.apps.entry(*app).or_default().push(self.spawn_road(
+                url,
+                false,
+                Some(*app),
+                bunker_pubkey,
+                inbound,
+                status,
+            ));
         }
     }
 
