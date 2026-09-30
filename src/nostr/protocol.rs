@@ -308,7 +308,10 @@ impl<S: super::vault::SecretStore> Daemon<S> {
     pub fn spawn_inactivity_watchdog(
         daemon: &std::sync::Arc<std::sync::Mutex<Self>>,
         beat: Duration,
-    ) -> Option<std::thread::JoinHandle<()>> {
+    ) -> Option<std::thread::JoinHandle<()>>
+    where
+        S: std::marker::Send,
+    {
         if daemon.lock().expect("the daemon lock").inactivity.is_none() {
             return None;
         }
