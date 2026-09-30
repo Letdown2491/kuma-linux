@@ -470,9 +470,6 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                 }
                 Response::Ok(OkResponse::Unrevoke { ok: true, cleared })
             }
-                }
-                Response::Ok(OkResponse::Revoke { ok: true, removed })
-            }
             Request::Level { app, level } => match self.engine.set_level(&app, level) {
                 Ok(()) => Response::Ok(OkResponse::Level { ok: true }),
                 Err(e) => err_response(anyhow!("{e}")),
