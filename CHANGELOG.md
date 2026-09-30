@@ -8,23 +8,27 @@ differently. Why it changed belongs in the commit that made it.
 
 ### Added
 
-- **Asks and pairings speak in names.** `kuma-nostr bunker --for
-  "Damus on my phone"` names the URI at mint — the connect that burns
-  it pairs under the name — and `kuma-nostr label <app> <name>` (the
-  panel's pencil) names one after the fact; the person's word
-  outranks the client's own metadata claim. The spec's connect
-  metadata and requested permissions (the third and fourth connect
-  params, the display hints the `bunker://` flow never had a source
-  for) are read now too, and an off-spec client's metadata blob at
-  the third position is recognized rather than dropped.
+- **Asks and pairings speak the client's name, in Signet's words.**
+  The pairing record's name is the client's own handshake metadata —
+  the spec's optional connect fields (perms, name, image) ride the
+  `bunker://` flow now exactly as they ride `nostrconnect://`, read
+  as display hints and never as authorization, with an off-spec
+  client's metadata blob at the third position recognized by its
+  brace. An app that stays anonymous shows as a pubkey fragment, and
+  the panel's avatar fetch is https-only with an identicon fallback.
+  The paired-apps list reads like Signet's: two lines of fact per
+  app — name, level badge, paired/how many asks/last used — and a
+  tap opens the app's own view where the acts (level, revoke, delete)
+  live, because a list is not a control panel.
 - **Ask prompts read like decisions.** A signature ask says what the
-  event would do in words the kind numbers map to — "post a note",
-  "replace your relay list" — with the content whole and the tags'
-  names beneath; the strict event parse that turned every
-  odd-shaped event into "sign an unreadable event" is retired, and
-  an event that truly cannot be read shows itself instead of a
-  verdict-shaped shrug. The name at mint rides the vault blob (now
-  version 4); a 44.4.0 blob reads unchanged.
+  event would do in words — "Sign a note", "Send DM", "Update relay
+  list" — with the kind and its name, the content whole, and a
+  sensitive-action cue on the kinds that change identity, spend
+  privacy or carry weight. The strict event parse that turned every
+  odd-shaped event into "sign an unreadable event" is retired: the
+  kind is read leniently, sensitivity fails open into "ask", and an
+  event that truly cannot be read shows itself instead of a
+  verdict-shaped shrug.
 
 - **`kuma-nostr delete <app>` removes a paired app outright.** The
   record and its standing answers go, the live session goes with them,

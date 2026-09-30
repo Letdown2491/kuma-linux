@@ -4390,9 +4390,7 @@ local tab = "asks" -- asks | apps | pair
 local tab_chosen = false -- the person's click wins over onboarding
 local panel_open = false -- the frame tick only polls while this is true
 local frame_acc = 0 -- milliseconds since the last poll, from the tick
-local mint_label = nil -- the person's name for the URI they are about to mint
-local renaming = nil -- the pubkey whose card shows the name editor
-local rename_text = nil -- the editor's current text
+local selected_app = nil -- the pubkey whose detail view is open
 local render -- forward-declared: refresh's callbacks call it before the
               -- file's bottom assigns it, and a name read before its
               -- local exists resolves to the global — nil.
@@ -4462,7 +4460,22 @@ local METHOD_GLYPHS = {
 }
 
 local function short(pk)
-    return (pk or "?"):sub(1, 8) .. "…"
+    return (pk or "?"):sub(1, 12) .. "…"
+end
+
+-- A relative time, the list's second line: paired and last asked as
+-- ago-words, not unix numbers.
+local function relative(ts)
+    if not ts then return nil end
+    local delta = os.time() - ts
+    if delta < 60 then
+        return "just now"
+    elseif delta < 3600 then
+        return math.floor(delta / 60) .. "m ago"
+    elseif delta < 86400 then
+        return math.floor(delta / 3600) .. "h ago"
+    end
+    return math.floor(delta / 86400) .. "d ago"
 end
 
 -- The app behind an ask: the pairings carry the name and the icon the
@@ -4492,7 +4505,10 @@ local function avatar(pubkey, image, size)
             path = dest, width = size, height = size, radius = size / 3, fit = "cover",
         })
     end
-    if image then
+    -- Signet's gate: https only, and the panel downloads it rather
+    -- than trusting the raw URL with anything else. A client that
+    -- claims a cleartext avatar gets the identicon like everyone else.
+    if image and image:find("^https://") then
         noctalia.download(image, dest, function() render() end)
     end
     return ui.column({
@@ -4581,16 +4597,31 @@ local function askCard(p)
             avatar(p.app, known and known.image or nil, 38),
             ui.column({ gap = 1, flexGrow = 1 }, {
                 ui.label({ text = label, fontWeight = "semibold", color = "on_surface" }),
-                ui.label({
-                    text = (p.method or "?"):gsub("(%l)(%u)", function(a, b) return a .. " " .. b:lower() end),
-                    fontSize = 12, color = "on_surface_variant",
-                }),
+                -- The ask in words: the daemon's label table says what
+                -- the signature would do, and this line is that
+                -- sentence, not a method name.
+                ui.label({ text = p.summary or "?", fontSize = 12, color = "on_surface_variant" }),
             }),
         }),
     }
-    if p.summary then
+    -- Signet's cue: the kinds that change identity, spend privacy or
+    -- carry weight wear a warning, so the glance knows which asks
+    -- deserve the read.
+    if p.sensitive then
         table.insert(lines, ui.label({
-            text = p.summary, fontSize = 12, color = "on_surface_variant", maxLines = 3,
+            text = "⚠ Sensitive action — review carefully before approving",
+            fontSize = 12, color = "error",
+        }))
+    end
+    if p.kind then
+        table.insert(lines, ui.label({
+            text = "kind: " .. p.kind .. (p.kind_label and " (" .. p.kind_label .. ")" or ""),
+            fontSize = 11, color = "on_surface_variant/0.8",
+        }))
+    end
+    if p.content then
+        table.insert(lines, ui.label({
+            text = p.content, fontSize = 12, color = "on_surface", maxLines = 8,
         }))
     end
     if p.detail then
@@ -4609,142 +4640,57 @@ local function askCard(p)
     return card(lines)
 end
 
-local LEVELS = { "ask", "basic", "trust" }
-
-local function nextLevel(level)
-    for i, l in ipairs(LEVELS) do
-        if l == level then
-            return LEVELS[i % #LEVELS + 1]
-        end
+-- The level badge, the card's right edge: the standing answer, with
+-- its weight as the color — trust is the loudest thing in the layer
+-- and wears the alarm, basic wears the accent, ask stays quiet.
+local function levelBadge(level)
+    local glyph, color
+    if level == "trust" then
+        glyph, color = "shield-lock", "error"
+    elseif level == "basic" then
+        glyph, color = "shield-check", "primary"
+    else
+        glyph, color = "shield", "on_surface_variant"
     end
-    return "ask"
-end
-
--- The level control is one button that tells the truth twice: its
--- text is the standing answer, and its weight is the level's
--- seriousness — trust renders primary, because that is the loudest
--- thing in the layer and the button should look like what it hands
--- out. A tap advances the cycle; the daemon logs the change.
-local function levelButton(a)
-    local variant = "ghost"
-    if a.level == "trust" then
-        variant = "primary"
-    elseif a.level == "basic" then
-        variant = "secondary"
-    end
-    return ui.button({
-        text = "level: " .. (a.level or "ask"),
-        controlSize = "sm",
-        variant = variant,
-        tooltip = "tap to cycle ask, basic, trust",
-        onClick = function() cli({ "level", a.pubkey, nextLevel(a.level) }) end,
+    return ui.row({ gap = 4, align = "center" }, {
+        ui.glyph({ name = glyph, size = 13, color = color }),
+        ui.label({ text = level or "ask", fontSize = 11, color = color }),
     })
 end
 
+-- The list's card is a read, not a write: two lines — who the app is
+-- and what it has been doing — and a tap opens the detail where the
+-- acts live. Signet's shape: the list shows state, the sheet holds
+-- the buttons, and no card is a control panel unto itself.
 local function appCard(a)
-    -- The name editor replaces the card while it is open: the person's
-    -- word for the app, which outranks the client's own metadata
-    -- claim on every surface after it. Save and submit run the same
-    -- act, and the free text rides the argv form — a name the person
-    -- typed has no business being parsed by a shell.
-    if renaming == a.pubkey then
-        local function save()
-            local name = (rename_text and rename_text ~= "" and rename_text) or nil
-            if not name then
-                renaming = nil
-                render()
-                return
-            end
-            noctalia.runAsync({ "kuma-nostr", "label", a.pubkey, name }, function(result)
-                if result.exitCode ~= 0 then
-                    noctalia.notifyError("kumaOS nostr",
-                        (result.stderr and result.stderr ~= "" and result.stderr) or "the label failed")
-                end
-                renaming = nil
-                refresh()
-            end)
-        end
-        return card({
-            ui.label({ text = "Name this app", fontSize = 13, fontWeight = "semibold", color = "on_surface" }),
-            ui.row({ gap = 8 }, {
-                ui.input({
-                    key = "rename-" .. a.pubkey,
-                    value = a.name or "",
-                    placeholder = "what do you call this app?",
-                    controlSize = "sm",
-                    flexGrow = 1,
-                    onChange = function(text) rename_text = text end,
-                    onSubmit = function(text)
-                        rename_text = text
-                        save()
-                    end,
-                }),
-                ui.button({ text = "Save", variant = "primary", controlSize = "sm", glyph = "check", onClick = save }),
-                ui.button({ variant = "ghost", controlSize = "sm", glyph = "x",
-                    onClick = function()
-                        renaming = nil
-                        render()
-                    end }),
-            }),
-        })
+    local line2 = { "paired " .. (relative(a.paired_at) or "?") }
+    if a.request_count and a.request_count > 0 then
+        table.insert(line2, a.request_count .. " asks")
     end
-    -- Revocation is a state: the tombstone stays until the person
-    -- clears it, so the card says so and offers the way back instead
-    -- of a second revoke that would only find the tombstone again.
-    -- Delete is the other act, and it works on either state: a
-    -- removal, not a ban — the record goes and a fresh URI pairs
-    -- again.
-    if a.revoked_at then
-        return card({
-            ui.row({ gap = 12, align = "center" }, {
-                avatar(a.pubkey, a.image, 40),
-                ui.column({ gap = 1, flexGrow = 1 }, {
-                    ui.label({ text = a.name or short(a.pubkey), fontWeight = "semibold", color = "on_surface_variant" }),
-                    ui.label({ text = short(a.pubkey) .. " · revoked", fontSize = 11, color = "error" }),
-                }),
-                ui.button({ variant = "ghost", controlSize = "sm", glyph = "undo",
-                    tooltip = "un-revoke; a freshly minted URI pairs it again",
-                    onClick = function() cli({ "unrevoke", a.pubkey }) end }),
-                ui.button({ variant = "ghost", controlSize = "sm", glyph = "pencil",
-                    tooltip = "name this app; ask cards show it",
-                    onClick = function()
-                        renaming = a.pubkey
-                        rename_text = a.name or ""
-                        render()
-                    end }),
-                ui.button({ variant = "ghost", controlSize = "sm", glyph = "trash",
-                    tooltip = "delete; the record goes, and a fresh URI pairs it again",
-                    onClick = function() cli({ "delete", a.pubkey }) end }),
-            }),
-        })
+    if a.last_used_at then
+        table.insert(line2, "last " .. relative(a.last_used_at))
     end
-    local permLine = a.perms and ui.label({
-        text = "asks for: " .. a.perms, fontSize = 11,
-        color = "on_surface_variant/0.8", maxLines = 2,
-    }) or nil
-    return card({
+    return ui.column({
+        key = "app-" .. a.pubkey,
+        fill = "surface_variant/0.35", radius = 14, padding = 14, gap = 4,
+        onClick = function()
+            selected_app = a.pubkey
+            render()
+        end,
+    }, {
         ui.row({ gap = 12, align = "center" }, {
             avatar(a.pubkey, a.image, 40),
-            ui.column({ gap = 1, flexGrow = 1 }, {
-                ui.label({ text = a.name or short(a.pubkey), fontWeight = "semibold", color = "on_surface" }),
-                ui.label({ text = short(a.pubkey), fontSize = 11, color = "on_surface_variant" }),
+            ui.label({
+                text = a.name or short(a.pubkey), fontWeight = "semibold", flexGrow = 1,
+                color = a.revoked_at and "on_surface_variant" or "on_surface",
             }),
-            ui.button({ variant = "ghost", controlSize = "sm", glyph = "shield-off",
-                tooltip = "revoke; refused even with its old URI until you un-revoke",
-                onClick = function() cli({ "revoke", a.pubkey }) end }),
-            ui.button({ variant = "ghost", controlSize = "sm", glyph = "pencil",
-                tooltip = "name this app; ask cards show it",
-                onClick = function()
-                    renaming = a.pubkey
-                    rename_text = a.name or ""
-                    render()
-                end }),
-            ui.button({ variant = "ghost", controlSize = "sm", glyph = "trash",
-                tooltip = "delete; a freshly minted URI pairs it again",
-                onClick = function() cli({ "delete", a.pubkey }) end }),
+            levelBadge(a.level),
         }),
-        permLine,
-        levelButton(a),
+        ui.label({
+            text = (a.revoked_at and "revoked · " or "") .. table.concat(line2, " · "),
+            fontSize = 11, maxLines = 2,
+            color = a.revoked_at and "error" or "on_surface_variant/0.8",
+        }),
     })
 end
 
@@ -4803,30 +4749,17 @@ local function pairPane()
     return card({
         offered,
         ui.label({
-            text = "Copy a fresh URI into any NIP-46 app. It pairs one app once — the connect burns it — so mint another for the next app. Name the app first and its asks show the name.",
+            text = "Copy a fresh URI into any NIP-46 app. It pairs one app once — the connect burns it — so mint another for the next app.",
             fontSize = 12, color = "on_surface_variant", maxLines = 3,
-        }),
-        ui.input({
-            key = "mint-label",
-            placeholder = "what app is this URI for? (optional)",
-            controlSize = "sm",
-            onChange = function(text) mint_label = text end,
         }),
         ui.row({ gap = 8 }, {
             ui.button({ text = "Copy fresh URI", variant = "primary", glyph = "clipboard-copy", onClick = function()
                 -- Minting is the act: the copy takes a URI that has
                 -- never been spent, not the last one — which a used
-                -- pairing already burned. The name the person typed
-                -- rides the mint and pairs with it; the argv form
-                -- carries it, because free text is not shell text.
-                -- Every arm says something: the copy, the daemon's
-                -- refusal, or an answer with no URI in it.
-                local args = { "kuma-nostr", "bunker", "--json" }
-                if mint_label and mint_label ~= "" then
-                    table.insert(args, "--for")
-                    table.insert(args, mint_label)
-                end
-                noctalia.runAsync(args, function(result)
+                -- pairing already burned. Every arm says something:
+                -- the copy, the daemon's refusal, or an answer with
+                -- no URI in it.
+                noctalia.runAsync({ "kuma-nostr", "bunker", "--json" }, function(result)
                     local doc = noctalia.json.decode(result.stdout ~= "" and result.stdout or "{}")
                     if doc and doc.uri then
                         noctalia.copyToClipboard(doc.uri, "text/plain")
@@ -4867,7 +4800,93 @@ local function asksPane()
     return ui.column({ gap = 12 }, cards)
 end
 
+-- The detail view: where the acts live. The list's card opened this —
+-- the acts are one tap deeper than the list, which is the whole
+-- reason the list can stay clean.
+local function appDetail(a)
+    local rows = {
+        ui.button({ variant = "ghost", controlSize = "sm", glyph = "arrow-left",
+            text = "Paired apps", onClick = function()
+                selected_app = nil
+                render()
+            end }),
+        card({
+            ui.row({ gap = 12, align = "center" }, {
+                avatar(a.pubkey, a.image, 48),
+                ui.column({ gap = 1, flexGrow = 1 }, {
+                    ui.label({ text = a.name or short(a.pubkey), fontWeight = "semibold", color = "on_surface" }),
+                    ui.label({ text = a.pubkey, fontSize = 11, color = "on_surface_variant", maxLines = 2 }),
+                }),
+            }),
+            ui.label({
+                text = table.concat({
+                    "paired " .. (relative(a.paired_at) or "?"),
+                    a.request_count .. " asks",
+                    a.last_used_at and ("last " .. relative(a.last_used_at)),
+                }, " · "),
+                fontSize = 11, color = "on_surface_variant/0.8", maxLines = 2,
+            }),
+        }),
+        card({
+            ui.label({ text = "Trust level", fontSize = 13, fontWeight = "semibold", color = "on_surface" }),
+            ui.label({
+                text = "basic signs only the everyday safe list; everything else asks",
+                fontSize = 11, color = "on_surface_variant/0.8", maxLines = 2,
+            }),
+            ui.row({ gap = 8 }, {
+                ui.button({ text = "ask", controlSize = "sm",
+                    variant = a.level == "ask" and "primary" or "ghost",
+                    onClick = function() cli({ "level", a.pubkey, "ask" }) end }),
+                ui.button({ text = "basic", controlSize = "sm",
+                    variant = a.level == "basic" and "primary" or "ghost",
+                    onClick = function() cli({ "level", a.pubkey, "basic" }) end }),
+                ui.button({ text = "trust", controlSize = "sm",
+                    variant = a.level == "trust" and "destructive" or "ghost",
+                    tooltip = "signs everything unattended; the doctor grades it Warn",
+                    onClick = function() cli({ "level", a.pubkey, "trust" }) end }),
+            }),
+        }),
+    }
+    if a.perms then
+        table.insert(rows, card({
+            ui.label({ text = "asks for: " .. a.perms, fontSize = 11,
+                color = "on_surface_variant/0.8", maxLines = 3 }),
+        }))
+    end
+    table.insert(rows, card({
+        ui.label({ text = "This app", fontSize = 13, fontWeight = "semibold", color = "on_surface" }),
+        ui.row({ gap = 8 }, {
+            a.revoked_at
+                and ui.button({ text = "Un-revoke", variant = "outline", controlSize = "sm", glyph = "undo",
+                    onClick = function() cli({ "unrevoke", a.pubkey }) end })
+                or ui.button({ text = "Revoke", variant = "outline", controlSize = "sm", glyph = "shield-off",
+                    tooltip = "the ban: refused even with its old URI until you clear it",
+                    onClick = function() cli({ "revoke", a.pubkey }) end }),
+            ui.button({ text = "Delete", variant = "destructive", controlSize = "sm", glyph = "trash",
+                tooltip = "the record goes; a fresh URI pairs it again",
+                onClick = function()
+                    selected_app = nil
+                    cli({ "delete", a.pubkey })
+                end }),
+        }),
+        ui.label({
+            text = a.revoked_at
+                and "a revoked app is refused whatever it carries; delete forgets it outright"
+                or "revoke is the ban; delete forgets outright, and a fresh URI pairs again",
+            fontSize = 11, color = "on_surface_variant/0.8", maxLines = 3,
+        }),
+    }))
+    return ui.column({ gap = 10 }, rows)
+end
+
 local function appsPane()
+    if selected_app then
+        local a = appOf(selected_app)
+        if a then
+            return appDetail(a)
+        end
+        selected_app = nil -- the app was deleted under the open view
+    end
     if #apps == 0 then
         return emptyState("apps", "No apps paired yet", "Pair one from the Pair tab")
     end

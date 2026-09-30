@@ -75,6 +75,10 @@ const SAFE_KINDS: &[u16] =
 /// follows, deletions, relay and mute lists, DMs, client auth, the
 /// wallet kinds) asks the same way an unknown kind does. An
 /// unreadable event asks: what cannot be read cannot be vouched for.
+/// The kind is read leniently — the strict typed parse refused whole
+/// events over unexpected fields, and sensitivity that fails open into
+/// "ask" is the safe direction; a failure that called an event
+/// everyday would be the other thing.
 fn is_sensitive(method: &NostrConnectMethod, params: &[String]) -> bool {
     match method {
         NostrConnectMethod::Nip04Decrypt | NostrConnectMethod::Nip44Decrypt => true,
@@ -82,14 +86,10 @@ fn is_sensitive(method: &NostrConnectMethod, params: &[String]) -> bool {
         // writing one. NIP-44 is general-purpose — blossom auth,
         // arbitrary blobs — and rides at Basic like an everyday sign.
         NostrConnectMethod::Nip04Encrypt => true,
-        NostrConnectMethod::SignEvent => params
-            .first()
-            .and_then(|json| nostr::event::UnsignedEvent::from_json(json).ok())
-            .map(|event| {
-                let kind = u16::from(event.kind) as u16;
-                !SAFE_KINDS.contains(&kind)
-            })
-            .unwrap_or(true),
+        NostrConnectMethod::SignEvent => match params.first().and_then(|json| event_kind(json)) {
+            Some(kind) => !SAFE_KINDS.contains(&(kind as u16)),
+            None => true,
+        },
         _ => false,
     }
 }
@@ -124,18 +124,42 @@ pub struct Paired {
     /// `None` is an app in good standing.
     #[serde(default)]
     pub revoked_at: Option<u64>,
+    /// How many requests the app has made — the list's second line,
+    /// the shape Signet's app card carries. A count is not a history:
+    /// the log is where the asks are named.
+    #[serde(default)]
+    pub request_count: u64,
+    /// When the app last asked, and in what shape the answer went.
+    #[serde(default)]
+    pub last_used_at: Option<u64>,
 }
 
-/// What `prompts` shows: the ask, enough to decide on. `summary` is
-/// the glance; `detail` is the exact event the approval renders before
-/// the finger commits — the unsigned event JSON for a sign, the payload
-/// shape otherwise, and nothing for the verbs that carry no content.
+/// What `prompts` shows: the ask, enough to decide on. The summary is
+/// the glance in words ("Sign a note"); the rest is the decision's
+/// material, structured rather than a JSON wall — the kind and its
+/// name, the content whole, the sensitive cue, and a detail line for
+/// the payload-shaped verbs.
 #[derive(Debug, Clone, Serialize)]
 pub struct PromptView {
     pub id: String,
     pub app: String,
+    /// The raw method, as the app sent it — the panel maps it to a glyph.
     pub method: String,
     pub summary: String,
+    /// The event's kind and its name, for a signature ask.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind_label: Option<String>,
+    /// The event's content, whole — the judgment is about these words.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// Whether the kind is one of the identity-, privacy- or
+    /// wallet-touching ones — the cue that says look twice.
+    pub sensitive: bool,
+    /// A payload shape the struct fields do not carry (the decrypts'
+    /// target pubkey). The signature's payload rides `content` now.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
 
@@ -283,6 +307,8 @@ impl Engine {
             image,
             perms,
             revoked_at: None,
+            request_count: 0,
+            last_used_at: None,
         });
         inner.log.push(LogEntry {
             at: unix_now(),
@@ -436,18 +462,31 @@ impl Engine {
         });
     }
 
-    /// The pending asks, for the `prompts` verb and the panel.
+    /// The pending asks, for the `prompts` verb and the panel. The
+    /// signature's material is structured here — kind, its name, the
+    /// content whole — because the decision's rows are the daemon's
+    /// vocabulary to speak, not the panel's to parse.
     pub fn prompts(&self) -> Vec<PromptView> {
         let inner = self.inner.lock().expect("the policy lock");
         inner
             .prompts
             .iter()
-            .map(|(id, prompt)| PromptView {
-                id: id.clone(),
-                app: prompt.app.to_string(),
-                method: format!("{:?}", prompt.method),
-                summary: prompt.summary.clone(),
-                detail: detail(&prompt.method, &prompt.params),
+            .map(|(id, prompt)| {
+                let event_json = (prompt.method == NostrConnectMethod::SignEvent)
+                    .then(|| prompt.params.first())
+                    .flatten();
+                let kind = event_json.and_then(|json| event_kind(json));
+                PromptView {
+                    id: id.clone(),
+                    app: prompt.app.to_string(),
+                    method: format!("{:?}", prompt.method),
+                    summary: prompt.summary.clone(),
+                    kind,
+                    kind_label: kind.and_then(kind_label).map(str::to_string),
+                    content: event_json.and_then(|json| event_content(json)),
+                    sensitive: is_sensitive(&prompt.method, &prompt.params),
+                    detail: detail(&prompt.method, &prompt.params),
+                }
             })
             .collect()
     }
@@ -534,12 +573,18 @@ impl super::bunker::Gate for Engine {
 
         {
             let mut inner = self.inner.lock().expect("the policy lock");
-            let level = inner
+            // The ask is a use of the app's pairing, whatever the level
+            // answers: the count and the last-used stamp are the list's
+            // second line, and they ride the same lock as the level
+            // read so they cannot disagree with a decision made here.
+            let paired = inner
                 .apps
-                .iter()
+                .iter_mut()
                 .find(|p| p.pubkey == app.to_string())
-                .map(|p| p.level)
-                .unwrap_or(Level::Ask);
+                .expect("the pairing the pair above just made");
+            paired.request_count += 1;
+            paired.last_used_at = Some(unix_now());
+            let level = paired.level;
             let trusted_everywhere = level == Level::Trust;
             let trusted_here = inner
                 .remembered
@@ -562,6 +607,7 @@ impl super::bunker::Gate for Engine {
                     summary: summary.clone(),
                     verdict: verdict.into(),
                 });
+                self.persist_apps(&inner);
                 return Decision::Allow;
             }
         }
@@ -617,7 +663,6 @@ impl super::bunker::Gate for Engine {
         }
     }
 }
-
 /// The logout's body: the record and its standing answers go
 /// together — the app's own goodbye is a deletion, not a tombstone,
 /// because re-pairing is a fresh URI either way. Does not persist;
@@ -631,13 +676,11 @@ fn remove_app(inner: &mut Inner, app: &str) -> bool {
 
 /// The exact event an approval shows, privacy mode's one exception: a
 /// signature cannot be judged blind, so the event's content rides in
-/// whole. The render is for reading — what kind of act it is, the
-/// content itself, the tags' names — not a JSON wall. The decrypt
-/// methods name their scope without their payload — the payload is
-/// the secret, and the prompt is rendered on screens.
+/// whole — carried in the view's `content` field, not a JSON wall.
+/// The decrypt methods name their scope without their payload — the
+/// payload is the secret, and the prompt is rendered on screens.
 fn detail(method: &NostrConnectMethod, params: &[String]) -> Option<String> {
     match method {
-        NostrConnectMethod::SignEvent => params.first().map(|json| sign_event_detail(json)),
         NostrConnectMethod::Nip04Decrypt | NostrConnectMethod::Nip44Decrypt => {
             params.first().map(|pk| format!("decrypt for {pk}"))
         }
@@ -660,75 +703,85 @@ fn event_kind(json: &str) -> Option<u64> {
     }
 }
 
-/// What a kind number means, for the kinds whose meaning is common
-/// enough to promise. The unknown kinds stay honest with their number
-/// rather than pretending to a phrase.
-fn kind_phrase(kind: u64) -> Option<&'static str> {
+/// The event's content, whole, when it is a string field — the
+/// judgment's material.
+fn event_content(json: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    value.get("content").and_then(|c| c.as_str()).map(str::to_string)
+}
+
+/// What a kind number means — the noun for the detail row. The
+/// unknown kinds stay honest with their number rather than pretending
+/// to a phrase. (Signet's table, kept.)
+fn kind_label(kind: u64) -> Option<&'static str> {
     Some(match kind {
-        0 => "edit your profile",
-        1 => "post a note",
-        3 => "update your follows",
-        4 => "send a direct message",
-        5 => "delete events",
-        6 => "repost",
-        7 => "react",
-        1984 => "report content",
-        10000 => "replace your mute list",
-        10002 => "replace your relay list",
-        22242 => "authenticate a client",
-        30023 => "publish an article",
-        30078 => "replace app data",
+        0 => "Metadata",
+        1 => "Note",
+        3 => "Contacts",
+        4 => "DM",
+        5 => "Delete",
+        6 => "Repost",
+        7 => "Reaction",
+        8 => "Badge Award",
+        9 => "Chat Message",
+        10 => "Group Chat",
+        1984 => "Report",
+        9734 => "Zap Request",
+        9735 => "Zap",
+        10000 => "Mute List",
+        10001 => "Pin List",
+        10002 => "Relay List",
+        22242 => "HTTP Auth",
+        27235 => "HTTP Auth",
+        30000 => "Categorized People",
+        30001 => "Categorized Bookmarks",
+        30023 => "Long-form Content",
+        30078 => "App-specific Data",
         _ => return None,
     })
 }
 
-/// The ask's one line: what the signature would do. Never the content —
-/// the summary goes in the log, and a log that carries every signed
-/// sentence is a diary nobody asked for.
-fn summarize(method: &NostrConnectMethod, params: &[String]) -> String {
-    match method {
-        NostrConnectMethod::SignEvent => match params.first().and_then(|json| event_kind(json)) {
-            Some(kind) => match kind_phrase(kind) {
-                Some(phrase) => format!("sign: {phrase} (kind {kind})"),
-                None => format!("sign a kind {kind} event"),
-            },
-            None => "sign an event this prompt could not read".into(),
+/// What a signature ask is, in words — Signet's present-tense table,
+/// the sentence a person decides on. The unknown kinds say their
+/// number; an unreadable event says so as a shape, not a shrug.
+fn sign_event_summary(params: &[String]) -> String {
+    match params.first().and_then(|json| event_kind(json)) {
+        Some(kind) => match kind {
+            0 => "Update profile".into(),
+            1 => "Sign a note".into(),
+            3 => "Update contacts".into(),
+            4 => "Send DM".into(),
+            5 => "Delete event".into(),
+            6 => "Repost".into(),
+            7 => "Sign a reaction".into(),
+            9 => "Sign chat message".into(),
+            9734 => "Sign zap request".into(),
+            9735 => "Sign zap".into(),
+            10002 => "Update relay list".into(),
+            22242 => "Sign http auth".into(),
+            24133 => "Sign NIP-46 response".into(),
+            27235 => "Sign http auth".into(),
+            30023 => "Sign article".into(),
+            other => format!("Sign event (kind {other})"),
         },
-        other => format!("{other:?}").to_lowercase(),
+        None => "Sign event".into(),
     }
 }
 
-/// The prompt's detail, for reading before deciding: the kind in
-/// words, the content whole — the person's judgment is about these
-/// words — and the tags' names, so a note wearing a hidden `p` tag is
-/// a visible fact. The raw JSON is the fallback, because a shape this
-/// cannot parse is exactly the shape to show rather than hide.
-fn sign_event_detail(json: &str) -> String {
-    let Some(value) = serde_json::from_str::<serde_json::Value>(json).ok() else {
-        return format!("an event this prompt cannot parse:\n{json}");
-    };
-    let kind = value.get("kind").and_then(|k| k.as_u64());
-    let head = match kind {
-        Some(kind) => match kind_phrase(kind) {
-            Some(phrase) => format!("{phrase} (kind {kind})"),
-            None => format!("a kind {kind} event"),
-        },
-        None => "an event".to_string(),
-    };
-    let content = value.get("content").and_then(|c| c.as_str()).unwrap_or("");
-    let tags: Vec<&str> = value
-        .get("tags")
-        .and_then(|t| t.as_array())
-        .map(|tags| {
-            tags.iter().filter_map(|t| t.get(0).and_then(|n| n.as_str())).collect()
-        })
-        .unwrap_or_default();
-    let tag_line = if tags.is_empty() {
-        String::new()
-    } else {
-        format!("\n\ntags: {}", tags.join(", "))
-    };
-    format!("{head}\n\n{content}{tag_line}")
+/// The ask's one line, for the prompt and the log alike: the method in
+/// words. Never the content — the summary goes in the log, and a log
+/// that carries every signed sentence is a diary nobody asked for.
+fn summarize(method: &NostrConnectMethod, params: &[String]) -> String {
+    match method {
+        NostrConnectMethod::SignEvent => sign_event_summary(params),
+        NostrConnectMethod::GetPublicKey => "Get public key".into(),
+        NostrConnectMethod::Nip04Encrypt => "Encrypt message (NIP-04)".into(),
+        NostrConnectMethod::Nip04Decrypt => "Decrypt message (NIP-04)".into(),
+        NostrConnectMethod::Nip44Encrypt => "Encrypt message (NIP-44)".into(),
+        NostrConnectMethod::Nip44Decrypt => "Decrypt message (NIP-44)".into(),
+        NostrConnectMethod::Ping => "Ping".into(),
+        other => format!("{other:?}").to_lowercase(),
+    }
 }
 
 fn remember_key(app: &PublicKey, method: &NostrConnectMethod) -> String {
@@ -1158,43 +1211,79 @@ mod tests {
         // did not expect; the summary needs one integer, read with
         // that much honesty.
         let event = r#"{"kind":1,"content":"hello","tags":[]}"#;
-        assert_eq!(
-            summarize(&NostrConnectMethod::SignEvent, &[event.to_string()]),
-            "sign: post a note (kind 1)"
-        );
+        assert_eq!(summarize(&NostrConnectMethod::SignEvent, &[event.to_string()]), "Sign a note");
 
-        // A kind as a string and a kind with no phrase: each says what
-        // it is rather than "unreadable".
+        // A kind as a string, an unknown kind, and a shape that is not
+        // an event at all: each says what it is rather than
+        // "unreadable".
         let string_kind = r#"{"kind":"10002","content":"","tags":[]}"#;
         assert_eq!(
             summarize(&NostrConnectMethod::SignEvent, &[string_kind.to_string()]),
-            "sign: replace your relay list (kind 10002)"
+            "Update relay list"
         );
         let unknown = r#"{"kind":34567,"content":"","tags":[]}"#;
         assert_eq!(
             summarize(&NostrConnectMethod::SignEvent, &[unknown.to_string()]),
-            "sign a kind 34567 event"
+            "Sign event (kind 34567)"
         );
         let not_an_event = "hello";
+        assert_eq!(summarize(&NostrConnectMethod::SignEvent, &[not_an_event.to_string()]), "Sign event");
+
+        // The other methods answer in words too — the Debug spelling
+        // ("getpublickey") is machine food, not a decision's headline.
+        assert_eq!(summarize(&NostrConnectMethod::GetPublicKey, &[]), "Get public key");
         assert_eq!(
-            summarize(&NostrConnectMethod::SignEvent, &[not_an_event.to_string()]),
-            "sign an event this prompt could not read"
+            summarize(&NostrConnectMethod::Nip44Decrypt, &["3f7a".to_string()]),
+            "Decrypt message (NIP-44)"
         );
     }
 
-    #[test]
-    fn the_detail_reads_like_a_decision_not_a_json_wall() {
-        let event = r#"{"kind":1,"content":"Hello, I'm signing remotely","tags":[["p","3f7a"]]}"#;
-        let shown = detail(&NostrConnectMethod::SignEvent, &[event.to_string()]).unwrap();
-        assert!(shown.starts_with("post a note (kind 1)"), "{shown}");
-        assert!(shown.contains("Hello, I'm signing remotely"), "{shown}");
-        assert!(shown.contains("tags: p"), "{shown}");
+    #[tokio::test]
+    async fn the_prompt_carries_what_the_decision_needs() {
+        let engine = engine();
+        let app = app();
+        engine.pair(&app);
 
-        // The unparsable shape shows itself: the raw bytes are the
-        // fallback, not a silence.
-        let shown = detail(&NostrConnectMethod::SignEvent, &["<not json>".to_string()]).unwrap();
-        assert!(shown.contains("cannot parse"), "{shown}");
-        assert!(shown.contains("<not json>"));
+        // A pending ask renders as the decision's material: the human
+        // label, the kind and its name, the content whole, the
+        // sensitivity cue — and no JSON wall where a detail should be.
+        let params = vec![r#"{"kind":1,"content":"Hello, I'm signing remotely","tags":[]}"#.into()];
+        let waiter = {
+            let engine = engine.clone();
+            let app = app;
+            tokio::spawn(async move { engine.decide(&app, &NostrConnectMethod::SignEvent, &params).await })
+        };
+
+        // The decide task and this test share one thread: yield until
+        // the prompt has landed, which is the first poll of decide.
+        let views = loop {
+            let views = engine.prompts();
+            if !views.is_empty() {
+                break views;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
+        assert_eq!(views[0].summary, "Sign a note");
+        assert_eq!(views[0].kind, Some(1));
+        assert_eq!(views[0].kind_label.as_deref(), Some("Note"));
+        assert_eq!(views[0].content.as_deref(), Some("Hello, I'm signing remotely"));
+        assert!(!views[0].sensitive, "a note is everyday's own kind");
+        assert!(views[0].detail.is_none(), "the content carries it; no JSON wall beside it");
+
+        // The answer lands, and the app's second line earns its keep:
+        // the ask counted as a use.
+        engine.approve(&views[0].id, None).unwrap();
+        assert!(matches!(waiter.await.unwrap(), Decision::Allow));
+        let paired = &engine.apps()[0];
+        assert_eq!(paired.request_count, 1);
+        assert!(paired.last_used_at.is_some());
+
+        // A sensitive kind flags itself: a relay-list write is not an
+        // everyday note.
+        let params = vec![r#"{"kind":10002,"content":"","tags":[]}"#.into()];
+        assert!(is_sensitive(&NostrConnectMethod::SignEvent, &params));
+        let params = vec!["not an event".to_string()];
+        assert!(is_sensitive(&NostrConnectMethod::SignEvent, &params), "the unreadable fails open into ask");
     }
 
     #[test]
