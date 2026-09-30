@@ -430,22 +430,19 @@ impl Bunker {
                 // — and a bunker with none outstanding has nothing to
                 // verify against, so the person's gate stays the door.
                 let secret = params.get(1).cloned();
-                let verified = match secret.as_deref() {
-                    Some(provided) => {
-                        match self
-                            .expected_secrets
-                            .iter()
-                            .position(|s| constant_time_eq(s, provided))
-                        {
-                            Some(at) => {
-                                self.expected_secrets.remove(at);
-                                true
-                            }
-                            None => false,
-                        }
-                    }
-                    None => self.expected_secrets.is_empty(),
+                // The burn is located now and executed when the answer
+                // exists — a live list that burned before a wrap that
+                // failed would disagree with the stored list, and a
+                // restart would flip the disagreement back open.
+                let mut burn_at = match secret.as_deref() {
+                    Some(provided) => self
+                        .expected_secrets
+                        .iter()
+                        .position(|s| constant_time_eq(s, provided)),
+                    None => None,
                 };
+                let verified = burn_at.is_some()
+                    || (secret.is_none() && self.expected_secrets.is_empty());
                 eprintln!(
                     "kuma-nostrd: connect from {}: {}",
                     event.pubkey,
@@ -483,12 +480,11 @@ impl Bunker {
                 );
                 let metadata = ClientMeta::parse(params.get(3));
                 return match answer {
-                    Some(answer) => Plan::Paired {
-                        answer,
-                        app: event.pubkey,
-                        metadata,
-                        burned: if secret.is_some() { secret } else { None },
-                    },
+                    Some(answer) => {
+                        let burned =
+                            burn_at.take().map(|at| self.expected_secrets.remove(at));
+                        Plan::Paired { answer, app: event.pubkey, metadata, burned }
+                    }
                     None => Plan::Ignore,
                 };
             }
