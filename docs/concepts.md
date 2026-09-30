@@ -605,7 +605,10 @@ least), it locks by itself when nothing has unlocked or kept it
 alive for that long — the dead man's switch, for a machine that
 stops answering with the gate still open. Off by default, because
 the desktop daemon's posture is the PAM-open keyring; a person who
-wants the fuse passes the window where the daemon starts.
+wants the fuse passes the window where the daemon starts. A restart
+is a fresh window: starting the daemon is a present person's act,
+which is also why the keyring being PAM-open does not defeat the
+switch — the gate it guards is the one left open afterwards.
 
 **The key the bunker signs with is not your identity.** Pairing an app
 gives it the bunker's own key — a dedicated remote signer the layer
