@@ -644,9 +644,10 @@ mod tests {
         // The revoke verb takes the session with it, live: the next
         // request is a refusal, not a gate — and nothing the app does
         // afterwards re-pairs it.
-        assert!(daemon
-            .handle(decode(&format!(r#"{{"cmd":"revoke","app":"{}"}}"#, app)).unwrap())
-            .ok());
+        assert!(matches!(
+            daemon.handle(decode(&format!(r#"{{"cmd":"revoke","app":"{}"}}"#, app)).unwrap(),
+            Response::Ok(_)
+        ));
         let bunker_pubkey = daemon.bunker.as_ref().expect("armed").public_key();
         let message = NostrConnectMessage::Request {
             id: "after-revoke".into(),
