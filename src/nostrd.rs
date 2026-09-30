@@ -148,10 +148,18 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             kuma::nostr::bunker::Plan::RelaysServed { answer, app } => {
-                engine.served(&app.to_string(), "switch_relays", "the bunker's relay list".into());
+                engine.noted(
+                    &app.to_string(),
+                    "switch_relays",
+                    "the bunker's relay list".into(),
+                    "served",
+                );
                 if let Err(e) = worker.lock().expect("the daemon lock").publish(&answer) {
                     eprintln!("kuma-nostrd: the answer was not published: {e:#}");
                 }
+            }
+            kuma::nostr::bunker::Plan::Shed { app } => {
+                engine.noted(&app.to_string(), "rate_limit", "over its rate".into(), "shed");
             }
             kuma::nostr::bunker::Plan::Ended { answer, app } => {
                 engine.logout(&app.to_string());

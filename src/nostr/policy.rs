@@ -310,18 +310,19 @@ impl Engine {
         removed
     }
 
-    /// A protocol-level fact the bunker served without the gate —
-    /// `switch_relays` names its relays to any paired app — recorded
-    /// so the activity log's answer stays complete. The verdict is a
+    /// A protocol-level fact the bunker served or shed without the
+    /// gate — `switch_relays` names its relays to any paired app, a
+    /// sender over its rate is answered with nothing — recorded so
+    /// the activity log's answer stays complete. The verdict is a
     /// fact here, not a decision.
-    pub fn served(&self, app: &str, method: &str, summary: String) {
+    pub fn noted(&self, app: &str, method: &str, summary: String, verdict: &str) {
         let mut inner = self.inner.lock().expect("the policy lock");
         inner.log.push(LogEntry {
             at: unix_now(),
             app: app.to_string(),
             method: method.into(),
             summary,
-            verdict: "served".into(),
+            verdict: verdict.into(),
         });
     }
 

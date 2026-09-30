@@ -133,6 +133,12 @@ pub enum Plan {
         answer: Event,
         app: PublicKey,
     },
+    /// A request shed for its sender's own rate: answered with
+    /// nothing, so one app cannot spend the shared relays for every
+    /// other app on the key. The daemon records the shedding.
+    Shed {
+        app: PublicKey,
+    },
     Ask {
         /// The full request event: `execute` re-reads the app's pubkey
         /// and the correlation id from it.
@@ -141,6 +147,28 @@ pub enum Plan {
         method: NostrConnectMethod,
         params: Vec<String>,
     },
+}
+
+/// The per-sender rate: tokens refill at this many per second, up to
+/// the burst. Signet's own numbers — a sustained ten requests a
+/// second per app, thirty of headroom for the batches a feed fetch
+/// makes. Where signet queues an over-budget request briefly, this
+/// bunker sheds: the worker is one thread, and a delay there is a
+/// delay for every app behind it.
+const RATE_REFILL_PER_SEC: f64 = 10.0;
+const RATE_BURST: f64 = 30.0;
+/// The bound the buckets shed to, and what idle means for one — a
+/// sender silent this long has a full bucket by refill, so its state
+/// is not worth keeping under a flood of throwaway pubkeys.
+const RATE_BUCKETS_MAX: usize = 1000;
+const RATE_BUCKET_STALE: Duration = Duration::from_secs(600);
+
+/// A sender's token bucket: what the refill has accumulated, and when
+/// it last moved. Keyed by the verified pubkey, so the budget is the
+/// sender's own — one app cannot spend another's.
+struct Bucket {
+    tokens: f64,
+    seen: std::time::Instant,
 }
 
 /// The replay gates. A NIP-46 request arrives through relays that
@@ -256,6 +284,15 @@ pub struct Bunker {
     /// argument until the declaration block exists to carry it, the
     /// same gap the relays themselves have.
     relays: Vec<String>,
+    /// The per-sender refill and burst, fields rather than constants
+    /// so a test can shrink them to a size it sees shed. The
+    /// constants are the production values; nothing else writes.
+    rate_refill_per_sec: f64,
+    rate_burst: f64,
+    /// The per-sender token buckets — the rate one app cannot spend
+    /// another's. Bounded like the replay caches: stale buckets shed
+    /// first, then the oldest eighth.
+    rate: HashMap<PublicKey, Bucket>,
     /// The replay gates every request passes before any crypto runs.
     replay: Replay,
 }
@@ -267,6 +304,9 @@ impl Bunker {
             sessions: HashSet::new(),
             expected_secret,
             relays: Vec::new(),
+            rate: HashMap::new(),
+            rate_refill_per_sec: RATE_REFILL_PER_SEC,
+            rate_burst: RATE_BURST,
             replay: Replay::default(),
         }
     }
@@ -276,6 +316,14 @@ impl Bunker {
     /// empty list, which is the truth it holds.
     pub fn with_relays(&mut self, relays: Vec<String>) {
         self.relays = relays;
+    }
+
+    /// The rate a test can afford to exercise: the same bucket shape
+    /// at a size the test sees shed.
+    #[cfg(test)]
+    fn with_rate(&mut self, refill_per_sec: f64, burst: f64) {
+        self.rate_refill_per_sec = refill_per_sec;
+        self.rate_burst = burst;
     }
 
     /// The bunker's public identity, hex — what `get_public_key`
@@ -331,6 +379,13 @@ impl Bunker {
         // A refusal here names nothing, like the noise below.
         if !self.replay.admit(event) {
             return Plan::Ignore;
+        }
+        // The sender's own budget: past the burst there is no queue —
+        // the worker is one thread, and a delay for one app is a
+        // delay for every app behind it. The shed is silence here and
+        // a record in the daemon's log.
+        if !self.admit_rate(&event.pubkey) {
+            return Plan::Shed { app: event.pubkey };
         }
         let Some(plaintext) = self.keys.nip44_decrypt(&event.pubkey, &event.content).ok() else {
             return Plan::Ignore;
@@ -534,6 +589,44 @@ impl Bunker {
                 NostrConnectResponse::with_error(format!("the payload did not transform: {e}"))
             }
         }
+    }
+
+    /// Whether the sender's own budget admits one more request: the
+    /// bucket refills by the elapsed time, and a token is spent. A
+    /// new sender starts full — the burst is the allowance a batch
+    /// needs, not a debt to pay into.
+    fn admit_rate(&mut self, app: &PublicKey) -> bool {
+        self.bucket_room();
+        let now = std::time::Instant::now();
+        let bucket = self.rate.entry(*app).or_insert(Bucket { tokens: self.rate_burst, seen: now });
+        let elapsed = now.duration_since(bucket.seen).as_secs_f64();
+        bucket.tokens = (bucket.tokens + elapsed * self.rate_refill_per_sec).min(self.rate_burst);
+        bucket.seen = now;
+        if bucket.tokens >= 1.0 {
+            bucket.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Room for one more sender: idle buckets shed first, then — a
+    /// flood of throwaway pubkeys — the oldest eighth. A shed bucket
+    /// refills by construction; the sender it forgot was idle or
+    /// already over budget.
+    fn bucket_room(&mut self) {
+        if self.rate.len() < RATE_BUCKETS_MAX {
+            return;
+        }
+        let now = std::time::Instant::now();
+        self.rate.retain(|_, bucket| now.duration_since(bucket.seen) < RATE_BUCKET_STALE);
+        if self.rate.len() < RATE_BUCKETS_MAX {
+            return;
+        }
+        let mut seens: Vec<std::time::Instant> = self.rate.values().map(|b| b.seen).collect();
+        seens.sort_unstable();
+        let cutoff = seens[seens.len() / 8];
+        self.rate.retain(|_, bucket| bucket.seen > cutoff);
     }
 
     /// The methods the crate's own message type does not know —
@@ -1367,6 +1460,44 @@ mod tests {
             other => panic!("a logout acks: {other:?}"),
         }
         assert!(!bunker.is_paired(&stranger.pubkey()));
+    }
+
+    #[tokio::test]
+    async fn a_sender_over_its_budget_is_shed_and_others_are_not() {
+        let mut bunker = Bunker::new(Keys::generate(), None);
+        // A burst of two, refilling at nothing a test can wait out:
+        // the connect spends one, one ping spends the last, and the
+        // next ping is the sender's own rate talking.
+        bunker.with_rate(0.0, 2.0);
+        let app = App::new();
+        let other = App::new();
+        bunker.plan(&app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
+        bunker.plan(&other.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
+
+        let ping = app.request_event(&bunker.public_key(), NostrConnectMethod::Ping, &[]);
+        assert!(matches!(bunker.plan(&ping), Plan::Answer(_)));
+        assert!(matches!(bunker.plan(&ping), Plan::Shed { .. }), "the budget is spent");
+
+        // The other app's budget is the other app's: unaffected.
+        let other_ping =
+            other.request_event(&bunker.public_key(), NostrConnectMethod::Ping, &[]);
+        assert!(matches!(bunker.plan(&other_ping), Plan::Answer(_)));
+    }
+
+    #[tokio::test]
+    async fn the_budget_refills_and_a_shed_sender_returns() {
+        let mut bunker = Bunker::new(Keys::generate(), None);
+        // One token, refilling fast: spend it on the connect, watch
+        // the next request shed, and watch the refill admit one more.
+        bunker.with_rate(5.0, 1.0);
+        let app = App::new();
+        bunker.plan(&app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
+
+        let ping = app.request_event(&bunker.public_key(), NostrConnectMethod::Ping, &[]);
+        assert!(matches!(bunker.plan(&ping), Plan::Shed { .. }));
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(matches!(bunker.plan(&ping), Plan::Answer(_)), "the bucket refilled");
     }
 
     #[tokio::test]

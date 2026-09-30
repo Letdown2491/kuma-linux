@@ -257,12 +257,16 @@ mod tests {
                         let _ = daemon.lock().unwrap().publish(&answer);
                     }
                     crate::nostr::bunker::Plan::RelaysServed { answer, app } => {
-                        engine.served(
+                        engine.noted(
                             &app.to_string(),
                             "switch_relays",
                             "the bunker's relay list".into(),
+                            "served",
                         );
                         let _ = daemon.lock().unwrap().publish(&answer);
+                    }
+                    crate::nostr::bunker::Plan::Shed { app } => {
+                        engine.noted(&app.to_string(), "rate_limit", "over its rate".into(), "shed");
                     }
                     crate::nostr::bunker::Plan::Ended { answer, app } => {
                         engine.logout(&app.to_string());
