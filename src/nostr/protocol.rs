@@ -547,6 +547,122 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_paired_app_reaches_the_gate_after_a_restart() {
+        use nostr::nips::nip44::Nip44;
+        use nostr::nips::nip46::{NostrConnectMessage, NostrConnectMethod};
+
+        // The state dir is real so the pairings persist; the vault
+        // store is shared so the second daemon holds the same identity.
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(MemoryStore::default());
+        let mut daemon =
+            Daemon::new(Vault::new(store.clone()), Vec::new(), Some(dir.path().to_path_buf())).0;
+        daemon.handle(decode(r#"{"cmd":"setup","mode":{"how":"generate"}}"#).unwrap()).await;
+
+        // An app pairs — the engine's record is the durable side.
+        let app_keys = Keys::generate();
+        daemon.engine.pair_with_metadata(&app_keys.public_key(), None, None);
+        drop(daemon);
+
+        // A fresh daemon over the same state: the restart, with the
+        // keyring PAM-open — the startup posture comes up answering.
+        let mut daemon =
+            Daemon::new(Vault::new(store), Vec::new(), Some(dir.path().to_path_buf())).0;
+        daemon.startup_unlock().await.unwrap();
+
+        // The app's next request reaches the gate, not a refusal.
+        let bunker_pubkey = daemon.bunker.as_ref().expect("armed").public_key();
+        let message = NostrConnectMessage::Request {
+            id: "after-restart".into(),
+            method: NostrConnectMethod::GetPublicKey,
+            params: vec![],
+        };
+        let content = app_keys.nip44_encrypt(&bunker_pubkey, &message.as_json()).unwrap();
+        let request = EventBuilder::new(Kind::NostrConnect, content)
+            .tag(Tag::public_key(bunker_pubkey))
+            .finalize(&app_keys)
+            .unwrap();
+        match daemon.plan_bunker_event(&request) {
+            Some(super::bunker::Plan::Ask { .. }) => {}
+            other => panic!("a paired app reaches the gate after a restart: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_paired_app_reaches_the_gate_after_a_lock_and_unlock_cycle() {
+        use nostr::nips::nip44::Nip44;
+        use nostr::nips::nip46::{NostrConnectMessage, NostrConnectMethod};
+
+        let mut daemon = daemon().await;
+        daemon.handle(decode(r#"{"cmd":"setup","mode":{"how":"generate"}}"#).unwrap()).await;
+
+        let app_keys = Keys::generate();
+        daemon.engine.pair_with_metadata(&app_keys.public_key(), None, None);
+
+        // The cycle: lock tears the bunker down, unlock arms it fresh.
+        daemon.handle(decode(r#"{"cmd":"lock"}"#).unwrap()).await;
+        daemon.handle(decode(r#"{"cmd":"unlock"}"#).unwrap()).await;
+
+        let bunker_pubkey = daemon.bunker.as_ref().expect("armed").public_key();
+        let message = NostrConnectMessage::Request {
+            id: "after-cycle".into(),
+            method: NostrConnectMethod::GetPublicKey,
+            params: vec![],
+        };
+        let content = app_keys.nip44_encrypt(&bunker_pubkey, &message.as_json()).unwrap();
+        let request = EventBuilder::new(Kind::NostrConnect, content)
+            .tag(Tag::public_key(bunker_pubkey))
+            .finalize(&app_keys)
+            .unwrap();
+        match daemon.plan_bunker_event(&request) {
+            Some(super::bunker::Plan::Ask { .. }) => {}
+            other => panic!("a paired app reaches the gate after re-arming: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_revoked_app_stays_refused_after_a_restart() {
+        use nostr::nips::nip44::Nip44;
+        use nostr::nips::nip46::{NostrConnectMessage, NostrConnectMethod};
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(MemoryStore::default());
+        let mut daemon =
+            Daemon::new(Vault::new(store.clone()), Vec::new(), Some(dir.path().to_path_buf())).0;
+        daemon.handle(decode(r#"{"cmd":"setup","mode":{"how":"generate"}}"#).unwrap()).await;
+
+        let app_keys = Keys::generate();
+        let app = app_keys.public_key();
+        daemon.engine.pair_with_metadata(&app, None, None);
+        assert!(daemon.engine.revoke(&app.to_string()));
+        drop(daemon);
+
+        let mut daemon =
+            Daemon::new(Vault::new(store), Vec::new(), Some(dir.path().to_path_buf())).0;
+        daemon.startup_unlock().await.unwrap();
+
+        let bunker_pubkey = daemon.bunker.as_ref().expect("armed").public_key();
+        let message = NostrConnectMessage::Request {
+            id: "after-revoke".into(),
+            method: NostrConnectMethod::GetPublicKey,
+            params: vec![],
+        };
+        let content = app_keys.nip44_encrypt(&bunker_pubkey, &message.as_json()).unwrap();
+        let request = EventBuilder::new(Kind::NostrConnect, content)
+            .tag(Tag::public_key(bunker_pubkey))
+            .finalize(&app_keys)
+            .unwrap();
+        match daemon.plan_bunker_event(&request) {
+            Some(super::bunker::Plan::Answer(response)) => {
+                let plaintext =
+                    app_keys.nip44_decrypt(&bunker_pubkey, &response.content).unwrap();
+                assert!(plaintext.contains("not paired"), "{plaintext}");
+            }
+            other => panic!("a revoked app is refused, not gated: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn the_status_walks_the_whole_life_cycle() {
         let mut daemon = daemon().await;
 
