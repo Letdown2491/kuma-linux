@@ -408,7 +408,15 @@ impl<S: super::vault::SecretStore> Daemon<S> {
             self.inbound.clone(),
             self.status_tx.clone(),
         ));
-        self.bunker = Some(Bunker::new(keys, self.vault.secret().map(str::to_string)));
+        let mut bunker = Bunker::new(keys, self.vault.secret().map(str::to_string));
+        // The persisted pairings ride in: a fresh session map is not
+        // a forgetting, and the restart is invisible to a paired app.
+        // One source of truth answers "paired" — the engine's record,
+        // which revocation edits.
+        bunker.seed(
+            self.engine.apps().iter().filter_map(|paired| PublicKey::parse(&paired.pubkey).ok()),
+        );
+        self.bunker = Some(bunker);
         public_key_bech32(&pubkey)
     }
 

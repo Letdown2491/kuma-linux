@@ -258,6 +258,18 @@ impl Bunker {
         self.keys.public_key()
     }
 
+    /// Seed the sessions from the persisted pairings — what arming
+    /// hands the bunker so a fresh map is not a forgetting. Each
+    /// seeded app reaches the gate without re-connecting; a connect
+    /// still pairs on its own for the apps the state has never seen.
+    /// The durable side stays the policy engine's record: a revoked
+    /// app is not in it, and so is not seeded.
+    pub fn seed(&mut self, paired: impl IntoIterator<Item = PublicKey>) {
+        for pubkey in paired {
+            self.sessions.entry(pubkey).or_insert(Session { secret: None });
+        }
+    }
+
     /// Whether an app is paired. The policy engine replaces the storage
     /// with per-app policy and persisted pairing; the question stays.
     pub fn is_paired(&self, app: &PublicKey) -> bool {
