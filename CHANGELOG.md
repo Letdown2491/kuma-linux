@@ -92,6 +92,17 @@ differently. Why it changed belongs in the commit that made it.
   The off switch stays silent in the doctor, the desktop default
   being the PAM-open keyring.
 
+- **The nostrconnect:// flow.** A client's own invite now pairs:
+  paste its URI (`kuma-nostr connect <uri>`, or the panel behind the
+  `nostrconnect://` link handler) and the pairing lands — the person's
+  paste is the approval — with the handshake published on the
+  client's own relays and the URI's secret echoed as the result the
+  client validates. The client's name and requested permissions ride
+  the pairing record as display hints. Every refusal names itself:
+  a missing secret, no relay, a bad pubkey, a plaintext relay to a
+  non-loopback host. **Nothing to do differently; the bunker:// flow
+  is unchanged.**
+
 ## v44.4.0 (2026-09-28)
 
 ### Added

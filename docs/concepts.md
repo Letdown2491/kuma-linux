@@ -620,6 +620,17 @@ a comparison that leaks its own progress is a lock that shows its
 keys; the URI-less door — a bunker with nothing outstanding — stays
 the person's gate.
 
+**The client can hold the door open too.** A `nostrconnect://` URI —
+the client's own invite, pasted into `kuma-nostr connect` or the
+panel — pairs the client the moment the person pastes it: the paste
+is the approval, the handshake goes out on the client's own relays,
+and the URI's secret echoes back as the result the client validates.
+The client's name and its requested permissions ride the pairing
+record as display hints, never authorization; the levels above are
+the only thing that decides. Every refusal names itself — a missing
+secret, no relay, a plaintext relay to a non-loopback host — because
+the person holding the URI is the one who can fix it.
+
 **The key the bunker signs with is not your identity.** Pairing an app
 gives it the bunker's own key — a dedicated remote signer the layer
 generated — so an app learns your npub only by asking, and the pubkey a
