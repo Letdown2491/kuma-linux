@@ -599,7 +599,11 @@ app holding it Warn by name, because a standing grant is the loudest
 thing in the layer. An approved ask can be remembered for an hour at
 most; that ceiling is the verb's own. An unanswered ask times out
 after five minutes — the refusal travels back to the app, and the log
-keeps the expiry.
+keeps the expiry. The same ask retried while it waits joins the
+first: one card, a count of the retries, one answer for every waiter.
+The activity itself is memory, not steam — the log persists across
+restarts, capped at the last 500 entries, and the panel's Activity
+tab and `kuma-nostr log` both read it.
 
 **The lock is the switch, and the switch is yours to arm.** The
 daemon's lock verb drops the keys, and a bunker with no keys refuses

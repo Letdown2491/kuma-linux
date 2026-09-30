@@ -157,6 +157,11 @@ pub struct PromptView {
     /// Whether the kind is one of the identity-, privacy- or
     /// wallet-touching ones — the cue that says look twice.
     pub sensitive: bool,
+    /// How many identical asks are waiting behind this one card: a
+    /// client that retries while the person reads joins the first
+    /// ask instead of stacking a second card, and one answer serves
+    /// every waiter.
+    pub retries: u64,
     /// A payload shape the struct fields do not carry (the decrypts'
     /// target pubkey). The signature's payload rides `content` now.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -168,13 +173,16 @@ struct Prompt {
     method: NostrConnectMethod,
     params: Vec<String>,
     summary: String,
-    responder: oneshot::Sender<Decision>,
+    /// Every ask that joined this card, each with a response to
+    /// receive: the first connect's waiter plus one per identical
+    /// retry. One decision answers the lot.
+    responders: Vec<oneshot::Sender<Decision>>,
 }
 
 /// One line of the activity log: what was asked, by whom, and why it
 /// went the way it went. Privacy mode is structural — there is no field
 /// a param could hide in.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogEntry {
     pub at: u64,
     pub app: String,
@@ -199,6 +207,9 @@ struct Inner {
 /// approved a week later, it executed. Five minutes is what the app
 /// on the other side is willing to wait anyway.
 const PROMPT_TTL_SECS: u64 = 300;
+/// The activity log's cap: the last 500 entries survive, which is
+/// more than a person reads and few enough that the file stays a file.
+const LOG_CAP: usize = 500;
 
 /// The engine: the [`super::bunker::Gate`] the bunker's worker asks,
 /// and the state the socket verbs (`prompts`, `approve`, `deny`,
@@ -222,6 +233,7 @@ impl Engine {
             prompt_ttl,
         };
         engine.load_apps();
+        engine.load_log();
         engine
     }
 
@@ -240,6 +252,62 @@ impl Engine {
     /// The state file the pairings persist to, if this engine persists.
     fn apps_file(&self) -> Option<PathBuf> {
         self.state_path.as_ref().map(|dir| dir.join("apps.json"))
+    }
+
+    /// The activity log's file, beside the pairings. Newest last, so a
+    /// reader appends; the cap lives at the write.
+    fn log_file(&self) -> Option<PathBuf> {
+        self.state_path.as_ref().map(|dir| dir.join("log.json"))
+    }
+
+    fn load_log(&self) {
+        let Some(file) = self.log_file() else { return };
+        let Ok(text) = std::fs::read_to_string(&file) else { return };
+        match serde_json::from_str::<Vec<LogEntry>>(&text) {
+            Ok(log) => {
+                self.inner.lock().expect("the policy lock").log = log;
+            }
+            Err(e) => eprintln!("kuma-nostrd: {file:?} did not parse; starting with an empty log: {e}"),
+        }
+    }
+
+    fn persist_log(&self, inner: &Inner) {
+        let Some(file) = self.log_file() else { return };
+        if let Some(parent) = file.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("kuma-nostrd: cannot create {parent:?}: {e}");
+                return;
+            }
+        }
+        match serde_json::to_string_pretty(&inner.log) {
+            Ok(text) => {
+                if let Err(e) = std::fs::write(&file, text) {
+                    eprintln!("kuma-nostrd: cannot write {file:?}: {e}");
+                }
+            }
+            Err(e) => eprintln!("kuma-nostrd: the activity log did not serialize: {e}"),
+        }
+    }
+
+    /// The activity log's one door: push, cap, persist. The log is the
+    /// layer's memory — what this app asked, what it got — and a
+    /// memory that died at every restart answered nothing, so it rides
+    /// `log.json` beside the pairings, capped at the last 500 entries.
+    /// Every push in the engine goes through here, so the cap cannot
+    /// be forgotten at a new call site.
+    fn record_log(&self, inner: &mut Inner, entry: LogEntry) {
+        inner.log.push(entry);
+        if inner.log.len() > LOG_CAP {
+            let trim = inner.log.len() - LOG_CAP;
+            inner.log.drain(0..trim);
+        }
+        self.persist_log(inner);
+    }
+
+    /// The activity log, oldest first — what the `log` verb answers
+    /// and what the panel's Activity tab renders newest-first.
+    pub fn log(&self) -> Vec<LogEntry> {
+        self.inner.lock().expect("the policy lock").log.clone()
     }
 
     fn load_apps(&self) {
@@ -310,7 +378,7 @@ impl Engine {
             request_count: 0,
             last_used_at: None,
         });
-        inner.log.push(LogEntry {
+        self.record_log(&mut *inner, LogEntry {
             at: unix_now(),
             app: hex,
             method: "connect".into(),
@@ -346,7 +414,7 @@ impl Engine {
         paired.revoked_at = Some(unix_now());
         inner.remembered.retain(|key, _| !key.starts_with(&format!("{app}:")));
         if fresh {
-            inner.log.push(LogEntry {
+            self.record_log(&mut *inner, LogEntry {
                 at: unix_now(),
                 app: app.to_string(),
                 method: "revoke".into(),
@@ -372,7 +440,7 @@ impl Engine {
             return false;
         }
         paired.revoked_at = None;
-        inner.log.push(LogEntry {
+        self.record_log(&mut *inner, LogEntry {
             at: unix_now(),
             app: app.to_string(),
             method: "unrevoke".into(),
@@ -393,7 +461,7 @@ impl Engine {
             return false;
         };
         paired.name = Some(name.to_string());
-        inner.log.push(LogEntry {
+        self.record_log(&mut *inner, LogEntry {
             at: unix_now(),
             app: app.to_string(),
             method: "label".into(),
@@ -413,7 +481,7 @@ impl Engine {
         let mut inner = self.inner.lock().expect("the policy lock");
         let removed = remove_app(&mut inner, app);
         if removed {
-            inner.log.push(LogEntry {
+            self.record_log(&mut *inner, LogEntry {
                 at: unix_now(),
                 app: app.to_string(),
                 method: "delete".into(),
@@ -434,7 +502,7 @@ impl Engine {
         let mut inner = self.inner.lock().expect("the policy lock");
         let removed = remove_app(&mut inner, app);
         if removed {
-            inner.log.push(LogEntry {
+            self.record_log(&mut *inner, LogEntry {
                 at: unix_now(),
                 app: app.to_string(),
                 method: "logout".into(),
@@ -453,7 +521,7 @@ impl Engine {
     /// fact here, not a decision.
     pub fn noted(&self, app: &str, method: &str, summary: String, verdict: &str) {
         let mut inner = self.inner.lock().expect("the policy lock");
-        inner.log.push(LogEntry {
+        self.record_log(&mut *inner, LogEntry {
             at: unix_now(),
             app: app.to_string(),
             method: method.into(),
@@ -485,6 +553,7 @@ impl Engine {
                     kind_label: kind.and_then(kind_label).map(str::to_string),
                     content: event_json.and_then(|json| event_content(json)),
                     sensitive: is_sensitive(&prompt.method, &prompt.params),
+                    retries: prompt.responders.len() as u64,
                     detail: detail(&prompt.method, &prompt.params),
                 }
             })
@@ -517,18 +586,23 @@ impl Engine {
         }
         // The channel is the single arbiter of who decides: a send
         // that lands is the decision, and a send that fails means the
-        // window closed first and the wait is gone. The approval is
-        // refused by time, not by the person, and the log says
-        // exactly that instead of claiming an allow nothing received.
+        // window closed first and the wait is gone. One answer goes to
+        // every waiter the card collected — the first ask and its
+        // retries together — and the verdict is honest about whether
+        // anyone was still there to receive it.
         let answer_verdict = match &decision {
             Decision::Allow => "allowed".to_string(),
             Decision::Deny(reason) => format!("denied: {reason}"),
         };
-        let verdict = match prompt.responder.send(decision) {
-            Ok(()) => answer_verdict,
-            Err(_) => "an answer came after the window closed".to_string(),
-        };
-        inner.log.push(LogEntry {
+        let mut received = false;
+        for responder in prompt.responders {
+            if responder.send(decision.clone()).is_ok() {
+                received = true;
+            }
+        }
+        let verdict =
+            if received { answer_verdict } else { "an answer came after the window closed".to_string() };
+        self.record_log(&mut *inner, LogEntry {
             at: unix_now(),
             app: prompt.app.to_string(),
             method: format!("{:?}", prompt.method),
@@ -600,7 +674,7 @@ impl super::bunker::Gate for Engine {
                 } else {
                     "allowed (basic)"
                 };
-                inner.log.push(LogEntry {
+                self.record_log(&mut *inner, LogEntry {
                     at: unix_now(),
                     app: app.to_string(),
                     method: format!("{method:?}"),
@@ -614,23 +688,41 @@ impl super::bunker::Gate for Engine {
 
         // The ask: an id, a channel, and the lock released the moment
         // the prompt is registered — the answer comes back through the
-        // oneshot whenever it comes.
+        // oneshot whenever it comes. An identical ask that arrives
+        // while this one waits joins it instead of stacking a second
+        // card: one decision answers every waiter, each through its
+        // own response id.
         let (tx, rx) = oneshot::channel();
         let id = {
             let mut inner = self.inner.lock().expect("the policy lock");
-            inner.next_id += 1;
-            let id = format!("{}-{:04}", unix_now(), inner.next_id);
-            inner.prompts.push((
-                id.clone(),
-                Prompt {
-                    app: *app,
-                    method: *method,
-                    params: params.to_vec(),
-                    summary: summary.clone(),
-                    responder: tx,
-                },
-            ));
-            id
+            let joined = inner
+                .prompts
+                .iter_mut()
+                .find(|(_, p)| p.app == *app && p.method == *method && p.params == params);
+            match joined {
+                Some((existing_id, existing)) => {
+                    // The joining ask borrows the card's id for its
+                    // expiry bookkeeping; its own response id lives in
+                    // its request event, not here.
+                    existing.responders.push(tx);
+                    existing_id.clone()
+                }
+                None => {
+                    inner.next_id += 1;
+                    let id = format!("{}-{:04}", unix_now(), inner.next_id);
+                    inner.prompts.push((
+                        id.clone(),
+                        Prompt {
+                            app: *app,
+                            method: *method,
+                            params: params.to_vec(),
+                            summary: summary.clone(),
+                            responders: vec![tx],
+                        },
+                    ));
+                    id
+                }
+            }
         };
         eprintln!("kuma-nostrd: asking {id}: {summary}");
         // The window: a prompt that waited forever was a signature
@@ -650,7 +742,7 @@ impl super::bunker::Gate for Engine {
                 // answered — this arm logs the expiry for that one.
                 if inner.prompts.iter().any(|(prompt_id, _)| prompt_id == &id) {
                     inner.prompts.retain(|(prompt_id, _)| prompt_id != &id);
-                    inner.log.push(LogEntry {
+                    self.record_log(&mut *inner, LogEntry {
                         at: unix_now(),
                         app: app.to_string(),
                         method: format!("{method:?}"),
@@ -1299,5 +1391,59 @@ mod tests {
 
         let stranger = nostr::key::Keys::generate().public_key();
         assert!(!engine.rename(&stranger.to_string(), "x"), "renaming a stranger names nobody");
+    }
+
+    #[tokio::test]
+    async fn a_retried_ask_joins_the_first_and_one_answer_serves_all() {
+        let engine = engine();
+        let app = app();
+        engine.pair(&app);
+        let params = vec![r#"{"kind":1,"content":"hello","tags":[]}"#.into()];
+
+        // The same ask three times while nobody answers: one card, a
+        // count of the waiters, not a pile of identical prompts.
+        let waiters: Vec<_> = (0..3)
+            .map(|_| {
+                let engine = engine.clone();
+                let app = app;
+                let params = params.clone();
+                tokio::spawn(async move { engine.decide(&app, &NostrConnectMethod::SignEvent, &params).await })
+            })
+            .collect();
+        let views = loop {
+            let views = engine.prompts();
+            if views.len() == 1 && views[0].retries == 3 {
+                break views;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
+        assert_eq!(views.len(), 1, "identical asks share one card");
+        assert_eq!(views[0].retries, 3);
+
+        // One answer, every waiter: each response carries its own id,
+        // the decision is shared.
+        engine.approve(&views[0].id, None).unwrap();
+        for waiter in waiters {
+            assert!(matches!(waiter.await.unwrap(), Decision::Allow));
+        }
+        assert!(engine.prompts().is_empty());
+    }
+
+    #[test]
+    fn the_activity_log_persists_and_stays_capped() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Engine::new(Some(dir.path().to_path_buf()));
+        let app = app();
+        engine.pair(&app);
+        for _ in 0..(LOG_CAP + 30) {
+            engine.noted(&app.to_string(), "ping", "a probe".into(), "served");
+        }
+        assert_eq!(engine.log().len(), LOG_CAP, "the cap is the log's own");
+        assert_eq!(engine.log().last().unwrap().summary, "a probe", "the newest survive");
+
+        // A restart reads what the last one wrote.
+        let engine = Engine::new(Some(dir.path().to_path_buf()));
+        assert_eq!(engine.log().len(), LOG_CAP);
+        assert_eq!(engine.log().last().unwrap().app, app.to_string());
     }
 }

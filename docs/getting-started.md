@@ -344,6 +344,7 @@ $ kuma-nostr bunker --qr      # mints a one-time pairing URI, as text and QR
 $ kuma-nostr connect <uri>    # or: pair a client's own nostrconnect:// invite
 $ kuma-nostr prompts          # what is waiting on you
 $ kuma-nostr approve <id>
+$ kuma-nostr log              # the activity: what was asked, and how it went
 ```
 
 A pairing URI pairs one app once — the connect burns it — so mint another

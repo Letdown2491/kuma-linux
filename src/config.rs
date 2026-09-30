@@ -1412,6 +1412,7 @@ pub(crate) mod tests {
             ),
         ),
         ("kuma-nostr prompts", Proof::Unexecuted("run as --json this session; the plain form is the same verb without the document")),
+        ("kuma-nostr log", Proof::Unexecuted("run as --json by the panel's Activity tab; the plain form is the same verb without the document")),
         (
             "kuma-nostr approve <id>",
             Proof::Unexecuted(

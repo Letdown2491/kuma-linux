@@ -8,6 +8,17 @@ differently. Why it changed belongs in the commit that made it.
 
 ### Added
 
+- **The activity log persists, and the panel reads it.** What was
+  asked, by whom, and how it went now survives daemon restarts —
+  `log.json` beside the pairings, capped at the last 500 entries —
+  and `kuma-nostr log` reads it. The panel grows an Activity tab
+  where the same entries render newest-first, named by app and time.
+- **A retried ask joins the first.** A client that retries the same
+  request while the person is reading no longer stacks a pile of
+  identical prompts: the retry joins the first card, the card counts
+  it ("asked 3× · Sign a note"), and one answer serves every waiter,
+  each through its own response id.
+
 - **Asks and pairings speak the client's name, in Signet's words.**
   The pairing record's name is the client's own handshake metadata —
   the spec's optional connect fields (perms, name, image) ride the

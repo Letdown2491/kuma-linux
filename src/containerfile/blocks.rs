@@ -4380,11 +4380,13 @@ end
 local PROMPTS_URL = "kuma-nostr prompts --json"
 local APPS_URL = "kuma-nostr apps --json"
 local STATUS_URL = "kuma-nostr status --json"
+local LOG_URL = "kuma-nostr log --json"
 local ICON_DIR = "icons"
 
 local prompts = {}
 local apps = {}
 local vault = nil
+local log_entries = {}
 local offered_uri = nil -- a nostrconnect:// link the handler handed in
 local tab = "asks" -- asks | apps | pair
 local tab_chosen = false -- the person's click wins over onboarding
@@ -4426,6 +4428,11 @@ local function refresh()
     noctalia.runAsync(PROMPTS_URL, function(result)
         local prompts_now = fetched(result, "prompts")
         if prompts_now then prompts = prompts_now end
+        render()
+    end)
+    noctalia.runAsync(LOG_URL, function(result)
+        local log_now = fetched(result, "log")
+        if log_now then log_entries = log_now end
         render()
     end)
     noctalia.runAsync(APPS_URL, function(result)
@@ -4585,6 +4592,7 @@ end
 local TABS = {
     { id = "asks", glyph = "bell", title = "Requests" },
     { id = "apps", glyph = "apps", title = "Paired apps" },
+    { id = "log", glyph = "history", title = "Activity" },
     { id = "pair", glyph = "link", title = "Pair" },
 }
 
@@ -4622,8 +4630,13 @@ local function askCard(p)
                 ui.label({ text = label, fontWeight = "semibold", color = "on_surface" }),
                 -- The ask in words: the daemon's label table says what
                 -- the signature would do, and this line is that
-                -- sentence, not a method name.
-                ui.label({ text = p.summary or "?", fontSize = 12, color = "on_surface_variant" }),
+                -- sentence, not a method name. A retrying client adds
+                -- its count here instead of stacking a second card.
+                ui.label({
+                    text = (p.retries and p.retries > 1 and ("asked " .. p.retries .. "× · ") or "")
+                        .. (p.summary or "?"),
+                    fontSize = 12, color = "on_surface_variant",
+                }),
             }),
         }),
     }
@@ -4911,6 +4924,38 @@ local function appDetail(a)
     return ui.column({ gap = 10, align = "stretch" }, rows)
 end
 
+local function logPane()
+    if #log_entries == 0 then
+        return emptyState("history", "Nothing has happened yet",
+            "Asks, approvals and pairings land here as they happen")
+    end
+    local rows = {}
+    -- Newest first: the last thing that happened is the thing to read.
+    for i = #log_entries, 1, -1 do
+        local e = log_entries[i]
+        local known = appOf(e.app)
+        local who = (known and known.name) or short(e.app)
+        local verdict = e.verdict or ""
+        local color = (verdict:find("^denied") or verdict:find("expired")) and "error"
+            or (verdict:find("^allowed") and "primary" or "on_surface_variant/0.8")
+        table.insert(rows, ui.column({
+            key = "log-" .. (e.at or 0) .. "-" .. tostring(i),
+            fill = "surface_variant/0.35", radius = 10, padding = 10, gap = 2, align = "stretch",
+        }, {
+            ui.row({ gap = 8, align = "center" }, {
+                ui.label({ text = who, fontWeight = "semibold", flexGrow = 1, color = "on_surface" }),
+                ui.label({
+                    text = e.at and noctalia.formatTime("%Y-%m-%d %H:%M", e.at) or "",
+                    fontSize = 10, color = "on_surface_variant/0.8",
+                }),
+            }),
+            ui.label({ text = e.summary or "?", fontSize = 12, color = "on_surface_variant" }),
+            ui.label({ text = verdict, fontSize = 11, color = color }),
+        }))
+    end
+    return ui.column({ gap = 8, align = "stretch" }, rows)
+end
+
 local function appsPane()
     if selected_app then
         local a = appOf(selected_app)
@@ -4948,6 +4993,9 @@ render = function()
     elseif tab == "apps" then
         title = "Paired apps"
         body = appsPane()
+    elseif tab == "log" then
+        title = "Activity"
+        body = logPane()
     else
         title = "Pair"
         body = pairPane()

@@ -160,6 +160,8 @@ one app, one use, burned by the connect that presents it), `connect
 tombstones (the record stays, refused), `unrevoke` clears the tombstone,
 `delete` removes the record outright (a fresh URI pairs again), `label`
 names an app (the person's word, outranking the client's metadata claim),
+and `log` reads the activity — the last 500 asks, answers and pairings,
+persisted across restarts.
 `rotate` invalidates every outstanding URI at once, `lock` and `unlock`
 are the gate, and `destroy` is a dry run until `--yes`.
 

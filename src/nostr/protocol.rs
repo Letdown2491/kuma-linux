@@ -58,6 +58,9 @@ pub enum Request {
     },
     /// The pending asks, for the CLI's `prompts` and the panel.
     Prompts,
+    /// The activity log, oldest first — what was asked, by whom, and
+    /// how it went. The last 500 entries, persisted across restarts.
+    Log,
     /// Answer an ask with yes; `remember_hours` grants the method a
     /// standing yes for that long — an hour at most by the verb's own
     /// ceiling.
@@ -164,6 +167,7 @@ pub enum OkResponse {
     DestroyDryRun { ok: bool, would: String },
     Destroy { ok: bool },
     Prompts { ok: bool, prompts: Vec<super::policy::PromptView> },
+    Log { ok: bool, log: Vec<super::policy::LogEntry> },
     Approve { ok: bool },
     Deny { ok: bool },
     Apps { ok: bool, apps: Vec<super::policy::Paired> },
@@ -439,6 +443,9 @@ impl<S: super::vault::SecretStore> Daemon<S> {
             }
             Request::Prompts => {
                 Response::Ok(OkResponse::Prompts { ok: true, prompts: self.engine.prompts() })
+            }
+            Request::Log => {
+                Response::Ok(OkResponse::Log { ok: true, log: self.engine.log() })
             }
             Request::Approve { id, remember_hours } => {
                 // The ceiling is the verb's own: more than an hour is

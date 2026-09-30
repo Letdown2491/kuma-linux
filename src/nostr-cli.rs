@@ -90,6 +90,9 @@ enum Command {
     },
     /// The asks waiting on a person, newest last.
     Prompts,
+    /// The activity log, oldest first: what was asked, by whom, and
+    /// how it went. The last 500 entries, persisted across restarts.
+    Log,
     /// Answer an ask with yes. `--remember 1` grants the same method a
     /// standing yes for an hour — the longest a remember can be.
     Approve {
@@ -187,6 +190,7 @@ fn main() -> Result<()> {
         }
         Command::Destroy { yes } => format!(r#"{{"cmd":"destroy","confirm":{yes}}}"#),
         Command::Prompts => r#"{"cmd":"prompts"}"#.to_string(),
+        Command::Log => r#"{"cmd":"log"}"#.to_string(),
         Command::Approve { id, remember } => {
             format!(
                 r#"{{"cmd":"approve","id":{},"remember_hours":{}}}"#,
@@ -380,6 +384,21 @@ fn render(value: &serde_json::Value) -> Result<()> {
                 if let Some(detail) = prompt["detail"].as_str() {
                     println!("    {detail}");
                 }
+            }
+        }
+        Some("log") => {
+            let log = value["log"].as_array().cloned().unwrap_or_default();
+            if log.is_empty() {
+                println!("the log is empty");
+            }
+            for entry in log {
+                println!(
+                    "{}  {}  {}  {}",
+                    entry["at"].as_u64().unwrap_or(0),
+                    entry["app"].as_str().unwrap_or("?").get(..16).unwrap_or("?").to_string() + "…",
+                    entry["summary"].as_str().unwrap_or("?"),
+                    entry["verdict"].as_str().unwrap_or("?")
+                );
             }
         }
         Some("approve") => println!("approved"),
