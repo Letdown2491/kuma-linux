@@ -1839,8 +1839,7 @@ mod tests {
         // first pairing. The pairing is the bond: the same pubkey's
         // connect acks without a secret, because the request's own
         // signature is the proof of who is asking.
-        let request =
-            app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]);
+        let request = app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]);
         match bunker.plan(&request) {
             Plan::Paired { burned, .. } => {
                 assert_eq!(burned, None, "an identity reconnect burns nothing");

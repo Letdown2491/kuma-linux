@@ -282,6 +282,7 @@ impl Engine {
             name,
             image,
             perms,
+            revoked_at: None,
         });
         inner.log.push(LogEntry {
             at: unix_now(),
