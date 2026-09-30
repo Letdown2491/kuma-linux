@@ -965,26 +965,27 @@ pub(crate) mod tests {
     pub(crate) fn is_local_declaration(path: &Path) -> bool {
         path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with("kuma.toml"))
     }
-
     #[test]
     fn the_inactivity_window_is_floor_validated_at_build() {
         let base = "schema_version = 1\n[system]\ndesktop = \"niri\"\n";
-        let window = |secs: &str| {
-            let toml =
-                format!("{base}[nostr]\nenable = true\ninactivity_lock_secs = {secs}\n");
+        let window = |nostr_tail: &str| {
+            let toml = format!("{base}[nostr]\nenable = true{nostr_tail}\n");
             let config: Config = toml::from_str(&toml).unwrap();
             config.validate()
         };
         // The floor: a fuse shorter than an hour trips on lunch, and
         // the declaration that tells one is a build failure, not a
         // shrug.
-        assert!(window("1800").unwrap_err().to_string().contains("floor is one hour"));
+        assert!(window("\ninactivity_lock_secs = 1800")
+            .unwrap_err()
+            .to_string()
+            .contains("floor is one hour"));
         // The honest shapes: absent, the explicit off, the floor
         // itself, and a day.
-        assert!(window("\"\"").is_ok());
-        assert!(window("0").is_ok());
-        assert!(window("3600").is_ok());
-        assert!(window("86400").is_ok());
+        assert!(window("").is_ok());
+        assert!(window("\ninactivity_lock_secs = 0").is_ok());
+        assert!(window("\ninactivity_lock_secs = 3600").is_ok());
+        assert!(window("\ninactivity_lock_secs = 86400").is_ok());
     }
 
     #[test]

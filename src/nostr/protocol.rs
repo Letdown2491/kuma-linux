@@ -975,10 +975,10 @@ mod tests {
 
         // Two mints, two doors: the URIs differ, and each carries its
         // own secret.
-        let first: serde_json::Value =
-            serde_json::from_str(encode(&daemon.handle(decode(r#"{"cmd":"mint"}"#).unwrap()).await)
-                .trim())
-            .unwrap();
+        let first: serde_json::Value = serde_json::from_str(
+            encode(&daemon.handle(decode(r#"{"cmd":"mint"}"#).unwrap()).await).trim(),
+        )
+        .unwrap();
         let second: serde_json::Value = serde_json::from_str(
             encode(&daemon.handle(decode(r#"{"cmd":"mint"}"#).unwrap()).await).trim(),
         )
@@ -1018,8 +1018,7 @@ mod tests {
             .unwrap();
         match daemon.plan_bunker_event(&replay) {
             Some(crate::nostr::bunker::Plan::Answer(response)) => {
-                let plaintext =
-                    stranger.nip44_decrypt(&bunker_pubkey, &response.content).unwrap();
+                let plaintext = stranger.nip44_decrypt(&bunker_pubkey, &response.content).unwrap();
                 assert!(plaintext.contains("secret"), "{plaintext}");
             }
             other => panic!("a burned secret is refused: {other:?}"),

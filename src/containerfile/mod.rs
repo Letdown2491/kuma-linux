@@ -2078,10 +2078,32 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
         let text = blocks::emitted(&armed, "nostr");
         assert!(text.contains("--inactivity-lock-secs 86400"), "{text}");
 
-        let unarmed = config(
-            "schema_version = 1\n[system]\ndesktop = \"niri\"\n[nostr]\nenable = true\n",
-        );
+        let unarmed =
+            config("schema_version = 1\n[system]\ndesktop = \"niri\"\n[nostr]\nenable = true\n");
         assert!(!blocks::emitted(&unarmed, "nostr").contains("--inactivity-lock-secs"));
+    }
+
+    /// The nostr unit carries what the declaration armed: a window on
+    /// the exec line when the switch is armed, and no flag repeating
+    /// the daemon's own off when it is not.
+    #[test]
+    fn the_nostr_unit_carries_the_switch_the_declaration_armed() {
+        let armed = tempfile::tempdir().unwrap();
+        context(
+            "schema_version = 1\n[system]\ndesktop = \"niri\"\n[nostr]\nenable = true\n\
+             relays = [\"wss://relay.nip46.com\"]\ninactivity_lock_secs = 86400\n",
+            armed.path(),
+        );
+        let unit = std::fs::read_to_string(armed.path().join("kuma-nostrd.service")).unwrap();
+        assert!(unit.contains("--inactivity-lock-secs 86400"), "{unit}");
+
+        let unarmed = tempfile::tempdir().unwrap();
+        context(
+            "schema_version = 1\n[system]\ndesktop = \"niri\"\n[nostr]\nenable = true\n",
+            unarmed.path(),
+        );
+        let unit = std::fs::read_to_string(unarmed.path().join("kuma-nostrd.service")).unwrap();
+        assert!(!unit.contains("--inactivity-lock-secs"), "{unit}");
     }
 
     /// Every kuma unit the image enables must declare, in the block

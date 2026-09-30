@@ -435,14 +435,13 @@ impl Bunker {
                 // failed would disagree with the stored list, and a
                 // restart would flip the disagreement back open.
                 let mut burn_at = match secret.as_deref() {
-                    Some(provided) => self
-                        .expected_secrets
-                        .iter()
-                        .position(|s| constant_time_eq(s, provided)),
+                    Some(provided) => {
+                        self.expected_secrets.iter().position(|s| constant_time_eq(s, provided))
+                    }
                     None => None,
                 };
-                let verified = burn_at.is_some()
-                    || (secret.is_none() && self.expected_secrets.is_empty());
+                let verified =
+                    burn_at.is_some() || (secret.is_none() && self.expected_secrets.is_empty());
                 eprintln!(
                     "kuma-nostrd: connect from {}: {}",
                     event.pubkey,
@@ -481,8 +480,7 @@ impl Bunker {
                 let metadata = ClientMeta::parse(params.get(3));
                 return match answer {
                     Some(answer) => {
-                        let burned =
-                            burn_at.take().map(|at| self.expected_secrets.remove(at));
+                        let burned = burn_at.take().map(|at| self.expected_secrets.remove(at));
                         Plan::Paired { answer, app: event.pubkey, metadata, burned }
                     }
                     None => Plan::Ignore,
