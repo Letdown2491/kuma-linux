@@ -145,6 +145,10 @@ enable = true
 # relays = []            # local relay is a bunker nothing off-machine sees
 # serve = true           # and serve is its tailnet face, wss:// over
 #                        # tailscale — the local relay's requirement
+# inactivity_lock_secs = 86400   # the dead man's switch: the vault locks
+#                        # itself after this long with no unlock and no
+#                        # keep-alive (`kuma-nostr touch`). Absent or 0 is
+#                        # off, the desktop default; the floor is an hour.
 #
 # Wifi passwords are the one thing nothing else can recreate: not this
 # file, which calls them out of scope, not the image, which ships that
