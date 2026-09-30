@@ -1225,7 +1225,7 @@ mod tests {
                 let message = app.decrypt_response(&response);
                 match message {
                     NostrConnectMessage::Response { error, .. } => {
-                        assert!(error.unwrap().contains("secret"), "{error:?}");
+                        assert!(error.as_ref().unwrap().contains("secret"), "{error:?}");
                     }
                     other => panic!("a response came back: {other:?}"),
                 }
@@ -1822,7 +1822,7 @@ mod tests {
                 let message = app.decrypt_response(&response);
                 match message {
                     NostrConnectMessage::Response { error, .. } => {
-                        assert!(error.unwrap().contains("revoked"), "{error:?}");
+                        assert!(error.as_ref().unwrap().contains("revoked"), "{error:?}");
                     }
                     other => panic!("a response came back: {other:?}"),
                 }
