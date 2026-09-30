@@ -14,6 +14,14 @@ differently. Why it changed belongs in the commit that made it.
   at Basic (NIP-04's job is private messages); NIP-44 encryption rides
   unattended like an everyday sign. Nothing to do differently.
 
+- **The bunker refuses replays.** A relay redelivering its kind-24133
+  backlog — a reconnect re-floods the subscription — no longer re-runs
+  old requests through the policy engine, and a request captured once
+  can no longer be re-fed from a relay: an event id is answered at
+  most once per window, a request implausibly old or future-dated
+  drops, and one travelling backwards in its sender's own time drops
+  with it. Nothing to do differently.
+
 ## v44.4.0 (2026-09-28)
 
 ### Added

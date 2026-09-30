@@ -175,7 +175,7 @@ impl Replay {
     /// Whether this is a first, fresh sighting of the event. Anything
     /// else — duplicate, stale, future, or backwards in its sender's
     /// time — is false, and the caller answers it with nothing.
-    fn first_sighting(&mut self, event: &Event) -> bool {
+    fn admit(&mut self, event: &Event) -> bool {
         let now = unix_now();
         if self.seen.get(&event.id.to_string()).is_some_and(|&expires| expires > now) {
             return false;
@@ -278,7 +278,7 @@ impl Bunker {
         // The replay gates: a request is answered at most once, only
         // while fresh, and never backwards in its sender's own time.
         // A refusal here names nothing, like the noise below.
-        if !self.replay.first_sighting(event) {
+        if !self.replay.admit(event) {
             return Plan::Ignore;
         }
         let Some(plaintext) = self.keys.nip44_decrypt(&event.pubkey, &event.content).ok() else {
@@ -1074,7 +1074,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_stale_or_future_request_is_dropped() {
-        use crate::nostr::policy::unix_now;
+
         let mut bunker = Bunker::new(Keys::generate(), None);
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
@@ -1104,7 +1104,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_replay_below_the_senders_watermark_is_dropped() {
-        use crate::nostr::policy::unix_now;
+
         let mut bunker = Bunker::new(Keys::generate(), None);
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
@@ -1139,7 +1139,7 @@ mod tests {
 
     #[test]
     fn the_replay_cache_sheds_to_its_bound_under_a_flood() {
-        use super::super::policy::unix_now;
+
         let mut replay = Replay::default();
         let now = unix_now();
         // Twice the bound in fresh first sightings, room made after
