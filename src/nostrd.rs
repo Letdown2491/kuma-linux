@@ -147,6 +147,18 @@ fn main() -> anyhow::Result<()> {
                     eprintln!("kuma-nostrd: the answer was not published: {e:#}");
                 }
             }
+            kuma::nostr::bunker::Plan::RelaysServed { answer, app } => {
+                engine.served(&app.to_string(), "switch_relays", "the bunker's relay list".into());
+                if let Err(e) = worker.lock().expect("the daemon lock").publish(&answer) {
+                    eprintln!("kuma-nostrd: the answer was not published: {e:#}");
+                }
+            }
+            kuma::nostr::bunker::Plan::Ended { answer, app } => {
+                worker.lock().expect("the daemon lock").end_session(&app);
+                if let Err(e) = worker.lock().expect("the daemon lock").publish(&answer) {
+                    eprintln!("kuma-nostrd: the answer was not published: {e:#}");
+                }
+            }
             kuma::nostr::bunker::Plan::Ask { ref request, method, ref params, .. } => {
                 use kuma::nostr::bunker::Gate;
                 let decision =

@@ -282,14 +282,47 @@ impl Engine {
     /// verb can tell the caller "no such app" instead of nodding.
     pub fn revoke(&self, app: &str) -> bool {
         let mut inner = self.inner.lock().expect("the policy lock");
-        let before = inner.apps.len();
-        inner.apps.retain(|p| p.pubkey != app);
-        inner.remembered.retain(|key, _| !key.starts_with(&format!("{app}:")));
-        let removed = inner.apps.len() < before;
+        let removed = remove_app(&mut inner, app);
         if removed {
             self.persist_apps(&inner);
         }
         removed
+    }
+
+    /// The app's own goodbye: the removal revoke does, logged as the
+    /// caller's act rather than the person's. A logout from an app
+    /// with no session removes nothing and is still answered — the
+    /// ack is the courtesy, the log the record only when there was
+    /// something to remove.
+    pub fn logout(&self, app: &str) -> bool {
+        let mut inner = self.inner.lock().expect("the policy lock");
+        let removed = remove_app(&mut inner, app);
+        if removed {
+            inner.log.push(LogEntry {
+                at: unix_now(),
+                app: app.to_string(),
+                method: "logout".into(),
+                summary: "the app ended its own session".into(),
+                verdict: "removed".into(),
+            });
+            self.persist_apps(&inner);
+        }
+        removed
+    }
+
+    /// A protocol-level fact the bunker served without the gate —
+    /// `switch_relays` names its relays to any paired app — recorded
+    /// so the activity log's answer stays complete. The verdict is a
+    /// fact here, not a decision.
+    pub fn served(&self, app: &str, method: &str, summary: String) {
+        let mut inner = self.inner.lock().expect("the policy lock");
+        inner.log.push(LogEntry {
+            at: unix_now(),
+            app: app.to_string(),
+            method: method.into(),
+            summary,
+            verdict: "served".into(),
+        });
     }
 
     /// The pending asks, for the `prompts` verb and the panel.
@@ -472,6 +505,16 @@ impl super::bunker::Gate for Engine {
             }
         }
     }
+}
+
+/// The shared body of revoke and logout: the record and its standing
+/// answers go together. Does not persist; the callers do, and the
+/// logout logs what it removed.
+fn remove_app(inner: &mut Inner, app: &str) -> bool {
+    let before = inner.apps.len();
+    inner.apps.retain(|p| p.pubkey != app);
+    inner.remembered.retain(|key, _| !key.starts_with(&format!("{app}:")));
+    inner.apps.len() < before
 }
 
 /// The exact event an approval shows, privacy mode's one exception: a

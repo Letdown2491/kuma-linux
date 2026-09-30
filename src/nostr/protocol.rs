@@ -539,6 +539,7 @@ impl<S: super::vault::SecretStore> Daemon<S> {
             }
         }
         bunker.seed(seeded);
+        bunker.with_relays(self.relays.clone());
         self.bunker = Some(bunker);
         public_key_bech32(&pubkey)
     }
@@ -583,6 +584,16 @@ impl<S: super::vault::SecretStore> Daemon<S> {
     /// locked bunker, or noise.
     pub fn plan_bunker_event(&mut self, event: &Event) -> Option<super::bunker::Plan> {
         Some(self.bunker.as_mut()?.plan(event))
+    }
+
+    /// The logout's live half: the bunker's session goes with the
+    /// engine's record, the same way the revoke verb takes both. The
+    /// caller's own request is the authority; nothing else is asked.
+    pub fn end_session(&mut self, app: &PublicKey) {
+        if let Some(bunker) = self.bunker.as_mut() {
+            bunker.evict(&app.to_string());
+        }
+        self.engine.logout(&app.to_string());
     }
 
     /// A handle to the engine for beat two — the decision — which the

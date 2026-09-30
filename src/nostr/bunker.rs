@@ -116,6 +116,23 @@ pub enum Plan {
         app: PublicKey,
         metadata: Option<ClientMeta>,
     },
+    /// A relay list the bunker served a paired app — `switch_relays`,
+    /// a newer method than this tree's types carry, so it travels as
+    /// raw JSON and comes back here: the answer carries the list, and
+    /// the daemon records the serving so the activity log's answer
+    /// stays complete. Not a gate decision — protocol, like the ping.
+    RelaysServed {
+        answer: Event,
+        app: PublicKey,
+    },
+    /// A logout the app asked for: the answer acks, and the daemon
+    /// removes the pairing — record, session, standing grants —
+    /// because the caller's own request is the only authority it
+    /// needs. Self-scoped by construction: no param names a target.
+    Ended {
+        answer: Event,
+        app: PublicKey,
+    },
     Ask {
         /// The full request event: `execute` re-reads the app's pubkey
         /// and the correlation id from it.
@@ -234,13 +251,31 @@ pub struct Bunker {
     /// this is the door that invitation does not open. `None` only
     /// before the vault's first read, when there is no URI yet either.
     expected_secret: Option<String>,
+    /// The relay set the bunker answers on — what `switch_relays`
+    /// serves a paired app. Arming hands it in; it travels as an
+    /// argument until the declaration block exists to carry it, the
+    /// same gap the relays themselves have.
+    relays: Vec<String>,
     /// The replay gates every request passes before any crypto runs.
     replay: Replay,
 }
 
 impl Bunker {
     pub fn new(keys: Keys, expected_secret: Option<String>) -> Self {
-        Self { keys, sessions: HashSet::new(), expected_secret, replay: Replay::default() }
+        Self {
+            keys,
+            sessions: HashSet::new(),
+            expected_secret,
+            relays: Vec::new(),
+            replay: Replay::default(),
+        }
+    }
+
+    /// The relay set `switch_relays` serves. Arming calls this beside
+    /// the seeding; a bunker without it answers the method with an
+    /// empty list, which is the truth it holds.
+    pub fn with_relays(&mut self, relays: Vec<String>) {
+        self.relays = relays;
     }
 
     /// The bunker's public identity, hex — what `get_public_key`
@@ -301,7 +336,7 @@ impl Bunker {
             return Plan::Ignore;
         };
         let Ok(message) = NostrConnectMessage::from_json(&plaintext) else {
-            return Plan::Ignore;
+            return self.plan_raw(event, &plaintext);
         };
         let (id, method, params) = match message {
             NostrConnectMessage::Request { id, method, params } => (id, method, params),
@@ -488,6 +523,68 @@ impl Bunker {
                 NostrConnectResponse::with_error(format!("the payload did not transform: {e}"))
             }
         }
+    }
+
+    /// The methods the crate's own message type does not know —
+    /// `switch_relays` and `logout`, newer than the types this tree
+    /// grew up with. Parsed as raw JSON, answered as raw responses: a
+    /// paired app gets the bunker's relay list, a goodbye removes its
+    /// own pairing, and anything else is the noise it looks like.
+    fn plan_raw(&mut self, event: &Event, plaintext: &str) -> Plan {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(plaintext) else {
+            return Plan::Ignore;
+        };
+        let (Some(id), Some(method)) = (
+            value["id"].as_str().map(str::to_string),
+            value["method"].as_str().map(str::to_string),
+        ) else {
+            return Plan::Ignore;
+        };
+        match method.as_str() {
+            "switch_relays" => {
+                if !self.is_paired(&event.pubkey) {
+                    return Plan::Ignore;
+                }
+                let Ok(relays) = serde_json::to_string(&self.relays) else {
+                    return Plan::Ignore;
+                };
+                match self.raw_response(event, &id, relays) {
+                    Some(answer) => Plan::RelaysServed { answer, app: event.pubkey },
+                    None => Plan::Ignore,
+                }
+            }
+            "logout" => {
+                let answer = self.raw_response(event, &id, "ack".to_string());
+                match answer {
+                    // A goodbye from a paired app ends the pairing; a
+                    // goodbye from an app with no session acks and
+                    // removes nothing — the courtesy the spec asks.
+                    Some(answer) if self.is_paired(&event.pubkey) => {
+                        Plan::Ended { answer, app: event.pubkey }
+                    }
+                    Some(answer) => Plan::Answer(answer),
+                    None => Plan::Ignore,
+                }
+            }
+            _ => Plan::Ignore,
+        }
+    }
+
+    /// The same wrap as [`Bunker::response_event`], for an answer the
+    /// typed response enum cannot carry: a result the method defined
+    /// after this tree's types did — a relay list is a JSON array, an
+    /// ack is a word.
+    fn raw_response(&self, request: &Event, request_id: &str, result: String) -> Option<Event> {
+        let message = NostrConnectMessage::Response {
+            id: request_id.to_string(),
+            result: Some(result),
+            error: None,
+        };
+        let content = self.keys.nip44_encrypt(&request.pubkey, &message.as_json()).ok()?;
+        EventBuilder::new(Kind::from_u16(24133), content)
+            .tag(Tag::public_key(request.pubkey))
+            .finalize(&self.keys)
+            .ok()
     }
 
     /// Wrap an answer: kind 24133, encrypted back to the app that asked,
