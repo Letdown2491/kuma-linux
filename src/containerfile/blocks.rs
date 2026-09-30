@@ -4614,6 +4614,9 @@ local function railButton(t)
         onClick = function()
             tab = t.id
             tab_chosen = true
+            if t.id == "pair" then
+                checkClipboard()
+            end
             render()
         end,
     })
@@ -4766,6 +4769,22 @@ local function offerCard()
     })
 end
 
+-- Landing on Pair reads the clipboard, once per panel open: most web
+-- apps ship a copy button, not a clickable link, so the copied URI is
+-- the common case and the paste step is a toll. Only the prefix is
+-- matched, nothing is stored, and the offer card it fills is still
+-- the person's question to answer — the tap on Pair remains the
+-- approval.
+local clipboard_checked = false
+local function checkClipboard()
+    if clipboard_checked or offered_uri then return end
+    clipboard_checked = true
+    local text = noctalia.clipboardText()
+    if text and text:find("^nostrconnect://") then
+        offered_uri = text
+    end
+end
+
 local function pairPane()
     if vault and not vault.exists then
         -- The fresh machine: no identity yet, and unlock is not the
@@ -4788,48 +4807,51 @@ local function pairPane()
             }),
         })
     end
-    local offered = offered_uri and offerCard() or nil
     local inactivity = vault and vault.inactivity or nil
-    return card({
-        offered,
-        ui.label({
-            text = "Copy a fresh URI into any NIP-46 app. It pairs one app once — the connect burns it — so mint another for the next app.",
-            fontSize = 12, color = "on_surface_variant", maxLines = 3,
-        }),
-        ui.row({ gap = 8 }, {
-            ui.button({ text = "Copy fresh URI", variant = "primary", glyph = "clipboard-copy", onClick = function()
-                -- Minting is the act: the copy takes a URI that has
-                -- never been spent, not the last one — which a used
-                -- pairing already burned. Every arm says something:
-                -- the copy, the daemon's refusal, or an answer with
-                -- no URI in it.
-                noctalia.runAsync({ "kuma-nostr", "bunker", "--json" }, function(result)
-                    local doc = noctalia.json.decode(result.stdout ~= "" and result.stdout or "{}")
-                    if doc and doc.uri then
-                        noctalia.copyToClipboard(doc.uri, "text/plain")
-                    elseif result.exitCode == 0 then
-                        noctalia.notifyError("kumaOS nostr", "the mint answered without a URI")
-                    else
-                        noctalia.notifyError("kumaOS nostr",
-                            (result.stderr and result.stderr ~= "" and result.stderr) or "the mint failed")
-                    end
-                    refresh()
-                end)
-            end }),
-            ui.button({ text = "Rotate", variant = "outline", glyph = "refresh", onClick = function()
-                cli({ "rotate" })
-            end }),
-        }),
-        ui.label({
-            text = "Rotation retires every outstanding URI at once; apps holding old copies need a fresh one.",
-            fontSize = 11, color = "on_surface_variant/0.8", maxLines = 3,
-        }),
-        inactivity and ui.label({
+    local children = {}
+    if offered_uri then
+        table.insert(children, offerCard())
+    end
+    table.insert(children, ui.label({
+        text = "Copy a fresh URI into any NIP-46 app. It pairs one app once — the connect burns it — so mint another for the next app.",
+        fontSize = 12, color = "on_surface_variant", maxLines = 3,
+    }))
+    table.insert(children, ui.row({ gap = 8 }, {
+        ui.button({ text = "Copy fresh URI", variant = "primary", glyph = "clipboard-copy", onClick = function()
+            -- Minting is the act: the copy takes a URI that has
+            -- never been spent, not the last one — which a used
+            -- pairing already burned. Every arm says something: the
+            -- copy, the daemon's refusal, or an answer with no URI
+            -- in it.
+            noctalia.runAsync({ "kuma-nostr", "bunker", "--json" }, function(result)
+                local doc = noctalia.json.decode(result.stdout ~= "" and result.stdout or "{}")
+                if doc and doc.uri then
+                    noctalia.copyToClipboard(doc.uri, "text/plain")
+                elseif result.exitCode == 0 then
+                    noctalia.notifyError("kumaOS nostr", "the mint answered without a URI")
+                else
+                    noctalia.notifyError("kumaOS nostr",
+                        (result.stderr and result.stderr ~= "" and result.stderr) or "the mint failed")
+                end
+                refresh()
+            end)
+        end }),
+        ui.button({ text = "Rotate", variant = "outline", glyph = "refresh", onClick = function()
+            cli({ "rotate" })
+        end }),
+    }))
+    table.insert(children, ui.label({
+        text = "Rotation retires every outstanding URI at once; apps holding old copies need a fresh one.",
+        fontSize = 11, color = "on_surface_variant/0.8", maxLines = 3,
+    }))
+    if inactivity then
+        table.insert(children, ui.label({
             text = "the vault locks itself after " .. inactivity.remaining_secs
                 .. "s of no unlock and no keep-alive — this panel keeps it alive while you are here",
             fontSize = 11, color = "on_surface_variant/0.8", maxLines = 3,
-        }) or nil,
-    })
+        }))
+    end
+    return card(children, "pair-pane")
 end
 
 local function asksPane()
@@ -5025,7 +5047,13 @@ function onOpen(context)
         tab_chosen = true
     end
     -- Open or act, the panel says a person is here.
-    noctalia.runAsync("kuma-nostr touch", nil)
+    noctalia.runAsync({ "kuma-nostr", "touch" }, nil)
+    -- The clipboard is read once per open, and only the Pair tab's
+    -- landing consumes the read.
+    clipboard_checked = false
+    if tab == "pair" then
+        checkClipboard()
+    end
     -- While the panel is open it polls: the frame tick is the panel's
     -- one clock, asked for here and given back on close, so an open
     -- panel watches for asks instead of showing the moment it was
