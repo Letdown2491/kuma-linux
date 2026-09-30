@@ -1741,6 +1741,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_revoked_app_is_refused_even_with_a_live_secret() {
+        let mut bunker = Bunker::new(Keys::generate(), vec!["the-nonce".into()]);
+        let app = App::new();
+        let request = app.request_event(
+            &bunker.public_key(),
+            NostrConnectMethod::Connect,
+            &[bunker.public_key().to_string().as_str(), "the-nonce"],
+        );
+        assert!(matches!(bunker.plan(&request), Plan::Paired { .. }));
+
+        // The tombstone's teeth: revoked beats a live secret. The
+        // person said the app is out; no URI in the app's hands says
+        // otherwise.
+        bunker.mark_revoked(&app.pubkey());
+        let fresh = App::new();
+        bunker.with_secrets(vec!["a-fresh-nonce".into()]);
+        let request = fresh.request_event(
+            &bunker.public_key(),
+            NostrConnectMethod::Connect,
+            &[bunker.public_key().to_string().as_str(), "a-fresh-nonce"],
+        );
+        assert!(matches!(bunker.plan(&request), Plan::Ignore), "a revoked app is refused");
+        assert!(!bunker.is_paired(&fresh.pubkey()));
+
+        // Un-revoking clears the tombstone, and the fresh URI pairs.
+        bunker.mark_unrevoked(&fresh.pubkey());
+        let request = fresh.request_event(
+            &bunker.public_key(),
+            NostrConnectMethod::Connect,
+            &[bunker.public_key().to_string().as_str(), "a-fresh-nonce"],
+        );
+        assert!(matches!(bunker.plan(&request), Plan::Paired { .. }));
+    }
+
+    #[tokio::test]
+    async fn a_known_app_reconnects_by_its_identity_not_its_secret() {
+        let mut bunker = Bunker::new(Keys::generate(), vec!["the-nonce".into()]);
+        let app = App::new();
+        let request = app.request_event(
+            &bunker.public_key(),
+            NostrConnectMethod::Connect,
+            &[bunker.public_key().to_string().as_str(), "the-nonce"],
+        );
+        assert!(matches!(bunker.plan(&request), Plan::Paired { .. }));
+
+        // The client restarted itself; its stored secret burned at the
+        // first pairing. The pairing is the bond: the same pubkey's
+        // connect acks without a secret, because the request's own
+        // signature is the proof of who is asking.
+        let request =
+            app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]);
+        match bunker.plan(&request) {
+            Plan::Paired { burned, .. } => {
+                assert_eq!(burned, None, "an identity reconnect burns nothing");
+            }
+            other => panic!("a known app reconnects: {other:?}"),
+        }
+
+        // A stranger without a secret is still a stranger.
+        let stranger = App::new();
+        let request =
+            stranger.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]);
+        assert!(matches!(bunker.plan(&request), Plan::Answer(_)));
+        assert!(!bunker.is_paired(&stranger.pubkey()));
+    }
+
+    #[tokio::test]
     async fn noise_is_none_and_never_a_response() {
         let mut bunker = Bunker::new(Keys::generate(), vec![]);
         let app = App::new();
