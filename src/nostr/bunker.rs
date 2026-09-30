@@ -1154,6 +1154,120 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn switch_relays_serves_a_paired_app_the_relay_list() {
+        let mut bunker = Bunker::new(Keys::generate(), None);
+        bunker.with_relays(vec![
+            "wss://one.example".to_string(),
+            "wss://two.example".to_string(),
+        ]);
+        let app = App::new();
+        bunker.plan(&app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
+
+        // The crate's own method enum does not know this method, so the
+        // request travels as raw JSON the bunker parses itself.
+        let request = app.request_event_raw(
+            &bunker.public_key(),
+            r#"{"id":"relays","method":"switch_relays","params":[]}"#,
+        );
+        let relays = match bunker.plan(&request) {
+            Plan::RelaysServed { answer, .. } => {
+                let message = app.decrypt_response(&answer);
+                match message {
+                    NostrConnectMessage::Response { result, error, .. } => {
+                        assert_eq!(error, None);
+                        let relays = result.expect("a served list is a result");
+                        serde_json::from_str::<Vec<String>>(&relays).unwrap()
+                    }
+                    other => panic!("a response came back: {other:?}"),
+                }
+            }
+            other => panic!("a paired app gets the list: {other:?}"),
+        };
+        assert_eq!(relays, vec!["wss://one.example", "wss://two.example"]);
+
+        // An unpaired app gets nothing — the list is not for strangers.
+        let stranger = App::new();
+        let request = stranger.request_event_raw(
+            &bunker.public_key(),
+            r#"{"id":"relays","method":"switch_relays","params":[]}"#,
+        );
+        assert!(matches!(bunker.plan(&request), Plan::Ignore));
+    }
+
+    #[tokio::test]
+    async fn logout_ends_the_callers_own_session_and_nothing_else() {
+        let mut bunker = Bunker::new(Keys::generate(), None);
+        let app = App::new();
+        let other = App::new();
+        bunker.plan(&app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
+        bunker.plan(&other.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
+
+        // The goodbye is self-scoped: no param names a target, the
+        // caller is the target. The ack rides back either way.
+        let request = app.request_event_raw(
+            &bunker.public_key(),
+            r#"{"id":"bye","method":"logout","params":[]}"#,
+        );
+        match bunker.plan(&request) {
+            Plan::Ended { answer, .. } => {
+                let message = app.decrypt_response(&answer);
+                match message {
+                    NostrConnectMessage::Response { result, .. } => {
+                        assert_eq!(result.as_deref(), Some("ack"));
+                    }
+                    other => panic!("a response came back: {other:?}"),
+                }
+            }
+            other => panic!("a logout acks: {other:?}"),
+        }
+
+        // The caller's session is gone; the other app's is not.
+        let ask = app.request_event(&bunker.public_key(), NostrConnectMethod::GetPublicKey, &[]);
+        match bunker.plan(&ask) {
+            Plan::Answer(response) => {
+                let message = app.decrypt_response(&response);
+                match message {
+                    NostrConnectMessage::Response { error, .. } => {
+                        assert!(error.unwrap().contains("not paired"));
+                    }
+                    other => panic!("a response came back: {other:?}"),
+                }
+            }
+            other => panic!("a logged-out app is refused: {other:?}"),
+        }
+        let still_paired = other.request_event(
+            &bunker.public_key(),
+            NostrConnectMethod::GetPublicKey,
+            &[],
+        );
+        assert!(
+            matches!(bunker.plan(&still_paired), Plan::Ask { .. }),
+            "a logout cannot reach another app's session"
+        );
+
+        // A goodbye from an app with no session acks anyway — the
+        // spec's courtesy — and opens nothing by it.
+        let stranger = App::new();
+        let request = stranger.request_event_raw(
+            &bunker.public_key(),
+            r#"{"id":"bye","method":"logout","params":[]}"#,
+        );
+        match bunker.plan(&request) {
+            Plan::Answer(response) => {
+                let message = stranger.decrypt_response(&response);
+                match message {
+                    NostrConnectMessage::Response { result, .. } => {
+                        assert_eq!(result.as_deref(), Some("ack"));
+                    }
+                    other => panic!("a response came back: {other:?}"),
+                }
+            }
+            other => panic!("a logout acks: {other:?}"),
+        }
+        assert!(!bunker.is_paired(&stranger.pubkey()));
+    }
+
+    #[tokio::test]
     async fn noise_is_none_and_never_a_response() {
         let mut bunker = Bunker::new(Keys::generate(), None);
         let app = App::new();
