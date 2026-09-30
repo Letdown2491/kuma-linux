@@ -472,7 +472,7 @@ impl<S: super::vault::SecretStore> Daemon<S> {
         ask: super::bunker::Plan,
         decision: super::bunker::Decision,
     ) -> Option<Event> {
-        let super::bunker::Plan::Ask { request, id, method, params } = ask else {
+        let crate::nostr::bunker::Plan::Ask { request, id, method, params } = ask else {
             return None;
         };
         self.bunker.as_ref()?.execute(&request, &id, &method, &params, decision)
@@ -584,7 +584,7 @@ mod tests {
             .finalize(&app_keys)
             .unwrap();
         match daemon.plan_bunker_event(&request) {
-            Some(super::bunker::Plan::Ask { .. }) => {}
+            Some(crate::nostr::bunker::Plan::Ask { .. }) => {}
             other => panic!("a paired app reaches the gate after a restart: {other:?}"),
         }
     }
@@ -616,7 +616,7 @@ mod tests {
             .finalize(&app_keys)
             .unwrap();
         match daemon.plan_bunker_event(&request) {
-            Some(super::bunker::Plan::Ask { .. }) => {}
+            Some(crate::nostr::bunker::Plan::Ask { .. }) => {}
             other => panic!("a paired app reaches the gate after re-arming: {other:?}"),
         }
     }
@@ -654,7 +654,7 @@ mod tests {
             .finalize(&app_keys)
             .unwrap();
         match daemon.plan_bunker_event(&request) {
-            Some(super::bunker::Plan::Answer(response)) => {
+            Some(crate::nostr::bunker::Plan::Answer(response)) => {
                 let plaintext =
                     app_keys.nip44_decrypt(&bunker_pubkey, &response.content).unwrap();
                 assert!(plaintext.contains("not paired"), "{plaintext}");
