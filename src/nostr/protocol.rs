@@ -310,7 +310,7 @@ impl<S: super::vault::SecretStore> Daemon<S> {
         beat: Duration,
     ) -> Option<std::thread::JoinHandle<()>>
     where
-        S: std::marker::Send,
+        S: std::marker::Send + 'static,
     {
         if daemon.lock().expect("the daemon lock").inactivity.is_none() {
             return None;
