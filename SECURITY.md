@@ -291,7 +291,8 @@ refused, and a bunker with no outstanding secrets pairs nobody until
 the person mints a fresh URI. Revoking an app tombstones it — the
 connect is refused whatever the app carries, the tombstone survives
 restarts, and `unrevoke` clears it (the way back in is still a fresh
-URI) — while the app's own `logout` deletes its pairing outright.
+URI) — deleting one removes it outright (a fresh URI pairs again),
+and the app's own `logout` is the same deletion under the app's name.
 Either way the key is untouched, and a known app reconnects by its own
 identity: its requests are signed with the key it paired with, so a
 client restart is a hello, not a stranger.

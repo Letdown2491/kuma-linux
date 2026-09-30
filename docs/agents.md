@@ -158,6 +158,7 @@ it: `bunker --json` mints a one-time pairing URI (`uri` in the document —
 one app, one use, burned by the connect that presents it), `connect
 --json --uri <nostrconnect-uri>` pairs a client's own invite, `revoke`
 tombstones (the record stays, refused), `unrevoke` clears the tombstone,
+`delete` removes the record outright (a fresh URI pairs again),
 `rotate` invalidates every outstanding URI at once, `lock` and `unlock`
 are the gate, and `destroy` is a dry run until `--yes`.
 

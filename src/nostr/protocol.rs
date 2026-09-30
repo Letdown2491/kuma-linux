@@ -103,6 +103,12 @@ pub enum Request {
     Unrevoke {
         app: String,
     },
+    /// Remove a paired app outright: the record and its standing
+    /// answers go, and a freshly minted URI pairs it again. Not the
+    /// tombstone — revoke is the ban, delete is the removal.
+    Delete {
+        app: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -157,6 +163,7 @@ pub enum OkResponse {
     Mint { ok: bool, uri: String },
     Connect { ok: bool, name: Option<String>, relays: Vec<String> },
     Unrevoke { ok: bool, cleared: bool },
+    Delete { ok: bool, removed: bool },
 }
 
 /// What `status` says, and what `doctor` will grade through it later.
@@ -473,6 +480,23 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                     }
                 }
                 Response::Ok(OkResponse::Unrevoke { ok: true, cleared })
+            }
+            Request::Delete { app } => {
+                // The deletion takes the live session with it, as the
+                // revoke does: the record and the roads go together,
+                // and what pairs next does it with a fresh URI.
+                let removed = self.engine.delete(&app);
+                if removed {
+                    if let (Some(bunker), Ok(pubkey)) =
+                        (self.bunker.as_mut(), PublicKey::parse(&app))
+                    {
+                        bunker.evict(&app);
+                        if let Some(pool) = self.pool.as_mut() {
+                            pool.drop_app(&pubkey);
+                        }
+                    }
+                }
+                Response::Ok(OkResponse::Delete { ok: true, removed })
             }
             Request::Level { app, level } => match self.engine.set_level(&app, level) {
                 Ok(()) => Response::Ok(OkResponse::Level { ok: true }),
@@ -963,6 +987,92 @@ mod tests {
         let apps = daemon.engine.apps();
         assert_eq!(apps.len(), 1);
         assert!(apps[0].revoked_at.is_some(), "the ask un-tombstoned a revoked app");
+    }
+
+    #[tokio::test]
+    async fn a_deleted_app_is_gone_not_tombstoned_and_a_fresh_uri_pairs_it_again() {
+        use nostr::nips::nip44::Nip44;
+        use nostr::nips::nip46::{NostrConnectMessage, NostrConnectMethod};
+
+        let mut daemon = daemon().await;
+        daemon.handle(decode(r#"{"cmd":"setup","mode":{"how":"generate"}}"#).unwrap()).await;
+
+        let app_keys = Keys::generate();
+        let app = app_keys.public_key();
+        daemon.engine.pair_with_metadata(&app, None, None, None);
+
+        // The app connects, so the delete has a live session to take.
+        let bunker_pubkey = daemon.bunker.as_ref().expect("armed").public_key();
+        let secret = daemon
+            .vault
+            .secrets()
+            .last()
+            .expect("the armed vault's outstanding secret")
+            .to_string();
+        let connect = NostrConnectMessage::Request {
+            id: "connect".into(),
+            method: NostrConnectMethod::Connect,
+            params: vec![bunker_pubkey.to_string(), secret],
+        };
+        let content = app_keys.nip44_encrypt(&bunker_pubkey, &connect.as_json()).unwrap();
+        let connect_event = EventBuilder::new(Kind::NostrConnect, content)
+            .tag(Tag::public_key(bunker_pubkey))
+            .finalize(&app_keys)
+            .unwrap();
+        assert!(matches!(
+            daemon.plan_bunker_event(&connect_event),
+            Some(crate::nostr::bunker::Plan::Paired { .. })
+        ));
+
+        // The delete takes the session with it, live: the next
+        // request is a refusal, not a gate.
+        let delete = format!(r#"{{"cmd":"delete","app":"{}"}}"#, app);
+        assert!(matches!(daemon.handle(decode(&delete).unwrap()).await, Response::Ok(_)));
+        let message = NostrConnectMessage::Request {
+            id: "after-delete".into(),
+            method: NostrConnectMethod::GetPublicKey,
+            params: vec![],
+        };
+        let content = app_keys.nip44_encrypt(&bunker_pubkey, &message.as_json()).unwrap();
+        let request = EventBuilder::new(Kind::NostrConnect, content)
+            .tag(Tag::public_key(bunker_pubkey))
+            .finalize(&app_keys)
+            .unwrap();
+        match daemon.plan_bunker_event(&request) {
+            Some(crate::nostr::bunker::Plan::Answer(response)) => {
+                let plaintext = app_keys.nip44_decrypt(&bunker_pubkey, &response.content).unwrap();
+                assert!(plaintext.contains("not paired"), "{plaintext}");
+            }
+            other => panic!("a deleted app is refused live, not gated: {other:?}"),
+        }
+
+        // Deletion, not a tombstone: the record is gone outright.
+        let apps = daemon.engine.apps();
+        assert!(apps.is_empty(), "a deleted app leaves no record: {apps:?}");
+
+        // And the way back needs no un-revoke: a freshly minted URI
+        // pairs the same app again. Deletion forgot; it did not ban.
+        daemon.handle(decode(r#"{"cmd":"mint"}"#).unwrap()).await;
+        let fresh = daemon
+            .vault
+            .secrets()
+            .last()
+            .expect("the mint's outstanding secret")
+            .to_string();
+        let reconnect = NostrConnectMessage::Request {
+            id: "reconnect".into(),
+            method: NostrConnectMethod::Connect,
+            params: vec![bunker_pubkey.to_string(), fresh],
+        };
+        let content = app_keys.nip44_encrypt(&bunker_pubkey, &reconnect.as_json()).unwrap();
+        let reconnect_event = EventBuilder::new(Kind::NostrConnect, content)
+            .tag(Tag::public_key(bunker_pubkey))
+            .finalize(&app_keys)
+            .unwrap();
+        assert!(matches!(
+            daemon.plan_bunker_event(&reconnect_event),
+            Some(crate::nostr::bunker::Plan::Paired { .. })
+        ));
     }
 
     #[tokio::test]

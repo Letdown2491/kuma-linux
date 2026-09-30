@@ -21,8 +21,8 @@ URI pairs one app once.
 
 **Tombstone.** What revoking leaves behind: the pairing record stays,
 marked `revoked_at`, and the app's connect is refused whatever it
-carries until `unrevoke` clears it. Logout, the app's own goodbye,
-deletes instead.
+carries until `unrevoke` clears it. Delete, the person's removal, and
+logout, the app's own goodbye, delete instead.
 
 **Base.** The foundation an image is built on. With `system.base` unset,
 kuma composes its own from Fedora's packages rather than starting from

@@ -660,11 +660,14 @@ paired phone.
 pairing — the app's connect is refused whatever it carries, the
 tombstone survives restarts, and `unrevoke` is the person's way back
 (it still needs a freshly minted URI, because the app's original
-secret burned at its first connect). The pairing is the bond: a
+secret burned at its first connect). `delete` is the person's other
+act, and it is a deletion: the record and its standing answers go
+outright, and a freshly minted URI pairs the same app again — no
+un-revoke needed, because deletion forgot rather than banned. The
+pairing is the bond: a
 known app's own reconnect re-verifies by identity — a client that
 restarted itself needs no fresh URI — and `logout` is the client's
-own goodbye, a deletion rather than a tombstone, because re-pairing
-is a fresh URI either way.
+own goodbye, the same deletion under the app's own name.
 
 **A disable is reversible, and a toggle never destroys anything.** The
 key lives in your keyring and the pairings in the daemon's state — user

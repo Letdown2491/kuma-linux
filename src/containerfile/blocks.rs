@@ -4381,9 +4381,16 @@ local vault = nil
 local offered_uri = nil -- a nostrconnect:// link the handler handed in
 local tab = "asks" -- asks | apps | pair
 local tab_chosen = false -- the person's click wins over onboarding
+local panel_open = false -- the frame tick only polls while this is true
+local frame_acc = 0 -- milliseconds since the last poll, from the tick
 local render -- forward-declared: refresh's callbacks call it before the
               -- file's bottom assigns it, and a name read before its
               -- local exists resolves to the global — nil.
+
+-- How long an open panel sits still before it asks the daemon what
+-- changed: an ask arriving mid-read belongs in the list the person is
+-- looking at, not behind a close-and-reopen.
+local POLL_MS = 3000
 
 -- ── data ──────────────────────────────────────────────────────────────
 
@@ -4417,7 +4424,18 @@ local function cli(args)
     -- rides along, so answering a prompt four minutes in does not
     -- race the vault's own lock.
     noctalia.runAsync("kuma-nostr touch", nil)
-    noctalia.runAsync("kuma-nostr " .. table.concat(args, " "), refresh)
+    -- A failed act says so: the CLI exits nonzero on a dead socket or
+    -- a daemon refusal, and its stderr is the sentence the person
+    -- reads. The silence here once made a working revoke look broken.
+    noctalia.runAsync("kuma-nostr " .. table.concat(args, " "), function(result)
+        if result.exitCode ~= 0 then
+            local why = (result.stderr and result.stderr ~= "" and result.stderr)
+                or (result.stdout and result.stdout ~= "" and result.stdout)
+                or "the act failed"
+            noctalia.notifyError("kumaOS nostr", why)
+        end
+        refresh()
+    end)
 end
 
 -- ── small vocabulary ─────────────────────────────────────────────────
@@ -4617,6 +4635,9 @@ local function appCard(a)
     -- Revocation is a state: the tombstone stays until the person
     -- clears it, so the card says so and offers the way back instead
     -- of a second revoke that would only find the tombstone again.
+    -- Delete is the other act, and it works on either state: a
+    -- removal, not a ban — the record goes and a fresh URI pairs
+    -- again.
     if a.revoked_at then
         return card({
             ui.row({ gap = 12, align = "center" }, {
@@ -4628,6 +4649,9 @@ local function appCard(a)
                 ui.button({ variant = "ghost", controlSize = "sm", glyph = "undo",
                     tooltip = "un-revoke; a freshly minted URI pairs it again",
                     onClick = function() cli({ "unrevoke", a.pubkey }) end }),
+                ui.button({ variant = "ghost", controlSize = "sm", glyph = "trash",
+                    tooltip = "delete; the record goes, and a fresh URI pairs it again",
+                    onClick = function() cli({ "delete", a.pubkey }) end }),
             }),
         })
     end
@@ -4642,9 +4666,12 @@ local function appCard(a)
                 ui.label({ text = a.name or short(a.pubkey), fontWeight = "semibold", color = "on_surface" }),
                 ui.label({ text = short(a.pubkey), fontSize = 11, color = "on_surface_variant" }),
             }),
-            ui.button({ variant = "ghost", controlSize = "sm", glyph = "trash",
-                tooltip = "revoke",
+            ui.button({ variant = "ghost", controlSize = "sm", glyph = "shield-off",
+                tooltip = "revoke; refused even with its old URI until you un-revoke",
                 onClick = function() cli({ "revoke", a.pubkey }) end }),
+            ui.button({ variant = "ghost", controlSize = "sm", glyph = "trash",
+                tooltip = "delete; a freshly minted URI pairs it again",
+                onClick = function() cli({ "delete", a.pubkey }) end }),
         }),
         permLine,
         levelButton(a),
@@ -4807,6 +4834,35 @@ function onOpen(context)
     end
     -- Open or act, the panel says a person is here.
     noctalia.runAsync("kuma-nostr touch", nil)
+    -- While the panel is open it polls: the frame tick is the panel's
+    -- one clock, asked for here and given back on close, so an open
+    -- panel watches for asks instead of showing the moment it was
+    -- opened. The guard keeps an older host working — a nil API
+    -- costs the live poll, nothing else.
+    panel_open = true
+    frame_acc = 0
+    if panel.setNeedsFrameTick then
+        panel.setNeedsFrameTick(true)
+    end
+    refresh()
+end
+
+function onClose()
+    panel_open = false
+    if panel.setNeedsFrameTick then
+        panel.setNeedsFrameTick(false)
+    end
+end
+
+function onFrameTick(deltaMs)
+    if not panel_open then
+        return
+    end
+    frame_acc = frame_acc + (deltaMs or 0)
+    if frame_acc < POLL_MS then
+        return
+    end
+    frame_acc = 0
     refresh()
 end
 "#,

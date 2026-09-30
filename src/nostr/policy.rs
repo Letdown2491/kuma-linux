@@ -357,7 +357,28 @@ impl Engine {
         true
     }
 
-    /// The app's own goodbye: the removal revoke does, logged as the
+    /// The person's delete: the record and its standing answers go
+    /// together — the same deletion the app's own goodbye performs,
+    /// logged as the person's act. Not a tombstone: revoke is the
+    /// ban, delete is the removal, and re-pairing is a fresh URI
+    /// either way.
+    pub fn delete(&self, app: &str) -> bool {
+        let mut inner = self.inner.lock().expect("the policy lock");
+        let removed = remove_app(&mut inner, app);
+        if removed {
+            inner.log.push(LogEntry {
+                at: unix_now(),
+                app: app.to_string(),
+                method: "delete".into(),
+                summary: "the person deleted the app".into(),
+                verdict: "removed".into(),
+            });
+            self.persist_apps(&inner);
+        }
+        removed
+    }
+
+    /// The app's own goodbye: the removal delete does, logged as the
     /// caller's act rather than the person's. A logout from an app
     /// with no session removes nothing and is still answered — the
     /// ack is the courtesy, the log the record only when there was
@@ -1017,5 +1038,24 @@ mod tests {
         assert!(engine.logout(&app.to_string()));
         assert!(engine.apps().is_empty());
         assert!(!engine.logout(&app.to_string()), "logging out twice removes nothing");
+    }
+
+    #[test]
+    fn delete_removes_where_revoke_remembers() {
+        let engine = engine();
+        let app = app();
+        engine.pair(&app);
+
+        // Delete: the record goes, it does not become a tombstone.
+        assert!(engine.delete(&app.to_string()));
+        assert!(engine.apps().is_empty(), "a deleted app leaves no record");
+        assert!(!engine.delete(&app.to_string()), "deleting twice removes nothing");
+
+        // The same pubkey pairs again — deletion forgot, it did not
+        // ban: the way back is a fresh URI, not an un-revoke.
+        engine.pair(&app);
+        let paired = engine.apps();
+        assert_eq!(paired.len(), 1);
+        assert!(paired[0].revoked_at.is_none(), "a re-paired app is not born revoked");
     }
 }

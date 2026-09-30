@@ -348,8 +348,11 @@ $ kuma-nostr approve <id>
 
 A pairing URI pairs one app once — the connect burns it — so mint another
 for the next app. The panel does all of this with buttons, keeps the
-bunker's keep-alive fed while you are using it, and shows the revoked
-state with its undo. `kuma doctor` grades the whole layer, and says so
+bunker's keep-alive fed while you are using it, watches for new asks
+while it is open, shows the revoked state with its undo, and offers
+both ways out: revoke (a ban an app cannot cross until you un-revoke)
+and delete (the record goes; a fresh URI pairs it again). `kuma
+doctor` grades the whole layer, and says so
 before setup too.
 hibernate --yes` on a machine that already has a swapfile repairs what
 disagrees.

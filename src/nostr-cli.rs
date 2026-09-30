@@ -105,6 +105,10 @@ enum Command {
     /// Clear a revocation's tombstone. The way back in is still a
     /// freshly minted URI (`kuma-nostr bunker`).
     Unrevoke { app: String },
+    /// Remove a paired app outright: the record and its standing
+    /// answers go, and a freshly minted URI pairs it again. Not the
+    /// tombstone — that is `revoke`.
+    Delete { app: String },
     /// Set a paired app's policy level: `ask`, `basic`, or `trust`.
     /// Trust is the indefinite approval — every method signs
     /// unattended — and is graded loudly by the doctor.
@@ -183,6 +187,7 @@ fn main() -> Result<()> {
         Command::Unrevoke { app } => {
             format!(r#"{{"cmd":"unrevoke","app":{}}}"#, json_string(app))
         }
+        Command::Delete { app } => format!(r#"{{"cmd":"delete","app":{}}}"#, json_string(app)),
         Command::Level { app, level } => format!(
             r#"{{"cmd":"level","app":{},"level":{}}}"#,
             json_string(app),
@@ -383,6 +388,13 @@ fn render(value: &serde_json::Value) -> Result<()> {
                 println!("un-revoked; mint a fresh URI to let the app back in");
             } else {
                 println!("no revoked app by that pubkey");
+            }
+        }
+        Some("delete") => {
+            if value["removed"].as_bool() == Some(true) {
+                println!("deleted");
+            } else {
+                println!("no such app");
             }
         }
         Some("level") => println!("level set"),

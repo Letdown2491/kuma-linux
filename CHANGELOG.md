@@ -6,6 +6,28 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+### Added
+
+- **`kuma-nostr delete <app>` removes a paired app outright.** The
+  record and its standing answers go, the live session goes with them,
+  and a freshly minted URI pairs the same app again — no un-revoke,
+  because deletion forgot rather than banned. Revoke stays the ban:
+  the tombstone an app cannot cross until `unrevoke`. The panel offers
+  both — trash deletes, shield revokes — on live and revoked cards
+  alike.
+
+### Fixed
+
+- **The nostr panel answers while it is open.** An ask arriving while
+  you are reading the panel now shows up in it: the panel polls while
+  open (the frame tick, asked for on open and given back on close)
+  instead of refreshing only on open and on its own acts — which is
+  why the bar's ask count moved and the panel's list did not.
+- **A failed panel act says so.** A verb the CLI cannot land — a dead
+  socket, a daemon refusal — now surfaces its error instead of
+  repainting in silence, which is what once made a working revoke
+  look broken.
+
 ## v44.4.0 (2026-09-30)
 
 ### Added
