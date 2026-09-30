@@ -141,15 +141,17 @@ jobs:
           # that stages them into images: a nostr-enabled declaration
           # stages kuma-nostrd and kuma-nostr from beside the running
           # kuma, so a release carrying one of the three is a release
-          # whose nostr block fails honestly at build time.
+          # whose nostr block fails honestly at build time. The asset
+          # name is the plain name plus the target — what the release
+          # notes curl and the draft attaches.
           for bin in kuma kuma-nostrd kuma-nostr; do
-            cp "target/${TARGET}/release/$bin" "$bin"
-            strip "$bin"
-            sha256sum "$bin" > "${bin}.sha256"
+            cp "target/${TARGET}/release/$bin" "${bin}-${TARGET}"
+            strip "${bin}-${TARGET}"
+            sha256sum "${bin}-${TARGET}" > "${bin}-${TARGET}.sha256"
             # Prove each artifact runs before publishing it. A binary
             # that cannot answer --version on a clean runner is not a
             # release.
-            "./$bin" --version
+            "./${bin}-${TARGET}" --version
           done
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
@@ -164,12 +166,9 @@ jobs:
       - name: sign
         run: |
           set -euo pipefail
-          for bin in kuma-nostrd kuma-nostr; do
-            cosign sign-blob --yes --bundle "${bin}.bundle" "$bin"
+          for bin in kuma kuma-nostrd kuma-nostr; do
+            cosign sign-blob --yes --bundle "${bin}-${TARGET}.bundle" "${bin}-${TARGET}"
           done
-          cosign sign-blob --yes \
-            --bundle '${{ steps.pkg.outputs.name }}.bundle' \
-            '${{ steps.pkg.outputs.name }}'
 
       # A build from main is not a release, so it does not get one. It is
       # still the whole release path up to this point — same test, same
@@ -183,15 +182,15 @@ jobs:
         with:
           name: ${{ steps.pkg.outputs.name }}
           path: |
-            kuma
-            kuma.sha256
-            kuma.bundle
-            kuma-nostrd
-            kuma-nostrd.sha256
-            kuma-nostrd.bundle
-            kuma-nostr
-            kuma-nostr.sha256
-            kuma-nostr.bundle
+            kuma-x86_64-unknown-linux-musl
+            kuma-x86_64-unknown-linux-musl.sha256
+            kuma-x86_64-unknown-linux-musl.bundle
+            kuma-nostrd-x86_64-unknown-linux-musl
+            kuma-nostrd-x86_64-unknown-linux-musl.sha256
+            kuma-nostrd-x86_64-unknown-linux-musl.bundle
+            kuma-nostr-x86_64-unknown-linux-musl
+            kuma-nostr-x86_64-unknown-linux-musl.sha256
+            kuma-nostr-x86_64-unknown-linux-musl.bundle
           if-no-files-found: error
 
       # The notes used to be identical for every release, so the page a
@@ -321,15 +320,15 @@ jobs:
           fi
           )" \
             --target '${{ github.sha }}' \
-            kuma \
-            kuma.sha256 \
-            kuma.bundle \
-            kuma-nostrd \
-            kuma-nostrd.sha256 \
-            kuma-nostrd.bundle \
-            kuma-nostr \
-            kuma-nostr.sha256 \
-            kuma-nostr.bundle
+            kuma-x86_64-unknown-linux-musl \
+            kuma-x86_64-unknown-linux-musl.sha256 \
+            kuma-x86_64-unknown-linux-musl.bundle \
+            kuma-nostrd-x86_64-unknown-linux-musl \
+            kuma-nostrd-x86_64-unknown-linux-musl.sha256 \
+            kuma-nostrd-x86_64-unknown-linux-musl.bundle \
+            kuma-nostr-x86_64-unknown-linux-musl \
+            kuma-nostr-x86_64-unknown-linux-musl.sha256 \
+            kuma-nostr-x86_64-unknown-linux-musl.bundle
         env:
           GH_TOKEN: ${{ github.token }}
 
