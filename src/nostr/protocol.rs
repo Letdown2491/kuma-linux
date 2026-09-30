@@ -975,10 +975,16 @@ mod tests {
 
         // Two mints, two doors: the URIs differ, and each carries its
         // own secret.
-        let first = daemon.handle(decode(r#"{"cmd":"mint"}"#).unwrap()).await;
-        let second = daemon.handle(decode(r#"{"cmd":"mint"}"#).unwrap()).await;
-        let first_uri = encode(&first).trim().to_string();
-        let second_uri = encode(&second).trim().to_string();
+        let first: serde_json::Value =
+            serde_json::from_str(encode(&daemon.handle(decode(r#"{"cmd":"mint"}"#).unwrap()).await)
+                .trim())
+            .unwrap();
+        let second: serde_json::Value = serde_json::from_str(
+            encode(&daemon.handle(decode(r#"{"cmd":"mint"}"#).unwrap()).await).trim(),
+        )
+        .unwrap();
+        let first_uri = first["uri"].as_str().expect("a mint answers a uri").to_string();
+        let second_uri = second["uri"].as_str().expect("a mint answers a uri").to_string();
         assert_ne!(first_uri, second_uri, "a mint is a new door, not the same one");
         assert!(first_uri.contains("secret="), "{first_uri}");
 
