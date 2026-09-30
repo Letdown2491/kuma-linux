@@ -765,6 +765,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_unanswered_prompt_times_out_into_a_denial() {
+        let engine = Engine::with_prompt_ttl(None, Duration::from_millis(50));
+        let app = app();
+        let engine_for_ask = engine.clone();
+        let ask = tokio::spawn(async move {
+            engine_for_ask.decide(&app, &NostrConnectMethod::GetPublicKey, &[]).await
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(engine.prompts().len(), 1, "the ask is queued");
+
+        // Nobody answers. The window closes; the app gets its denial,
+        // the queue forgets the ask, and the log records the expiry.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        match ask.await.unwrap() {
+            Decision::Deny(reason) => assert!(reason.contains("timed out"), "{reason}"),
+            Decision::Allow => panic!("an unanswered ask timed out into an allow"),
+        }
+        assert!(engine.prompts().is_empty(), "an expired prompt leaves the queue");
+        let log = engine.activity();
+        assert!(log.last().unwrap().verdict.contains("expired"), "{log:?}");
+    }
+
+    #[tokio::test]
+    async fn approving_an_expired_prompt_is_an_honest_error() {
+        let engine = Engine::with_prompt_ttl(None, Duration::from_millis(50));
+        let app = app();
+        let engine_for_ask = engine.clone();
+        let ask = tokio::spawn(async move {
+            engine_for_ask.decide(&app, &NostrConnectMethod::GetPublicKey, &[]).await
+        });
+        tokio::task::yield_now().await;
+        let id = engine.prompts()[0].id.clone();
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        ask.await.unwrap();
+        assert!(engine.approve(&id, None).is_err(), "an expired id approves nothing");
+        // And the decision after expiry is still a denial of record.
+        assert!(engine.activity().iter().any(|e| e.verdict.contains("expired")));
+    }
+
+    #[tokio::test]
     async fn pairings_persist_through_a_reboot_of_the_engine() {
         let dir = tempfile::tempdir().unwrap();
         let app = app();

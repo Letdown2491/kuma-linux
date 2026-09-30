@@ -692,8 +692,7 @@ mod tests {
             .unwrap();
         match daemon.plan_bunker_event(&request) {
             Some(crate::nostr::bunker::Plan::Answer(response)) => {
-                let plaintext =
-                    app_keys.nip44_decrypt(&bunker_pubkey, &response.content).unwrap();
+                let plaintext = app_keys.nip44_decrypt(&bunker_pubkey, &response.content).unwrap();
                 assert!(plaintext.contains("not paired"), "{plaintext}");
             }
             other => panic!("a revoked app is refused live, not gated: {other:?}"),
