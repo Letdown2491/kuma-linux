@@ -71,6 +71,16 @@ pub struct Nostr {
     /// house.
     #[serde(default)]
     pub relay: NostrRelay,
+    /// The inactivity switch's window, in seconds: after this long
+    /// with no unlock and no keep-alive, the daemon locks itself — the
+    /// dead man's switch, whose act is the panel's own lock. Absent or
+    /// 0 leaves the switch off, the desktop default: the keyring is
+    /// PAM-open here, and a switch on by default would lock the bunker
+    /// while the person is away. The floor is an hour — a fuse shorter
+    /// than that trips on lunch — and a violation is a build failure,
+    /// like every other lie the declaration can tell.
+    #[serde(default)]
+    pub inactivity_lock_secs: Option<u64>,
     /// The tailnet exposure switch: serve the local relay on the
     /// machine's ts.net name. Absent means local-only, because widening
     /// who can reach the relay is a decision about the trust boundary
@@ -802,6 +812,14 @@ impl Config {
             for relay in &self.nostr.relays {
                 validate_relay(relay)?;
             }
+            match self.nostr.inactivity_lock_secs {
+                None | Some(0) => {}
+                Some(secs) if secs < 3600 => bail!(
+                    "nostr.inactivity_lock_secs is {secs}s; the floor is one hour (3600), \\
+                     because a fuse shorter than that trips on lunch"
+                ),
+                Some(_) => {}
+            }
         }
         Ok(())
     }
@@ -946,6 +964,27 @@ pub(crate) mod tests {
     /// be pulled into a test that asserts what a *committed* example says.
     pub(crate) fn is_local_declaration(path: &Path) -> bool {
         path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with("kuma.toml"))
+    }
+
+    #[test]
+    fn the_inactivity_window_is_floor_validated_at_build() {
+        let base = "schema_version = 1\n[system]\ndesktop = \"niri\"\n";
+        let window = |secs: &str| {
+            let toml =
+                format!("{base}[nostr]\nenable = true\ninactivity_lock_secs = {secs}\n");
+            let config: Config = toml::from_str(&toml).unwrap();
+            config.validate()
+        };
+        // The floor: a fuse shorter than an hour trips on lunch, and
+        // the declaration that tells one is a build failure, not a
+        // shrug.
+        assert!(window("1800").unwrap_err().to_string().contains("floor is one hour"));
+        // The honest shapes: absent, the explicit off, the floor
+        // itself, and a day.
+        assert!(window("\"\"").is_ok());
+        assert!(window("0").is_ok());
+        assert!(window("3600").is_ok());
+        assert!(window("86400").is_ok());
     }
 
     #[test]

@@ -2759,6 +2759,27 @@ fn check_nostr(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     // machine's and the CLI's alone.
     report(Grade::Ok, "nostr", reachability_wording(&config.nostr.relays), None);
 
+    // The inactivity switch, from the declaration: the unit is what
+    // carries it, so the declared window is the fact. Armed says so
+    // and names the window; the off switch is silent, because the
+    // desktop posture is the PAM-open keyring and a switch nobody
+    // configured is not a finding. The floor is validated at build,
+    // so an armed window here is floor-honest by construction.
+    match config.nostr.inactivity_lock_secs {
+        Some(0) => {}
+        Some(secs) => report(
+            Grade::Ok,
+            "nostr",
+            format!(
+                "the inactivity switch is armed: the vault locks itself after {}s of nothing \
+                 unlocking or keeping it alive",
+                human_secs(secs)
+            ),
+            None,
+        ),
+        None => {}
+    }
+
     // The tailnet exposure, graded against the declaration: the baked
     // unit exists exactly when the declaration said serve, so the
     // question is whether tailscale's own state agrees. Asking it can
@@ -2917,6 +2938,24 @@ fn reachability_wording(relays: &[String]) -> String {
         "the bunker answers on the tailnet and the declared relays".into()
     } else {
         "the bunker answers through the declared public relays".into()
+    }
+}
+
+/// A window in words: 86400 reads as "a day", 3600 as "an hour" — the
+/// doctor's grades are read by a person, and a person does not divide
+/// by 3600 for pleasure.
+fn human_secs(secs: u64) -> String {
+    match secs {
+        s if s % 86400 == 0 => {
+            format!("{} day{}", s / 86400, if s / 86400 > 1 { "s" } else { "" })
+        }
+        s if s % 3600 == 0 => {
+            format!("{} hour{}", s / 3600, if s / 3600 > 1 { "s" } else { "" })
+        }
+        s if s % 60 == 0 => {
+            format!("{} minute{}", s / 60, if s / 60 > 1 { "s" } else { "" })
+        }
+        s => format!("{s}s"),
     }
 }
 

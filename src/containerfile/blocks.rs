@@ -4043,9 +4043,14 @@ pub(super) fn live_masks() -> Vec<&'static str> {
 /// is the point — it is a reviewable decision, not an accident.
 /// The nostr layer's daemon unit: the first user unit with the full
 /// sandbox (docs/unit-sandboxing.md carries the reasoning). The relay
-/// set rides the exec line — `--relay` per entry — because the daemon
-/// takes no declaration of its own: the declaration is kuma's, and the
-/// unit is the spelling of it systemd can run.
+/// set and the inactivity window ride the exec line — `--relay` per
+/// entry, `--inactivity-lock-secs` when the switch is armed — because
+/// the daemon takes no declaration of its own: the declaration is
+/// kuma's, and the unit is the spelling of it systemd can run. The
+/// args stay the daemon's interface even now that the declaration
+/// carries their values: a binary with no config file of its own is a
+/// binary whose every fact arrives on argv, and that is the shape an
+/// auditor can hold in their head.
 fn nostrd_service(nostr: &crate::config::Nostr) -> String {
     // The list is [local, ...declared]: the bunker's first subscription
     // is the relay on this machine, and the declared set follows as
@@ -4058,6 +4063,13 @@ fn nostrd_service(nostr: &crate::config::Nostr) -> String {
     for r in &nostr.relays {
         relay_args.push_str(&format!(" --relay {r}"));
     }
+    // The switch rides only when armed: absent or 0 is the daemon's
+    // own off, and a flag that repeats the default is noise the unit
+    // does not need.
+    let mut inactivity_arg = String::new();
+    if let Some(secs) = nostr.inactivity_lock_secs.filter(|secs| *secs > 0) {
+        inactivity_arg.push_str(&format!(" --inactivity-lock-secs {secs}"));
+    }
     format!(
         r#"[Unit]
 Description=kumaOS nostr bunker
@@ -4068,7 +4080,7 @@ PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
-ExecStart=/usr/bin/kuma-nostrd{relay_args}
+ExecStart=/usr/bin/kuma-nostrd{relay_args}{inactivity_arg}
 # The state dir has to exist before the sandbox does: ReadWritePaths
 # names it, and a namespace that cannot mount a missing path fails the
 # unit before the daemon runs. The `+` runs this one command unsandboxed
