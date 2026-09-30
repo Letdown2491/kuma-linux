@@ -95,13 +95,15 @@ differently. Why it changed belongs in the commit that made it.
   person is away. The unit's exec line carries the flag when armed,
   and `kuma doctor` grades the armed state in words a person reads.
 
-- **A local relay, and the tailnet mode.** The bunker's first
-  subscription is a relay on the machine itself — `nip46-relay`, ported
-  from the Go original and carrying only kind 24133/24135 traffic,
-  in-memory, evicted after ten minutes, bound to loopback. The daemon's
-  relay list is local first, the declared fallbacks after; declaring
-  relays never removes the local one, and `[nostr.relay] enable =
-  false` is the spoken way to. When the declaration runs
+- **A local relay, and the tailnet mode.** Opt-in
+  (`[nostr.relay] enable = true`): a relay on the machine itself —
+  `nip46-relay`, ported from the Go original and carrying only kind
+  24133/24135 traffic, in-memory, evicted after ten minutes, bound to
+  loopback. When enabled, the daemon's relay list is local first, the
+  declared fallbacks after, and declaring relays never removes the
+  local one; the default declaration runs the bunker on the public
+  relay alone, which is what makes a fresh install pairable from
+  anywhere with nothing configured. When the declaration runs
   `tailscaled.service`, a converge script exposes the local relay to
   the tailnet under the machine's ts.net name — the relay is then
   reachable by a paired phone with no third party at all. Absent
