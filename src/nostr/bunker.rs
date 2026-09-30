@@ -567,11 +567,11 @@ impl Bunker {
                 // a second connect with the same secret is refused.
                 // The compare is constant-time, because a comparison
                 // that leaks its own progress is a lock that shows
-                // its keys. A connect without an echo is refused
-                // while secrets are outstanding — a scraped pubkey
-                // opens asks on nobody — and a bunker with none
-                // outstanding has nothing to verify against, so the
-                // person's gate stays the door.
+                // its keys. A connect without an echo is refused —
+                // a scraped pubkey opens asks on nobody, and an
+                // all-burned bunker's door closes too: the person
+                // mints a fresh URI when they want a new pairing,
+                // and nothing pairs until they do.
                 let secret = params.get(1).cloned();
                 if self.revoked.contains(&event.pubkey) {
                     eprintln!(
@@ -598,9 +598,7 @@ impl Bunker {
                     }
                     _ => None,
                 };
-                let verified = known
-                    || burn_at.is_some()
-                    || (secret.is_none() && self.expected_secrets.is_empty());
+                let verified = known || burn_at.is_some();
                 eprintln!(
                     "kuma-nostrd: connect from {}: {}",
                     event.pubkey,
@@ -1210,22 +1208,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_bunker_without_a_nonce_still_pairs_by_the_human_gate() {
-        // The pre-nonce shape: a vault that has not migrated yet arms a
-        // bunker with nothing to verify against, and the person's gate
-        // stays the only door — which is why the refusal above is an
-        // answer rather than a silence: an app that reads the refusal
-        // knows to read the fresh URI, and a person whose bunker asks
-        // knows to look at the panel.
+    async fn a_bunker_with_no_outstanding_secret_leaves_the_door_shut() {
+        // The all-burned shape: every URI's secret was spent, and no
+        // door is open until the person mints a fresh one. The old
+        // fallback — an empty vault pairing by the person's gate —
+        // died with the one-time secret: post-burn emptiness is the
+        // NORMAL state now, and a fallback that fired routinely would
+        // let a scraped pubkey open asks on the person after every
+        // legitimate pairing spent its door.
         let mut bunker = Bunker::new(Keys::generate(), vec![]);
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
         match bunker.plan(&app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[])) {
-            Plan::Paired { .. } => {}
-            other => panic!("connect is protocol: {other:?}"),
+            Plan::Answer(response) => {
+                let message = app.decrypt_response(&response);
+                match message {
+                    NostrConnectMessage::Response { error, .. } => {
+                        assert!(error.unwrap().contains("secret"), "{error:?}");
+                    }
+                    other => panic!("a response came back: {other:?}"),
+                }
+            }
+            other => panic!("a door with no secret is shut, not open: {other:?}"),
         }
-        assert!(bunker.is_paired(&app.pubkey()));
+        assert!(!bunker.is_paired(&app.pubkey()));
     }
 
     #[tokio::test]
@@ -1800,23 +1807,32 @@ mod tests {
         );
         assert!(matches!(bunker.plan(&request), Plan::Paired { .. }));
 
-        // The tombstone's teeth: revoked beats a live secret. The
-        // person said the app is out; no URI in the app's hands says
-        // otherwise.
+        // The person mints a fresh URI; the revoked app has somehow
+        // read it. The tombstone's teeth: revoked beats a live
+        // secret, because the person's word outranks any URI.
         bunker.mark_revoked(&app.pubkey());
-        let fresh = App::new();
         bunker.with_secrets(vec!["a-fresh-nonce".into()]);
-        let request = fresh.request_event(
+        let request = app.request_event(
             &bunker.public_key(),
             NostrConnectMethod::Connect,
             &[bunker.public_key().to_string().as_str(), "a-fresh-nonce"],
         );
-        assert!(matches!(bunker.plan(&request), Plan::Ignore), "a revoked app is refused");
-        assert!(!bunker.is_paired(&fresh.pubkey()));
+        match bunker.plan(&request) {
+            Plan::Answer(response) => {
+                let message = app.decrypt_response(&response);
+                match message {
+                    NostrConnectMessage::Response { error, .. } => {
+                        assert!(error.unwrap().contains("revoked"), "{error:?}");
+                    }
+                    other => panic!("a response came back: {other:?}"),
+                }
+            }
+            other => panic!("a revoked app is refused, not paired: {other:?}"),
+        }
 
         // Un-revoking clears the tombstone, and the fresh URI pairs.
-        bunker.mark_unrevoked(&fresh.pubkey());
-        let request = fresh.request_event(
+        bunker.mark_unrevoked(&app.pubkey());
+        let request = app.request_event(
             &bunker.public_key(),
             NostrConnectMethod::Connect,
             &[bunker.public_key().to_string().as_str(), "a-fresh-nonce"],
