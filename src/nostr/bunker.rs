@@ -1170,6 +1170,7 @@ mod tests {
         let mut bunker = Bunker::new(Keys::generate(), vec!["the-nonce".into()]);
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
+        let secret = "the-nonce";
 
         // No echo at all: the app that never read the URI.
         let request = app.connect(&bunker, &secret);
@@ -1902,7 +1903,7 @@ mod tests {
 
     #[tokio::test]
     async fn noise_is_none_and_never_a_response() {
-        let (mut bunker, secret) = bunker_for_tests();
+        let (mut bunker, _secret) = bunker_for_tests();
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
