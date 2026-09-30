@@ -96,8 +96,17 @@ fn a_broken_declaration_is_still_one_document() {
 #[test]
 fn doctor_json_carries_findings_with_fixes() {
     let doc = kuma(&["doctor", "--json"]);
-    shape(&doc, &["checks", "ok", "summary"]);
-    assert_eq!(doc["ok"], true);
+    // The verdict decides the shape: a failing doctor adds `error`
+    // naming the counts, and this machine is whatever it is — a CI
+    // runner grades unclean, a kuma deployment does not — so the shape
+    // is read off the verdict, not assumed of the machine.
+    let ok = doc["ok"].as_bool().expect("the verdict is a bool");
+    let mut want = vec!["checks", "ok", "summary"];
+    if !ok {
+        want.push("error");
+        assert!(doc["error"].is_string(), "a failing doctor names its counts");
+    }
+    shape(&doc, &want);
     shape(&doc["summary"], &["fails", "warns"]);
     let checks = doc["checks"].as_array().expect("checks is an array");
     assert!(!checks.is_empty(), "doctor always grades something");
