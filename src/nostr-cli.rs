@@ -58,6 +58,15 @@ enum Command {
     /// The panel sends this when the person is clearly present, so a
     /// switch with nobody near it is one that means it.
     Touch,
+    /// Begin a pairing from a `nostrconnect://` URI — the client's
+    /// own invite, the person's paste the approval. The handshake
+    /// goes out on the client's relays, and the pairing lands in
+    /// `apps` like any other.
+    Connect {
+        /// The URI, whole — scheme, client pubkey, relays, secret.
+        #[arg(trailing_var_arg)]
+        uri: Vec<String>,
+    },
     /// What the daemon holds: whether a vault exists and is unlocked.
     Status,
     /// The `bunker://` URI a remote app pairs with — as text, and as a
@@ -145,6 +154,13 @@ fn main() -> Result<()> {
         Command::Unlock => r#"{"cmd":"unlock"}"#.to_string(),
         Command::Lock => r#"{"cmd":"lock"}"#.to_string(),
         Command::Touch => r#"{"cmd":"touch"}"#.to_string(),
+        Command::Connect { uri } => {
+            // A pasted URI is one argument in shells that keep their
+            // spaces and several in shells that do not — rejoin
+            // without guessing which.
+            let uri = uri.join(" ");
+            serde_json::json!({ "cmd": "connect", "uri": uri }).to_string()
+        }
         Command::Status => r#"{"cmd":"status"}"#.to_string(),
         Command::Bunker { .. } => r#"{"cmd":"mint"}"#.to_string(),
         Command::Destroy { yes } => format!(r#"{{"cmd":"destroy","confirm":{yes}}}"#),
@@ -301,6 +317,13 @@ fn render(value: &serde_json::Value) -> Result<()> {
         }
         Some("lock") => println!("locked"),
         Some("touch") => println!("kept alive"),
+        Some("connect") => println!(
+            "the handshake went out{}; the pairing lands when the client answers",
+            value["name"]
+                .as_str()
+                .map(|n| format!(" to {n}"))
+                .unwrap_or_else(|| "".to_string())
+        ),
         Some("destroy_dry_run") => println!(
             "dry run: {}",
             value["would"].as_str().unwrap_or("this would delete the vault")

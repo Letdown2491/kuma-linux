@@ -112,6 +112,12 @@ pub struct Paired {
     pub name: Option<String>,
     #[serde(default)]
     pub image: Option<String>,
+    /// The permissions the client asked for in its `nostrconnect://`
+    /// URI — `method[:kind]` commas, the client's own request. A
+    /// display hint like the name: the policy engine's levels decide,
+    /// and the perms never widen anything.
+    #[serde(default)]
+    pub perms: Option<String>,
 }
 
 /// What `prompts` shows: the ask, enough to decide on. `summary` is
@@ -240,7 +246,13 @@ impl Engine {
     /// metadata (the app's name and image, its own unverified claim)
     /// lands on the first pairing and fills in on reconnects: an app
     /// that ships a name later gets the better label.
-    pub fn pair_with_metadata(&self, app: &PublicKey, name: Option<String>, image: Option<String>) {
+    pub fn pair_with_metadata(
+        &self,
+        app: &PublicKey,
+        name: Option<String>,
+        image: Option<String>,
+        perms: Option<String>,
+    ) {
         let mut inner = self.inner.lock().expect("the policy lock");
         let hex = app.to_string();
         if let Some(paired) = inner.apps.iter_mut().find(|p| p.pubkey == hex) {
@@ -250,6 +262,11 @@ impl Engine {
             if paired.image.is_none() {
                 paired.image = image;
             }
+            // A nostrconnect URI's perms fill in on pairing; they do
+            // not overwrite a claim the app made later.
+            if paired.perms.is_none() {
+                paired.perms = perms;
+            }
             return;
         }
         inner.apps.push(Paired {
@@ -258,6 +275,7 @@ impl Engine {
             paired_at: unix_now(),
             name,
             image,
+            perms,
         });
         inner.log.push(LogEntry {
             at: unix_now(),
@@ -270,7 +288,7 @@ impl Engine {
     }
 
     fn pair(&self, app: &PublicKey) {
-        self.pair_with_metadata(app, None, None);
+        self.pair_with_metadata(app, None, None, None);
     }
 
     /// The paired apps, for the `apps` verb.

@@ -832,7 +832,7 @@ impl Config {
 /// talking to which bunker, how often, and how big. A declaration that
 /// leaks kind 24133 traffic by configuration is exactly the shape of
 /// mistake a validator exists to catch.
-fn validate_relay(relay: &str) -> Result<()> {
+pub(crate) fn validate_relay(relay: &str) -> Result<()> {
     let (scheme, rest) = match relay.split_once("://") {
         Some((scheme, rest)) => (scheme, rest),
         None => {

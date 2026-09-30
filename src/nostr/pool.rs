@@ -59,6 +59,12 @@ pub struct RelayPool {
     outbound: Sender<Event>,
     stop: Arc<AtomicBool>,
     handles: Vec<std::thread::JoinHandle<()>>,
+    /// The URLs already threaded — what keeps a nostrconnect app's
+    /// relays from doubling a road the pool already runs.
+    urls: Vec<String>,
+    /// The queue's receiver behind its mutex, cloned per thread —
+    /// the spawn path's shape, kept for the subscribe-more path.
+    outbound_rx: Arc<Mutex<Receiver<Event>>>,
 }
 
 impl RelayPool {
@@ -78,6 +84,7 @@ impl RelayPool {
         // mutex, and a thread only holds it for the drain of one loop
         // beat.
         let outbound_rx = Arc::new(Mutex::new(outbound_rx));
+        let mut urls = Vec::new();
         let handles = relays
             .into_iter()
             .map(|url| {
@@ -85,12 +92,40 @@ impl RelayPool {
                 let outbound_rx = outbound_rx.clone();
                 let inbound = inbound.clone();
                 let status = status.clone();
+                urls.push(url.clone());
                 std::thread::spawn(move || {
                     one_relay(url, bunker_pubkey, inbound, status, outbound_rx, stop);
                 })
             })
             .collect();
-        Self { outbound, stop, handles }
+        Self { outbound, stop, handles, urls, outbound_rx }
+    }
+
+    /// More relay threads for a nostrconnect app's own relays: the
+    /// same subscription, the same channels, one more road in for the
+    /// app's requests and its handshake reading. A URL the pool
+    /// already threads is skipped — one road, one thread — and the
+    /// pool's own set stays the daemon's.
+    pub fn subscribe_relays(
+        &mut self,
+        relays: Vec<String>,
+        bunker_pubkey: PublicKey,
+        inbound: &Sender<Event>,
+        status: &Sender<RelayStatus>,
+    ) {
+        for url in relays {
+            if self.urls.contains(&url) {
+                continue;
+            }
+            self.urls.push(url.clone());
+            let outbound_rx = self.outbound_rx.clone();
+            let stop = self.stop.clone();
+            let inbound = inbound.clone();
+            let status = status.clone();
+            self.handles.push(std::thread::spawn(move || {
+                one_relay(url, bunker_pubkey, inbound, status, outbound_rx, stop);
+            }));
+        }
     }
 
     /// Publish an event to every relay. Relays that are down get it on

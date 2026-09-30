@@ -57,6 +57,67 @@ impl ClientMeta {
     }
 }
 
+/// A `nostrconnect://` URI, parsed: the client-initiated pairing the
+/// NIP defines — the client's pubkey, the relays it listens on, the
+/// secret the signer must echo, and the optional metadata the client
+/// claims for itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NostrConnectParts {
+    pub client_pubkey: PublicKey,
+    pub relays: Vec<String>,
+    pub secret: String,
+    pub perms: Option<String>,
+    pub name: Option<String>,
+}
+
+/// Parse and validate a `nostrconnect://` URI. Every failure names
+/// itself, because the person holding the URI is the one who can fix
+/// it. The relays get the declaration's own rule — `wss://` to the
+/// world, `ws://` to loopback only — reused rather than re-worded, for
+/// the same reason: plaintext kind 24133 traffic announces which app
+/// talks to which bunker, and the URI does not get a wider rule than
+/// the declaration that runs the bunker.
+pub fn parse_nostrconnect_uri(uri: &str) -> Result<NostrConnectParts> {
+    let rest = uri
+        .strip_prefix("nostrconnect://")
+        .ok_or_else(|| anyhow!("the URI must start with nostrconnect://"))?;
+    let (pubkey_str, query) = match rest.split_once('?') {
+        Some((pk, q)) => (pk, q),
+        None => (rest, ""),
+    };
+    let client_pubkey = PublicKey::parse(pubkey_str)
+        .map_err(|e| anyhow!("the client pubkey must be 64 hex characters: {e}"))?;
+    let mut relays = Vec::new();
+    let mut secret = None;
+    let mut perms = None;
+    let mut name = None;
+    for pair in query.split('&') {
+        let (key, value) = match pair.split_once('=') {
+            Some(kv) => kv,
+            None => continue,
+        };
+        match key {
+            "relay" => relays.push(percent_decode(value)?),
+            "secret" => secret = Some(percent_decode(value)?),
+            "perms" => perms = Some(percent_decode(value)?),
+            "name" => name = Some(percent_decode(value)?),
+            // url and image ride along unnamed: the panel's display
+            // hint, not the daemon's business.
+            _ => {}
+        }
+    }
+    if relays.is_empty() {
+        bail!("the URI carries no relay to answer the client on");
+    }
+    for relay in &relays {
+        crate::config::validate_relay(relay)?;
+    }
+    let secret = secret.ok_or_else(|| {
+        anyhow!("the URI carries no secret, and a connect without one is a spoofed one")
+    })?;
+    Ok(NostrConnectParts { client_pubkey, relays, secret, perms, name })
+}
+
 /// The decision a gate hands back for a consequential method. The
 /// reason is not decoration: it is what the response tells the app and
 /// what the activity log records.
@@ -318,6 +379,33 @@ impl Bunker {
     /// empty list, which is the truth it holds.
     pub fn with_relays(&mut self, relays: Vec<String>) {
         self.relays = relays;
+    }
+
+    /// Begin a `nostrconnect://` pairing: the person's paste is the
+    /// approval, so the pairing lands here — the session opens — and
+    /// the handshake event is what the daemon publishes on the
+    /// client's relays. Per the NIP the handshake is a connect
+    /// *response*: `{id, result: secret}`, whose author is how the
+    /// client learns the bunker's pubkey and whose result is what the
+    /// client validates against the URI's own secret. A client that
+    /// never receives it just never connects; the pairing record
+    /// sits unused until the person revokes it.
+    pub fn start_handshake(&mut self, uri: &str) -> Result<(Event, NostrConnectParts)> {
+        let parts = parse_nostrconnect_uri(uri)?;
+        self.sessions.insert(parts.client_pubkey);
+        // The id is nobody's correlation — a response to no request —
+        // so it is random, and its randomness is its whole job.
+        let message = NostrConnectMessage::Response {
+            id: handshake_id(),
+            result: Some(parts.secret.clone()),
+            error: None,
+        };
+        let content =
+            self.keys.nip44_encrypt(&parts.client_pubkey, &message.as_json())?;
+        let event = EventBuilder::new(Kind::from_u16(24133), content)
+            .tag(Tag::public_key(parts.client_pubkey))
+            .finalize(&self.keys)?;
+        Ok((event, parts))
     }
 
     /// The outstanding secrets, refreshed: a mint adds a door, a burn
@@ -746,6 +834,14 @@ impl Bunker {
 fn constant_time_eq(a: &str, b: &str) -> bool {
     use subtle::ConstantTimeEq;
     a.as_bytes().ct_eq(b.as_bytes()).into()
+}
+
+/// The handshake response's id: eight random bytes, hex — a response
+/// to no request needs nothing longer, and nothing about it correlates.
+fn handshake_id() -> String {
+    let mut bytes = [0u8; 8];
+    getrandom::fill(&mut bytes).unwrap_or_default();
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The bunker URI an app logs in with: the bunker's key, the relays it
@@ -1553,6 +1649,67 @@ mod tests {
             matches!(bunker.plan(&ping(&bunker, &app)), Plan::Answer(_)),
             "the bucket refilled"
         );
+    }
+
+    #[test]
+    fn the_nostrconnect_uri_parses_and_names_its_own_failures() {
+        let client = Keys::generate().public_key();
+        let uri = format!(
+            "nostrconnect://{client}?relay=wss%3A%2F%2Frelay.example&secret=the-secret\
+             &perms=sign_event%3A1%2Cnip44_encrypt&name=My+Client"
+        );
+        let parts = parse_nostrconnect_uri(&uri).unwrap();
+        assert_eq!(parts.client_pubkey, client);
+        assert_eq!(parts.relays, ["wss://relay.example"], "percent-encoded relays decode");
+        assert_eq!(parts.secret, "the-secret");
+        assert_eq!(parts.perms.as_deref(), Some("sign_event:1,nip44_encrypt"));
+        assert_eq!(parts.name.as_deref(), Some("My Client"));
+
+        // Every failure names itself, because the person holding the
+        // URI is the one who can fix it.
+        let reason = |uri: &str| parse_nostrconnect_uri(uri).unwrap_err().to_string();
+        assert!(reason("nostr://nope").contains("nostrconnect://"));
+        assert!(reason("nostrconnect://not-a-pubkey?secret=x").contains("64 hex"));
+        let relayless = format!("nostrconnect://{client}?secret=x");
+        assert!(reason(&relayless).contains("no relay"));
+        let secretless = format!("nostrconnect://{client}?relay=wss://relay.example");
+        assert!(reason(&secretless).contains("no secret"));
+        let plaintext_relay =
+            format!("nostrconnect://{client}?relay=http://relay.example&secret=x");
+        assert!(reason(&plaintext_relay).contains("wss"));
+    }
+
+    #[tokio::test]
+    async fn the_handshake_is_a_connect_response_the_client_validates() {
+        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let client = Keys::generate();
+        let uri = format!(
+            "nostrconnect://{}?relay=wss%3A%2F%2Frelay.example&secret=the-secret&name=Test",
+            client.public_key()
+        );
+        let (handshake, parts) = bunker.start_handshake(&uri).unwrap();
+
+        // The pairing landed at the paste, before a byte moved: the
+        // person's word was the approval.
+        assert!(bunker.is_paired(&client.public_key()));
+        assert_eq!(parts.name.as_deref(), Some("Test"));
+
+        // The event is the NIP's shape: kind 24133 to the client, its
+        // content the response whose result is the URI's own secret —
+        // the proof the client validates.
+        assert_eq!(handshake.kind, Kind::from_u16(24133));
+        assert_eq!(handshake.pubkey, bunker.public_key());
+        let plaintext = client.keys.nip44_decrypt(&handshake.pubkey, &handshake.content).unwrap();
+        match NostrConnectMessage::from_json(&plaintext).unwrap() {
+            NostrConnectMessage::Response { result, .. } => {
+                assert_eq!(result.as_deref(), Some("the-secret"));
+            }
+            other => panic!("a response came back: {other:?}"),
+        }
+
+        // A URI that does not parse pairs nobody and opens nothing.
+        let broken = bunker.start_handshake("nostrconnect://not-a-pubkey?secret=x");
+        assert!(broken.is_err());
     }
 
     #[tokio::test]

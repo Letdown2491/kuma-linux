@@ -52,6 +52,12 @@ impl Client {
         require_ok(&value)
     }
 
+    /// Begin a nostrconnect:// pairing from the client's URI.
+    pub fn connect(&mut self, uri: &str) -> Result<serde_json::Value> {
+        let value = self.ask(&serde_json::json!({ "cmd": "connect", "uri": uri }).to_string())?;
+        require_ok(&value)
+    }
+
     /// The paired apps and their levels.
     pub fn apps(&mut self) -> Result<serde_json::Value> {
         let value = self.ask(r#"{"cmd":"apps"}"#)?;

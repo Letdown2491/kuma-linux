@@ -137,6 +137,7 @@ fn main() -> anyhow::Result<()> {
                     &app,
                     metadata.as_ref().and_then(|m| m.name.clone()),
                     metadata.as_ref().and_then(|m| m.image.clone()),
+                    None,
                 );
                 if let Some(burned) = burned {
                     if let Err(e) = runtime_handle

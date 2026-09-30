@@ -207,6 +207,155 @@ mod tests {
         assert!(status.contains("\"exists\":true"));
     }
 
+    /// The nostrconnect flow's own crown: the person pastes the
+    /// client's URI into the socket, the daemon publishes the
+    /// handshake on the client's relays, the client validates its
+    /// secret, and the client's method request after that is answered
+    /// like any paired app's — the pairing the person's paste made.
+    #[test]
+    fn a_nostrconnect_uri_pairs_and_the_client_is_served() {
+        use crate::nostr::test_relay::StubRelay;
+        use nostr::nips::nip46::{NostrConnectMessage, NostrConnectRequest};
+
+        let stub = StubRelay::start(Vec::new());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SOCKET_NAME);
+        let listener = bind(&path).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let (daemon, inbound_rx) =
+            Daemon::new(Vault::new(MemoryStore::default()), vec![stub.url.clone()], None);
+        let engine = daemon.engine();
+        let daemon = Arc::new(Mutex::new(daemon));
+        std::thread::spawn({
+            let daemon = daemon.clone();
+            let handle = runtime.handle().clone();
+            move || loop {
+                let Ok(event) = inbound_rx.recv() else {
+                    return;
+                };
+                let plan = { daemon.lock().unwrap().plan_bunker_event(&event) };
+                let Some(plan) = plan else { continue };
+                match plan {
+                    crate::nostr::bunker::Plan::Ignore => continue,
+                    crate::nostr::bunker::Plan::Answer(answer) => {
+                        let _ = daemon.lock().unwrap().publish(&answer);
+                    }
+                    crate::nostr::bunker::Plan::Ask { ref request, method, ref params, .. } => {
+                        use crate::nostr::bunker::Gate;
+                        let decision =
+                            handle.block_on(engine.decide(&request.pubkey, &method, params));
+                        let answer =
+                            { daemon.lock().unwrap().execute_bunker_event(plan, decision) };
+                        if let Some(answer) = answer {
+                            let _ = daemon.lock().unwrap().publish(&answer);
+                        }
+                    }
+                    crate::nostr::bunker::Plan::Paired { .. }
+                    | crate::nostr::bunker::Plan::RelaysServed { .. }
+                    | crate::nostr::bunker::Plan::Ended { .. }
+                    | crate::nostr::bunker::Plan::Shed { .. } => continue,
+                }
+            }
+        });
+        std::thread::spawn({
+            let daemon = daemon.clone();
+            move || serve(listener, daemon)
+        });
+
+        // The daemon is armed before the URI arrives: the socket
+        // client set it up.
+        let mut client = UnixStream::connect(&path).unwrap();
+        let ask = |mut client: &UnixStream, line: &str| -> String {
+            client.write_all(line.as_bytes()).unwrap();
+            client.write_all(b"\n").unwrap();
+            let mut answer = String::new();
+            BufReader::new(client.try_clone().unwrap()).read_line(&mut answer).unwrap();
+            answer
+        };
+        ask(&mut client, r#"{"cmd":"setup","mode":{"how":"generate"}}"#);
+
+        // The client minted its own keys and its own secret, and shows
+        // the URI the person pastes. Its relay is the same stub — the
+        // daemon's own road and the client's overlap here. The relay
+        // rides percent-encoded, the spelling the NIP's own example
+        // uses.
+        let app = Keys::generate();
+        let relay_encoded = stub.url.replace(':', "%3A").replace('/', "%2F");
+        let uri = format!(
+            "nostrconnect://{}?relay={}&secret=the-client-secret&perms=sign_event%3A1&name=Pasted",
+            app.public_key(),
+            relay_encoded
+        );
+        let answer = ask(&mut client, &format!(r#"{{"cmd":"connect","uri":"{uri}"}}"#));
+        assert!(answer.contains("\"ok\":true"), "the paste paired: {answer}");
+        assert!(answer.contains("Pasted"), "the URI's name rode along: {answer}");
+
+        // The handshake crossed the client's relay, and its content is
+        // the response whose result is the client's own secret — the
+        // proof the client validates against spoofing.
+        wait_for("the handshake to reach the client's relay", 100, || {
+            stub.received().iter().any(|frame| frame.contains(":24133"))
+        });
+        let frame = stub
+            .received()
+            .into_iter()
+            .find(|frame| frame.contains(":24133"))
+            .expect("the handshake went out");
+        let parsed: serde_json::Value = serde_json::from_str(&frame).unwrap();
+        let handshake: Event = serde_json::from_value(parsed[1].clone()).unwrap();
+        let plaintext = app.nip44_decrypt(&handshake.pubkey, &handshake.content).unwrap();
+        match NostrConnectMessage::from_json(&plaintext).unwrap() {
+            NostrConnectMessage::Response { result, .. } => {
+                assert_eq!(result.as_deref(), Some("the-client-secret"));
+            }
+            other => panic!("the handshake is a response: {other:?}"),
+        }
+
+        // The pairing the paste made, visible like any other: the
+        // name and the perms the URI claimed ride the record.
+        let apps: serde_json::Value =
+            serde_json::from_str(ask(&mut client, r#"{"cmd":"apps"}"#).trim()).unwrap();
+        let record = &apps["apps"][0];
+        assert_eq!(record["pubkey"].as_str(), Some(&app.public_key().to_string()));
+        assert_eq!(record["name"].as_str(), Some("Pasted"));
+        assert_eq!(record["perms"].as_str(), Some("sign_event:1"));
+
+        // And the client is served: its method request — through its
+        // relay — comes back answered, the way a paired app's does.
+        let bunker_pubkey =
+            nostr::key::PublicKey::parse(apps["apps"][0]["pubkey"].as_str().unwrap()).unwrap();
+        let message = NostrConnectMessage::request(
+            &NostrConnectRequest::from_message(
+                nostr::nips::nip46::NostrConnectMethod::GetPublicKey,
+                vec![],
+            )
+            .unwrap(),
+        );
+        let content = app.nip44_encrypt(&bunker_pubkey, &message.as_json()).unwrap();
+        let request = EventBuilder::new(Kind::NostrConnect, content)
+            .tag(Tag::public_key(bunker_pubkey))
+            .finalize(&app)
+            .unwrap();
+        stub.inject(&request);
+        wait_for("the client's answer to come back", 100, || {
+            let frames: Vec<String> =
+                stub.received().into_iter().filter(|f| f.contains(":24133")).collect();
+            frames.len() >= 2
+        });
+        let frames: Vec<String> =
+            stub.received().into_iter().filter(|f| f.contains(":24133")).collect();
+        let parsed: serde_json::Value = serde_json::from_str(&frames[1]).unwrap();
+        let answer: Event = serde_json::from_value(parsed[1].clone()).unwrap();
+        let plaintext = app.nip44_decrypt(&answer.pubkey, &answer.content).unwrap();
+        match NostrConnectMessage::from_json(&plaintext).unwrap() {
+            NostrConnectMessage::Response { result, error, .. } => {
+                assert_eq!(error, None, "{error:?}");
+                assert_eq!(result.as_deref(), Some(bunker_pubkey.to_string().as_str()));
+            }
+            other => panic!("a response came back: {other:?}"),
+        }
+    }
+
     /// The layer's crown test, and the reason the stub relay exists:
     /// a daemon serving its unix socket, armed by the socket verb
     /// itself, whose bunker answers an app's request across a real
@@ -250,6 +399,7 @@ mod tests {
                             &app,
                             metadata.as_ref().and_then(|m| m.name.clone()),
                             metadata.as_ref().and_then(|m| m.image.clone()),
+                            None,
                         );
                         if let Some(burned) = burned {
                             let _ = handle.block_on(daemon.lock().unwrap().burn(&burned));

@@ -92,6 +92,11 @@ pub enum Request {
     /// it. The act of creating a pairing URI; the connect that uses
     /// it burns it.
     Mint,
+    /// Begin a `nostrconnect://` pairing from the client's URI — the
+    /// person's paste is the approval, the handshake the daemon's act.
+    Connect {
+        uri: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -144,6 +149,7 @@ pub enum OkResponse {
     Level { ok: bool },
     Rotate { ok: bool, uri: String },
     Mint { ok: bool, uri: String },
+    Connect { ok: bool, name: Option<String>, relays: Vec<String> },
 }
 
 /// What `status` says, and what `doctor` will grade through it later.
@@ -447,6 +453,45 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                 Ok(()) => Response::Ok(OkResponse::Level { ok: true }),
                 Err(e) => err_response(anyhow!("{e}")),
             },
+            Request::Connect { uri } => {
+                // The person's paste is the approval: parse, open the
+                // session, publish the handshake on the client's
+                // relays, record the pairing. A locked bunker has no
+                // key to sign the handshake with, and a URI that
+                // promises one would be a lie.
+                if self.bunker.is_none() {
+                    return err_response(anyhow!(
+                        "the bunker is locked; unlock it and the pairing can land"
+                    ));
+                }
+                match self.bunker.as_mut().expect("checked").start_handshake(&uri) {
+                    Ok((handshake, parts)) => {
+                        if let Some(pool) = self.pool.as_mut() {
+                            pool.subscribe_relays(
+                                parts.relays.clone(),
+                                self.bunker.as_ref().expect("checked").public_key(),
+                                &self.inbound,
+                                &self.status_tx,
+                            );
+                        }
+                        self.engine.pair_with_metadata(
+                            &parts.client_pubkey,
+                            parts.name.clone(),
+                            None,
+                            parts.perms.clone(),
+                        );
+                        if let Err(e) = self.publish(&handshake) {
+                            return err_response(anyhow!("the handshake was not published: {e}"));
+                        }
+                        Response::Ok(OkResponse::Connect {
+                            ok: true,
+                            name: parts.name,
+                            relays: parts.relays,
+                        })
+                    }
+                    Err(e) => err_response(anyhow!("the URI did not parse: {e}")),
+                }
+            }
             Request::Rotate => match self.rotate().await {
                 Ok(uri) => Response::Ok(OkResponse::Rotate { ok: true, uri }),
                 Err(e) => err_response(e),
@@ -742,7 +787,7 @@ mod tests {
 
         // An app pairs — the engine's record is the durable side.
         let app_keys = Keys::generate();
-        daemon.engine.pair_with_metadata(&app_keys.public_key(), None, None);
+        daemon.engine.pair_with_metadata(&app_keys.public_key(), None, None, None);
         drop(daemon);
 
         // A fresh daemon over the same state: the restart, with the
@@ -778,7 +823,7 @@ mod tests {
         daemon.handle(decode(r#"{"cmd":"setup","mode":{"how":"generate"}}"#).unwrap()).await;
 
         let app_keys = Keys::generate();
-        daemon.engine.pair_with_metadata(&app_keys.public_key(), None, None);
+        daemon.engine.pair_with_metadata(&app_keys.public_key(), None, None, None);
 
         // The cycle: lock tears the bunker down, unlock arms it fresh.
         daemon.handle(decode(r#"{"cmd":"lock"}"#).unwrap()).await;
@@ -811,7 +856,7 @@ mod tests {
 
         let app_keys = Keys::generate();
         let app = app_keys.public_key();
-        daemon.engine.pair_with_metadata(&app, None, None);
+        daemon.engine.pair_with_metadata(&app, None, None, None);
 
         // The app connects, so the bunker holds a live session too —
         // the engine's record is not the only place "paired" lives.
@@ -876,7 +921,7 @@ mod tests {
 
         let app_keys = Keys::generate();
         let app = app_keys.public_key();
-        daemon.engine.pair_with_metadata(&app, None, None);
+        daemon.engine.pair_with_metadata(&app, None, None, None);
         assert!(daemon.engine.revoke(&app.to_string()));
         drop(daemon);
 
