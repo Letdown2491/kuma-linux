@@ -1,0 +1,46 @@
+# The compose environment, mirrored.
+#
+# The base kuma composes from floats by tag, and a float is an upstream
+# release nobody here reviewed — the 2026-09-30 one broke every boot
+# stage at once. Pinning it needs the old bytes, and quay's registry
+# garbage-collects a manifest the moment its tag moves elsewhere, so
+# the old digest 404s within days: a pin that names quay's digest is
+# a pin that expires. The mirror is where the pin can live instead:
+# this job pulls the base once, pushes it under this repo's own kuma
+# package, and ci.yml names the minted tag. Dispatch it by hand when
+# the pin moves, the same way the Go relay's commit is bumped by hand;
+# the diff is the review.
+name: mirror-base
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: the compose environment to mirror
+        default: quay.io/fedora/fedora-bootc:44
+      tag:
+        description: the tag to mint under ghcr.io/letdown2491/kuma
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: log in to ghcr
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: pull and push the mirror
+        run: |
+          set -euo pipefail
+          podman pull "${{ inputs.base }}"
+          podman push "${{ inputs.base }}" "ghcr.io/letdown2491/kuma:${{ inputs.tag }}"
+      - name: say what was minted
+        run: |
+          podman inspect --format \
+            'minted {{.RepoTags}} {{.Digest}}' \
+            "ghcr.io/letdown2491/kuma:${{ inputs.tag }}"
