@@ -5108,11 +5108,13 @@ pub(crate) const NIRI_NOSTR_BIND: &str = r#"    Mod+Ctrl+N allow-when-locked=tru
 
 /// The scheme handler: a nostrconnect:// link clicked anywhere lands in
 /// the approval panel rather than in nothing. The desktop file is the
-/// handler; the mimeapps line names it.
+/// handler; the mimeapps line names it. The verb is panel-open, not
+/// panel-toggle — a clicked link while the panel is already open must
+/// land the offer, not close the panel over it.
 pub(crate) const NOSTR_PANEL_DESKTOP: &str = r#"[Desktop Entry]
 Type=Application
 Name=kumaOS Nostr approvals
-Exec=noctalia msg panel-toggle kuma/nostr:panel %u
+Exec=noctalia msg panel-open kuma/nostr:panel %u
 NoDisplay=true
 MimeType=x-scheme-handler/nostrconnect;
 "#;
