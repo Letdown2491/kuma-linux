@@ -656,6 +656,16 @@ lets a local program do is ask — the policy engine decides what gets
 signed, the same engine and the same log for the CLI, a local app, and a
 paired phone.
 
+**Revocation is a state, not a deletion.** `revoke` tombstones the
+pairing — the app's connect is refused whatever it carries, the
+tombstone survives restarts, and `unrevoke` is the person's way back
+(it still needs a freshly minted URI, because the app's original
+secret burned at its first connect). The pairing is the bond: a
+known app's own reconnect re-verifies by identity — a client that
+restarted itself needs no fresh URI — and `logout` is the client's
+own goodbye, a deletion rather than a tombstone, because re-pairing
+is a fresh URI either way.
+
 **A disable is reversible, and a toggle never destroys anything.** The
 key lives in your keyring and the pairings in the daemon's state — user
 state no image update touches — so `[nostr] enable = false` ships a

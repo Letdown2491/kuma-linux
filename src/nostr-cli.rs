@@ -98,8 +98,13 @@ enum Command {
     Deny { id: String },
     /// The paired apps and their policy levels.
     Apps,
-    /// Forget a paired app: it answers as unpaired from then on.
+    /// Forget a paired app: it answers as unpaired from then on, and
+    /// no URI in its hands pairs it again — the tombstone stays until
+    /// `unrevoke`.
     Revoke { app: String },
+    /// Clear a revocation's tombstone. The way back in is still a
+    /// freshly minted URI (`kuma-nostr bunker`).
+    Unrevoke { app: String },
     /// Set a paired app's policy level: `ask`, `basic`, or `trust`.
     /// Trust is the indefinite approval — every method signs
     /// unattended — and is graded loudly by the doctor.
@@ -175,6 +180,9 @@ fn main() -> Result<()> {
         Command::Deny { id } => format!(r#"{{"cmd":"deny","id":{}}}"#, json_string(id)),
         Command::Apps => r#"{"cmd":"apps"}"#.to_string(),
         Command::Revoke { app } => format!(r#"{{"cmd":"revoke","app":{}}}"#, json_string(app)),
+        Command::Unrevoke { app } => {
+            format!(r#"{{"cmd":"unrevoke","app":{}}}"#, json_string(app))
+        }
         Command::Level { app, level } => format!(
             r#"{{"cmd":"level","app":{},"level":{}}}"#,
             json_string(app),
@@ -368,6 +376,13 @@ fn render(value: &serde_json::Value) -> Result<()> {
                 println!("revoked");
             } else {
                 println!("no such app");
+            }
+        }
+        Some("unrevoke") => {
+            if value["cleared"].as_bool() == Some(true) {
+                println!("un-revoked; mint a fresh URI to let the app back in");
+            } else {
+                println!("no revoked app by that pubkey");
             }
         }
         Some("level") => println!("level set"),

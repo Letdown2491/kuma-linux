@@ -103,6 +103,18 @@ differently. Why it changed belongs in the commit that made it.
   non-loopback host. **Nothing to do differently; the bunker:// flow
   is unchanged.**
 
+- **Revocation is a state.** Revoke no longer deletes the pairing
+  record — it tombstones it: the app's connect is refused whatever it
+  carries, the tombstone survives restarts, and `kuma-nostr
+  unrevoke <app>` clears it. **Do something differently if you
+  revoked apps to free their rows: the rows are still there, revoked.**
+  The way back in is still a freshly minted URI — the app's original
+  secret burned at its first connect — and a known app's own
+  reconnect now acks by identity, so a client that restarted itself
+  needs no fresh URI. The door with no outstanding secret is now
+  shut: nothing pairs until the person mints, where an empty vault
+  used to fall back to pairing on the person's later approval.
+
 ## v44.4.0 (2026-09-28)
 
 ### Added
