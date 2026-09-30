@@ -187,8 +187,7 @@ impl RelayPool {
                 continue;
             }
             self.app_urls.entry(*app).or_default().push(url.clone());
-            let road =
-                self.spawn_road(url, false, Some(*app), bunker_pubkey, inbound, status);
+            let road = self.spawn_road(url, false, Some(*app), bunker_pubkey, inbound, status);
             self.apps.entry(*app).or_default().push(road);
         }
     }
@@ -224,11 +223,12 @@ impl RelayPool {
     }
 
     /// Publish the handshake down the client's relays and nothing
-    /// else's — the NIP spells that road as the URI's, and a new
-    /// pairing announced on the declared set is metadata the bunker's
-    /// own relays do not need.
+    /// else's — the NIP spells that road as the URI's. An app whose
+    /// URI named the declared set has no threads of its own: the
+    /// declared set IS its road.
     pub fn publish_only_to(&self, event: &Event, app: &PublicKey) -> Result<()> {
-        self.send(event, Fan::OnlyApp(*app))
+        let has_own_road = self.apps.get(app).is_some_and(|roads| !roads.is_empty());
+        self.send(event, if has_own_road { Fan::OnlyApp(*app) } else { Fan::Own })
     }
 
     fn send(&self, event: &Event, fan: Fan) -> Result<()> {
