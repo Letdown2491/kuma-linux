@@ -54,6 +54,10 @@ enum Command {
     Unlock,
     /// Drop the key from memory; the stored vault stays.
     Lock,
+    /// The keep-alive: reset the inactivity clock without unlocking.
+    /// The panel sends this when the person is clearly present, so a
+    /// switch with nobody near it is one that means it.
+    Touch,
     /// What the daemon holds: whether a vault exists and is unlocked.
     Status,
     /// The `bunker://` URI a remote app pairs with — as text, and as a
@@ -140,6 +144,7 @@ fn main() -> Result<()> {
         Command::Import => import_request()?,
         Command::Unlock => r#"{"cmd":"unlock"}"#.to_string(),
         Command::Lock => r#"{"cmd":"lock"}"#.to_string(),
+        Command::Touch => r#"{"cmd":"touch"}"#.to_string(),
         Command::Status => r#"{"cmd":"status"}"#.to_string(),
         Command::Bunker { .. } => r#"{"cmd":"status"}"#.to_string(),
         Command::Destroy { yes } => format!(r#"{{"cmd":"destroy","confirm":{yes}}}"#),
@@ -279,6 +284,13 @@ fn render(value: &serde_json::Value) -> Result<()> {
                 (true, true, Some(npub)) => println!("vault exists, unlocked as {npub}"),
                 (true, true, None) => println!("vault exists, unlocked"),
             }
+            if let Some(switch) = vault["inactivity"].as_object() {
+                println!(
+                    "inactivity lock: armed, {}s remaining of {}s",
+                    switch["remaining_secs"].as_u64().unwrap_or(0),
+                    switch["window_secs"].as_u64().unwrap_or(0)
+                );
+            }
         }
         Some("setup") => println!(
             "vault created, unlocked as {}",
@@ -288,6 +300,7 @@ fn render(value: &serde_json::Value) -> Result<()> {
             println!("unlocked as {}", value["pubkey"].as_str().unwrap_or("(npub unreadable)"))
         }
         Some("lock") => println!("locked"),
+        Some("touch") => println!("kept alive"),
         Some("destroy_dry_run") => println!(
             "dry run: {}",
             value["would"].as_str().unwrap_or("this would delete the vault")

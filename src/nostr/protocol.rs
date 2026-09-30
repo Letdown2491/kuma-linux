@@ -15,6 +15,7 @@
 
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
@@ -44,6 +45,11 @@ pub enum Request {
     },
     Unlock,
     Lock,
+    /// The keep-alive: resets the inactivity clock without unlocking.
+    /// The surfaces that know the person is present — the panel, the
+    /// CLI — send it, so a switch nobody interacted with is one that
+    /// means it.
+    Touch,
     /// Deletes the vault. `confirm` defaults to false, so a bare
     /// destroy is the dry run — the cost is named before it is paid.
     Destroy {
@@ -123,6 +129,7 @@ pub enum OkResponse {
     Setup { ok: bool, pubkey: String },
     Unlock { ok: bool, pubkey: String },
     Lock { ok: bool },
+    Touch { ok: bool },
     DestroyDryRun { ok: bool, would: String },
     Destroy { ok: bool },
     Prompts { ok: bool, prompts: Vec<super::policy::PromptView> },
@@ -155,6 +162,21 @@ pub struct VaultFact {
     /// connect, and a URI that promised one would be a lie with a
     /// sixty-second fuse.
     pub uri: Option<String>,
+    /// The inactivity switch, when it is armed: the window and what
+    /// remains of it. A switch that is off is absent — `status` says
+    /// nothing about a switch nobody configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inactivity: Option<InactivityFact>,
+}
+
+/// The inactivity switch's state at the moment `status` asked: the
+/// window it was configured with, and what remains of it. Remaining
+/// floor-clips at zero; a switch past its window with the gate still
+/// open is one the watchdog's next beat is about to close.
+#[derive(Debug, Clone, Serialize)]
+pub struct InactivityFact {
+    pub window_secs: u64,
+    pub remaining_secs: u64,
 }
 
 /// One line in, one line out, over a newline.
@@ -194,6 +216,16 @@ pub struct Daemon<S: super::vault::SecretStore> {
     /// channel. Stale by design between statuses: the doctor's liveness
     /// probe is the live answer, this is the rendered one.
     relay_states: HashMap<String, RelayState>,
+    /// The inactivity switch's window, when it is armed. `None` is the
+    /// switch off — the desktop daemon's posture is the PAM-open
+    /// keyring, and a switch on by default would lock the bunker while
+    /// the person is away from the keyboard, which is the opposite of
+    /// the surprise-free boot the layer promises.
+    inactivity: Option<Duration>,
+    /// The last reset the switch saw — construction, an unlock, or a
+    /// keep-alive. Requests do not reset it: the switch's question is
+    /// whether a person is present, not whether an app is talking.
+    last_activity: std::time::Instant,
 }
 
 impl<S: super::vault::SecretStore> Daemon<S> {
@@ -220,8 +252,75 @@ impl<S: super::vault::SecretStore> Daemon<S> {
             status_tx,
             status_rx,
             relay_states: HashMap::new(),
+            inactivity: None,
+            last_activity: std::time::Instant::now(),
         };
         (daemon, inbound_rx)
+    }
+
+    /// Arm the inactivity switch. The window is the daemon operator's
+    /// decision, carried as an argument until the declaration block
+    /// exists to carry it — the same gap the relay set has — and the
+    /// floor is enforced where the argument is parsed, not here.
+    pub fn with_inactivity(&mut self, window: Option<Duration>) {
+        self.inactivity = window;
+        self.last_activity = std::time::Instant::now();
+    }
+
+    /// The keep-alive: the clock starts over. Unlocking touches too —
+    /// a fresh gate is a present person by definition.
+    fn touch(&mut self) {
+        self.last_activity = std::time::Instant::now();
+    }
+
+    /// Whether the window has passed on an open gate — the only state
+    /// the watchdog acts on. A locked daemon's switch has nothing to
+    /// do: the lock is the switch's own act, and an unlock resets the
+    /// clock by construction.
+    fn inactivity_expired(&self) -> bool {
+        self.vault.is_unlocked()
+            && self.inactivity.is_some_and(|window| self.last_activity.elapsed() > window)
+    }
+
+    /// The lock's body, shared by the verb and the watchdog: a bunker
+    /// that is being locked stops being armed first, so there is no
+    /// moment where the keys are gone and the bunker still answers.
+    fn lock_switch(&mut self) {
+        self.teardown_bunker();
+        self.vault.lock();
+    }
+
+    /// The switch's state for `status`: the window and what remains.
+    /// `None` when the switch is off.
+    fn inactivity_fact(&self) -> Option<InactivityFact> {
+        let window = self.inactivity?;
+        let remaining = window.saturating_sub(self.last_activity.elapsed());
+        Some(InactivityFact { window_secs: window.as_secs(), remaining_secs: remaining.as_secs() })
+    }
+
+    /// The watchdog: a thread that wakes on its beat and closes the
+    /// switch when the window has passed. It holds no state of its
+    /// own — every beat re-locks the daemon and asks the one question
+    /// — and a switch that is off spawns no thread, because a switch
+    /// nobody configured has nothing to watch. The beat is a minute:
+    /// longer than the floor's granularity needs to be exact, shorter
+    /// than any window a person would set.
+    pub fn spawn_inactivity_watchdog(
+        daemon: &std::sync::Arc<std::sync::Mutex<Self>>,
+        beat: Duration,
+    ) -> Option<std::thread::JoinHandle<()>> {
+        if daemon.lock().expect("the daemon lock").inactivity.is_none() {
+            return None;
+        }
+        let daemon = Arc::clone(daemon);
+        Some(std::thread::spawn(move || loop {
+            std::thread::sleep(beat);
+            let mut daemon = daemon.lock().expect("the daemon lock");
+            if daemon.inactivity_expired() {
+                eprintln!("kuma-nostrd: the inactivity window closed; the switch locks");
+                daemon.lock_switch();
+            }
+        }))
     }
 
     pub async fn handle(&mut self, request: Request) -> Response {
@@ -264,6 +363,7 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                                 relays: self.relays.clone(),
                                 connected,
                                 uri,
+                                inactivity: self.inactivity_fact(),
                             },
                         })
                     }
@@ -273,9 +373,12 @@ impl<S: super::vault::SecretStore> Daemon<S> {
             Request::Setup { mode } => self.setup(mode).await,
             Request::Unlock => self.unlock().await,
             Request::Lock => {
-                self.teardown_bunker();
-                self.vault.lock();
+                self.lock_switch();
                 Response::Ok(OkResponse::Lock { ok: true })
+            }
+            Request::Touch => {
+                self.touch();
+                Response::Ok(OkResponse::Touch { ok: true })
             }
             Request::Destroy { confirm } => {
                 if !confirm {
@@ -353,6 +456,7 @@ impl<S: super::vault::SecretStore> Daemon<S> {
         self.vault.unlock().await?;
         let key =
             self.vault.key().ok_or_else(|| anyhow!("unlocked the vault and found no key"))?.clone();
+        self.touch();
         Ok(self.arm_bunker(&key))
     }
 
@@ -393,6 +497,7 @@ impl<S: super::vault::SecretStore> Daemon<S> {
         match self.vault.unlock().await {
             Ok(()) => match self.vault.key().cloned() {
                 Some(key) => {
+                    self.touch();
                     let pubkey = self.arm_bunker(&key);
                     Response::Ok(OkResponse::Unlock { ok: true, pubkey })
                 }
@@ -552,6 +657,13 @@ mod tests {
         let mut daemon = daemon().await;
         let response = daemon.handle(decode(request).unwrap()).await;
         encode(&response)
+    }
+
+    /// The status line's vault fact, parsed — what the switch's tests
+    /// read.
+    fn decode_status_vault(line: &str) -> serde_json::Value {
+        let value: serde_json::Value = serde_json::from_str(line).expect("a house line");
+        value["vault"].clone()
     }
 
     #[tokio::test]
@@ -740,6 +852,67 @@ mod tests {
             }
             other => panic!("a revoked app is refused, not gated: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn the_switch_locks_an_idle_daemon_and_touch_resets_it() {
+        async fn switched_daemon(window_secs: u64) -> Daemon<MemoryStore> {
+            let mut daemon = daemon().await;
+            daemon.handle(decode(r#"{"cmd":"setup","mode":{"how":"generate"}}"#).unwrap()).await;
+            daemon.with_inactivity(Some(Duration::from_secs(window_secs)));
+            daemon
+        }
+
+        // Armed: the status names the switch and what remains of it.
+        let mut daemon = switched_daemon(3600).await;
+        let line = encode(&daemon.handle(decode(r#"{"cmd":"status"}"#).unwrap()).await);
+        assert!(line.contains("inactivity"), "the status carries the switch: {line}");
+        let vault = &decode_status_vault(&line);
+        assert_eq!(vault["window_secs"].as_u64(), Some(3600));
+        assert!(vault["remaining_secs"].as_u64().unwrap_or(0) > 3590, "{vault}");
+
+        // The keep-alive resets the clock without unlocking.
+        std::thread::sleep(Duration::from_millis(1200));
+        let before = decode_status_vault(&encode(
+            &daemon.handle(decode(r#"{"cmd":"status"}"#).unwrap()).await,
+        ))["remaining_secs"]
+            .as_u64()
+            .unwrap_or(0);
+        assert!(matches!(
+            daemon.handle(decode(r#"{"cmd":"touch"}"#).unwrap()).await,
+            Response::Ok(OkResponse::Touch { .. })
+        ));
+        let after = decode_status_vault(&encode(
+            &daemon.handle(decode(r#"{"cmd":"status"}"#).unwrap()).await,
+        ))["remaining_secs"]
+            .as_u64()
+            .unwrap_or(0);
+        assert!(after > before, "a touch leaves more time on the clock: {before} → {after}");
+        let line = encode(&daemon.handle(decode(r#"{"cmd":"status"}"#).unwrap()).await);
+        assert!(line.contains("\"unlocked\":true"), "a touch did not lock: {line}");
+    }
+
+    #[tokio::test]
+    async fn the_watchdog_locks_when_the_window_passes() {
+        let mut daemon = daemon().await;
+        daemon.handle(decode(r#"{"cmd":"setup","mode":{"how":"generate"}}"#).unwrap()).await;
+        daemon.with_inactivity(Some(Duration::from_secs(1)));
+        let daemon = std::sync::Arc::new(std::sync::Mutex::new(daemon));
+
+        // The watchdog on a fast beat; the window is a second. Nobody
+        // touches, so the switch closes on its own.
+        Daemon::spawn_inactivity_watchdog(&daemon, Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(1400));
+
+        let mut daemon = daemon.lock().expect("the daemon lock");
+        let line = encode(&daemon.handle(decode(r#"{"cmd":"status"}"#).unwrap()).await);
+        assert!(line.contains("\"unlocked\":false"), "the watchdog locked: {line}");
+    }
+
+    #[tokio::test]
+    async fn a_switch_that_is_off_spawns_no_watchdog() {
+        let daemon = std::sync::Arc::new(std::sync::Mutex::new(daemon().await));
+        assert!(Daemon::spawn_inactivity_watchdog(&daemon, Duration::from_millis(100)).is_none());
     }
 
     #[tokio::test]

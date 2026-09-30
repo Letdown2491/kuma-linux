@@ -38,6 +38,15 @@ struct Args {
     /// only way one exists.
     #[arg(long = "relay")]
     relays: Vec<String>,
+    /// The inactivity switch's window, in seconds: after this long
+    /// with no unlock and no keep-alive, the daemon locks itself —
+    /// the dead man's switch, whose act is the same lock verb the
+    /// panel has. 0 or absent leaves the switch off, the desktop
+    /// default: the keyring is PAM-open here, and a switch on by
+    /// default would lock the bunker while the person is away. The
+    /// floor is an hour — a fuse shorter than that trips on lunch.
+    #[arg(long)]
+    inactivity_lock_secs: Option<u64>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -52,6 +61,13 @@ fn main() -> anyhow::Result<()> {
         .expect("installing the crypto provider");
 
     let args = Args::parse();
+    let window = match args.inactivity_lock_secs {
+        None | Some(0) => None,
+        Some(secs) if secs < 3600 => {
+            anyhow::bail!("the inactivity window is {secs}s; the floor is one hour (3600)")
+        }
+        Some(secs) => Some(std::time::Duration::from_secs(secs)),
+    };
     let socket_path = match &args.socket {
         Some(path) => path.clone(),
         None => socket::default_socket_path()?,
@@ -79,8 +95,9 @@ fn main() -> anyhow::Result<()> {
         .map(|home| std::path::PathBuf::from(home).join(".local/state/kuma-nostr"));
     let (daemon, inbound_rx) =
         Daemon::new(Vault::new(KeyringStore), args.relays.clone(), state_dir);
-    let engine = daemon.engine();
     let mut daemon = daemon;
+    daemon.with_inactivity(window);
+    let engine = daemon.engine();
 
     // The startup posture: come up answering. A vault that will not
     // open is a locked daemon, not a dead one.
@@ -92,6 +109,11 @@ fn main() -> anyhow::Result<()> {
     }
 
     let daemon = Arc::new(Mutex::new(daemon));
+
+    // The inactivity watchdog, when the switch is armed: it wakes on
+    // the minute, asks the one question, and closes the switch the
+    // same way the panel's lock verb does. Off, it is nothing at all.
+    Daemon::spawn_inactivity_watchdog(&daemon, std::time::Duration::from_secs(60));
 
     // The bunker worker: relay-delivered events in, answers published
     // out. The three beats are the lock story: plan under the lock,
