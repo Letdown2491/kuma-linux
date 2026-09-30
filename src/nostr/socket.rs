@@ -373,6 +373,155 @@ mod tests {
         }
     }
 
+    /// The nostrconnect road, end to end, with the client's relays
+    /// distinct from the bunker's: the handshake goes only to the
+    /// client's relay, the client's request is answered on both roads,
+    /// and revoking tears the client's roads down.
+    #[test]
+    fn a_nostrconnect_app_s_road_is_its_own_and_teardown_stops_it() {
+        use crate::nostr::test_relay::{StubRelay, wait_for};
+        use nostr::nips::nip46::{NostrConnectMessage, NostrConnectRequest};
+
+        // Two relays: the bunker's own (stub1) and the client's (stub2).
+        let own_relay = StubRelay::start(Vec::new());
+        let client_relay = StubRelay::start(Vec::new());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SOCKET_NAME);
+        let listener = bind(&path).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let (daemon, inbound_rx) =
+            Daemon::new(Vault::new(MemoryStore::default()), vec![own_relay.url.clone()], None);
+        let engine = daemon.engine();
+        let daemon = Arc::new(Mutex::new(daemon));
+        std::thread::spawn({
+            let daemon = daemon.clone();
+            let handle = runtime.handle().clone();
+            move || loop {
+                let Ok(event) = inbound_rx.recv() else {
+                    return;
+                };
+                let plan = { daemon.lock().unwrap().plan_bunker_event(&event) };
+                let Some(plan) = plan else { continue };
+                match plan {
+                    crate::nostr::bunker::Plan::Ignore => continue,
+                    crate::nostr::bunker::Plan::Answer(answer) => {
+                        let _ = daemon.lock().unwrap().publish(&answer);
+                    }
+                    crate::nostr::bunker::Plan::Paired { .. }
+                    | crate::nostr::bunker::Plan::RelaysServed { .. }
+                    | crate::nostr::bunker::Plan::Ended { .. }
+                    | crate::nostr::bunker::Plan::Shed { .. } => continue,
+                    crate::nostr::bunker::Plan::Ask { ref request, method, ref params, .. } => {
+                        use crate::nostr::bunker::Gate;
+                        // The client's first ask: approved here, so the
+                        // answer's road is what carries it.
+                        let decision = if method
+                            == nostr::nips::nip46::NostrConnectMethod::GetPublicKey
+                        {
+                            crate::nostr::bunker::Decision::Allow
+                        } else {
+                            handle.block_on(engine.decide(&request.pubkey, &method, params))
+                        };
+                        let answer =
+                            { daemon.lock().unwrap().execute_bunker_event(plan, decision) };
+                        if let Some(answer) = answer {
+                            let _ = daemon.lock().unwrap().publish(&answer);
+                        }
+                    }
+                }
+            }
+        });
+        std::thread::spawn({
+            let daemon = daemon.clone();
+            move || serve(listener, daemon)
+        });
+
+        let mut client = UnixStream::connect(&path).unwrap();
+        let ask = |mut client: &UnixStream, line: &str| -> String {
+            client.write_all(line.as_bytes()).unwrap();
+            client.write_all(b"\n").unwrap();
+            let mut answer = String::new();
+            BufReader::new(client.try_clone().unwrap()).read_line(&mut answer).unwrap();
+            answer
+        };
+        ask(&mut client, r#"{"cmd":"setup","mode":{"how":"generate"}}"#).to_string();
+
+        // The client's URI names only the client's relay.
+        let app = Keys::generate();
+        let relay_encoded = client_relay.url.replace(':', "%3A").replace('/', "%2F");
+        let uri = format!(
+            "nostrconnect://{}?relay={}&secret=the-client-secret&name=Road",
+            app.public_key(),
+            relay_encoded
+        );
+        let answer = ask(&mut client, &format!(r#"{{"cmd":"connect","uri":"{uri}"}}"#));
+        assert!(answer.contains("\"ok\":true"), "{answer}");
+
+        // The handshake crossed the client's relay and nothing else's.
+        wait_for("the handshake to reach the client's relay", 100, || {
+            client_relay.received().iter().any(|frame| frame.contains(":24133"))
+        });
+        assert!(
+            !own_relay.received().iter().any(|frame| frame.contains(":24133")),
+            "the handshake is the client's road's business, not the declared set's"
+        );
+        let frame = client_relay
+            .received()
+            .into_iter()
+            .find(|frame| frame.contains(":24133"))
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&frame).unwrap();
+        let handshake: Event = serde_json::from_value(parsed[1].clone()).unwrap();
+        let bunker_pubkey = handshake.pubkey;
+        let plaintext = app.nip44_decrypt(&bunker_pubkey, &handshake.content).unwrap();
+        match NostrConnectMessage::from_json(&plaintext).unwrap() {
+            NostrConnectMessage::Response { result, .. } => {
+                assert_eq!(result.as_deref(), Some("the-client-secret"));
+            }
+            other => panic!("the handshake is a response: {other:?}"),
+        }
+
+        // The client's request crosses its own relay, and the answer
+        // comes back down BOTH roads: the declared set and the
+        // client's.
+        let message = NostrConnectMessage::request(
+            &NostrConnectRequest::from_message(
+                nostr::nips::nip46::NostrConnectMethod::GetPublicKey,
+                vec![],
+            )
+            .unwrap(),
+        );
+        let content = app.nip44_encrypt(&bunker_pubkey, &message.as_json()).unwrap();
+        let request = EventBuilder::new(Kind::NostrConnect, content)
+            .tag(Tag::public_key(bunker_pubkey))
+            .finalize(&app)
+            .unwrap();
+        client_relay.inject(&request);
+
+        wait_for("the answer on the client's relay", 100, || {
+            client_relay.received().iter().any(|frame| frame.contains(":24133") && frame.contains(&handshake.id.to_string()) == false)
+        });
+        wait_for("the answer on the declared set's relay", 100, || {
+            own_relay.received().iter().any(|frame| frame.contains(":24133"))
+        });
+
+        // The revoke tears the client's roads down: the threads stop,
+        // and a request that crosses the client's relay afterwards is
+        // never read at all.
+        let apps: serde_json::Value =
+            serde_json::from_str(ask(&mut client, r#"{"cmd":"apps"}"#).trim()).unwrap();
+        let app_hex = apps["apps"][0]["pubkey"].as_str().unwrap().to_string();
+        assert!(ask(
+            &mut client,
+            &format!(r#"{{"cmd":"revoke","app":"{app_hex}"}}"#)
+        )
+        .contains("\"ok\":true"));
+        wait_for("the client's roads to tear down", 100, || {
+            let daemon = daemon.lock().unwrap();
+            daemon.pool.as_ref().expect("armed").app_road_count(&app.public_key()) == 0
+        });
+    }
+
     /// The layer's crown test, and the reason the stub relay exists:
     /// a daemon serving its unix socket, armed by the socket verb
     /// itself, whose bunker answers an app's request across a real
