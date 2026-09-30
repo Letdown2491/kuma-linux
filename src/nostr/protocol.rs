@@ -934,8 +934,11 @@ mod tests {
             }
             other => panic!("a revoked app is refused live, not gated: {other:?}"),
         }
-        // And the engine's record did not come back from the ask.
-        assert!(daemon.engine.apps().is_empty(), "the ask re-paired a revoked app");
+        // And the engine's record did not come back from the ask —
+        // it stayed the tombstone the person made.
+        let apps = daemon.engine.apps();
+        assert_eq!(apps.len(), 1);
+        assert!(apps[0].revoked_at.is_some(), "the ask un-tombstoned a revoked app");
     }
 
     #[tokio::test]

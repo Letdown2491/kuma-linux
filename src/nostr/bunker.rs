@@ -1173,7 +1173,7 @@ mod tests {
         let secret = "the-nonce";
 
         // No echo at all: the app that never read the URI.
-        let request = app.connect(&bunker, &secret);
+        let request = app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[]);
         match bunker.plan(&request) {
             Plan::Answer(response) => match app.decrypt_response(&response) {
                 NostrConnectMessage::Response { error: Some(e), .. } => {
@@ -1246,11 +1246,11 @@ mod tests {
         // NORMAL state now, and a fallback that fired routinely would
         // let a scraped pubkey open asks on the person after every
         // legitimate pairing spent its door.
-        let (mut bunker, secret) = bunker_for_tests();
+        let mut bunker = Bunker::new(Keys::generate(), vec![]);
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
-        match bunker.plan(&app.connect(&bunker, &secret)) {
+        match bunker.plan(&app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[])) {
             Plan::Answer(response) => {
                 let message = app.decrypt_response(&response);
                 match message {
@@ -1655,7 +1655,7 @@ mod tests {
         let app = App::new();
         let other = App::new();
         bunker.plan(&app.connect(&bunker, &secret));
-        bunker.plan(&other.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
+        bunker.plan(&other.connect(&bunker, &secret));
 
         // The goodbye is self-scoped: no param names a target, the
         // caller is the target. The ack rides back either way.

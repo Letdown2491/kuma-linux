@@ -994,13 +994,28 @@ mod tests {
     }
 
     #[test]
-    fn revoke_forgets_the_app_and_its_standing_answers() {
+    fn revoke_tombstones_and_logout_forgets() {
         let engine = engine();
         let app = app();
         engine.pair(&app);
-        assert_eq!(engine.apps().len(), 1);
+
+        // Revoke: the record stays, tombstoned — the refusal has
+        // teeth across restarts — while a second revoke is no news.
         assert!(engine.revoke(&app.to_string()));
+        let record = &engine.apps()[0];
+        assert!(record.revoked_at.is_some(), "the tombstone is the record's own");
+        assert!(engine.revoke(&app.to_string()), "re-revoking finds the app");
+
+        // Un-revoke clears the tombstone; the record is the app's way
+        // back.
+        assert!(engine.unrevoke(&app.to_string()));
+        assert!(engine.apps()[0].revoked_at.is_none());
+        assert!(!engine.unrevoke(&app.to_string()), "un-revoking a clean record is no news");
+
+        // Logout: the app's own goodbye — a deletion, not a
+        // tombstone. Re-pairing is a fresh URI either way.
+        assert!(engine.logout(&app.to_string()));
         assert!(engine.apps().is_empty());
-        assert!(!engine.revoke(&app.to_string()), "revoking twice is not a success story");
+        assert!(!engine.logout(&app.to_string()), "logging out twice removes nothing");
     }
 }
