@@ -158,17 +158,17 @@ struct Inner {
     next_id: u64,
 }
 
-/// The engine: the [`super::bunker::Gate`] the bunker's worker asks,
-/// and the state the socket verbs (`prompts`, `approve`, `deny`,
-/// `apps`, `revoke`) drive. Cloneable on purpose — the handle is cheap
-/// and the state is shared — because the verbs and the gate are two
-/// roads into one decision record.
 /// How long an Ask waits for a person before it denies itself. A
 /// prompt that waited forever was a signature waiting to happen —
 /// approved a week later, it executed. Five minutes is what the app
 /// on the other side is willing to wait anyway.
 const PROMPT_TTL_SECS: u64 = 300;
 
+/// The engine: the [`super::bunker::Gate`] the bunker's worker asks,
+/// and the state the socket verbs (`prompts`, `approve`, `deny`,
+/// `apps`, `revoke`) drive. Cloneable on purpose — the handle is cheap
+/// and the state is shared — because the verbs and the gate are two
+/// roads into one decision record.
 #[derive(Clone)]
 pub struct Engine {
     inner: Arc<Mutex<Inner>>,
@@ -179,28 +179,26 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// `state_dir` is where `apps.json` lives; `None` makes the engine
-    /// memory-only, which is what the offline tests run against.
-    pub fn new(state_dir: Option<PathBuf>) -> Self {
+    fn with_ttl(state_dir: Option<PathBuf>, prompt_ttl: Duration) -> Self {
         let engine = Self {
             inner: Arc::new(Mutex::new(Inner::default())),
             state_path: state_dir,
-            prompt_ttl: Duration::from_secs(PROMPT_TTL_SECS),
+            prompt_ttl,
         };
         engine.load_apps();
         engine
     }
 
+    /// `state_dir` is where `apps.json` lives; `None` makes the engine
+    /// memory-only, which is what the offline tests run against.
+    pub fn new(state_dir: Option<PathBuf>) -> Self {
+        Self::with_ttl(state_dir, Duration::from_secs(PROMPT_TTL_SECS))
+    }
+
     /// The same engine with a window a test can afford to wait out.
     #[cfg(test)]
     fn with_prompt_ttl(state_dir: Option<PathBuf>, ttl: Duration) -> Self {
-        let engine = Self {
-            inner: Arc::new(Mutex::new(Inner::default())),
-            state_path: state_dir,
-            prompt_ttl: ttl,
-        };
-        engine.load_apps();
-        engine
+        Self::with_ttl(state_dir, ttl)
     }
 
     /// The state file the pairings persist to, if this engine persists.
@@ -334,20 +332,26 @@ impl Engine {
             let key = remember_key(&prompt.app, &prompt.method);
             inner.remembered.insert(key, unix_now() + duration.as_secs());
         }
+        // The channel is the single arbiter of who decides: a send
+        // that lands is the decision, and a send that fails means the
+        // window closed first and the wait is gone. The approval is
+        // refused by time, not by the person, and the log says
+        // exactly that instead of claiming an allow nothing received.
+        let answer_verdict = match &decision {
+            Decision::Allow => "allowed".to_string(),
+            Decision::Deny(reason) => format!("denied: {reason}"),
+        };
+        let verdict = match prompt.responder.send(decision) {
+            Ok(()) => answer_verdict,
+            Err(_) => "an answer came after the window closed".to_string(),
+        };
         inner.log.push(LogEntry {
             at: unix_now(),
             app: prompt.app.to_string(),
             method: format!("{:?}", prompt.method),
             summary: prompt.summary.clone(),
-            verdict: match &decision {
-                Decision::Allow => "allowed".into(),
-                Decision::Deny(reason) => format!("denied: {reason}"),
-            },
+            verdict,
         });
-        // A dropped send means the waiting bunker worker is gone — the
-        // request's app already timed out — and the log still says the
-        // decision happened, which is the part that must not be lost.
-        let _ = prompt.responder.send(decision);
         Ok(())
     }
 
@@ -449,14 +453,21 @@ impl super::bunker::Gate for Engine {
             Ok(Err(_)) => Decision::Deny("the prompt was dropped".into()),
             Err(_) => {
                 let mut inner = self.inner.lock().expect("the policy lock");
-                inner.prompts.retain(|(prompt_id, _)| prompt_id != &id);
-                inner.log.push(LogEntry {
-                    at: unix_now(),
-                    app: app.to_string(),
-                    method: format!("{method:?}"),
-                    summary,
-                    verdict: "expired unanswered".into(),
-                });
+                // An answer may have landed in the gap between the
+                // deadline and this lock: its send failed against a
+                // wait already gone, and its verdict is already in the
+                // log. Only a prompt still in the queue is one nobody
+                // answered — this arm logs the expiry for that one.
+                if inner.prompts.iter().any(|(prompt_id, _)| prompt_id == &id) {
+                    inner.prompts.retain(|(prompt_id, _)| prompt_id != &id);
+                    inner.log.push(LogEntry {
+                        at: unix_now(),
+                        app: app.to_string(),
+                        method: format!("{method:?}"),
+                        summary,
+                        verdict: "expired unanswered".into(),
+                    });
+                }
                 Decision::Deny("the ask timed out unanswered".into())
             }
         }
