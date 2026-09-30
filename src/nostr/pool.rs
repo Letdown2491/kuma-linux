@@ -38,6 +38,23 @@ pub(crate) const SUBSCRIPTION_ID: &str = "kuma-bunker";
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
 const BACKOFF_START: Duration = Duration::from_secs(1);
 
+/// How a road probes a quiet wire. The beat is one second (the read
+/// timeout); every so many beats the road sends a ping, and so many
+/// pings may go unanswered — no inbound frame of any kind between
+/// them — before the road calls the connection dead and walks off
+/// into the backoff that reconnects it.
+#[derive(Clone, Copy)]
+struct Timing {
+    beats_per_ping: u32,
+    max_unanswered: u32,
+}
+
+impl Default for Timing {
+    fn default() -> Self {
+        Self { beats_per_ping: 30, max_unanswered: 2 }
+    }
+}
+
 /// What a relay thread reports upward. Connection state is a fact the
 /// surfaces render, not a log line to hope for.
 #[derive(Debug, Clone, PartialEq)]
@@ -110,8 +127,26 @@ impl RelayPool {
         inbound: Sender<Event>,
         status: Sender<RelayStatus>,
     ) -> Self {
+        Self::spawn_with_timing(
+            relays,
+            bunker_pubkey,
+            inbound,
+            status,
+            Timing::default(),
+        )
+    }
+
+    /// `spawn` with the probe cadence spelled out — the tests' road to
+    /// a fast fuse. Production callers take the default.
+    fn spawn_with_timing(
+        relays: Vec<String>,
+        bunker_pubkey: PublicKey,
+        inbound: Sender<Event>,
+        status: Sender<RelayStatus>,
+        timing: Timing,
+    ) -> Self {
         let mut pool = Self { roads: Vec::new(), own_urls: Vec::new(), app_urls: HashMap::new() };
-        pool.spawn_own(relays, bunker_pubkey, &inbound, &status);
+        pool.spawn_own(relays, bunker_pubkey, &inbound, &status, timing);
         pool
     }
 
@@ -123,6 +158,7 @@ impl RelayPool {
         bunker_pubkey: PublicKey,
         inbound: &Sender<Event>,
         status: &Sender<RelayStatus>,
+        timing: Timing,
     ) {
         let stop = Arc::new(AtomicBool::new(false));
         let (outbound, outbound_rx) = channel::<(Event, Fan)>();
@@ -131,7 +167,9 @@ impl RelayPool {
             let inbound = inbound.clone();
             let status = status.clone();
             move || {
-                one_relay(url, own, app, bunker_pubkey, inbound, status, outbound_rx, stop);
+                one_relay(
+                    url, own, app, bunker_pubkey, inbound, status, outbound_rx, stop, timing,
+                );
             }
         });
         self.roads.push((Road { own, app, stop, handle, outbound: outbound.clone() }, outbound));
@@ -143,13 +181,14 @@ impl RelayPool {
         bunker_pubkey: PublicKey,
         inbound: &Sender<Event>,
         status: &Sender<RelayStatus>,
+        timing: Timing,
     ) {
         for url in relays {
             if self.own_urls.contains(&url) {
                 continue;
             }
             self.own_urls.push(url.clone());
-            self.spawn_road(url, true, None, bunker_pubkey, inbound, status);
+            self.spawn_road(url, true, None, bunker_pubkey, inbound, status, timing);
         }
     }
 
@@ -174,7 +213,7 @@ impl RelayPool {
                 continue;
             }
             self.app_urls.entry(*app).or_default().push(url.clone());
-            self.spawn_road(url, false, Some(*app), bunker_pubkey, inbound, status);
+            self.spawn_road(url, false, Some(*app), bunker_pubkey, inbound, status, Timing::default());
         }
     }
 
@@ -267,14 +306,16 @@ fn one_relay(
     status: Sender<RelayStatus>,
     outbound: Receiver<(Event, Fan)>,
     stop: Arc<AtomicBool>,
+    timing: Timing,
 ) {
     let mut backoff = BACKOFF_START;
     loop {
         if stop.load(Ordering::SeqCst) {
             return;
         }
-        match connect_and_serve(&url, own, app, bunker_pubkey, &inbound, &status, &outbound, &stop)
-        {
+        match connect_and_serve(
+            &url, own, app, bunker_pubkey, &inbound, &status, &outbound, &stop, timing,
+        ) {
             Ok(()) => return,
             Err(e) => {
                 let _ =
@@ -301,7 +342,9 @@ fn connect_and_serve(
     status: &Sender<RelayStatus>,
     outbound: &Receiver<(Event, Fan)>,
     stop: &AtomicBool,
+    timing: Timing,
 ) -> Result<()> {
+    let _ = timing;
     let (mut socket, _response) =
         tungstenite::connect(url).with_context(|| format!("connecting to {url}"))?;
     set_read_timeout(&mut socket, Some(Duration::from_secs(1)))?;
@@ -531,5 +574,69 @@ mod tests {
         assert!(events_from_relay_message("not json", SUBSCRIPTION_ID).is_empty());
         assert!(events_from_relay_message(r#"["NOTICE","hi"]"#, SUBSCRIPTION_ID).is_empty());
         assert!(events_from_relay_message(r#"["EVENT"]"#, SUBSCRIPTION_ID).is_empty());
+    }
+
+    // The post-hibernate road: the relay's side died while the machine
+    // slept, and nothing will ever arrive on the socket again — the
+    // FIN was lost mid-sleep, no ping is coming, no close. The kernel
+    // still calls the connection ESTABLISHED, so only the road's own
+    // probe can learn the truth. The regression the sleep bug wrote:
+    // a stub that answers the subscribe and then goes silent forever
+    // must be walked off — the road reconnects, and the second
+    // connection at the listener is the proof.
+    #[test]
+    fn a_road_whose_relay_went_silent_reconnects() {
+        let signer = Keys::generate();
+        let bunker_pubkey = signer.public_key();
+
+        // The stub accepts, shakes hands, reads the subscribe, and
+        // then plays dead: no frames, no reads, no close — the
+        // connection is a black hole, exactly as a relay left behind
+        // by a suspend is. The listener keeps accepting: a second
+        // acceptance is the observable a reconnect has.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("ws://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let connections = Arc::new(AtomicUsize::new(0));
+        let connections_for_thread = connections.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                connections_for_thread.fetch_add(1, Ordering::SeqCst);
+                let Ok(mut socket) = tungstenite::accept(stream) else { return };
+                loop {
+                    match socket.read() {
+                        Ok(Message::Text(_)) => break,
+                        Ok(_) => continue,
+                        Err(_) => return,
+                    }
+                }
+                // Never closed, never answered again: dropping would
+                // send a FIN, and a FIN is the one honesty the dead
+                // road has.
+                std::mem::forget(socket);
+            }
+        });
+
+        let (inbound_tx, _inbound_rx) = channel::<Event>();
+        let (status_tx, status_rx) = channel::<RelayStatus>();
+        let pool = RelayPool::spawn_with_timing(
+            vec![url],
+            bunker_pubkey,
+            inbound_tx,
+            status_tx,
+            Timing { beats_per_ping: 1, max_unanswered: 2 },
+        );
+
+        // The first connection lands — the road came up — and after
+        // the silence the road must walk off the dead socket: a
+        // second connection, inside the probe window.
+        wait_for("the first connection", 100, || {
+            connections.load(Ordering::SeqCst) >= 1
+        });
+        wait_for("the road to walk off the silent socket", 200, || {
+            connections.load(Ordering::SeqCst) >= 2
+        });
+        let _ = status_rx;
+        pool.shutdown();
     }
 }
