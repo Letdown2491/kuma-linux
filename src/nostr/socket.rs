@@ -337,6 +337,22 @@ mod tests {
             .finalize(&app)
             .unwrap();
         stub.inject(&request);
+
+        // The pairing landed at Ask — the person's paste approved the
+        // pairing, not the methods — so the client's first ask queues
+        // a prompt, and the paste's own person answers it here.
+        wait_for("the prompt to appear", 100, || {
+            ask(&mut client, r#"{"cmd":"prompts"}"#).contains("GetPublicKey")
+        });
+        let prompts: serde_json::Value =
+            serde_json::from_str(ask(&mut client, r#"{"cmd":"prompts"}"#).trim()).unwrap();
+        let prompt_id = prompts["prompts"][0]["id"].as_str().unwrap().to_string();
+        let approved = ask(
+            &mut client,
+            &format!(r#"{{"cmd":"approve","id":"{prompt_id}","remember_hours":null}}"#),
+        );
+        assert!(approved.contains("\"ok\":true"), "{approved}");
+
         wait_for("the client's answer to come back", 100, || {
             let frames: Vec<String> =
                 stub.received().into_iter().filter(|f| f.contains(":24133")).collect();
