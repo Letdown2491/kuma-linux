@@ -415,7 +415,7 @@ mod tests {
                     }
                     b')' | b']' | b'}' => {
                         let open = stack.pop().unwrap_or_else(|| {
-                            panic!("{name} closes a {bytes[i] as char} that never opened")
+                            panic!("{name} closes a {} that never opened", bytes[i] as char)
                         });
                         let close = match open {
                             b'(' => b')',
