@@ -506,12 +506,13 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                             None,
                             parts.perms.clone(),
                         );
-                        if let Err(e) = self
-                            .pool
-                            .as_ref()
-                            .ok_or_else(|| anyhow!("the bunker is not running"))?
-                            .publish_only_to(&handshake, &parts.client_pubkey)
-                        {
+                        let published = match self.pool.as_ref() {
+                            Some(pool) => {
+                                pool.publish_only_to(&handshake, &parts.client_pubkey)
+                            }
+                            None => Err(anyhow!("the bunker is not running")),
+                        };
+                        if let Err(e) = published {
                             return err_response(anyhow!("the handshake was not published: {e}"));
                         }
                         Response::Ok(OkResponse::Connect {
@@ -745,7 +746,7 @@ impl<S: super::vault::SecretStore> Daemon<S> {
     pub fn publish(&self, event: &Event) -> Result<()> {
         match &self.pool {
             Some(pool) => match event.tags.public_keys().next() {
-                Some(app) => pool.publish_for(event, app),
+                Some(app) => pool.publish_for(event, &app),
                 None => pool.publish(event),
             },
             None => Err(anyhow!("the bunker is not running")),
