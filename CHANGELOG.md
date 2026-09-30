@@ -57,6 +57,12 @@ differently. Why it changed belongs in the commit that made it.
   window where you start the daemon.** `status` reports it when
   armed.
 
+- **The bunker answers `switch_relays` and `logout`.** A paired app
+  can ask which relays the bunker answers on, and can end its own
+  pairing — the goodbye removes the record, the session, and the
+  standing grants, and cannot reach any other app. Nothing to do
+  differently.
+
 ## v44.4.0 (2026-09-28)
 
 ### Added
