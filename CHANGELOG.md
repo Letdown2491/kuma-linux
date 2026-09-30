@@ -27,6 +27,12 @@ differently. Why it changed belongs in the commit that made it.
   socket, a daemon refusal — now surfaces its error instead of
   repainting in silence, which is what once made a working revoke
   look broken.
+- **`bunker --json` prints the document again.** It printed the bare
+  URI, which no JSON parser can read — the panel's Copy fresh URI
+  decoded `nil`, copied nothing, and the clipboard kept whatever was
+  there before. Every verb's `--json` now prints the same shape, the
+  one `docs/agents.md` always promised (`uri` in the document), and
+  the button answers when a mint refuses or returns malformed.
 
 ## v44.4.0 (2026-09-30)
 

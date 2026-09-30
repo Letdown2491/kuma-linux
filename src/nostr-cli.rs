@@ -199,7 +199,14 @@ fn main() -> Result<()> {
     let value = client.ask(&request)?;
 
     if bunker_verb {
-        return bunker_verb_render(&value, bunker_qr, cli.json);
+        // `--json` is the document, like every verb's `--json` — the
+        // panel reads `uri` out of it. The render below is the
+        // person-facing one: URI, and the QR beside it when asked.
+        if cli.json {
+            println!("{value}");
+            return Ok(());
+        }
+        return bunker_verb_render(&value, bunker_qr);
     }
 
     if cli.json {
@@ -411,9 +418,9 @@ fn render(value: &serde_json::Value) -> Result<()> {
 /// URI is the copyable answer; the QR is the scannable one — both carry
 /// the bunker pubkey and the relay set, because a QR that only renders
 /// when the URI is not also printed is a URI nobody can paste into a
-/// support question. `--json` prints the URI alone in the house shape,
-/// which is what the panel reads.
-fn bunker_verb_render(value: &serde_json::Value, qr: bool, json: bool) -> Result<()> {
+/// support question. The `--json` document is main()'s, before this
+/// render is reached.
+fn bunker_verb_render(value: &serde_json::Value, qr: bool) -> Result<()> {
     if value.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
         anyhow::bail!(
             "the daemon refused: {}",
@@ -424,11 +431,6 @@ fn bunker_verb_render(value: &serde_json::Value, qr: bool, json: bool) -> Result
     let uri = value["uri"].as_str().ok_or_else(|| {
         anyhow::anyhow!("the daemon has no pairing URI yet; run `kuma-nostr setup`")
     })?;
-
-    if json {
-        println!("{uri}");
-        return Ok(());
-    }
 
     if qr {
         // One quiet-zone module on each side is the minimum a scanner

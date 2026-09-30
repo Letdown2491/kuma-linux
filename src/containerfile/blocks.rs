@@ -4740,11 +4740,20 @@ local function pairPane()
             ui.button({ text = "Copy fresh URI", variant = "primary", glyph = "clipboard-copy", onClick = function()
                 -- Minting is the act: the copy takes a URI that has
                 -- never been spent, not the last one — which a used
-                -- pairing already burned.
+                -- pairing already burned. Every arm says something:
+                -- the copy, the daemon's refusal, or an answer with
+                -- no URI in it. Silence here once ate URIs whole —
+                -- the clipboard kept its last tenant and the panel
+                -- looked fine.
                 noctalia.runAsync("kuma-nostr bunker --json", function(result)
                     local doc = noctalia.json.decode(result.stdout or "{}")
                     if doc and doc.uri then
                         noctalia.copyToClipboard(doc.uri, "text/plain")
+                    elseif result.exitCode == 0 then
+                        noctalia.notifyError("kumaOS nostr", "the mint answered without a URI")
+                    else
+                        noctalia.notifyError("kumaOS nostr",
+                            (result.stderr and result.stderr ~= "" and result.stderr) or "the mint failed")
                     end
                     refresh()
                 end)
