@@ -284,8 +284,24 @@ mode is structural: the record carries the method, the event kind, and
 the verdict, never a param.
 
 **What an app holds is a per-app pairing, not the key.** Pairing grants
-the right to *ask*; it never hands out key material. Revoking an app
-forgets its pairing and its remembered answers; the key is untouched.
+the right to *ask*; it never hands out key material. A pairing URI
+carries a one-time secret, and the connect that presents it burns it:
+a URI pairs one app once, a second connect with the same secret is
+refused, and a bunker with no outstanding secrets pairs nobody until
+the person mints a fresh URI. Revoking an app tombstones it — the
+connect is refused whatever the app carries, the tombstone survives
+restarts, and `unrevoke` clears it (the way back in is still a fresh
+URI) — while the app's own `logout` deletes its pairing outright.
+Either way the key is untouched, and a known app reconnects by its own
+identity: its requests are signed with the key it paired with, so a
+client restart is a hello, not a stranger.
+
+**The vault can lock itself.** The inactivity switch — a declaration
+window, an hour's floor, off by default — runs the same lock the
+panel's verb runs when nothing has unlocked or kept the bunker alive
+for that long. It exists for the machine that stops answering with the
+gate still open; the desktop's default posture is the PAM-open keyring,
+so the switch is yours to arm.
 
 **What the sandbox bounds.** The daemon runs as a user unit under the
 graphical session with the full systemd sandbox: no new privileges, a
