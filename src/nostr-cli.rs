@@ -64,7 +64,7 @@ enum Command {
     /// `apps` like any other.
     Connect {
         /// The URI, whole — scheme, client pubkey, relays, secret.
-        #[arg(trailing_var_arg)]
+        #[arg(allow_hyphen_values = true, num_args = 1..)]
         uri: Vec<String>,
     },
     /// What the daemon holds: whether a vault exists and is unlocked.
