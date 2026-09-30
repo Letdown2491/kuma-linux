@@ -29,15 +29,10 @@ use kuma::relay::{EventStore, RateLimiter, Rejected, RelayFilter};
 type Subscriptions = Arc<Mutex<HashMap<u64, Vec<(String, RelayFilter)>>>>;
 type Outbound = Arc<Mutex<HashMap<u64, Sender<Message>>>>;
 
-/// The heartbeat of every connection thread: outbound frames drain and
-/// the eviction beat ticks on this cadence. Long enough that an idle
-/// relay costs nothing; short enough that a queued answer goes out
-/// before its reader gives up.
+/// The heartbeat of every connection thread: outbound frames drain on
+/// this cadence. Long enough that an idle relay costs nothing; short
+/// enough that a queued answer goes out before its reader gives up.
 const BEAT: Duration = Duration::from_secs(1);
-
-/// Eviction runs every this-many beats — a minute of wall clock at the
-/// one-second beat.
-const EVICTION_EVERY: u64 = 60;
 
 #[derive(Parser)]
 #[command(
@@ -81,6 +76,25 @@ fn main() -> Result<()> {
     let outbound: Outbound = Arc::new(Mutex::new(HashMap::new()));
     let subscriptions: Subscriptions = Arc::new(Mutex::new(HashMap::new()));
     let next_id = AtomicU64::new(1);
+    // The budget is the pubkey's, not the connection's: one map for the
+    // relay's whole life, so a reconnect meets the budget it left and
+    // cannot refresh a flood by walking back in. The capacity is the
+    // configured rate, the same number the Go original takes from its
+    // env.
+    let limiters: Arc<Mutex<HashMap<nostr::key::PublicKey, RateLimiter>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
+    // The evictor is the store's own heartbeat, not any connection's:
+    // the Go original's sweepLoop runs on a quarter of the TTL, never
+    // under fifteen seconds, whether or not anyone is connected. A
+    // sweep tied to a connection's read loop dies with the connection
+    // and lags the TTL by a minute.
+    let evictor_store = store.clone();
+    let every = (args.keep_minutes * 60 / 4).max(15);
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(every));
+        evictor_store.lock().expect("the event store").evict(now_secs());
+    });
 
     for stream in listener.incoming() {
         let stream = match stream {
@@ -94,8 +108,17 @@ fn main() -> Result<()> {
         let store = store.clone();
         let outbound = outbound.clone();
         let subscriptions = subscriptions.clone();
+        let limiters = limiters.clone();
         std::thread::spawn(move || {
-            if let Err(e) = one_connection(id, stream, store, outbound, subscriptions) {
+            if let Err(e) = one_connection(
+                id,
+                stream,
+                store,
+                outbound,
+                subscriptions,
+                limiters,
+                args.rate_limit,
+            ) {
                 eprintln!("nip46-relay: connection {id} ended: {e:#}");
             }
         });
@@ -110,17 +133,13 @@ fn one_connection(
     store: Arc<Mutex<EventStore>>,
     outbound: Outbound,
     subscriptions: Subscriptions,
+    limiters: Arc<Mutex<HashMap<nostr::key::PublicKey, RateLimiter>>>,
+    rate_limit: usize,
 ) -> Result<()> {
     let mut socket = tungstenite::accept(stream)?;
     socket.get_mut().set_read_timeout(Some(BEAT))?;
     let (tx, rx): (Sender<Message>, Receiver<Message>) = channel();
     outbound.lock().expect("the outbound map").insert(id, tx.clone());
-    // The budget is the pubkey's, not the connection's: the same
-    // semantics as the Go original, so a reconnect does not refresh a
-    // flood's budget and two apps sharing a socket do not share one.
-    let limiters: Arc<Mutex<HashMap<nostr::key::PublicKey, RateLimiter>>> =
-        Arc::new(Mutex::new(HashMap::new()));
-    let mut eviction_beat = 0u64;
 
     let result = serve_connection(
         id,
@@ -129,8 +148,8 @@ fn one_connection(
         &outbound,
         &subscriptions,
         &limiters,
+        rate_limit,
         &rx,
-        &mut eviction_beat,
     );
 
     // Leaving takes the subscriptions and the queue with it: a gone
@@ -148,22 +167,14 @@ fn serve_connection(
     outbound: &Outbound,
     subscriptions: &Subscriptions,
     limiters: &Arc<Mutex<HashMap<nostr::key::PublicKey, RateLimiter>>>,
+    rate_limit: usize,
     rx: &Receiver<Message>,
-    eviction_beat: &mut u64,
 ) -> Result<()> {
     loop {
         // Outbound first, on every beat: answers queued by other
         // connections' events go out before this thread blocks again.
         for message in rx.try_iter() {
             socket.send(message)?;
-        }
-
-        // Eviction on the beat: the store is swept once a minute, and
-        // a swept event's subscribers do not miss it — it had already
-        // been forwarded when it was fresh.
-        *eviction_beat += 1;
-        if *eviction_beat % EVICTION_EVERY == 0 {
-            store.lock().expect("the event store").evict(now_secs());
         }
 
         let message = match socket.read() {
@@ -239,9 +250,13 @@ fn serve_connection(
                     } else {
                         // The budget is the pubkey's, not the
                         // connection's: a reconnect does not refresh a
-                        // flood's budget.
+                        // flood's budget. The capacity is the configured
+                        // rate, the same number the Go original takes
+                        // from its env.
                         let mut limiters = limiters.lock().expect("the rate limiter map");
-                        let limiter = limiters.entry(event.pubkey).or_default();
+                        let limiter = limiters
+                            .entry(event.pubkey)
+                            .or_insert_with(|| RateLimiter::with_capacity(rate_limit));
                         if !limiter.admit(now) {
                             Err("rate-limited: too many events, slow down".to_string())
                         } else {
@@ -299,9 +314,28 @@ fn serve_connection(
                 };
                 let filter = frame.get(2).cloned().unwrap_or_default();
                 let filter = RelayFilter::from_json(&filter);
+                // The scoping door, before anything else: a query that
+                // could match NIP-46 traffic and is scoped by nothing
+                // is refused with CLOSED, naming the rule, and leaves
+                // no subscription behind. The Go original's
+                // rejectFilter; the lane probes it with a firehose.
+                if let Some(reason) = filter.reject_reason() {
+                    socket.send(Message::text(
+                        serde_json::json!(["CLOSED", subscription_id, reason]).to_string(),
+                    ))?;
+                    continue;
+                }
                 // Replay what is held, then remember the subscription
-                // for what arrives later.
-                let replay = store.lock().expect("the event store").query(&filter);
+                // for what arrives later. The replay first sweeps the
+                // TTL: a query never meets an expired event, whatever
+                // the evictor's beat is doing — the Go original's
+                // evictLocked runs on every save, and this is the read
+                // side of the same promise.
+                let replay = {
+                    let mut store = store.lock().expect("the event store");
+                    store.evict(now_secs());
+                    store.query(&filter)
+                };
                 for event in replay {
                     socket.send(Message::text(
                         serde_json::json!(["EVENT", subscription_id, event]).to_string(),
@@ -406,7 +440,15 @@ mod tests {
             let listener = listener.clone();
             std::thread::spawn(move || {
                 let (stream, _) = listener.accept().unwrap();
-                let _ = one_connection(0, stream, maps.0, maps.1, maps.2);
+                let _ = one_connection(
+                    0,
+                    stream,
+                    maps.0,
+                    maps.1,
+                    maps.2,
+                    maps.3,
+                    kuma::relay::RATE_LIMIT_PER_MINUTE,
+                );
             });
         }
         let (mut bunker_conn, _) = tungstenite::connect(format!("ws://127.0.0.1:{port}")).unwrap();
@@ -487,7 +529,15 @@ mod tests {
         );
         std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            let _ = one_connection(0, stream, maps.0, maps.1, maps.2);
+            let _ = one_connection(
+                0,
+                stream,
+                maps.0,
+                maps.1,
+                maps.2,
+                maps.3,
+                kuma::relay::RATE_LIMIT_PER_MINUTE,
+            );
         });
         let (mut client, _) = tungstenite::connect(format!("ws://127.0.0.1:{port}")).unwrap();
         plain(&mut client).set_read_timeout(Some(BEAT)).unwrap();

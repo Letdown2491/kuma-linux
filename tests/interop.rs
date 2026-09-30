@@ -17,7 +17,7 @@
 //!
 //! ```console
 //! $ NIP46_RELAY_URL=ws://127.0.0.1:3334 NIP46_RATE_LIMIT=5 \
-//!     NIP46_EVICTION_WAIT_SECS=65 cargo test --test interop
+//!     NIP46_EVICTION_WAIT_SECS=90 cargo test --test interop
 //! ```
 
 use std::time::{Duration, Instant};
@@ -234,7 +234,17 @@ fn the_lane_probes_the_relay() {
         let expired = request(&bunker_pk, &app, "lane-expiring");
         client.send(Message::text(serde_json::json!(["EVENT", expired]).to_string())).unwrap();
         wait_for(&mut client, 10, |frame| frame[0] == "OK" && frame[1] == expired.id.to_string());
-        std::thread::sleep(Duration::from_secs(wait));
+        // The wait is not silence: a relay pings a quiet wire and walks
+        // off one that pongs nothing (khatru pings every 30s and drops
+        // the connection after 60s of them), so the lane keeps reading
+        // — and read_frame answers the heartbeat — while the store's
+        // clock runs out. The road learned this first; the lane obeys
+        // the same rule.
+        let wake = Instant::now() + Duration::from_secs(wait);
+        while Instant::now() < wake {
+            read_frame(&mut client);
+            std::thread::sleep(Duration::from_millis(50));
+        }
         client
             .send(Message::text(
                 serde_json::json!(["REQ", "lane-after-eviction", scoped_filter]).to_string(),
