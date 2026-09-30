@@ -1874,6 +1874,7 @@ mod tests {
     async fn a_known_app_reconnects_by_its_identity_not_its_secret() {
         let mut bunker = Bunker::new(Keys::generate(), vec!["the-nonce".into()]);
         let app = App::new();
+        let secret = "the-nonce";
         let request = app.request_event(
             &bunker.public_key(),
             NostrConnectMethod::Connect,
