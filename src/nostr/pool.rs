@@ -187,14 +187,9 @@ impl RelayPool {
                 continue;
             }
             self.app_urls.entry(*app).or_default().push(url.clone());
-            self.apps.entry(*app).or_default().push(self.spawn_road(
-                url,
-                false,
-                Some(*app),
-                bunker_pubkey,
-                inbound,
-                status,
-            ));
+            let road =
+                self.spawn_road(url, false, Some(*app), bunker_pubkey, inbound, status);
+            self.apps.entry(*app).or_default().push(road);
         }
     }
 
