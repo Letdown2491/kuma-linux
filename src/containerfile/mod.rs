@@ -374,6 +374,68 @@ mod tests {
         }
     }
 
+    /// The plugin's Lua parses, or at least balances: strings and
+    /// comments stripped, every delimiter opened is closed. Nothing
+    /// else in this pipeline reads the plugin as a program — the
+    /// golden pins its bytes, the host's lint pins its manifest, and
+    /// the one parser that matters is the loading shell on somebody's
+    /// desktop, which is exactly where a syntax error must never
+    /// surface first. This is the cheap half of a parser: blind to
+    /// every mistake but an unbalanced one, and that is the mistake
+    /// an edit-in-place already made once.
+    #[test]
+    fn the_plugin_lua_balances() {
+        for (name, text) in crate::containerfile::blocks::NOSTR_PLUGIN_TREE {
+            let mut stack = Vec::new();
+            let bytes = text.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'-' if text[i..].starts_with("--") => {
+                        // A comment eats the rest of its line (a long
+                        // bracket would be Luau's own, and the plugin
+                        // carries none).
+                        while i < bytes.len() && bytes[i] != b'\n' {
+                            i += 1;
+                        }
+                    }
+                    b'"' | b'\'' => {
+                        let quote = bytes[i];
+                        i += 1;
+                        while i < bytes.len() && bytes[i] != quote {
+                            if bytes[i] == b'\\' {
+                                i += 1;
+                            }
+                            i += 1;
+                        }
+                    }
+                    b'(' | b'[' | b'{' => {
+                        stack.push(bytes[i]);
+                        i += 1;
+                    }
+                    b')' | b']' | b'}' => {
+                        let open = stack.pop().unwrap_or_else(|| {
+                            panic!("{name} closes a {bytes[i] as char} that never opened")
+                        });
+                        let close = match open {
+                            b'(' => b')',
+                            b'[' => b']',
+                            _ => b'}',
+                        };
+                        assert_eq!(
+                            bytes[i], close,
+                            "{name} closes {open} with {}",
+                            bytes[i] as char
+                        );
+                        i += 1;
+                    }
+                    _ => i += 1,
+                }
+            }
+            assert!(stack.is_empty(), "{name} ends with {} unclosed delimiter(s)", stack.len());
+        }
+    }
+
     fn hex(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
     }

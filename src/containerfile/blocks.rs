@@ -4835,6 +4835,8 @@ local function appDetail(a)
             end }),
         card({
             key = "detail-head",
+            ui.row({ gap = 12, align = "center" }, {
+                avatar(a.pubkey, a.image, 48),
                 ui.column({ gap = 1, flexGrow = 1 }, {
                     ui.label({ text = a.name or short(a.pubkey), fontWeight = "semibold", color = "on_surface" }),
                     ui.label({ text = a.pubkey, fontSize = 11, color = "on_surface_variant", maxLines = 2 }),
