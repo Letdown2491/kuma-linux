@@ -473,6 +473,17 @@ mod tests {
         }
     }
 
+    fn kind_write(kind: u16) -> Vec<String> {
+        let unsigned = nostr::event::UnsignedEvent::new(
+            nostr::key::Keys::generate().public_key(),
+            nostr::types::Timestamp::now(),
+            nostr::event::Kind::from_u16(kind),
+            [],
+            "{}",
+        );
+        vec![unsigned.as_json()]
+    }
+
     fn profile_write() -> Vec<String> {
         let unsigned = nostr::event::UnsignedEvent::new(
             nostr::key::Keys::generate().public_key(),
@@ -652,6 +663,91 @@ mod tests {
         assert_eq!(engine.prompts().len(), 1, "nip04_encrypt asks at Basic");
         engine.approve(&engine.prompts()[0].id, None).unwrap();
         assert!(matches!(ask.await.unwrap(), Decision::Allow));
+    }
+
+    #[tokio::test]
+    async fn at_basic_only_explicitly_safe_kinds_sign_unattended() {
+        let engine = engine();
+        let app = app();
+        // Pair by asking once, then relax to Basic.
+        let engine_for_ask = engine.clone();
+        let ask = tokio::spawn(async move {
+            engine_for_ask.decide(&app, &NostrConnectMethod::GetPublicKey, &[]).await
+        });
+        tokio::task::yield_now().await;
+        engine.approve(&engine.prompts()[0].id, None).unwrap();
+        ask.await.unwrap();
+        engine.set_level(&app.to_string(), Level::Basic).unwrap();
+
+        // A safe kind — a text note — signs unattended.
+        let allowed = engine
+            .decide(&app, &NostrConnectMethod::SignEvent, kind_write(1))
+            .await;
+        assert!(matches!(allowed, Decision::Allow), "a safe kind rides at Basic");
+        assert!(engine.prompts().is_empty());
+
+        // An unknown kind asks: safe by default is the direction.
+        let engine_for_ask = engine.clone();
+        let ask = tokio::spawn(async move {
+            engine_for_ask.decide(&app, &NostrConnectMethod::SignEvent, kind_write(9999)).await
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(engine.prompts().len(), 1, "an unknown kind asks at Basic");
+        engine.approve(&engine.prompts()[0].id, None).unwrap();
+        ask.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_newly_sensitive_kinds_ask_at_basic() {
+        let engine = engine();
+        let app = app();
+        let engine_for_ask = engine.clone();
+        let ask = tokio::spawn(async move {
+            engine_for_ask.decide(&app, &NostrConnectMethod::GetPublicKey, &[]).await
+        });
+        tokio::task::yield_now().await;
+        engine.approve(&engine.prompts()[0].id, None).unwrap();
+        ask.await.unwrap();
+        engine.set_level(&app.to_string(), Level::Basic).unwrap();
+
+        // Kinds 4 (NIP-04 DM), 22242 (client authentication), 24133
+        // (nested NIP-46 signing), and the wallet kinds 13194, 23194,
+        // 23195: none is on the safe list, so each asks.
+        for kind in [4, 22242, 24133, 13194, 23194, 23195] {
+            let engine_for_ask = engine.clone();
+            let ask = tokio::spawn(async move {
+                engine_for_ask.decide(&app, &NostrConnectMethod::SignEvent, kind_write(kind)).await
+            });
+            tokio::task::yield_now().await;
+            assert_eq!(engine.prompts().len(), 1, "kind {kind} asks at Basic");
+            engine.approve(&engine.prompts()[0].id, None).unwrap();
+            ask.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_sign_event_asks_even_at_basic() {
+        let engine = engine();
+        let app = app();
+        let engine_for_ask = engine.clone();
+        let ask = tokio::spawn(async move {
+            engine_for_ask.decide(&app, &NostrConnectMethod::GetPublicKey, &[]).await
+        });
+        tokio::task::yield_now().await;
+        engine.approve(&engine.prompts()[0].id, None).unwrap();
+        ask.await.unwrap();
+        engine.set_level(&app.to_string(), Level::Basic).unwrap();
+
+        let engine_for_ask = engine.clone();
+        let ask = tokio::spawn(async move {
+            engine_for_ask
+                .decide(&app, &NostrConnectMethod::SignEvent, &["not json".to_string()])
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(engine.prompts().len(), 1, "an unreadable event asks");
+        engine.approve(&engine.prompts()[0].id, None).unwrap();
+        ask.await.unwrap();
     }
 
     #[tokio::test]
