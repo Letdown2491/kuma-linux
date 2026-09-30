@@ -446,15 +446,19 @@ impl<S: super::vault::SecretStore> Daemon<S> {
             Request::Apps => Response::Ok(OkResponse::Apps { ok: true, apps: self.engine.apps() }),
             Request::Revoke { app } => {
                 let removed = self.engine.revoke(&app);
-                // The tombstone and the eviction are the same act:
-                // the refusal is live, and the app's own traffic
-                // cannot re-pair what the person removed.
+                // The tombstone, the eviction, and the road teardown
+                // are one act: the refusal is live, and the app's own
+                // traffic cannot re-pair what the person removed —
+                // its relays stop being the bunker's business.
                 if removed {
                     if let (Some(bunker), Ok(pubkey)) =
                         (self.bunker.as_mut(), PublicKey::parse(&app))
                     {
                         bunker.mark_revoked(&pubkey);
                         bunker.evict(&app);
+                        if let Some(pool) = self.pool.as_mut() {
+                            pool.drop_app(&pubkey);
+                        }
                     }
                 }
                 Response::Ok(OkResponse::Revoke { ok: true, removed })
@@ -489,6 +493,7 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                     Ok((handshake, parts)) => {
                         if let Some(pool) = self.pool.as_mut() {
                             pool.subscribe_relays(
+                                &parts.client_pubkey,
                                 parts.relays.clone(),
                                 self.bunker.as_ref().expect("checked").public_key(),
                                 &self.inbound,
@@ -501,7 +506,12 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                             None,
                             parts.perms.clone(),
                         );
-                        if let Err(e) = self.publish(&handshake) {
+                        if let Err(e) = self
+                            .pool
+                            .as_ref()
+                            .ok_or_else(|| anyhow!("the bunker is not running"))?
+                            .publish_only_to(&handshake, &parts.client_pubkey)
+                        {
                             return err_response(anyhow!("the handshake was not published: {e}"));
                         }
                         Response::Ok(OkResponse::Connect {
@@ -727,9 +737,17 @@ impl<S: super::vault::SecretStore> Daemon<S> {
     }
 
     /// Publish a bunker answer to every relay that is up.
+    /// Publish the bunker's answer down the road its own p-tag names:
+    /// the client an answer is encrypted to is the client whose relays
+    /// carry it, and the declared set rides every answer regardless —
+    /// that is the NIP's addressing, and the pool is the one that
+    /// knows the roads.
     pub fn publish(&self, event: &Event) -> Result<()> {
         match &self.pool {
-            Some(pool) => pool.publish(event),
+            Some(pool) => match event.tags.public_keys().next() {
+                Some(app) => pool.publish_for(event, app),
+                None => pool.publish(event),
+            },
             None => Err(anyhow!("the bunker is not running")),
         }
     }

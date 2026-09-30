@@ -52,19 +52,51 @@ pub struct RelayStatus {
     pub state: RelayState,
 }
 
-/// The pool: owns the relay threads, hands bunker-bound events to the
-/// `inbound` receiver, and publishes the bunker's answers to every
-/// relay that is up.
-pub struct RelayPool {
-    outbound: Sender<Event>,
+/// Which roads an outbound event takes. The bunker answers apps, and
+/// an answer encrypted to one app does not belong on every relay's
+/// wire: a relay operator learns which app talks to which bunker from
+/// the traffic alone, and an answer aimed at another app is not that
+/// relay's business.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Fan {
+    /// The declared set's roads — the bunker's answers on the relays
+    /// the declaration chose.
+    Own,
+    /// One app's road: the declared set AND the app's own relays. A
+    /// bunker:// app's road is the declared set alone; a
+    /// nostrconnect app's adds the relays its URI named.
+    App(PublicKey),
+    /// Only one app's own relays — the nostrconnect handshake, whose
+    /// road the NIP spells as the URI's relays and nothing else.
+    OnlyApp(PublicKey),
+}
+
+/// One relay thread's identity and its own stop flag: a road. An app's
+/// roads tear down individually on revocation — a shared flag would
+/// stop every road to stop one.
+struct Road {
+    own: bool,
+    app: Option<PublicKey>,
     stop: Arc<AtomicBool>,
-    handles: Vec<std::thread::JoinHandle<()>>,
-    /// The URLs already threaded — what keeps a nostrconnect app's
-    /// relays from doubling a road the pool already runs.
-    urls: Vec<String>,
+    handle: std::thread::JoinHandle<()>,
+}
+
+/// The pool: owns the relay threads, hands bunker-bound events to the
+/// `inbound` receiver, and publishes the bunker's answers down the
+/// road each answer names.
+pub struct RelayPool {
+    outbound: Sender<(Event, Fan)>,
     /// The queue's receiver behind its mutex, cloned per thread —
-    /// the spawn path's shape, kept for the subscribe-more path.
-    outbound_rx: Arc<Mutex<Receiver<Event>>>,
+    /// one queue, many roads, and a thread only holds it for the
+    /// drain of one loop beat.
+    outbound_rx: Arc<Mutex<Receiver<(Event, Fan)>>>,
+    /// The declared set's roads.
+    own: Vec<Road>,
+    own_urls: Vec<String>,
+    /// The nostrconnect apps' roads, by the client pubkey that
+    /// presented its URI.
+    apps: HashMap<PublicKey, Vec<Road>>,
+    app_urls: HashMap<PublicKey, Vec<String>>,
 }
 
 impl RelayPool {
@@ -78,35 +110,46 @@ impl RelayPool {
         inbound: Sender<Event>,
         status: Sender<RelayStatus>,
     ) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let (outbound, outbound_rx): (Sender<Event>, Receiver<Event>) = channel();
+        let (outbound, outbound_rx): (Sender<(Event, Fan)>, Receiver<(Event, Fan)>) = channel();
         // One queue, many relay threads: the receiver rides behind a
         // mutex, and a thread only holds it for the drain of one loop
         // beat.
         let outbound_rx = Arc::new(Mutex::new(outbound_rx));
-        let mut urls = Vec::new();
-        let handles = relays
-            .into_iter()
-            .map(|url| {
-                let stop = stop.clone();
-                let outbound_rx = outbound_rx.clone();
-                let inbound = inbound.clone();
-                let status = status.clone();
-                urls.push(url.clone());
-                std::thread::spawn(move || {
-                    one_relay(url, bunker_pubkey, inbound, status, outbound_rx, stop);
-                })
-            })
-            .collect();
-        Self { outbound, stop, handles, urls, outbound_rx }
+        let mut pool = Self {
+            outbound,
+            outbound_rx,
+            own: Vec::new(),
+            own_urls: Vec::new(),
+            apps: HashMap::new(),
+            app_urls: HashMap::new(),
+        };
+        pool.spawn_own(relays, bunker_pubkey, &inbound, &status);
+        pool
     }
 
-    /// More relay threads for a nostrconnect app's own relays: the
-    /// same subscription, the same channels, one more road in for the
-    /// app's requests and its handshake reading. A URL the pool
-    /// already threads is skipped — one road, one thread — and the
-    /// pool's own set stays the daemon's.
-    pub fn subscribe_relays(
+    fn spawn_road(
+        &self,
+        url: String,
+        own: bool,
+        app: Option<PublicKey>,
+        bunker_pubkey: PublicKey,
+        inbound: &Sender<Event>,
+        status: &Sender<RelayStatus>,
+    ) -> Road {
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = std::thread::spawn({
+            let stop = stop.clone();
+            let outbound_rx = self.outbound_rx.clone();
+            let inbound = inbound.clone();
+            let status = status.clone();
+            move || {
+                one_relay(url, own, app, bunker_pubkey, inbound, status, outbound_rx, stop);
+            }
+        });
+        Road { own, app, stop, handle }
+    }
+
+    fn spawn_own(
         &mut self,
         relays: Vec<String>,
         bunker_pubkey: PublicKey,
@@ -114,33 +157,90 @@ impl RelayPool {
         status: &Sender<RelayStatus>,
     ) {
         for url in relays {
-            if self.urls.contains(&url) {
+            if self.own_urls.contains(&url) {
                 continue;
             }
-            self.urls.push(url.clone());
-            let outbound_rx = self.outbound_rx.clone();
-            let stop = self.stop.clone();
-            let inbound = inbound.clone();
-            let status = status.clone();
-            self.handles.push(std::thread::spawn(move || {
-                one_relay(url, bunker_pubkey, inbound, status, outbound_rx, stop);
-            }));
+            self.own_urls.push(url.clone());
+            self.own.push(self.spawn_road(url, true, None, bunker_pubkey, inbound, status));
         }
     }
 
-    /// Publish an event to every relay. Relays that are down get it on
-    /// reconnect — the thread's first act after a subscribe is to drain
-    /// the outbound queue — so an answer is never lost to a relay that
-    /// blinks while the bunker was thinking.
+    /// A nostrconnect app's own relays, as threads: the same
+    /// subscription, the same channels, the app's road in. A URL the
+    /// declared set already runs is skipped — one road, one thread —
+    /// and so is one the app itself already has.
+    pub fn subscribe_relays(
+        &mut self,
+        app: &PublicKey,
+        relays: Vec<String>,
+        bunker_pubkey: PublicKey,
+        inbound: &Sender<Event>,
+        status: &Sender<RelayStatus>,
+    ) {
+        let urls = self.app_urls.entry(*app).or_default();
+        for url in relays {
+            if self.own_urls.contains(&url) || urls.contains(&url) {
+                continue;
+            }
+            urls.push(url.clone());
+            self.apps
+                .entry(*app)
+                .or_default()
+                .push(self.spawn_road(url, false, Some(*app), bunker_pubkey, inbound, status));
+        }
+    }
+
+    /// Tear one app's roads down: the revocation's own half. The
+    /// threads exit on their next beat; the declared set's roads are
+    /// nobody else's to stop.
+    pub fn drop_app(&mut self, app: &PublicKey) {
+        if let Some(roads) = self.apps.remove(app) {
+            for road in roads {
+                road.stop.store(true, Ordering::SeqCst);
+            }
+        }
+        self.app_urls.remove(app);
+    }
+
+    /// Whether an app's roads are still threaded — what the teardown
+    /// test reads.
+    #[cfg(test)]
+    pub(crate) fn app_road_count(&self, app: &PublicKey) -> usize {
+        self.apps.get(app).map_or(0, Vec::len)
+    }
+
+    /// Publish an event down the declared set's roads.
     pub fn publish(&self, event: &Event) -> Result<()> {
-        self.outbound.send(event.clone()).map_err(|_| anyhow::anyhow!("the relay threads are gone"))
+        self.send(event, Fan::Own)
+    }
+
+    /// Publish an answer down one app's road: the declared set, plus
+    /// the app's own relays when it has any.
+    pub fn publish_for(&self, event: &Event, app: &PublicKey) -> Result<()> {
+        self.send(event, Fan::App(*app))
+    }
+
+    /// Publish the handshake down the client's relays and nothing
+    /// else's — the NIP spells that road as the URI's, and a new
+    /// pairing announced on the declared set is metadata the bunker's
+    /// own relays do not need.
+    pub fn publish_only_to(&self, event: &Event, app: &PublicKey) -> Result<()> {
+        self.send(event, Fan::OnlyApp(*app))
+    }
+
+    fn send(&self, event: &Event, fan: Fan) -> Result<()> {
+        self.outbound
+            .send((event.clone(), fan))
+            .map_err(|_| anyhow::anyhow!("the relay threads are gone"))
     }
 
     /// Stop the threads and wait for them.
     pub fn shutdown(self) {
-        self.stop.store(true, Ordering::SeqCst);
-        for handle in self.handles {
-            let _ = handle.join();
+        for road in self.own.iter().chain(self.apps.values().flatten()) {
+            road.stop.store(true, Ordering::SeqCst);
+        }
+        for road in self.own.into_iter().chain(self.apps.into_values().flatten()) {
+            let _ = road.handle.join();
         }
     }
 }
@@ -150,10 +250,12 @@ impl RelayPool {
 /// to find the bunker waiting.
 fn one_relay(
     url: String,
+    own: bool,
+    app: Option<PublicKey>,
     bunker_pubkey: PublicKey,
     inbound: Sender<Event>,
     status: Sender<RelayStatus>,
-    outbound: Arc<Mutex<Receiver<Event>>>,
+    outbound: Arc<Mutex<Receiver<(Event, Fan)>>>,
     stop: Arc<AtomicBool>,
 ) {
     let mut backoff = BACKOFF_START;
@@ -161,7 +263,8 @@ fn one_relay(
         if stop.load(Ordering::SeqCst) {
             return;
         }
-        match connect_and_serve(&url, bunker_pubkey, &inbound, &status, &outbound, &stop) {
+        match connect_and_serve(&url, own, app, bunker_pubkey, &inbound, &status, &outbound, &stop)
+        {
             Ok(()) => return,
             Err(e) => {
                 let _ =
@@ -181,10 +284,12 @@ fn one_relay(
 
 fn connect_and_serve(
     url: &str,
+    own: bool,
+    app: Option<PublicKey>,
     bunker_pubkey: PublicKey,
     inbound: &Sender<Event>,
     status: &Sender<RelayStatus>,
-    outbound: &Arc<Mutex<Receiver<Event>>>,
+    outbound: &Arc<Mutex<Receiver<(Event, Fan)>>>,
     stop: &AtomicBool,
 ) -> Result<()> {
     let (mut socket, _response) =
@@ -210,8 +315,20 @@ fn connect_and_serve(
         let mut drained = Vec::new();
         {
             let outbound = outbound.lock().expect("the outbound queue lock");
-            while let Ok(event) = outbound.try_recv() {
-                drained.push(event);
+            while let Ok((event, fan)) = outbound.try_recv() {
+                // The road decides: the declared set's threads carry
+                // everything aimed at them and every app's road; an
+                // app's threads carry only their own app's traffic.
+                let mine = match &fan {
+                    Fan::Own => own,
+                    // An app's road is the declared set plus its own
+                    // relays, so the declared threads carry it too.
+                    Fan::App(who) => own || app.as_ref() == Some(who),
+                    Fan::OnlyApp(who) => app.as_ref() == Some(who),
+                };
+                if mine {
+                    drained.push(event);
+                }
             }
         }
         for event in drained {
