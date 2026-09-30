@@ -30,17 +30,16 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # The compose environment pinned to named bytes. The base floats by
-  # tag, and the 2026-09-30 float (44.20260930.0) composes a tree whose
-  # bootloader-update.service dies parsing the .bootc-aleph.json its own
-  # install writes — install, boot, dead-disk and hibernate all fail on
-  # that one chain, and the daily heartbeat cannot tell it apart from a
-  # regression here. This digest is the 2026-09-29 build (44.20260929.0,
-  # bootc 1.16.13), which every green run through Sep 29 composed from.
-  # A scheduled run empties the pin on purpose: the heartbeat exists to
-  # watch the moving base, so it is the run that tells you when upstream
-  # fixed itself and the pin can be bumped — or moved past.
-  KUMA_COMPOSE_ENV_DIGEST: ${{ github.event_name != 'schedule' && 'sha256:f59997f5b4925af2875e2bdef6753bbd58ed44257400fedeb1f41c50734a9e0d' || '' }}
+  # The base the boot stages compose from floats by tag, and the
+  # 2026-09-30 float (44.20260930.0) breaks every boot stage at once:
+  # the composed tree's bootloader-update.service dies parsing the
+  # .bootc-aleph.json its own install writes. The boot jobs fail on
+  # upstream's build, not on anything this tree did, and the daily
+  # heartbeat below is the tripwire that says when upstream fixed
+  # itself. Pinning the good bytes was tried and is not possible: quay
+  # garbage-collects a manifest once its tag moves, so the Sep 29
+  # build's digest already 404s and no registry reachable from here
+  # holds it. See the issue this failure filed for the whole chain.
 
 # Declared rather than inherited. The repository default is already
 # read-only (measured, not assumed: `default_workflow_permissions` is

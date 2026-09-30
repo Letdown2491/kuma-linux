@@ -149,25 +149,6 @@ stale=$(find src Cargo.toml Cargo.lock -newer "$KUMA" -print -quit 2>/dev/null |
     exit 2
 }
 
-# The compose environment floats by tag, and a float is an upstream
-# release nobody here reviewed. On 2026-09-30 one landed that breaks
-# every boot stage at once: the new base composes a tree whose
-# bootloader-update.service dies parsing the .bootc-aleph.json its own
-# install writes, kuma doctor reports the dead unit, and install, boot
-# and dead-disk all fail on the same chain. KUMA_COMPOSE_ENV_DIGEST
-# pins the compose environment to named bytes: pull the digest, tag it
-# as the floating ref, and every `podman run` of the compose environment
-# below uses the local tag instead of pulling fresh. The ref is the
-# default base in src/config.rs; the digest is bumped by hand when
-# upstream fixes itself, the same way the Go relay's commit is.
-if [ -n "${KUMA_COMPOSE_ENV_DIGEST:-}" ]; then
-    compose_env=quay.io/fedora/fedora-bootc:44
-    podman pull -q "$compose_env@${KUMA_COMPOSE_ENV_DIGEST}" >/dev/null \
-        || { echo "cannot pull the pinned compose env $compose_env@${KUMA_COMPOSE_ENV_DIGEST}" >&2; exit 2; }
-    podman tag "$compose_env@${KUMA_COMPOSE_ENV_DIGEST}" "$compose_env"
-    echo "   .. compose env pinned to ${KUMA_COMPOSE_ENV_DIGEST}"
-fi
-
 # And the same question about the image, which is the half that guard did
 # not cover and which cost a run of the slowest stage here.
 #
