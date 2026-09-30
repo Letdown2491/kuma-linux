@@ -6,6 +6,8 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+## v44.4.0 (2026-09-30)
+
 ### Added
 
 - **The activity log persists, and the panel reads it.** What was
@@ -48,28 +50,6 @@ differently. Why it changed belongs in the commit that made it.
   the tombstone an app cannot cross until `unrevoke`. The panel offers
   both — trash deletes, shield revokes — on live and revoked cards
   alike.
-
-### Fixed
-
-- **The nostr panel answers while it is open.** An ask arriving while
-  you are reading the panel now shows up in it: the panel polls while
-  open (the frame tick, asked for on open and given back on close)
-  instead of refreshing only on open and on its own acts — which is
-  why the bar's ask count moved and the panel's list did not.
-- **A failed panel act says so.** A verb the CLI cannot land — a dead
-  socket, a daemon refusal — now surfaces its error instead of
-  repainting in silence, which is what once made a working revoke
-  look broken.
-- **`bunker --json` prints the document again.** It printed the bare
-  URI, which no JSON parser can read — the panel's Copy fresh URI
-  decoded `nil`, copied nothing, and the clipboard kept whatever was
-  there before. Every verb's `--json` now prints the same shape, the
-  one `docs/agents.md` always promised (`uri` in the document), and
-  the button answers when a mint refuses or returns malformed.
-
-## v44.4.0 (2026-09-30)
-
-### Added
 
 - **The nostr layer.** A declaration with `[nostr]` enabled turns on a
   bunker: `kuma-nostrd`, a daemon holding a nostr signing key in your
@@ -170,6 +150,24 @@ differently. Why it changed belongs in the commit that made it.
   reachable by a paired phone with no third party at all. Absent
   tailscale nothing is refused: the bunker is local-only, and doctor
   says so.
+
+### Fixed
+
+- **The nostr panel answers while it is open.** An ask arriving while
+  you are reading the panel now shows up in it: the panel polls while
+  open (the frame tick, asked for on open and given back on close)
+  instead of refreshing only on open and on its own acts — which is
+  why the bar's ask count moved and the panel's list did not.
+- **A failed panel act says so.** A verb the CLI cannot land — a dead
+  socket, a daemon refusal — now surfaces its error instead of
+  repainting in silence, which is what once made a working revoke
+  look broken.
+- **`bunker --json` prints the document again.** It printed the bare
+  URI, which no JSON parser can read — the panel's Copy fresh URI
+  decoded `nil`, copied nothing, and the clipboard kept whatever was
+  there before. Every verb's `--json` now prints the same shape, the
+  one `docs/agents.md` always promised (`uri` in the document), and
+  the button answers when a mint refuses or returns malformed.
 
 ### Changed
 
