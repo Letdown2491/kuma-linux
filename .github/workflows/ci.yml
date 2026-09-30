@@ -30,6 +30,17 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # The compose environment pinned to named bytes. The base floats by
+  # tag, and the 2026-09-30 float (44.20260930.0) composes a tree whose
+  # bootloader-update.service dies parsing the .bootc-aleph.json its own
+  # install writes — install, boot, dead-disk and hibernate all fail on
+  # that one chain, and the daily heartbeat cannot tell it apart from a
+  # regression here. This digest is the 2026-09-29 build (44.20260929.0,
+  # bootc 1.16.13), which every green run through Sep 29 composed from.
+  # A scheduled run empties the pin on purpose: the heartbeat exists to
+  # watch the moving base, so it is the run that tells you when upstream
+  # fixed itself and the pin can be bumped — or moved past.
+  KUMA_COMPOSE_ENV_DIGEST: ${{ github.event_name != 'schedule' && 'sha256:f59997f5b4925af2875e2bdef6753bbd58ed44257400fedeb1f41c50734a9e0d' || '' }}
 
 # Declared rather than inherited. The repository default is already
 # read-only (measured, not assumed: `default_workflow_permissions` is
@@ -172,8 +183,12 @@ jobs:
             KEEP_IN_MINUTES=1 ACCEPT_WINDOW_IN_MINUTES=1 RATE_LIMIT_PER_MINUTE=5 \
             /tmp/go-relay/nip46-relay &
           sleep 2
+          # The wait outlives the TTL plus one sweep: the Go store's
+          # evictor beats every quarter of the TTL from relay start, so
+          # an event that expires at ~64s is swept at ~75s, and the
+          # lane's replay must land after the sweep, not before it.
           NIP46_RELAY_URL=ws://127.0.0.1:3339 \
-            NIP46_RATE_LIMIT=5 NIP46_EVICTION_WAIT_SECS=65 \
+            NIP46_RATE_LIMIT=5 NIP46_EVICTION_WAIT_SECS=90 \
             cargo test --locked --test interop -- --nocapture
       - name: the lane against the Rust port
         run: |
@@ -182,7 +197,7 @@ jobs:
             --keep-minutes 1 --accept-window-minutes 1 --rate-limit 5 &
           sleep 2
           NIP46_RELAY_URL=ws://127.0.0.1:7778 \
-            NIP46_RATE_LIMIT=5 NIP46_EVICTION_WAIT_SECS=65 \
+            NIP46_RATE_LIMIT=5 NIP46_EVICTION_WAIT_SECS=90 \
             cargo test --locked --test interop -- --nocapture
 
   # The image stage: actually build every committed declaration with
