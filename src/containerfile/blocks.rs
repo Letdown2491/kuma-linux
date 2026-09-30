@@ -4338,7 +4338,11 @@ end
 function update()
     noctalia.setUpdateInterval(5000)
     noctalia.runAsync("kuma-nostr prompts --json", function(result)
-        local doc = noctalia.json.decode(result.stdout or "{}")
+        -- A wedged daemon answers with nothing, and an empty string is
+        -- still truthy in Lua: decode of it is nil, and indexing that
+        -- here is what retired this widget after repeated timeouts.
+        -- An absent answer is "no asks", not a crash.
+        local doc = noctalia.json.decode(result.stdout ~= "" and result.stdout or "{}") or {}
         local queue = doc.prompts or {}
         local was = pending
         pending = #queue
