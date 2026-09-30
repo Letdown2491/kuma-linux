@@ -71,6 +71,17 @@ differently. Why it changed belongs in the commit that made it.
   worker is one thread, and a delay for one app is a delay for every
   app behind it. Nothing to do differently.
 
+- **A pairing URI is one app's door, once.** The vault-wide nonce was
+  a standing invitation: any app holding it paired, until the person
+  rotated. Every minted URI now carries its own one-time secret, and
+  the connect that uses it burns it — a second connect with the same
+  secret is refused. `kuma-nostr bunker` mints a fresh URI per call;
+  `rotate` still invalidates every outstanding secret at a stroke.
+  **Do something differently if you hand out pairing URIs to more
+  than one app: mint one URI per app, and re-mint for each new
+  pairing.** A vault from before this change migrates: its URI works
+  once more, exactly once.
+
 ## v44.4.0 (2026-09-28)
 
 ### Added

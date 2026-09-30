@@ -139,8 +139,8 @@ fn main() -> anyhow::Result<()> {
                     metadata.as_ref().and_then(|m| m.image.clone()),
                 );
                 if let Some(burned) = burned {
-                    if let Err(e) =
-                        runtime_handle.block_on(worker.lock().expect("the daemon lock").burn(&burned))
+                    if let Err(e) = runtime_handle
+                        .block_on(worker.lock().expect("the daemon lock").burn(&burned))
                     {
                         eprintln!("kuma-nostrd: the burned secret did not persist: {e:#}");
                     }

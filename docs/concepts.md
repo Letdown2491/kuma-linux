@@ -610,6 +610,16 @@ is a fresh window: starting the daemon is a present person's act,
 which is also why the keyring being PAM-open does not defeat the
 switch — the gate it guards is the one left open afterwards.
 
+**A pairing URI is one app's door, once.** Every minted URI carries
+its own one-time secret, and the connect that echoes it burns it: a
+second connect with the same secret is refused. `kuma-nostr bunker`
+mints a fresh URI per call — one per app, re-minted for each new
+pairing — and `rotate` still invalidates every outstanding secret
+at a stroke. The connect's echo is constant-time compared, because
+a comparison that leaks its own progress is a lock that shows its
+keys; the URI-less door — a bunker with nothing outstanding — stays
+the person's gate.
+
 **The key the bunker signs with is not your identity.** Pairing an app
 gives it the bunker's own key — a dedicated remote signer the layer
 generated — so an app learns your npub only by asking, and the pubkey a

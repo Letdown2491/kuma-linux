@@ -960,6 +960,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn each_mint_is_its_own_door_and_the_connect_burns_it() {
+        use nostr::nips::nip44::Nip44;
+        use nostr::nips::nip46::{NostrConnectMessage, NostrConnectMethod};
+
+        let mut daemon = daemon().await;
+        daemon.handle(decode(r#"{"cmd":"setup","mode":{"how":"generate"}}"#).unwrap()).await;
+
+        // Two mints, two doors: the URIs differ, and each carries its
+        // own secret.
+        let first = daemon.handle(decode(r#"{"cmd":"mint"}"#).unwrap()).await;
+        let second = daemon.handle(decode(r#"{"cmd":"mint"}"#).unwrap()).await;
+        let first_uri = encode(&first).trim().to_string();
+        let second_uri = encode(&second).trim().to_string();
+        assert_ne!(first_uri, second_uri, "a mint is a new door, not the same one");
+        assert!(first_uri.contains("secret="), "{first_uri}");
+
+        // The connect that reads one door burns it: the second
+        // connect with the same secret is refused, and the burned URI
+        // stops being advertised.
+        let app_keys = Keys::generate();
+        let bunker_pubkey = daemon.bunker.as_ref().expect("armed").public_key();
+        let secret = first_uri.split("secret=").nth(1).unwrap_or("").to_string();
+        let connect = NostrConnectMessage::Request {
+            id: "burn".into(),
+            method: NostrConnectMethod::Connect,
+            params: vec![bunker_pubkey.to_string(), secret.clone()],
+        };
+        let content = app_keys.nip44_encrypt(&bunker_pubkey, &connect.as_json()).unwrap();
+        let connect_event = EventBuilder::new(Kind::NostrConnect, content)
+            .tag(Tag::public_key(bunker_pubkey))
+            .finalize(&app_keys)
+            .unwrap();
+        assert!(matches!(
+            daemon.plan_bunker_event(&connect_event),
+            Some(crate::nostr::bunker::Plan::Paired { .. })
+        ));
+        daemon.burn(&secret).await.unwrap();
+
+        let stranger = Keys::generate();
+        let content = stranger.nip44_encrypt(&bunker_pubkey, &connect.as_json()).unwrap();
+        let replay = EventBuilder::new(Kind::NostrConnect, content)
+            .tag(Tag::public_key(bunker_pubkey))
+            .finalize(&stranger)
+            .unwrap();
+        match daemon.plan_bunker_event(&replay) {
+            Some(crate::nostr::bunker::Plan::Answer(response)) => {
+                let plaintext =
+                    stranger.nip44_decrypt(&bunker_pubkey, &response.content).unwrap();
+                assert!(plaintext.contains("secret"), "{plaintext}");
+            }
+            other => panic!("a burned secret is refused: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn the_status_walks_the_whole_life_cycle() {
         let mut daemon = daemon().await;
 
