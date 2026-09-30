@@ -837,7 +837,10 @@ mod tests {
         match message {
             NostrConnectMessage::Response { result, error, .. } => {
                 assert_eq!(result, None);
-                assert!(error.unwrap().contains("pubkey, payload"), "{error:?}");
+                assert!(
+                    error.as_ref().unwrap().contains("pubkey, payload"),
+                    "{error:?}"
+                );
             }
             other => panic!("a response came back: {other:?}"),
         }
@@ -852,7 +855,10 @@ mod tests {
         match message {
             NostrConnectMessage::Response { result, error, .. } => {
                 assert_eq!(result, None);
-                assert!(error.unwrap().contains("unreadable pubkey"), "{error:?}");
+                assert!(
+                    error.as_ref().unwrap().contains("unreadable pubkey"),
+                    "{error:?}"
+                );
             }
             other => panic!("a response came back: {other:?}"),
         }
@@ -867,7 +873,10 @@ mod tests {
         match message {
             NostrConnectMessage::Response { result, error, .. } => {
                 assert_eq!(result, None);
-                assert!(error.unwrap().contains("did not transform"), "{error:?}");
+                assert!(
+                    error.as_ref().unwrap().contains("did not transform"),
+                    "{error:?}"
+                );
             }
             other => panic!("a response came back: {other:?}"),
         }

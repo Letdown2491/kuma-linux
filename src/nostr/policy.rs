@@ -633,7 +633,7 @@ mod tests {
             .decide(
                 &app,
                 &NostrConnectMethod::Nip44Encrypt,
-                &[app.pubkey().to_string(), "text".into()],
+                &[app.to_string(), "text".into()],
             )
             .await;
         assert!(matches!(allowed, Decision::Allow));
@@ -642,11 +642,13 @@ mod tests {
         // NIP-04's job is private messages; encrypting one is writing one.
         let engine_for_ask = engine.clone();
         let ask = tokio::spawn(async move {
-            engine_for_ask.decide(
-                &app,
-                &NostrConnectMethod::Nip04Encrypt,
-                &[app.pubkey().to_string(), "text".into()],
-            )
+            engine_for_ask
+                .decide(
+                    &app,
+                    &NostrConnectMethod::Nip04Encrypt,
+                    &[app.to_string(), "text".into()],
+                )
+                .await
         });
         tokio::task::yield_now().await;
         assert_eq!(engine.prompts().len(), 1, "nip04_encrypt asks at Basic");
