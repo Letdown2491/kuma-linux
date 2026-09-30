@@ -158,6 +158,17 @@ Those are the ones you type. The rest of the surface:
 Every command ends by naming the legal next ones, so the surface is
 discoverable without this table. `kuma --help` lists all of it.
 
+## The nostr layer
+
+Optional, and enabled by the declaration: `[nostr] enable = true` turns
+on a bunker — a remote signer holding a nostr key in your login keyring,
+answering your phone and desktop apps over the relays, with every
+consequential ask landing as a prompt you answer in the shell's own
+panel. Pair it from the panel or `kuma-nostr bunker --qr`; a client's
+own `nostrconnect://` invite pastes into `kuma-nostr connect`. The
+whole story — the policy levels, one-time pairing secrets, revocation,
+and the optional inactivity lock — is [the nostr layer](docs/concepts.md#the-nostr-layer).
+
 ## How this differs
 
 **NixOS and Guix** own the idea: one versioned file, convergence as the only

@@ -134,3 +134,34 @@ working copy at all, read-only commands fall back to the machine's baked
 declaration, so an ISO-installed machine can `kuma update --yes` without
 ever creating a file; editing is what requires one.
 
+
+## The nostr layer's surface
+
+The layer ships its own CLI — `kuma-nostr` — and daemon — `kuma-nostrd` —
+speaking the same house shape: `ok` first, `error` on a refusal, `--json`
+for the document form, and the socket answers the same documents
+newline-delimited at `$XDG_RUNTIME_DIR/kuma-nostr.sock`.
+
+An agent's honest path is the CLI, and the read verbs are free:
+`kuma-nostr status --json` (the vault's existence, gate, identity, the
+pairing URI, the inactivity switch), `prompts --json` (the pending asks,
+each with `id`, `app`, `method`, `summary` and, for a signature, the exact
+unsigned event as `detail`), and `apps --json` (the pairings: level,
+name, claimed perms, the tombstone). `approve --json --id <id>` and
+`deny --json --id <id>` answer an ask; `--remember 1` grants the method
+an hour. That is the whole decision surface an agent gets — the panel and
+the CLI are equals in front of the same engine, and neither can widen an
+app past its level.
+
+The mutating pair verbs do what their names say and say so before they do
+it: `bunker --json` mints a one-time pairing URI (`uri` in the document —
+one app, one use, burned by the connect that presents it), `connect
+--json --uri <nostrconnect-uri>` pairs a client's own invite, `revoke`
+tombstones (the record stays, refused), `unrevoke` clears the tombstone,
+`rotate` invalidates every outstanding URI at once, `lock` and `unlock`
+are the gate, and `destroy` is a dry run until `--yes`.
+
+Two things an agent must not do are structural: the socket's peer check
+drops anything not running as the daemon's uid, and no verb reads a
+secret from a flag — keys arrive on stdin or through the keyring, so
+they cannot reach a `ps` line or a shell history.
