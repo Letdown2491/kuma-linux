@@ -597,6 +597,16 @@ most; that ceiling is the verb's own. An unanswered ask times out
 after five minutes — the refusal travels back to the app, and the log
 keeps the expiry.
 
+**The lock is the switch, and the switch is yours to arm.** The
+daemon's lock verb drops the keys, and a bunker with no keys refuses
+everything by construction. The inactivity switch is that lock on a
+fuse: armed with a window (`--inactivity-lock-secs`, an hour at
+least), it locks by itself when nothing has unlocked or kept it
+alive for that long — the dead man's switch, for a machine that
+stops answering with the gate still open. Off by default, because
+the desktop daemon's posture is the PAM-open keyring; a person who
+wants the fuse passes the window where the daemon starts.
+
 **The key the bunker signs with is not your identity.** Pairing an app
 gives it the bunker's own key — a dedicated remote signer the layer
 generated — so an app learns your npub only by asking, and the pubkey a

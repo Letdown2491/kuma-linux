@@ -46,6 +46,17 @@ differently. Why it changed belongs in the commit that made it.
   the person answering: approve within the window, or the answer
   arrives too late and is refused by time.**
 
+- **The inactivity switch.** Opt-in: `kuma-nostrd
+  --inactivity-lock-secs 86400` locks the vault — the same lock the
+  panel's verb runs — after that long with no unlock and no
+  keep-alive (`kuma-nostr touch` resets it without unlocking). The
+  floor is one hour, 0 or absent is off, and off is the default: the
+  desktop daemon's posture is the PAM-open keyring, and a switch on
+  by default would lock the bunker while the person is away.
+  **Do something differently only if you want the switch: pass the
+  window where you start the daemon.** `status` reports it when
+  armed.
+
 ## v44.4.0 (2026-09-28)
 
 ### Added
