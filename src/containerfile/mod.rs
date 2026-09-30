@@ -2071,23 +2071,6 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
     /// the daemon's own off when it is not.
     #[test]
     fn the_nostr_unit_carries_the_switch_the_declaration_armed() {
-        let armed = config(
-            "schema_version = 1\n[system]\ndesktop = \"niri\"\n[nostr]\nenable = true\n\
-             relays = [\"wss://relay.nip46.com\"]\ninactivity_lock_secs = 86400\n",
-        );
-        let text = blocks::emitted(&armed, "nostr");
-        assert!(text.contains("--inactivity-lock-secs 86400"), "{text}");
-
-        let unarmed =
-            config("schema_version = 1\n[system]\ndesktop = \"niri\"\n[nostr]\nenable = true\n");
-        assert!(!blocks::emitted(&unarmed, "nostr").contains("--inactivity-lock-secs"));
-    }
-
-    /// The nostr unit carries what the declaration armed: a window on
-    /// the exec line when the switch is armed, and no flag repeating
-    /// the daemon's own off when it is not.
-    #[test]
-    fn the_nostr_unit_carries_the_switch_the_declaration_armed() {
         let armed = tempfile::tempdir().unwrap();
         context(
             "schema_version = 1\n[system]\ndesktop = \"niri\"\n[nostr]\nenable = true\n\
