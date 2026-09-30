@@ -256,6 +256,18 @@ mod tests {
                     crate::nostr::bunker::Plan::Answer(answer) => {
                         let _ = daemon.lock().unwrap().publish(&answer);
                     }
+                    crate::nostr::bunker::Plan::RelaysServed { answer, app } => {
+                        engine.served(
+                            &app.to_string(),
+                            "switch_relays",
+                            "the bunker's relay list".into(),
+                        );
+                        let _ = daemon.lock().unwrap().publish(&answer);
+                    }
+                    crate::nostr::bunker::Plan::Ended { answer, app } => {
+                        daemon.lock().unwrap().end_session(&app);
+                        let _ = daemon.lock().unwrap().publish(&answer);
+                    }
                     crate::nostr::bunker::Plan::Ask { ref request, method, ref params, .. } => {
                         let decision =
                             handle.block_on(engine.decide(&request.pubkey, &method, params));

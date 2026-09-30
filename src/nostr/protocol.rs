@@ -883,10 +883,7 @@ mod tests {
         assert!(line.contains("inactivity"), "the status carries the switch: {line}");
         let vault = &decode_status_vault(&line);
         assert_eq!(vault["inactivity"]["window_secs"].as_u64(), Some(3600));
-        assert!(
-            vault["inactivity"]["remaining_secs"].as_u64().unwrap_or(0) > 3590,
-            "{vault}"
-        );
+        assert!(vault["inactivity"]["remaining_secs"].as_u64().unwrap_or(0) > 3590, "{vault}");
 
         // The keep-alive resets the clock without unlocking.
         std::thread::sleep(Duration::from_millis(1200));

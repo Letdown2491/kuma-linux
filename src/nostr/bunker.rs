@@ -1253,10 +1253,7 @@ mod tests {
     #[tokio::test]
     async fn switch_relays_serves_a_paired_app_the_relay_list() {
         let mut bunker = Bunker::new(Keys::generate(), None);
-        bunker.with_relays(vec![
-            "wss://one.example".to_string(),
-            "wss://two.example".to_string(),
-        ]);
+        bunker.with_relays(vec!["wss://one.example".to_string(), "wss://two.example".to_string()]);
         let app = App::new();
         bunker.plan(&app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
 
@@ -1332,11 +1329,8 @@ mod tests {
             }
             other => panic!("a logged-out app is refused: {other:?}"),
         }
-        let still_paired = other.request_event(
-            &bunker.public_key(),
-            NostrConnectMethod::GetPublicKey,
-            &[],
-        );
+        let still_paired =
+            other.request_event(&bunker.public_key(), NostrConnectMethod::GetPublicKey, &[]);
         assert!(
             matches!(bunker.plan(&still_paired), Plan::Ask { .. }),
             "a logout cannot reach another app's session"
