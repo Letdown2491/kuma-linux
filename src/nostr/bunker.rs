@@ -1654,8 +1654,11 @@ mod tests {
         let (mut bunker, secret) = bunker_for_tests();
         let app = App::new();
         let other = App::new();
+        // Two apps, two doors: the one-time secret burned at the
+        // first app's connect does not serve the second.
+        bunker.with_secrets(vec![secret.clone(), "the-second-nonce".into()]);
         bunker.plan(&app.connect(&bunker, &secret));
-        bunker.plan(&other.connect(&bunker, &secret));
+        bunker.plan(&other.connect(&bunker, "the-second-nonce"));
 
         // The goodbye is self-scoped: no param names a target, the
         // caller is the target. The ack rides back either way.
@@ -1726,10 +1729,11 @@ mod tests {
         // the connect spends one, one ping spends the last, and the
         // next ping is the sender's own rate talking.
         bunker.with_rate(0.0, 2.0);
+        bunker.with_secrets(vec![secret.clone(), "the-second-nonce".into()]);
         let app = App::new();
         let other = App::new();
         bunker.plan(&app.connect(&bunker, &secret));
-        bunker.plan(&other.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
+        bunker.plan(&other.connect(&bunker, "the-second-nonce"));
         let ping = |bunker: &Bunker, a: &App| {
             a.request_event(&bunker.public_key(), NostrConnectMethod::Ping, &[])
         };
@@ -1739,9 +1743,22 @@ mod tests {
             "the budget is spent"
         );
 
-        // The other app's budget is the other app's: unaffected.
+        // The other app's budget is the other app's: unaffected — and
+        // its answer is the pong a paired app's ping earns, not the
+        // refusal of an app that never paired.
         let other_ping = ping(&bunker, &other);
-        assert!(matches!(bunker.plan(&other_ping), Plan::Answer(_)));
+        match bunker.plan(&other_ping) {
+            Plan::Answer(answer) => {
+                let message = other.decrypt_response(&answer);
+                match message {
+                    NostrConnectMessage::Response { result, .. } => {
+                        assert_eq!(result.as_deref(), Some("pong"));
+                    }
+                    other => panic!("a response came back: {other:?}"),
+                }
+            }
+            other => panic!("the other app's budget is its own: {other:?}"),
+        }
     }
 
     #[tokio::test]
