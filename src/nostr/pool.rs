@@ -128,13 +128,7 @@ impl RelayPool {
         inbound: Sender<Event>,
         status: Sender<RelayStatus>,
     ) -> Self {
-        Self::spawn_with_timing(
-            relays,
-            bunker_pubkey,
-            inbound,
-            status,
-            Timing::default(),
-        )
+        Self::spawn_with_timing(relays, bunker_pubkey, inbound, status, Timing::default())
     }
 
     /// `spawn` with the probe cadence spelled out — the tests' road to
@@ -168,9 +162,7 @@ impl RelayPool {
             let inbound = inbound.clone();
             let status = status.clone();
             move || {
-                one_relay(
-                    url, own, app, bunker_pubkey, inbound, status, outbound_rx, stop, timing,
-                );
+                one_relay(url, own, app, bunker_pubkey, inbound, status, outbound_rx, stop, timing);
             }
         });
         self.roads.push((Road { own, app, stop, handle, outbound: outbound.clone() }, outbound));
@@ -214,7 +206,15 @@ impl RelayPool {
                 continue;
             }
             self.app_urls.entry(*app).or_default().push(url.clone());
-            self.spawn_road(url, false, Some(*app), bunker_pubkey, inbound, status, Timing::default());
+            self.spawn_road(
+                url,
+                false,
+                Some(*app),
+                bunker_pubkey,
+                inbound,
+                status,
+                Timing::default(),
+            );
         }
     }
 
@@ -315,7 +315,15 @@ fn one_relay(
             return;
         }
         match connect_and_serve(
-            &url, own, app, bunker_pubkey, &inbound, &status, &outbound, &stop, timing,
+            &url,
+            own,
+            app,
+            bunker_pubkey,
+            &inbound,
+            &status,
+            &outbound,
+            &stop,
+            timing,
         ) {
             Ok(()) => return,
             Err(e) => {
@@ -484,8 +492,8 @@ fn set_read_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicUsize;
     use crate::nostr::test_relay::{wait_for, StubRelay};
+    use std::sync::atomic::AtomicUsize;
 
     #[test]
     fn a_request_event_flows_relay_to_pool_and_an_answer_flows_back() {
@@ -662,9 +670,7 @@ mod tests {
         // The first connection lands — the road came up — and after
         // the silence the road must walk off the dead socket: a
         // second connection, inside the probe window.
-        wait_for("the first connection", 100, || {
-            connections.load(Ordering::SeqCst) >= 1
-        });
+        wait_for("the first connection", 100, || connections.load(Ordering::SeqCst) >= 1);
         wait_for("the road to walk off the silent socket", 200, || {
             connections.load(Ordering::SeqCst) >= 2
         });
