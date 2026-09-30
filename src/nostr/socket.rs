@@ -402,9 +402,6 @@ mod tests {
                 };
                 let plan = { daemon.lock().unwrap().plan_bunker_event(&event) };
                 let Some(plan) = plan else { continue };
-                if !matches!(plan, crate::nostr::bunker::Plan::Ignore) {
-                    eprintln!("road-test: the worker saw {plan:?}");
-                }
                 match plan {
                     crate::nostr::bunker::Plan::Ignore => continue,
                     crate::nostr::bunker::Plan::Answer(answer) => {
@@ -426,7 +423,6 @@ mod tests {
                             };
                         let answer =
                             { daemon.lock().unwrap().execute_bunker_event(plan, decision) };
-                        eprintln!("road-test: the ask answered: {answer:?}");
                         if let Some(answer) = answer {
                             let _ = daemon.lock().unwrap().publish(&answer);
                         }
