@@ -178,12 +178,15 @@ impl RelayPool {
         inbound: &Sender<Event>,
         status: &Sender<RelayStatus>,
     ) {
-        let urls = self.app_urls.entry(*app).or_default();
         for url in relays {
-            if self.own_urls.contains(&url) || urls.contains(&url) {
+            // The dedup reads both maps before either is borrowed for
+            // the spawn.
+            let known = self.own_urls.contains(&url)
+                || self.app_urls.get(app).is_some_and(|urls| urls.contains(&url));
+            if known {
                 continue;
             }
-            urls.push(url.clone());
+            self.app_urls.entry(*app).or_default().push(url.clone());
             self.apps.entry(*app).or_default().push(self.spawn_road(
                 url,
                 false,

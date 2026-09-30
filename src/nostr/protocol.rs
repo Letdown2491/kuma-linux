@@ -507,9 +507,7 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                             parts.perms.clone(),
                         );
                         let published = match self.pool.as_ref() {
-                            Some(pool) => {
-                                pool.publish_only_to(&handshake, &parts.client_pubkey)
-                            }
+                            Some(pool) => pool.publish_only_to(&handshake, &parts.client_pubkey),
                             None => Err(anyhow!("the bunker is not running")),
                         };
                         if let Err(e) = published {
