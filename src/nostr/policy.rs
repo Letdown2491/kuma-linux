@@ -64,7 +64,8 @@ pub enum Level {
 /// list (10000) is deliberately absent from this list, because a
 /// mute-list write reshapes who the identity hears, and the plan
 /// counted it sensitive for that reason.
-const SAFE_KINDS: &[u16] = &[1, 6, 7, 16, 1111, 30023, 30024, 1808, 9735, 10001, 30000, 30001, 24242];
+const SAFE_KINDS: &[u16] =
+    &[1, 6, 7, 16, 1111, 30023, 30024, 1808, 9735, 10001, 30000, 30001, 24242];
 
 /// Whether this method call reads a private payload or writes a part
 /// of the identity an explicit safe list does not vouch for. The
@@ -695,9 +696,7 @@ mod tests {
         engine.set_level(&app.to_string(), Level::Basic).unwrap();
 
         // A safe kind — a text note — signs unattended.
-        let allowed = engine
-            .decide(&app, &NostrConnectMethod::SignEvent, &kind_write(1))
-            .await;
+        let allowed = engine.decide(&app, &NostrConnectMethod::SignEvent, &kind_write(1)).await;
         assert!(matches!(allowed, Decision::Allow), "a safe kind rides at Basic");
         assert!(engine.prompts().is_empty());
 

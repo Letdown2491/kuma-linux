@@ -22,6 +22,16 @@ differently. Why it changed belongs in the commit that made it.
   drops, and one travelling backwards in its sender's own time drops
   with it. Nothing to do differently.
 
+- **Basic signs only the safe kinds.** The old direction named five
+  sensitive kinds and waved every other kind through unattended —
+  including DMs, client authentication, and the wallet kinds. The
+  direction inverts: an explicit safe list vouches for the everyday
+  social surface (notes, reposts, reactions, long-form), and every
+  kind it does not name asks, the way an unknown kind always should
+  have. **Do something differently if you relaxed an app to Basic and
+  it signed kinds beyond notes and reactions — those now ask, and the
+  fix is the panel's toggle or an approval.**
+
 ## v44.4.0 (2026-09-28)
 
 ### Added
