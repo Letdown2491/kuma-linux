@@ -252,7 +252,7 @@ mod tests {
                             metadata.as_ref().and_then(|m| m.image.clone()),
                         );
                         if let Some(burned) = burned {
-                            let _ = daemon.lock().unwrap().burn(&burned).await;
+                            let _ = handle.block_on(daemon.lock().unwrap().burn(&burned));
                         }
                         let _ = daemon.lock().unwrap().publish(&answer);
                     }

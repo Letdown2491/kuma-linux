@@ -287,9 +287,7 @@ impl<S: SecretStore> Vault<S> {
         if blob.secrets.is_empty() {
             blob.secrets = vec![generate_wrap()?];
         }
-        self.store
-            .save(&serde_json::to_vec(&blob).context("serializing the vault blob")?)
-            .await?;
+        self.store.save(&serde_json::to_vec(&blob).context("serializing the vault blob")?).await?;
         self.secrets = blob.secrets;
         self.key = Some(key);
         Ok(())
@@ -312,9 +310,7 @@ impl<S: SecretStore> Vault<S> {
         let mut blob = VaultBlob::decode(&bytes)?;
         let fresh = generate_wrap()?;
         blob.secrets.push(fresh.clone());
-        self.store
-            .save(&serde_json::to_vec(&blob).context("serializing the vault blob")?)
-            .await?;
+        self.store.save(&serde_json::to_vec(&blob).context("serializing the vault blob")?).await?;
         self.secrets = blob.secrets;
         Ok(fresh)
     }
@@ -322,20 +318,18 @@ impl<S: SecretStore> Vault<S> {
     /// Burn a one-time secret: the connect that verified against it
     /// used it up. Answers whether it was outstanding, so the caller
     /// can tell an honest burn from a repeat.
-    pub async fn burn_secret(&mut self, secret: &str) -> bool {
+    pub async fn burn_secret(&mut self, secret: &str) -> Result<bool> {
         let bytes =
             self.store.load().await?.ok_or_else(|| anyhow!("no vault exists in this store"))?;
         let mut blob = VaultBlob::decode(&bytes)?;
         let before = blob.secrets.len();
         blob.secrets.retain(|s| s != secret);
         if blob.secrets.len() == before {
-            return false;
+            return Ok(false);
         }
-        self.store
-            .save(&serde_json::to_vec(&blob).context("serializing the vault blob")?)
-            .await?;
+        self.store.save(&serde_json::to_vec(&blob).context("serializing the vault blob")?).await?;
         self.secrets = blob.secrets;
-        true
+        Ok(true)
     }
 
     /// Mint a fresh one-time secret and invalidate every outstanding
@@ -487,7 +481,8 @@ mod tests {
     #[tokio::test]
     async fn the_blob_survives_a_round_trip_through_bytes() {
         let key = SecretKey::generate();
-        let blob = VaultBlob::new(&key, "wrap of substance".into(), vec!["the nonce".into()]).unwrap();
+        let blob =
+            VaultBlob::new(&key, "wrap of substance".into(), vec!["the nonce".into()]).unwrap();
         let bytes = serde_json::to_vec(&blob).unwrap();
         let decoded = VaultBlob::decode(&bytes).unwrap();
         assert_eq!(decoded.wrap, "wrap of substance");

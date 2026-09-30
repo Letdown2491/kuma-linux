@@ -348,11 +348,12 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                         }
                         let unlocked = self.vault.is_unlocked();
                         let pubkey = self.bunker_pubkey().await;
-                        let uri = match (&pubkey, self.vault.uri_secret(), self.bunker.is_some())
-                        {
-                            (Some(npub), Some(secret), true) => PublicKey::parse(npub).ok().map(
-                                |pk| super::bunker::bunker_uri(&pk, &self.relays, Some(secret)),
-                            ),
+                        let uri = match (&pubkey, self.vault.uri_secret(), self.bunker.is_some()) {
+                            (Some(npub), Some(secret), true) => {
+                                PublicKey::parse(npub).ok().map(|pk| {
+                                    super::bunker::bunker_uri(&pk, &self.relays, Some(secret))
+                                })
+                            }
                             _ => None,
                         };
                         let connected = self
@@ -464,8 +465,7 @@ impl<S: super::vault::SecretStore> Daemon<S> {
                 }
                 match self.vault.mint_secret().await {
                     Ok(secret) => {
-                        let pubkey =
-                            self.bunker.as_ref().expect("the armed bunker").public_key();
+                        let pubkey = self.bunker.as_ref().expect("the armed bunker").public_key();
                         Response::Ok(OkResponse::Mint {
                             ok: true,
                             uri: super::bunker::bunker_uri(&pubkey, &self.relays, Some(&secret)),
