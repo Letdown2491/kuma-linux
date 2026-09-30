@@ -4402,24 +4402,43 @@ local POLL_MS = 3000
 
 -- ── data ──────────────────────────────────────────────────────────────
 
+-- A fetch's answer is a fact only when the fetch worked. A timed-out
+-- or killed CLI run comes back with empty stdout, which decodes to a
+-- document with nothing in it — and an answer that said "no apps" or
+-- "no asks" would be a lie the next poll corrects three seconds later,
+-- visible as the list blinking into a small centered nothing. So a
+-- failed fetch keeps the last-known state, and only a real answer
+-- moves it.
+local function fetched(result, field)
+    if result.exitCode ~= 0 then return nil end
+    local doc = noctalia.json.decode(result.stdout ~= "" and result.stdout or "{}")
+    local value = doc and doc[field]
+    if value == nil then return nil end
+    return value
+end
+
 local function refresh()
     noctalia.runAsync(STATUS_URL, function(result)
-        local doc = noctalia.json.decode(result.stdout or "{}")
-        vault = doc and doc.vault or nil
+        local vault_now = fetched(result, "vault")
+        if vault_now then vault = vault_now end
         render()
     end)
     noctalia.runAsync(PROMPTS_URL, function(result)
-        local doc = noctalia.json.decode(result.stdout or "{}")
-        prompts = (doc and doc.prompts) or {}
+        local prompts_now = fetched(result, "prompts")
+        if prompts_now then prompts = prompts_now end
         render()
     end)
     noctalia.runAsync(APPS_URL, function(result)
-        local doc = noctalia.json.decode(result.stdout or "{}")
-        apps = (doc and doc.apps) or {}
-        -- Onboarding opens where the work is: nobody paired yet is a
-        -- person who came for the URI.
-        if not tab_chosen and #apps == 0 then
-            tab = "pair"
+        local apps_now = fetched(result, "apps")
+        if apps_now then
+            apps = apps_now
+            -- Onboarding opens where the work is: nobody paired yet is
+            -- a person who came for the URI. A failed fetch never
+            -- counts as nobody — the last-known list is the truth a
+            -- timeout gets to keep.
+            if not tab_chosen and #apps == 0 then
+                tab = "pair"
+            end
         end
         render()
     end)
@@ -4519,9 +4538,13 @@ end
 
 -- A card: the one surface vocabulary every pane shares. A column
 -- wearing fill and radius — ui.box is a leaf, and a leaf cannot hold
--- the card's contents.
-local function card(children)
+-- the card's contents. The key is the reconciler's identity for the
+-- node: a list whose cards come and go needs the name to survive a
+-- re-render as the same control, or the diff reuses whatever lived at
+-- that index before.
+local function card(children, key)
     return ui.column({
+        key = key,
         fill = "surface_variant/0.35", radius = 14, padding = 14, gap = 10,
     }, children)
 end
@@ -4637,7 +4660,7 @@ local function askCard(p)
         ui.button({ text = "Deny", variant = "ghost", controlSize = "sm", glyph = "x",
             onClick = function() cli({ "deny", p.id }) end }),
     }))
-    return card(lines)
+    return card(lines, "ask-" .. p.id)
 end
 
 -- The level badge, the card's right edge: the standing answer, with
@@ -4811,8 +4834,7 @@ local function appDetail(a)
                 render()
             end }),
         card({
-            ui.row({ gap = 12, align = "center" }, {
-                avatar(a.pubkey, a.image, 48),
+            key = "detail-head",
                 ui.column({ gap = 1, flexGrow = 1 }, {
                     ui.label({ text = a.name or short(a.pubkey), fontWeight = "semibold", color = "on_surface" }),
                     ui.label({ text = a.pubkey, fontSize = 11, color = "on_surface_variant", maxLines = 2 }),
@@ -4828,6 +4850,7 @@ local function appDetail(a)
             }),
         }),
         card({
+            key = "detail-level",
             ui.label({ text = "Trust level", fontSize = 13, fontWeight = "semibold", color = "on_surface" }),
             ui.label({
                 text = "basic signs only the everyday safe list; everything else asks",
@@ -4849,11 +4872,13 @@ local function appDetail(a)
     }
     if a.perms then
         table.insert(rows, card({
+            key = "detail-perms",
             ui.label({ text = "asks for: " .. a.perms, fontSize = 11,
                 color = "on_surface_variant/0.8", maxLines = 3 }),
         }))
     end
     table.insert(rows, card({
+        key = "detail-acts",
         ui.label({ text = "This app", fontSize = 13, fontWeight = "semibold", color = "on_surface" }),
         ui.row({ gap = 8 }, {
             a.revoked_at
