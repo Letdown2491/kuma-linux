@@ -1419,6 +1419,20 @@ pub(crate) mod tests {
                  the same verb in front of the same engine",
             ),
         ),
+        (
+            "kuma-nostr bunker --for \"Damus on my phone\"",
+            Proof::Unexecuted(
+                "minted with --json on a live machine; the label rides the same mint verb, \
+                 covered by the vault tests",
+            ),
+        ),
+        (
+            "kuma-nostr label <app> <name>",
+            Proof::Unexecuted(
+                "the daemon-side verb is the rename the policy tests cover; nothing runs the \
+                 CLI form",
+            ),
+        ),
     ];
 
     /// Every verb is named somewhere a person reads.
