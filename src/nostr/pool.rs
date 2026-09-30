@@ -25,6 +25,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use nostr::prelude::*;
 use tungstenite::stream::MaybeTlsStream;
+use tungstenite::Bytes;
 use tungstenite::Message;
 
 /// The subscription id every relay thread uses. One subscription per
@@ -424,7 +425,7 @@ fn connect_and_serve(
                             "the relay went quiet: {unanswered} pings with no answer"
                         ));
                     }
-                    socket.send(Message::Ping(Vec::new()))?;
+                    socket.send(Message::Ping(Bytes::new()))?;
                 }
             }
             Err(tungstenite::Error::Protocol(
