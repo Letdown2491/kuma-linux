@@ -641,12 +641,30 @@ mod tests {
         let app = app_keys.public_key();
         daemon.engine.pair_with_metadata(&app, None, None);
 
+        // The app connects, so the bunker holds a live session too —
+        // the engine's record is not the only place "paired" lives.
+        let bunker_pubkey = daemon.bunker.as_ref().expect("armed").public_key();
+        let secret = daemon.vault.secret().expect("the armed vault's nonce").to_string();
+        let connect = NostrConnectMessage::Request {
+            id: "connect".into(),
+            method: NostrConnectMethod::Connect,
+            params: vec![bunker_pubkey.to_string(), secret],
+        };
+        let content = app_keys.nip44_encrypt(&bunker_pubkey, &connect.as_json()).unwrap();
+        let connect_event = EventBuilder::new(Kind::NostrConnect, content)
+            .tag(Tag::public_key(bunker_pubkey))
+            .finalize(&app_keys)
+            .unwrap();
+        assert!(matches!(
+            daemon.plan_bunker_event(&connect_event),
+            Some(crate::nostr::bunker::Plan::Paired { .. })
+        ));
+
         // The revoke verb takes the session with it, live: the next
         // request is a refusal, not a gate — and nothing the app does
         // afterwards re-pairs it.
         let revoke = format!(r#"{{"cmd":"revoke","app":"{}"}}"#, app);
         assert!(matches!(daemon.handle(decode(&revoke).unwrap()).await, Response::Ok(_)));
-        let bunker_pubkey = daemon.bunker.as_ref().expect("armed").public_key();
         let message = NostrConnectMessage::Request {
             id: "after-revoke".into(),
             method: NostrConnectMethod::GetPublicKey,
