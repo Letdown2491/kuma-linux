@@ -4451,17 +4451,20 @@ local function refresh()
     end)
 end
 
--- The args are ids and flags the daemon defines — no shell metachars
--- ride in them, so the line is safe to join.
+-- The args ride the argv form, always: runAsync's string form goes
+-- through /bin/sh, and the day an argument arrived from the internet
+-- — a nostrconnect URI, all & and ? and % — the shell shattered it
+-- into background jobs and the pairing never landed. The argv array
+-- executes directly; nothing is parsed, so nothing can shatter.
 local function cli(args)
     -- Every act in this panel is a person present: the keep-alive
     -- rides along, so answering a prompt four minutes in does not
     -- race the vault's own lock.
-    noctalia.runAsync("kuma-nostr touch", nil)
+    noctalia.runAsync({ "kuma-nostr", "touch" }, nil)
     -- A failed act says so: the CLI exits nonzero on a dead socket or
     -- a daemon refusal, and its stderr is the sentence the person
     -- reads. The silence here once made a working revoke look broken.
-    noctalia.runAsync("kuma-nostr " .. table.concat(args, " "), function(result)
+    noctalia.runAsync({ "kuma-nostr", table.unpack(args) }, function(result)
         if result.exitCode ~= 0 then
             local why = (result.stderr and result.stderr ~= "" and result.stderr)
                 or (result.stdout and result.stdout ~= "" and result.stdout)
