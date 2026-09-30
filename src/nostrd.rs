@@ -73,13 +73,14 @@ fn main() -> anyhow::Result<()> {
         None => socket::default_socket_path()?,
     };
 
-    // The runtime is the worker's: the startup unlock and the bunker's
-    // async decisions run on it, on this thread, where spawned tasks
-    // are polled. The socket loop is blocking threads; each connection
-    // builds a runtime of its own (socket::serve), because a keyring
-    // call bridged into a runtime another thread owns would never have
-    // its D-Bus executor polled — the daemon would hold its lock
-    // forever, listening and never answering.
+    // The runtime is the startup's: the unlock below runs on it, on
+    // this thread. Once serve() takes this thread the runtime parks
+    // for good — which is why the worker builds its own (see the
+    // spawn below), and each socket connection builds one of its own
+    // (socket::serve): a keyring call bridged into a runtime another
+    // thread owns would never have its D-Bus executor polled — the
+    // daemon would hold its lock forever, listening and never
+    // answering.
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -123,68 +124,83 @@ fn main() -> anyhow::Result<()> {
     // the process; a lock just makes its answers None until the next
     // unlock.
     let worker = daemon.clone();
-    let runtime_handle = runtime.handle().clone();
-    std::thread::spawn(move || loop {
-        let Ok(event) = inbound_rx.recv() else {
-            return;
-        };
-        let plan = { worker.lock().expect("the daemon lock").plan_bunker_event(&event) };
-        let Some(plan) = plan else { continue };
-        match plan {
-            kuma::nostr::bunker::Plan::Ignore => continue,
-            kuma::nostr::bunker::Plan::Paired { answer, app, metadata, burned } => {
-                engine.pair_with_metadata(
-                    &app,
-                    metadata.as_ref().and_then(|m| m.name.clone()),
-                    metadata.as_ref().and_then(|m| m.image.clone()),
-                    None,
-                );
-                if let Some(burned) = burned {
-                    if let Err(e) = runtime_handle
-                        .block_on(worker.lock().expect("the daemon lock").burn(&burned))
-                    {
-                        eprintln!("kuma-nostrd: the burned secret did not persist: {e:#}");
+    std::thread::spawn(move || {
+        // The worker's runtime is its own, built on the thread that
+        // drives it. The main thread's runtime parked the moment serve()
+        // took that thread: a future borrowed through its handle that
+        // wanted the I/O or timer driver waited on a poll that never
+        // came. The burn beat — a keyring write taken under the daemon
+        // lock, on the first URI connect to arrive by relay — hung the
+        // daemon whole, and an ask's five-minute fuse never burned
+        // either. A runtime this thread block_on's is polled for
+        // exactly the life of the worker, which is the life these
+        // futures need.
+        let worker_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("building the worker runtime");
+        loop {
+            let Ok(event) = inbound_rx.recv() else {
+                return;
+            };
+            let plan = { worker.lock().expect("the daemon lock").plan_bunker_event(&event) };
+            let Some(plan) = plan else { continue };
+            match plan {
+                kuma::nostr::bunker::Plan::Ignore => continue,
+                kuma::nostr::bunker::Plan::Paired { answer, app, metadata, burned } => {
+                    engine.pair_with_metadata(
+                        &app,
+                        metadata.as_ref().and_then(|m| m.name.clone()),
+                        metadata.as_ref().and_then(|m| m.image.clone()),
+                        None,
+                    );
+                    if let Some(burned) = burned {
+                        if let Err(e) = worker_runtime.block_on(
+                            worker.lock().expect("the daemon lock").burn(&burned),
+                        ) {
+                            eprintln!("kuma-nostrd: the burned secret did not persist: {e:#}");
+                        }
                     }
-                }
-                if let Err(e) = worker.lock().expect("the daemon lock").publish(&answer) {
-                    eprintln!("kuma-nostrd: the answer was not published: {e:#}");
-                }
-            }
-            kuma::nostr::bunker::Plan::Answer(answer) => {
-                if let Err(e) = worker.lock().expect("the daemon lock").publish(&answer) {
-                    eprintln!("kuma-nostrd: the answer was not published: {e:#}");
-                }
-            }
-            kuma::nostr::bunker::Plan::RelaysServed { answer, app } => {
-                engine.noted(
-                    &app.to_string(),
-                    "switch_relays",
-                    "the bunker's relay list".into(),
-                    "served",
-                );
-                if let Err(e) = worker.lock().expect("the daemon lock").publish(&answer) {
-                    eprintln!("kuma-nostrd: the answer was not published: {e:#}");
-                }
-            }
-            kuma::nostr::bunker::Plan::Shed { app } => {
-                engine.noted(&app.to_string(), "rate_limit", "over its rate".into(), "shed");
-            }
-            kuma::nostr::bunker::Plan::Ended { answer, app } => {
-                engine.logout(&app.to_string());
-                if let Err(e) = worker.lock().expect("the daemon lock").publish(&answer) {
-                    eprintln!("kuma-nostrd: the answer was not published: {e:#}");
-                }
-            }
-            kuma::nostr::bunker::Plan::Ask { ref request, method, ref params, .. } => {
-                use kuma::nostr::bunker::Gate;
-                let decision =
-                    runtime_handle.block_on(engine.decide(&request.pubkey, &method, params));
-                let answer = {
-                    worker.lock().expect("the daemon lock").execute_bunker_event(plan, decision)
-                };
-                if let Some(answer) = answer {
                     if let Err(e) = worker.lock().expect("the daemon lock").publish(&answer) {
                         eprintln!("kuma-nostrd: the answer was not published: {e:#}");
+                    }
+                }
+                kuma::nostr::bunker::Plan::Answer(answer) => {
+                    if let Err(e) = worker.lock().expect("the daemon lock").publish(&answer) {
+                        eprintln!("kuma-nostrd: the answer was not published: {e:#}");
+                    }
+                }
+                kuma::nostr::bunker::Plan::RelaysServed { answer, app } => {
+                    engine.noted(
+                        &app.to_string(),
+                        "switch_relays",
+                        "the bunker's relay list".into(),
+                        "served",
+                    );
+                    if let Err(e) = worker.lock().expect("the daemon lock").publish(&answer) {
+                        eprintln!("kuma-nostrd: the answer was not published: {e:#}");
+                    }
+                }
+                kuma::nostr::bunker::Plan::Shed { app } => {
+                    engine.noted(&app.to_string(), "rate_limit", "over its rate".into(), "shed");
+                }
+                kuma::nostr::bunker::Plan::Ended { answer, app } => {
+                    engine.logout(&app.to_string());
+                    if let Err(e) = worker.lock().expect("the daemon lock").publish(&answer) {
+                        eprintln!("kuma-nostrd: the answer was not published: {e:#}");
+                    }
+                }
+                kuma::nostr::bunker::Plan::Ask { ref request, method, ref params, .. } => {
+                    use kuma::nostr::bunker::Gate;
+                    let decision = worker_runtime
+                        .block_on(engine.decide(&request.pubkey, &method, params));
+                    let answer = {
+                        worker.lock().expect("the daemon lock").execute_bunker_event(plan, decision)
+                    };
+                    if let Some(answer) = answer {
+                        if let Err(e) = worker.lock().expect("the daemon lock").publish(&answer) {
+                            eprintln!("kuma-nostrd: the answer was not published: {e:#}");
+                        }
                     }
                 }
             }
