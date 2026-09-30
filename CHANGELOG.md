@@ -153,6 +153,15 @@ differently. Why it changed belongs in the commit that made it.
 
 ### Fixed
 
+- **The bunker survives a sleep.** A relay connection that died while
+  the machine was suspended stayed dead forever: the socket sat
+  ESTABLISHED, the read timed out on the beat and nothing probed the
+  wire, so after waking the daemon was deaf — your phone's asks
+  answered by nobody until the next reboot, the status surfaces told
+  nothing. The road now pings a quiet wire every thirty seconds and
+  walks off after three pings with no answer, landing in the backoff
+  that reconnects it; worst case a minute and a half of silence
+  before the bunker is reachable again.
 - **The nostr panel answers while it is open.** An ask arriving while
   you are reading the panel now shows up in it: the panel polls while
   open (the frame tick, asked for on open and given back on close)
