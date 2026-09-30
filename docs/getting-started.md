@@ -328,6 +328,32 @@ kernel was given against the one the file actually has, and a `kuma
 hibernate --yes` on a machine that already has a swapfile repairs what
 disagrees.
 
+**The nostr layer, if your declaration enabled it.** The bunker starts
+with your session; `kuma doctor` will have said the vault is not set up
+yet. Setup is once:
+
+```console
+$ kuma-nostr setup            # asks which road: a fresh key, or one you hold
+```
+
+Then pair a phone or an app from the panel (`Mod+Ctrl+N`, the Pair tab) or
+from a terminal:
+
+```console
+$ kuma-nostr bunker --qr      # mints a one-time pairing URI, as text and QR
+$ kuma-nostr connect <uri>    # or: pair a client's own nostrconnect:// invite
+$ kuma-nostr prompts          # what is waiting on you
+$ kuma-nostr approve <id>
+```
+
+A pairing URI pairs one app once — the connect burns it — so mint another
+for the next app. The panel does all of this with buttons, keeps the
+bunker's keep-alive fed while you are using it, and shows the revoked
+state with its undo. `kuma doctor` grades the whole layer, and says so
+before setup too.
+hibernate --yes` on a machine that already has a swapfile repairs what
+disagrees.
+
 **Secure Boot and hibernate do not go together.** A kernel that booted with
 Secure Boot on runs locked down, and a locked-down kernel refuses to
 hibernate, because a hibernate image is a way to write arbitrary memory back

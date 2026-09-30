@@ -14,6 +14,16 @@ on a timer; snapshots survive a mistake, backups survive the disk.
 signing requests from paired apps. The nostr layer runs one per session;
 see [the nostr layer](concepts.md#the-nostr-layer).
 
+**Pairing URI.** The one-time invite a client or the bunker mints —
+`bunker://` from the bunker, `nostrconnect://` from the client. It
+carries its own secret, and the connect that presents it burns it: one
+URI pairs one app once.
+
+**Tombstone.** What revoking leaves behind: the pairing record stays,
+marked `revoked_at`, and the app's connect is refused whatever it
+carries until `unrevoke` clears it. Logout, the app's own goodbye,
+deletes instead.
+
 **Base.** The foundation an image is built on. With `system.base` unset,
 kuma composes its own from Fedora's packages rather than starting from
 somebody else's image.

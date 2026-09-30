@@ -1321,8 +1321,7 @@ pub(crate) mod tests {
             "sudo dd if=kuma-x86_64.iso of=/dev/sdX bs=4M status=progress",
             Proof::Unexecuted("writes a physical disk; CI boots the ISO file directly instead"),
         ),
-        ("kuma install", Proof::Unexecuted("smoke.sh always passes --disk; the interactive live-media form is not run")),
-        ("kuma", Proof::Unexecuted("the bare status line is not run anywhere")),
+        ("kuma install", Proof::Unexecuted("smoke.sh always passes --disk; the interactive live-media form is not run")),        ("kuma", Proof::Unexecuted("the bare status line is not run anywhere")),
         ("kuma init", Proof::Unexecuted("nothing runs it; the starter declaration is only read as a fixture")),
         (
             "curl -LO https://github.com/Letdown2491/kumaos/releases/latest/download/kuma-x86_64-unknown-linux-musl",
@@ -1390,6 +1389,35 @@ pub(crate) mod tests {
         (
             "kuma hibernate --off --yes",
             Proof::Unexecuted("nothing runs it; it undoes a state no stage reaches"),
+        ),
+        (
+            "kuma-nostr setup",
+            Proof::Unexecuted(
+                "this machine's vault predates the release and a second setup is refused by \
+                 design; the daemon-side verb is covered by the protocol tests",
+            ),
+        ),
+        (
+            "kuma-nostr bunker --qr",
+            Proof::Unexecuted(
+                "minted with --json on a live machine this session; --qr is the sibling \
+                 render of the same verb",
+            ),
+        ),
+        (
+            "kuma-nostr connect <uri>",
+            Proof::Unexecuted(
+                "needs a client's own nostrconnect:// invite; the daemon-side verb is \
+                 covered end to end by the socket tests over a real relay",
+            ),
+        ),
+        ("kuma-nostr prompts", Proof::Unexecuted("run as --json this session; the plain form is the same verb without the document")),
+        (
+            "kuma-nostr approve <id>",
+            Proof::Unexecuted(
+                "this session's prompts were answered through the panel; the CLI form is \
+                 the same verb in front of the same engine",
+            ),
         ),
     ];
 
