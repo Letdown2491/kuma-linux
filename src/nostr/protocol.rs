@@ -586,16 +586,6 @@ impl<S: super::vault::SecretStore> Daemon<S> {
         Some(self.bunker.as_mut()?.plan(event))
     }
 
-    /// The logout's live half: the bunker's session goes with the
-    /// engine's record, the same way the revoke verb takes both. The
-    /// caller's own request is the authority; nothing else is asked.
-    pub fn end_session(&mut self, app: &PublicKey) {
-        if let Some(bunker) = self.bunker.as_mut() {
-            bunker.evict(&app.to_string());
-        }
-        self.engine.logout(&app.to_string());
-    }
-
     /// A handle to the engine for beat two — the decision — which the
     /// worker awaits with no lock held. The engine's state is shared
     /// through its own interior lock; this handle is a window, not a

@@ -562,14 +562,17 @@ impl Bunker {
                 }
             }
             "logout" => {
+                // The session's owner acts at the moment of the
+                // goodbye: the caller's pairing ends here, and the
+                // daemon's half (the engine's record) follows the
+                // `Ended` arm. A goodbye from an app with no session
+                // acks and removes nothing — the courtesy the spec
+                // asks.
+                let paired = self.is_paired(&event.pubkey);
+                self.sessions.remove(&event.pubkey);
                 let answer = self.raw_response(event, &id, "ack".to_string());
                 match answer {
-                    // A goodbye from a paired app ends the pairing; a
-                    // goodbye from an app with no session acks and
-                    // removes nothing — the courtesy the spec asks.
-                    Some(answer) if self.is_paired(&event.pubkey) => {
-                        Plan::Ended { answer, app: event.pubkey }
-                    }
+                    Some(answer) if paired => Plan::Ended { answer, app: event.pubkey },
                     Some(answer) => Plan::Answer(answer),
                     None => Plan::Ignore,
                 }

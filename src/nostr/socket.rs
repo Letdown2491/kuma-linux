@@ -265,7 +265,7 @@ mod tests {
                         let _ = daemon.lock().unwrap().publish(&answer);
                     }
                     crate::nostr::bunker::Plan::Ended { answer, app } => {
-                        daemon.lock().unwrap().end_session(&app);
+                        engine.logout(&app.to_string());
                         let _ = daemon.lock().unwrap().publish(&answer);
                     }
                     crate::nostr::bunker::Plan::Ask { ref request, method, ref params, .. } => {

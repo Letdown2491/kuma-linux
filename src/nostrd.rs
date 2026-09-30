@@ -154,7 +154,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             kuma::nostr::bunker::Plan::Ended { answer, app } => {
-                worker.lock().expect("the daemon lock").end_session(&app);
+                engine.logout(&app.to_string());
                 if let Err(e) = worker.lock().expect("the daemon lock").publish(&answer) {
                     eprintln!("kuma-nostrd: the answer was not published: {e:#}");
                 }
