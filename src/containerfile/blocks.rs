@@ -4545,7 +4545,7 @@ end
 local function card(children, key)
     return ui.column({
         key = key,
-        fill = "surface_variant/0.35", radius = 14, padding = 14, gap = 10,
+        fill = "surface_variant/0.35", radius = 14, padding = 14, gap = 10, align = "stretch",
     }, children)
 end
 
@@ -4825,7 +4825,7 @@ local function asksPane()
     for _, p in ipairs(prompts) do
         table.insert(cards, askCard(p))
     end
-    return ui.column({ gap = 12 }, cards)
+    return ui.column({ gap = 12, align = "stretch" }, cards)
 end
 
 -- The detail view: where the acts live. The list's card opened this —
@@ -4908,7 +4908,7 @@ local function appDetail(a)
             fontSize = 11, color = "on_surface_variant/0.8", maxLines = 3,
         }),
     }))
-    return ui.column({ gap = 10 }, rows)
+    return ui.column({ gap = 10, align = "stretch" }, rows)
 end
 
 local function appsPane()
@@ -4926,7 +4926,7 @@ local function appsPane()
     for _, a in ipairs(apps) do
         table.insert(cards, appCard(a))
     end
-    return ui.column({ gap = 12 }, cards)
+    return ui.column({ gap = 12, align = "stretch" }, cards)
 end
 
 -- ── the frame ────────────────────────────────────────────────────────
@@ -4953,13 +4953,13 @@ render = function()
         body = pairPane()
     end
 
-    local pane = ui.column({ gap = 10, flexGrow = 1 }, {
+    local pane = ui.column({ gap = 10, flexGrow = 1, align = "stretch" }, {
         paneHeader(title, badge),
         ui.separator({ color = "on_surface_variant/0.25" }),
         ui.scroll({ flexGrow = 1, gap = 12 }, { body }),
     })
 
-    panel.render(ui.column({ flexGrow = 1 }, {
+    panel.render(ui.column({ flexGrow = 1, align = "stretch" }, {
         ui.row({ gap = 12, flexGrow = 1 }, {
             ui.column({ gap = 8, width = 48 }, rail),
             pane,
