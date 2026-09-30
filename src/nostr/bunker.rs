@@ -1137,6 +1137,20 @@ mod tests {
         assert!(matches!(bunker.plan(&skewy), Plan::Answer(_)));
     }
 
+    #[test]
+    fn the_replay_cache_sheds_to_its_bound_under_a_flood() {
+        use super::super::policy::unix_now;
+        let mut replay = Replay::default();
+        let now = unix_now();
+        // Twice the bound in fresh first sightings, room made after
+        // each: the shed keeps the map under its ceiling.
+        for i in 0..(REPLAY_CACHE_MAX as u64 * 2) {
+            replay.seen.insert(format!("{i:064x}"), now + DEDUP_TTL_SECS);
+            replay.make_room(now);
+            assert!(replay.seen.len() <= REPLAY_CACHE_MAX, "the bound broke at {i}");
+        }
+    }
+
     #[tokio::test]
     async fn noise_is_none_and_never_a_response() {
         let mut bunker = Bunker::new(Keys::generate(), None);
