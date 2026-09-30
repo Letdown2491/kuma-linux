@@ -929,19 +929,24 @@ fn percent_decode(value: &str) -> Result<String> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' {
-            if i + 3 > bytes.len() {
-                return Err(anyhow!("bad percent-encoding"));
+        match bytes[i] {
+            // The query-string spelling of a space — the NIP's own
+            // example carries `name=My+Client`.
+            b'+' => out.push(b' '),
+            b'%' => {
+                if i + 3 > bytes.len() {
+                    return Err(anyhow!("bad percent-encoding"));
+                }
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3])
+                    .map_err(|_| anyhow!("bad percent-encoding"))?;
+                let byte = u8::from_str_radix(hex, 16).map_err(|_| anyhow!("bad percent-encoding"))?;
+                out.push(byte);
+                i += 3;
+                continue;
             }
-            let hex = std::str::from_utf8(&bytes[i + 1..i + 3])
-                .map_err(|_| anyhow!("bad percent-encoding"))?;
-            let byte = u8::from_str_radix(hex, 16).map_err(|_| anyhow!("bad percent-encoding"))?;
-            out.push(byte);
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
+            b => out.push(b),
         }
+        i += 1;
     }
     String::from_utf8(out).map_err(|_| anyhow!("bad percent-encoding"))
 }
