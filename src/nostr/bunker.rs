@@ -23,6 +23,7 @@
 //! why `get_public_key` answers with the signer key's public half.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use nostr::key::{Keys, PublicKey};
@@ -1479,8 +1480,7 @@ mod tests {
         assert!(matches!(bunker.plan(&ping), Plan::Shed { .. }), "the budget is spent");
 
         // The other app's budget is the other app's: unaffected.
-        let other_ping =
-            other.request_event(&bunker.public_key(), NostrConnectMethod::Ping, &[]);
+        let other_ping = other.request_event(&bunker.public_key(), NostrConnectMethod::Ping, &[]);
         assert!(matches!(bunker.plan(&other_ping), Plan::Answer(_)));
     }
 

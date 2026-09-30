@@ -266,7 +266,12 @@ mod tests {
                         let _ = daemon.lock().unwrap().publish(&answer);
                     }
                     crate::nostr::bunker::Plan::Shed { app } => {
-                        engine.noted(&app.to_string(), "rate_limit", "over its rate".into(), "shed");
+                        engine.noted(
+                            &app.to_string(),
+                            "rate_limit",
+                            "over its rate".into(),
+                            "shed",
+                        );
                     }
                     crate::nostr::bunker::Plan::Ended { answer, app } => {
                         engine.logout(&app.to_string());
