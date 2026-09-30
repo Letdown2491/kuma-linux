@@ -12,10 +12,13 @@
 //!   is what makes Trust the loudest thing in the layer, and why the
 //!   doctor grades any app holding it Warn by name.
 //!
-//! Sensitive — the plan's list: profile and follow writes, relay-list
-//! and mute-list writes, deletions, the decrypt methods, which read
-//! what was meant to be private, and NIP-04 encryption, whose whole
-//! job is private messages. A sensitive ask may be remembered for
+//! Sensitive — the safe-list direction: at Basic, only kinds the
+//! explicit safe list vouches for sign unattended, and everything else
+//! asks — the sensitive set the docs narrate (profile and follow
+//! writes, relay-list and mute-list writes, deletions, DMs, client
+//! auth, the wallet kinds) and every unknown kind alike, plus the
+//! decrypt methods, which read what was meant to be private, and
+//! NIP-04 encryption, whose whole job is private messages. A sensitive ask may be remembered for
 //! at most an hour; that is the longest standing grant the engine can
 //! mint, and `approve --remember` is how.
 //!
@@ -53,14 +56,24 @@ pub enum Level {
     Trust,
 }
 
-/// Kinds whose writes always ask at Basic: profile, follows, deletions,
-/// mute list, relay list — the writes that describe the identity or
-/// reshape who sees it.
-const SENSITIVE_KINDS: &[u16] = &[0, 3, 5, 10000, 10002];
+/// Kinds whose writes sign unattended at Basic — the everyday social
+/// surface: notes, reposts, reactions, comments, long-form, zap
+/// receipts, pin and follow-set lists, blossom authorizations.
+/// The direction is signet's, borrowed with one divergence: only an
+/// explicitly safe kind rides, and anything unknown asks — the mute
+/// list (10000) is deliberately absent from this list, because a
+/// mute-list write reshapes who the identity hears, and the plan
+/// counted it sensitive for that reason.
+const SAFE_KINDS: &[u16] = &[1, 6, 7, 16, 1111, 30023, 30024, 1808, 9735, 10001, 30000, 30001, 24242];
 
-/// Whether this method call reads a private payload or writes a
-/// sensitive part of the identity. The decrypt methods always do; a
-/// sign_event does when the unsigned event's kind does.
+/// Whether this method call reads a private payload or writes a part
+/// of the identity an explicit safe list does not vouch for. The
+/// decrypt methods always do; NIP-04 encryption does, whose whole job
+/// is private messages; a sign_event does for every kind the safe
+/// list does not name — the sensitive set the docs narrate (profile,
+/// follows, deletions, relay and mute lists, DMs, client auth, the
+/// wallet kinds) asks the same way an unknown kind does. An
+/// unreadable event asks: what cannot be read cannot be vouched for.
 fn is_sensitive(method: &NostrConnectMethod, params: &[String]) -> bool {
     match method {
         NostrConnectMethod::Nip04Decrypt | NostrConnectMethod::Nip44Decrypt => true,
@@ -71,9 +84,11 @@ fn is_sensitive(method: &NostrConnectMethod, params: &[String]) -> bool {
         NostrConnectMethod::SignEvent => params
             .first()
             .and_then(|json| nostr::event::UnsignedEvent::from_json(json).ok())
-            .map(|event| u16::from(event.kind) as u32)
-            .map(|kind| SENSITIVE_KINDS.contains(&(kind as u16)))
-            .unwrap_or(false),
+            .map(|event| {
+                let kind = u16::from(event.kind) as u16;
+                !SAFE_KINDS.contains(&kind)
+            })
+            .unwrap_or(true),
         _ => false,
     }
 }
