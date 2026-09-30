@@ -322,8 +322,9 @@ mod tests {
 
         // And the client is served: its method request — through its
         // relay — comes back answered, the way a paired app's does.
-        let bunker_pubkey =
-            nostr::key::PublicKey::parse(apps["apps"][0]["pubkey"].as_str().unwrap()).unwrap();
+        // The bunker's pubkey is the handshake's author, the way the
+        // NIP says the client learns it.
+        let bunker_pubkey = handshake.pubkey;
         let message = NostrConnectMessage::request(
             &NostrConnectRequest::from_message(
                 nostr::nips::nip46::NostrConnectMethod::GetPublicKey,
