@@ -1003,6 +1003,14 @@ fn percent_decode(value: &str) -> Result<String> {
 mod tests {
     use super::*;
 
+    /// The test bunker, armed: a secret the test holds in its hand,
+    /// so its app can connect the way a real app does — by reading
+    /// the URI.
+    fn bunker_for_tests() -> (Bunker, String) {
+        let secret = "the-test-nonce".to_string();
+        (Bunker::new(Keys::generate(), vec![secret.clone()]), secret)
+    }
+
     /// One keypair standing in for the paired app, with the pieces the
     /// tests need: a request event encrypted and signed as an app
     /// would, and the ability to decrypt what came back.
@@ -1017,6 +1025,27 @@ mod tests {
 
         fn pubkey(&self) -> PublicKey {
             self.keys.public_key()
+        }
+
+        /// The connect a real app sends: it read the URI, so its
+        /// params lead with the pubkey it expects to control and
+        /// carry the secret's echo behind them.
+        fn connect(&self, bunker: &Bunker, secret: &str) -> Event {
+            self.request_event(
+                &bunker.public_key(),
+                NostrConnectMethod::Connect,
+                &[bunker.public_key().to_string().as_str(), secret],
+            )
+        }
+
+        /// The connect, with the app's own request id.
+        fn connect_with_id(&self, bunker: &Bunker, secret: &str, id: &str) -> Event {
+            self.request_event_with_id(
+                &bunker.public_key(),
+                id,
+                NostrConnectMethod::Connect,
+                &[bunker.public_key().to_string().as_str(), secret],
+            )
         }
 
         fn request_event(
@@ -1084,7 +1113,7 @@ mod tests {
 
     #[tokio::test]
     async fn ping_round_trips_the_crypto_choreography() {
-        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let (mut bunker, secret) = bunker_for_tests();
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
@@ -1110,11 +1139,11 @@ mod tests {
 
     #[tokio::test]
     async fn connect_pairs_and_get_public_key_answers_the_bunker_identity() {
-        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let (mut bunker, secret) = bunker_for_tests();
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
-        match bunker.plan(&app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[])) {
+        match bunker.plan(&app.connect(&bunker, &secret)) {
             Plan::Paired { .. } => {}
             other => panic!("connect is protocol: {other:?}"),
         }
@@ -1143,7 +1172,7 @@ mod tests {
         let bunker_pubkey = bunker.public_key();
 
         // No echo at all: the app that never read the URI.
-        let request = app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[]);
+        let request = app.connect(&bunker, &secret);
         match bunker.plan(&request) {
             Plan::Answer(response) => match app.decrypt_response(&response) {
                 NostrConnectMessage::Response { error: Some(e), .. } => {
@@ -1216,11 +1245,11 @@ mod tests {
         // NORMAL state now, and a fallback that fired routinely would
         // let a scraped pubkey open asks on the person after every
         // legitimate pairing spent its door.
-        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let (mut bunker, secret) = bunker_for_tests();
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
-        match bunker.plan(&app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[])) {
+        match bunker.plan(&app.connect(&bunker, &secret)) {
             Plan::Answer(response) => {
                 let message = app.decrypt_response(&response);
                 match message {
@@ -1237,7 +1266,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unpaired_app_gets_refused() {
-        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let (mut bunker, secret) = bunker_for_tests();
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
@@ -1257,11 +1286,11 @@ mod tests {
 
     #[tokio::test]
     async fn the_gate_refusal_is_the_answer_the_app_sees() {
-        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let (mut bunker, secret) = bunker_for_tests();
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
-        bunker.plan(&app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[]));
+        bunker.plan(&app.connect(&bunker, &secret));
         let ask_event = app.request_event(&bunker_pubkey, NostrConnectMethod::GetPublicKey, &[]);
         let response = match bunker.plan(&ask_event) {
             Plan::Ask { request, id, method, params } => bunker
@@ -1287,10 +1316,10 @@ mod tests {
 
     #[tokio::test]
     async fn sign_event_signs_when_allowed_and_the_signature_verifies() {
-        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let (mut bunker, secret) = bunker_for_tests();
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
-        bunker.plan(&app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[]));
+        bunker.plan(&app.connect(&bunker, &secret));
 
         let unsigned = UnsignedEvent::new(
             bunker_pubkey,
@@ -1343,10 +1372,10 @@ mod tests {
 
     #[tokio::test]
     async fn nip44_encrypt_round_trips_to_the_third_party() {
-        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let (mut bunker, secret) = bunker_for_tests();
         let app = App::new();
         let third = App::new();
-        bunker.plan(&app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
+        bunker.plan(&app.connect(&bunker, &secret));
 
         let message = allowed_ask(
             &mut bunker,
@@ -1368,11 +1397,11 @@ mod tests {
 
     #[tokio::test]
     async fn nip44_decrypt_round_trips_from_the_third_party() {
-        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let (mut bunker, secret) = bunker_for_tests();
         let app = App::new();
         let third = App::new();
         let bunker_pubkey = bunker.public_key();
-        bunker.plan(&app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[]));
+        bunker.plan(&app.connect(&bunker, &secret));
 
         let ciphertext = third.keys.nip44_encrypt(&bunker_pubkey, "wire secret").unwrap();
         let message = allowed_ask(
@@ -1392,10 +1421,10 @@ mod tests {
 
     #[tokio::test]
     async fn nip04_encrypt_round_trips_to_the_third_party() {
-        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let (mut bunker, secret) = bunker_for_tests();
         let app = App::new();
         let third = App::new();
-        bunker.plan(&app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
+        bunker.plan(&app.connect(&bunker, &secret));
 
         let message = allowed_ask(
             &mut bunker,
@@ -1417,11 +1446,11 @@ mod tests {
 
     #[tokio::test]
     async fn nip04_decrypt_round_trips_from_the_third_party() {
-        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let (mut bunker, secret) = bunker_for_tests();
         let app = App::new();
         let third = App::new();
         let bunker_pubkey = bunker.public_key();
-        bunker.plan(&app.request_event(&bunker_pubkey, NostrConnectMethod::Connect, &[]));
+        bunker.plan(&app.connect(&bunker, &secret));
 
         let ciphertext = third.keys.nip04_encrypt(&bunker_pubkey, "an old wire secret").unwrap();
         let message = allowed_ask(
@@ -1441,10 +1470,10 @@ mod tests {
 
     #[tokio::test]
     async fn the_crypto_methods_refuse_malformed_params() {
-        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let (mut bunker, secret) = bunker_for_tests();
         let app = App::new();
         let third = App::new();
-        bunker.plan(&app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
+        bunker.plan(&app.connect(&bunker, &secret));
 
         // No params at all: even the pubkey is missing.
         let message = allowed_ask(&mut bunker, &app, NostrConnectMethod::Nip44Encrypt, &[]);
@@ -1504,7 +1533,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_redelivered_request_is_answered_once() {
-        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let (mut bunker, secret) = bunker_for_tests();
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
@@ -1518,7 +1547,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_stale_or_future_request_is_dropped() {
-        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let (mut bunker, secret) = bunker_for_tests();
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
         let now = unix_now();
@@ -1542,7 +1571,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_replay_below_the_senders_watermark_is_dropped() {
-        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let (mut bunker, secret) = bunker_for_tests();
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
         let now = unix_now();
@@ -1583,10 +1612,10 @@ mod tests {
 
     #[tokio::test]
     async fn switch_relays_serves_a_paired_app_the_relay_list() {
-        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let (mut bunker, secret) = bunker_for_tests();
         bunker.with_relays(vec!["wss://one.example".to_string(), "wss://two.example".to_string()]);
         let app = App::new();
-        bunker.plan(&app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
+        bunker.plan(&app.connect(&bunker, &secret));
 
         // The crate's own method enum does not know this method, so the
         // request travels as raw JSON the bunker parses itself.
@@ -1621,10 +1650,10 @@ mod tests {
 
     #[tokio::test]
     async fn logout_ends_the_callers_own_session_and_nothing_else() {
-        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let (mut bunker, secret) = bunker_for_tests();
         let app = App::new();
         let other = App::new();
-        bunker.plan(&app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
+        bunker.plan(&app.connect(&bunker, &secret));
         bunker.plan(&other.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
 
         // The goodbye is self-scoped: no param names a target, the
@@ -1691,14 +1720,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_sender_over_its_budget_is_shed_and_others_are_not() {
-        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let (mut bunker, secret) = bunker_for_tests();
         // A burst of two, refilling at nothing a test can wait out:
         // the connect spends one, one ping spends the last, and the
         // next ping is the sender's own rate talking.
         bunker.with_rate(0.0, 2.0);
         let app = App::new();
         let other = App::new();
-        bunker.plan(&app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
+        bunker.plan(&app.connect(&bunker, &secret));
         bunker.plan(&other.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
         let ping = |bunker: &Bunker, a: &App| {
             a.request_event(&bunker.public_key(), NostrConnectMethod::Ping, &[])
@@ -1716,12 +1745,12 @@ mod tests {
 
     #[tokio::test]
     async fn the_budget_refills_and_a_shed_sender_returns() {
-        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let (mut bunker, secret) = bunker_for_tests();
         // One token, refilling fast: spend it on the connect, watch
         // the next request shed, and watch the refill admit one more.
         bunker.with_rate(5.0, 1.0);
         let app = App::new();
-        bunker.plan(&app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
+        bunker.plan(&app.connect(&bunker, &secret));
 
         let ping = |bunker: &Bunker, a: &App| {
             a.request_event(&bunker.public_key(), NostrConnectMethod::Ping, &[])
@@ -1765,7 +1794,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_handshake_is_a_connect_response_the_client_validates() {
-        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let (mut bunker, secret) = bunker_for_tests();
         let client = Keys::generate();
         let uri = format!(
             "nostrconnect://{}?relay=wss%3A%2F%2Frelay.example&secret=the-secret&name=Test",
@@ -1855,7 +1884,7 @@ mod tests {
         // first pairing. The pairing is the bond: the same pubkey's
         // connect acks without a secret, because the request's own
         // signature is the proof of who is asking.
-        let request = app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]);
+        let request = app.connect(&bunker, &secret);
         match bunker.plan(&request) {
             Plan::Paired { burned, .. } => {
                 assert_eq!(burned, None, "an identity reconnect burns nothing");
@@ -1873,7 +1902,7 @@ mod tests {
 
     #[tokio::test]
     async fn noise_is_none_and_never_a_response() {
-        let mut bunker = Bunker::new(Keys::generate(), vec![]);
+        let (mut bunker, secret) = bunker_for_tests();
         let app = App::new();
         let bunker_pubkey = bunker.public_key();
 
