@@ -6,139 +6,91 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
-- **The bunker answers the four third-party crypto methods.** A paired
-  app can ask it to `nip04_encrypt`, `nip04_decrypt`, `nip44_encrypt`,
-  or `nip44_decrypt` for a third party; until now every one of those
-  came back "not implemented", so DM-capable clients could not work
-  against the bunker at all. Decrypts and NIP-04 encryption still ask
-  at Basic (NIP-04's job is private messages); NIP-44 encryption rides
-  unattended like an everyday sign. Nothing to do differently.
-
-- **The bunker refuses replays.** A relay redelivering its kind-24133
-  backlog — a reconnect re-floods the subscription — no longer re-runs
-  old requests through the policy engine, and a request captured once
-  can no longer be re-fed from a relay: an event id is answered at
-  most once per window, a request implausibly old or future-dated
-  drops, and one travelling backwards in its sender's own time drops
-  with it. Nothing to do differently.
-
-- **Basic signs only the safe kinds.** The old direction named five
-  sensitive kinds and waved every other kind through unattended —
-  including DMs, client authentication, and the wallet kinds. The
-  direction inverts: an explicit safe list vouches for the everyday
-  social surface (notes, reposts, reactions, long-form), and every
-  kind it does not name asks, the way an unknown kind always should
-  have. **Do something differently if you relaxed an app to Basic and
-  it signed kinds beyond notes and reactions — those now ask, and the
-  fix is the panel's toggle or an approval.**
-
-- **A restart no longer de-pairs the apps.** Arming the bunker built a
-  fresh session map, so after a daemon restart or a lock/unlock cycle
-  every previously paired app was refused until its client happened
-  to re-connect. The persisted pairings now ride in at arm time, and
-  a revoked app stays refused through the same door. Nothing to do
-  differently.
-
-- **Prompts expire.** A pending ask used to queue forever — one
-  approved a week later still executed. An ask now times out after
-  five minutes: the app gets its refusal, the queue forgets it, and
-  the log records the expiry. **Do something differently if you are
-  the person answering: approve within the window, or the answer
-  arrives too late and is refused by time.**
-
-- **The inactivity switch.** Opt-in: `kuma-nostrd
-  --inactivity-lock-secs 86400` locks the vault — the same lock the
-  panel's verb runs — after that long with no unlock and no
-  keep-alive (`kuma-nostr touch` resets it without unlocking). The
-  floor is one hour, 0 or absent is off, and off is the default: the
-  desktop daemon's posture is the PAM-open keyring, and a switch on
-  by default would lock the bunker while the person is away.
-  **Do something differently only if you want the switch: pass the
-  window where you start the daemon.** `status` reports it when
-  armed.
-
-- **The bunker answers `switch_relays` and `logout`.** A paired app
-  can ask which relays the bunker answers on, and can end its own
-  pairing — the goodbye removes the record, the session, and the
-  standing grants, and cannot reach any other app. Nothing to do
-  differently.
-
-- **One app cannot spend the shared relays for every other.** The
-  bunker keeps a token bucket per sender — ten a second refilling,
-  thirty of burst headroom — and sheds over-budget requests with no
-  response, recording the shed in the activity log. Where signet
-  queues an over-budget request briefly, this bunker sheds: the
-  worker is one thread, and a delay for one app is a delay for every
-  app behind it. Nothing to do differently.
-
-- **A pairing URI is one app's door, once.** The vault-wide nonce was
-  a standing invitation: any app holding it paired, until the person
-  rotated. Every minted URI now carries its own one-time secret, and
-  the connect that uses it burns it — a second connect with the same
-  secret is refused. `kuma-nostr bunker` mints a fresh URI per call;
-  `rotate` still invalidates every outstanding secret at a stroke.
-  **Do something differently if you hand out pairing URIs to more
-  than one app: mint one URI per app, and re-mint for each new
-  pairing.** A vault from before this change migrates: its URI works
-  once more, exactly once.
-
-- **The declaration carries the switch.** `inactivity_lock_secs` joins
-  the `[nostr]` declaration beside the relays it always ran: the
-  unit's exec line grows the flag when the switch is armed, the floor
-  is a build failure, and the doctor grades the armed state in words
-  a person reads. The daemon's own args stay its interface — a binary
-  with no config file of its own is a binary whose every fact arrives
-  on argv — so existing units and commands keep working unchanged.
-  The off switch stays silent in the doctor, the desktop default
-  being the PAM-open keyring.
-
-- **The nostrconnect:// flow.** A client's own invite now pairs:
-  paste its URI (`kuma-nostr connect <uri>`, or the panel behind the
-  `nostrconnect://` link handler) and the pairing lands — the person's
-  paste is the approval — with the handshake published on the
-  client's own relays and the URI's secret echoed as the result the
-  client validates. The client's name and requested permissions ride
-  the pairing record as display hints. Every refusal names itself:
-  a missing secret, no relay, a bad pubkey, a plaintext relay to a
-  non-loopback host. **Nothing to do differently; the bunker:// flow
-  is unchanged.**
-
-- **Revocation is a state.** Revoke no longer deletes the pairing
-  record — it tombstones it: the app's connect is refused whatever it
-  carries, the tombstone survives restarts, and `kuma-nostr
-  unrevoke <app>` clears it. **Do something differently if you
-  revoked apps to free their rows: the rows are still there, revoked.**
-  The way back in is still a freshly minted URI — the app's original
-  secret burned at its first connect — and a known app's own
-  reconnect now acks by identity, so a client that restarted itself
-  needs no fresh URI. The door with no outstanding secret is now
-  shut: nothing pairs until the person mints, where an empty vault
-  used to fall back to pairing on the person's later approval.
-
-## v44.4.0 (2026-09-28)
+## v44.4.0 (2026-09-30)
 
 ### Added
 
 - **The nostr layer.** A declaration with `[nostr]` enabled turns on a
   bunker: `kuma-nostrd`, a daemon holding a nostr signing key in your
   login keyring and answering paired apps over the relays; `kuma-nostr`,
-  the CLI (`setup`, `unlock`, `lock`, `status`, `prompts`, `approve`,
-  `deny`, `apps`, `revoke`, `bunker --qr`, `destroy`); the noctalia
-  plugin (a bar glyph that counts pending asks, and the approval panel
-  behind it — `Mod+Ctrl+N` opens it, and a `nostrconnect://` link
+  the CLI (`setup`, `generate`, `import`, `unlock`, `lock`, `touch`,
+  `status`, `bunker --qr`, `connect`, `prompts`, `approve`, `deny`,
+  `apps`, `revoke`, `unrevoke`, `level`, `rotate`, `destroy`); the
+  noctalia plugin (a bar glyph that counts pending asks, and the approval
+  panel behind it — `Mod+Ctrl+N` opens it, and a `nostrconnect://` link
   clicked anywhere lands there). A freshly paired app can ask for
   everything and signs nothing until a person answers; relaxing an app
-  to Basic lets its everyday methods sign unattended while sensitive
-  writes and the decrypt methods still ask; Trust signs everything and
-  `kuma doctor` grades it Warn by name. An approved ask can be
-  remembered for an hour at most. Nothing to do differently unless the
-  layer is wanted — absent or off, the image ships none of it — and a
-  toggle never destroys anything: the key lives in your keyring, user
-  state no image update touches, so a disable is reversible. The
-  release now carries the layer's two binaries beside kuma, because a
-  nostr-enabled image stages them from beside the running binary:
-  install them to the same place when the layer is wanted. The trust
-  model is written down in SECURITY.md.
+  to Basic signs only the kinds an explicit safe list vouches for —
+  notes, reposts, reactions, long-form, the everyday social surface —
+  and every kind it does not name asks, the decrypts, NIP-04
+  encryption, and NIP-44's general-purpose encryption riding like an
+  everyday sign; Trust signs everything and `kuma doctor` grades it
+  Warn by name. An approved ask can be remembered for an hour at most,
+  and an unanswered one times out after five minutes — the app gets its
+  refusal, and the log records the expiry. The pairings survive daemon
+  restarts and lock/unlock cycles; a prompt approved is a prompt that
+  executes in its window, not one that waited a week. Nothing to do
+  differently unless the layer is wanted — absent or off, the image
+  ships none of it — and a toggle never destroys anything: the key
+  lives in your keyring, user state no image update touches, so a
+  disable is reversible. The release carries the layer's two binaries
+  beside kuma, because a nostr-enabled image stages them from beside
+  the running binary: install them to the same place when the layer is
+  wanted. The trust model is written down in SECURITY.md.
+
+- **The full NIP-46 method surface.** A paired app can ask the bunker
+  to `nip04_encrypt`, `nip04_decrypt`, `nip44_encrypt`, or
+  `nip44_decrypt` for a third party; ask which relays it answers on
+  (`switch_relays`); and end its own pairing (`logout` — the goodbye
+  removes the record, the session, and the standing grants, and cannot
+  reach any other app).
+
+- **Both pairing flows.** `bunker://` — the daemon mints the URI, the
+  app connects — and `nostrconnect://` — the client's own invite,
+  pasted into `kuma-nostr connect <uri>` or the panel, whose paste is
+  the approval: the handshake goes out on the client's own relays and
+  the URI's secret echoes back as the result the client validates
+  against spoofing. Every pairing URI carries a one-time secret, and
+  the connect that uses it burns it — a URI pairs one app once, and a
+  second connect with the same secret is refused; `kuma-nostr bunker`
+  mints a fresh URI per call, and `rotate` still invalidates every
+  outstanding secret at a stroke. The client's name and its requested
+  permissions ride the pairing record as display hints, never
+  authorization; every URI refusal names itself — a missing secret, no
+  relay, a plaintext relay to a non-loopback host.
+
+- **Revocation is a state.** `revoke` tombstones the pairing — the
+  app's connect is refused whatever it carries, the tombstone survives
+  restarts — and `unrevoke` clears it; the way back in is still a
+  freshly minted URI, because the app's original secret burned at its
+  first connect. The pairing is the bond: a known app's own reconnect
+  re-verifies by identity, so a client that restarted itself needs no
+  fresh URI.
+
+- **The bunker refuses replays and sheds over-budget apps.** A relay
+  redelivering its kind-24133 backlog changes nothing: an event id is
+  answered at most once per window, a request implausibly old or
+  future-dated drops, and one travelling backwards in its sender's own
+  time drops with it. A token bucket per sender — ten a second
+  refilling, thirty of burst headroom — sheds over-budget requests
+  with no response, recording the shed in the activity log, so one app
+  cannot spend the shared relays for every other.
+
+- **An answer travels the road its p-tag names.** Each relay road is
+  its own queue, and an answer goes to the declared set plus whichever
+  app's relays its p-tag names — a nostrconnect handshake travels only
+  its URI's relays. Revoking an app tears its relay roads down; one
+  app's relay going down never touches the others'.
+
+- **The inactivity switch.** Opt-in: the declaration's
+  `inactivity_lock_secs` (or `kuma-nostrd --inactivity-lock-secs`)
+  locks the vault — the same lock the panel's verb runs — after that
+  long with no unlock and no keep-alive (`kuma-nostr touch` resets it
+  without unlocking). The floor is one hour, 0 or absent is off, and
+  off is the default: the desktop daemon's posture is the PAM-open
+  keyring, and a switch on by default would lock the bunker while the
+  person is away. The unit's exec line carries the flag when armed,
+  and `kuma doctor` grades the armed state in words a person reads.
 
 - **A local relay, and the tailnet mode.** The bunker's first
   subscription is a relay on the machine itself — `nip46-relay`, ported
