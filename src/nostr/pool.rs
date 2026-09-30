@@ -110,11 +110,7 @@ impl RelayPool {
         inbound: Sender<Event>,
         status: Sender<RelayStatus>,
     ) -> Self {
-        let mut pool = Self {
-            roads: Vec::new(),
-            own_urls: Vec::new(),
-            app_urls: HashMap::new(),
-        };
+        let mut pool = Self { roads: Vec::new(), own_urls: Vec::new(), app_urls: HashMap::new() };
         pool.spawn_own(relays, bunker_pubkey, &inbound, &status);
         pool
     }
@@ -132,6 +128,8 @@ impl RelayPool {
         let (outbound, outbound_rx) = channel::<(Event, Fan)>();
         let handle = std::thread::spawn({
             let stop = stop.clone();
+            let inbound = inbound.clone();
+            let status = status.clone();
             move || {
                 one_relay(url, own, app, bunker_pubkey, inbound, status, outbound_rx, stop);
             }
@@ -198,10 +196,7 @@ impl RelayPool {
     /// test reads.
     #[cfg(test)]
     pub(crate) fn app_road_count(&self, app: &PublicKey) -> usize {
-        self.roads
-            .iter()
-            .filter(|(road, _)| road.app.as_ref() == Some(app))
-            .count()
+        self.roads.iter().filter(|(road, _)| road.app.as_ref() == Some(app)).count()
     }
 
     /// Publish an event down the declared set's roads.
@@ -241,9 +236,9 @@ impl RelayPool {
                 Fan::OnlyApp(who) => road.app.as_ref() == Some(who),
             };
             if mine {
-                outbound.send((event.clone(), fan.clone())).map_err(|_| {
-                    anyhow::anyhow!("the relay threads are gone")
-                })?;
+                outbound
+                    .send((event.clone(), fan.clone()))
+                    .map_err(|_| anyhow::anyhow!("the relay threads are gone"))?;
             }
         }
         Ok(())
