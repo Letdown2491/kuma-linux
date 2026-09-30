@@ -346,11 +346,7 @@ impl Bunker {
                     return NostrConnectResponse::with_error(format!("unreadable pubkey: {e}"))
                 }
             },
-            _ => {
-                return NostrConnectResponse::with_error(
-                    "the method wants [pubkey, payload]",
-                )
-            }
+            _ => return NostrConnectResponse::with_error("the method wants [pubkey, payload]"),
         };
         let attempt = match method {
             NostrConnectMethod::Nip04Encrypt => self
@@ -796,7 +792,8 @@ mod tests {
             NostrConnectMessage::Response { result, error, .. } => {
                 assert_eq!(error, None, "{error:?}");
                 let ciphertext = result.expect("an encrypt answers with a result");
-                let plaintext = third.keys.nip44_decrypt(&bunker.public_key(), &ciphertext).unwrap();
+                let plaintext =
+                    third.keys.nip44_decrypt(&bunker.public_key(), &ciphertext).unwrap();
                 assert_eq!(plaintext, "a secret for the third party");
             }
             other => panic!("a response came back: {other:?}"),
@@ -844,7 +841,8 @@ mod tests {
             NostrConnectMessage::Response { result, error, .. } => {
                 assert_eq!(error, None, "{error:?}");
                 let ciphertext = result.expect("an encrypt answers with a result");
-                let plaintext = third.keys.nip04_decrypt(&bunker.public_key(), &ciphertext).unwrap();
+                let plaintext =
+                    third.keys.nip04_decrypt(&bunker.public_key(), &ciphertext).unwrap();
                 assert_eq!(plaintext, "an old-fashioned secret");
             }
             other => panic!("a response came back: {other:?}"),
@@ -882,6 +880,16 @@ mod tests {
         let third = App::new();
         bunker.plan(&app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
 
+        // No params at all: even the pubkey is missing.
+        let message = allowed_ask(&mut bunker, &app, NostrConnectMethod::Nip44Encrypt, &[]);
+        match message {
+            NostrConnectMessage::Response { result, error, .. } => {
+                assert_eq!(result, None);
+                assert!(error.as_ref().unwrap().contains("pubkey, payload"), "{error:?}");
+            }
+            other => panic!("a response came back: {other:?}"),
+        }
+
         // A payload missing: one param is not a method call.
         let message = allowed_ask(
             &mut bunker,
@@ -892,10 +900,7 @@ mod tests {
         match message {
             NostrConnectMessage::Response { result, error, .. } => {
                 assert_eq!(result, None);
-                assert!(
-                    error.as_ref().unwrap().contains("pubkey, payload"),
-                    "{error:?}"
-                );
+                assert!(error.as_ref().unwrap().contains("pubkey, payload"), "{error:?}");
             }
             other => panic!("a response came back: {other:?}"),
         }
@@ -910,10 +915,7 @@ mod tests {
         match message {
             NostrConnectMessage::Response { result, error, .. } => {
                 assert_eq!(result, None);
-                assert!(
-                    error.as_ref().unwrap().contains("unreadable pubkey"),
-                    "{error:?}"
-                );
+                assert!(error.as_ref().unwrap().contains("unreadable pubkey"), "{error:?}");
             }
             other => panic!("a response came back: {other:?}"),
         }
@@ -928,10 +930,7 @@ mod tests {
         match message {
             NostrConnectMessage::Response { result, error, .. } => {
                 assert_eq!(result, None);
-                assert!(
-                    error.as_ref().unwrap().contains("did not transform"),
-                    "{error:?}"
-                );
+                assert!(error.as_ref().unwrap().contains("did not transform"), "{error:?}");
             }
             other => panic!("a response came back: {other:?}"),
         }

@@ -25,3 +25,17 @@ tree's identity into the binary (`build.rs`): an uncommitted tree ships a
 `-dirty` binary, and a binary installed locally with that stamp is one
 that answers for code no commit describes. The tree that produced a
 running binary should always be a commit you can name.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked as GitHub Issues on Letdown2491/kumaOS via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles, each label string equal to its name. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.

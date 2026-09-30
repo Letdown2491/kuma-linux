@@ -271,8 +271,9 @@ default is Ask.** Every consequential method waits on a prompt that
 names the app and shows the exact event before anything is signed; a
 newly paired app can do nothing unattended. Relaxing an app to Basic
 lets its everyday methods sign unattended while sensitive writes
-(profile, follows, relay and mute lists, deletions) and the decrypt
-methods still ask; Trust removes the asks, and is graded Warn by name
+(profile, follows, relay and mute lists, deletions), the decrypt
+methods, and NIP-04 encryption — whose job is private messages — still
+ask; Trust removes the asks, and is graded Warn by name
 by `kuma doctor`, because a standing grant is the loudest thing in the
 layer. An approved ask can be remembered for an hour at most — the
 ceiling is the verb itself, and nothing in the layer mints a longer

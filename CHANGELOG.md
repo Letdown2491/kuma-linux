@@ -6,6 +6,14 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+- **The bunker answers the four third-party crypto methods.** A paired
+  app can ask it to `nip04_encrypt`, `nip04_decrypt`, `nip44_encrypt`,
+  or `nip44_decrypt` for a third party; until now every one of those
+  came back "not implemented", so DM-capable clients could not work
+  against the bunker at all. Decrypts and NIP-04 encryption still ask
+  at Basic (NIP-04's job is private messages); NIP-44 encryption rides
+  unattended like an everyday sign. Nothing to do differently.
+
 ## v44.4.0 (2026-09-28)
 
 ### Added

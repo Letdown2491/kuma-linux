@@ -585,8 +585,10 @@ engine's default level is Ask: every consequential method waits on a
 prompt that names the app, the method, and — for a signature — the exact
 event, and nothing signs until a person answers. You relax an app to
 Basic when its everyday requests should stop asking; sensitive writes —
-profile, follows, relay and mute lists, deletions — and every decrypt
-still ask. Trust signs everything unattended, and the doctor grades any
+profile, follows, relay and mute lists, deletions — every decrypt, and
+NIP-04 encryption (whose job is private messages) still ask. NIP-44
+encryption, general-purpose, rides at Basic. Trust signs everything
+unattended, and the doctor grades any
 app holding it Warn by name, because a standing grant is the loudest
 thing in the layer. An approved ask can be remembered for an hour at
 most; that ceiling is the verb's own.

@@ -415,6 +415,7 @@ fn detail(method: &NostrConnectMethod, params: &[String]) -> Option<String> {
         NostrConnectMethod::Nip04Decrypt | NostrConnectMethod::Nip44Decrypt => {
             params.first().map(|pk| format!("decrypt for {pk}"))
         }
+        NostrConnectMethod::Nip04Encrypt => params.first().map(|pk| format!("encrypt for {pk}")),
         _ => None,
     }
 }
@@ -635,11 +636,7 @@ mod tests {
 
         // NIP-44 is general-purpose encryption: it runs without a prompt.
         let allowed = engine
-            .decide(
-                &app,
-                &NostrConnectMethod::Nip44Encrypt,
-                &[app.to_string(), "text".into()],
-            )
+            .decide(&app, &NostrConnectMethod::Nip44Encrypt, &[app.to_string(), "text".into()])
             .await;
         assert!(matches!(allowed, Decision::Allow));
         assert!(engine.prompts().is_empty());
@@ -648,11 +645,7 @@ mod tests {
         let engine_for_ask = engine.clone();
         let ask = tokio::spawn(async move {
             engine_for_ask
-                .decide(
-                    &app,
-                    &NostrConnectMethod::Nip04Encrypt,
-                    &[app.to_string(), "text".into()],
-                )
+                .decide(&app, &NostrConnectMethod::Nip04Encrypt, &[app.to_string(), "text".into()])
                 .await
         });
         tokio::task::yield_now().await;
