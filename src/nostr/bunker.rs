@@ -365,6 +365,12 @@ pub struct Bunker {
     /// daemon burns the stored copy when the `Paired` answer lands,
     /// so the two halves agree.
     expected_secrets: Vec<String>,
+    /// The tombstoned pubkeys — the apps the person revoked. The
+    /// teeth of revocation: a connect from one of these is refused
+    /// whatever secret it carries, because the person's word outranks
+    /// any URI. The engine's record is the durable side; this is the
+    /// live side, marked and cleared beside it.
+    revoked: HashSet<PublicKey>,
     /// The relay set the bunker answers on — what `switch_relays`
     /// serves a paired app. Arming hands it in; it travels as an
     /// argument until the declaration block exists to carry it, the
@@ -389,6 +395,7 @@ impl Bunker {
             keys,
             sessions: HashSet::new(),
             expected_secrets,
+            revoked: HashSet::new(),
             relays: Vec::new(),
             rate: HashMap::new(),
             rate_refill_per_sec: RATE_REFILL_PER_SEC,
@@ -435,6 +442,19 @@ impl Bunker {
     /// mirrors. Arming hands the first list in.
     pub fn with_secrets(&mut self, secrets: Vec<String>) {
         self.expected_secrets = secrets;
+    }
+
+    /// Tombstone an app: the connect-refusing side of revocation.
+    /// The session's eviction is the verb's own separate act — the
+    /// tombstone is what outlives it.
+    pub fn mark_revoked(&mut self, app: &PublicKey) {
+        self.revoked.insert(*app);
+    }
+
+    /// Clear a tombstone: the person un-revoked, and a freshly minted
+    /// URI is the way back in.
+    pub fn mark_unrevoked(&mut self, app: &PublicKey) {
+        self.revoked.remove(app);
     }
 
     /// The rate a test can afford to exercise: the same bucket shape
@@ -529,29 +549,58 @@ impl Bunker {
         };
         let response = match method {
             NostrConnectMethod::Connect => {
-                // Params are [user_pubkey, secret?]. The URI's secret
-                // is one-time: the echo that verifies burns itself, so
-                // a minted pairing pairs one app once and a second
-                // connect with the same secret is refused. The compare
-                // is constant-time, because a comparison that leaks
-                // its own progress is a lock that shows its keys. A
-                // connect without an echo is refused while secrets are
-                // outstanding — a scraped pubkey opens asks on nobody
-                // — and a bunker with none outstanding has nothing to
-                // verify against, so the person's gate stays the door.
+                // Params are [user_pubkey, secret?]. Three doors, in
+                // order:
+                //
+                // The tombstone: a revoked app is refused whatever it
+                // carries — the person's word outranks any URI.
+                //
+                // The bond: a connect from an already-paired app is
+                // the app reconnecting by its own identity — a client
+                // restart is not a stranger, the request's signature
+                // is the proof of who asks, and no secret is spent.
+                // The pairing is the bond; the secret only gated the
+                // first pairing.
+                //
+                // The secret: a new app's echo that verifies burns
+                // itself, so a minted pairing pairs one app once and
+                // a second connect with the same secret is refused.
+                // The compare is constant-time, because a comparison
+                // that leaks its own progress is a lock that shows
+                // its keys. A connect without an echo is refused
+                // while secrets are outstanding — a scraped pubkey
+                // opens asks on nobody — and a bunker with none
+                // outstanding has nothing to verify against, so the
+                // person's gate stays the door.
                 let secret = params.get(1).cloned();
+                if self.revoked.contains(&event.pubkey) {
+                    eprintln!(
+                        "kuma-nostrd: connect from {}: refused, the app is revoked",
+                        event.pubkey
+                    );
+                    return match self.response_event(
+                        event,
+                        &id,
+                        NostrConnectResponse::with_error("this app is revoked"),
+                    ) {
+                        Some(answer) => Plan::Answer(answer),
+                        None => Plan::Ignore,
+                    };
+                }
+                let known = self.is_paired(&event.pubkey);
                 // The burn is located now and executed when the answer
                 // exists — a live list that burned before a wrap that
                 // failed would disagree with the stored list, and a
                 // restart would flip the disagreement back open.
-                let mut burn_at = match secret.as_deref() {
-                    Some(provided) => {
+                let mut burn_at = match (&secret, known) {
+                    (Some(provided), false) => {
                         self.expected_secrets.iter().position(|s| constant_time_eq(s, provided))
                     }
-                    None => None,
+                    _ => None,
                 };
-                let verified =
-                    burn_at.is_some() || (secret.is_none() && self.expected_secrets.is_empty());
+                let verified = known
+                    || burn_at.is_some()
+                    || (secret.is_none() && self.expected_secrets.is_empty());
                 eprintln!(
                     "kuma-nostrd: connect from {}: {}",
                     event.pubkey,

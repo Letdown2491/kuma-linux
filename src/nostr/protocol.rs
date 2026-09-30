@@ -97,6 +97,12 @@ pub enum Request {
     Connect {
         uri: String,
     },
+    /// Clear a revocation's tombstone. The way back in is still a
+    /// freshly minted URI — the un-revoke opens the door, the mint
+    /// hands over the key.
+    Unrevoke {
+        app: String,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,6 +156,7 @@ pub enum OkResponse {
     Rotate { ok: bool, uri: String },
     Mint { ok: bool, uri: String },
     Connect { ok: bool, name: Option<String>, relays: Vec<String> },
+    Unrevoke { ok: bool, cleared: bool },
 }
 
 /// What `status` says, and what `doctor` will grade through it later.
@@ -439,13 +446,30 @@ impl<S: super::vault::SecretStore> Daemon<S> {
             Request::Apps => Response::Ok(OkResponse::Apps { ok: true, apps: self.engine.apps() }),
             Request::Revoke { app } => {
                 let removed = self.engine.revoke(&app);
-                // The record goes with the session: a refusal is
-                // live, and the app's own traffic cannot re-pair
-                // what the person removed.
+                // The tombstone and the eviction are the same act:
+                // the refusal is live, and the app's own traffic
+                // cannot re-pair what the person removed.
                 if removed {
-                    if let Some(bunker) = self.bunker.as_mut() {
+                    if let (Some(bunker), Ok(pubkey)) =
+                        (self.bunker.as_mut(), PublicKey::parse(&app))
+                    {
+                        bunker.mark_revoked(&pubkey);
                         bunker.evict(&app);
                     }
+                }
+                Response::Ok(OkResponse::Revoke { ok: true, removed })
+            }
+            Request::Unrevoke { app } => {
+                let cleared = self.engine.unrevoke(&app);
+                if cleared {
+                    if let (Some(bunker), Ok(pubkey)) =
+                        (self.bunker.as_mut(), PublicKey::parse(&app))
+                    {
+                        bunker.mark_unrevoked(&pubkey);
+                    }
+                }
+                Response::Ok(OkResponse::Unrevoke { ok: true, cleared })
+            }
                 }
                 Response::Ok(OkResponse::Revoke { ok: true, removed })
             }
@@ -608,12 +632,21 @@ impl<S: super::vault::SecretStore> Daemon<S> {
         // The persisted pairings ride in: a fresh session set is not
         // a forgetting, and the restart is invisible to a paired app.
         // One source of truth answers "paired" — the engine's record,
-        // which revocation edits. A stored pubkey that does not parse
-        // says so instead of vanishing.
+        // which revocation tombstones. The tombstoned ride in as
+        // tombstones: the bunker refuses them whatever they carry,
+        // until the person un-revokes.
         let mut seeded = Vec::new();
         for paired in self.engine.apps() {
             match PublicKey::parse(&paired.pubkey) {
-                Ok(pubkey) => seeded.push(pubkey),
+                Ok(pubkey) => {
+                    if paired.revoked_at.is_some() {
+                        if let Some(bunker) = self.bunker.as_mut() {
+                            bunker.mark_revoked(&pubkey);
+                        }
+                    } else {
+                        seeded.push(pubkey);
+                    }
+                }
                 Err(e) => eprintln!("kuma-nostrd: a persisted pairing's pubkey did not parse: {e}"),
             }
         }

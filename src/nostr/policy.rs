@@ -118,6 +118,12 @@ pub struct Paired {
     /// and the perms never widen anything.
     #[serde(default)]
     pub perms: Option<String>,
+    /// The tombstone: when the person revoked this app. Revocation is
+    /// a state, not a deletion — the record stays so the refusal has
+    /// teeth across restarts and the panel can offer the way back.
+    /// `None` is an app in good standing.
+    #[serde(default)]
+    pub revoked_at: Option<u64>,
 }
 
 /// What `prompts` shows: the ask, enough to decide on. `summary` is
@@ -298,13 +304,56 @@ impl Engine {
 
     /// Forget an app. Answers whether one was actually removed, so the
     /// verb can tell the caller "no such app" instead of nodding.
+    /// Revoke an app: the tombstone's act. The record stays — revoked,
+    /// not deleted, so the refusal has teeth across restarts and the
+    /// panel can offer the way back — while the standing answers go,
+    /// because a grant the person erased does not come back with the
+    /// un-revoke. Answers whether a paired app was found, so the verb
+    /// can tell the caller "no such app".
     pub fn revoke(&self, app: &str) -> bool {
         let mut inner = self.inner.lock().expect("the policy lock");
-        let removed = remove_app(&mut inner, app);
-        if removed {
-            self.persist_apps(&inner);
+        let Some(paired) = inner.apps.iter_mut().find(|p| p.pubkey == app) else {
+            return false;
+        };
+        let fresh = paired.revoked_at.is_none();
+        paired.revoked_at = Some(unix_now());
+        inner.remembered.retain(|key, _| !key.starts_with(&format!("{app}:")));
+        if fresh {
+            inner.log.push(LogEntry {
+                at: unix_now(),
+                app: app.to_string(),
+                method: "revoke".into(),
+                summary: "the person revoked the app".into(),
+                verdict: "tombstoned".into(),
+            });
         }
-        removed
+        self.persist_apps(&inner);
+        true
+    }
+
+    /// Clear a tombstone: the person un-revoked. The way back in is a
+    /// freshly minted URI — the app's original secret burned at its
+    /// first connect — so the un-revoke opens the door without
+    /// opening the gate: the pairing lands when the app presents the
+    /// new URI.
+    pub fn unrevoke(&self, app: &str) -> bool {
+        let mut inner = self.inner.lock().expect("the policy lock");
+        let Some(paired) = inner.apps.iter_mut().find(|p| p.pubkey == app) else {
+            return false;
+        };
+        if paired.revoked_at.is_none() {
+            return false;
+        }
+        paired.revoked_at = None;
+        inner.log.push(LogEntry {
+            at: unix_now(),
+            app: app.to_string(),
+            method: "unrevoke".into(),
+            summary: "the person un-revoked the app".into(),
+            verdict: "cleared".into(),
+        });
+        self.persist_apps(&inner);
+        true
     }
 
     /// The app's own goodbye: the removal revoke does, logged as the
@@ -526,9 +575,10 @@ impl super::bunker::Gate for Engine {
     }
 }
 
-/// The shared body of revoke and logout: the record and its standing
-/// answers go together. Does not persist; the callers do, and the
-/// logout logs what it removed.
+/// The logout's body: the record and its standing answers go
+/// together — the app's own goodbye is a deletion, not a tombstone,
+/// because re-pairing is a fresh URI either way. Does not persist;
+/// the caller does, and logs what it removed.
 fn remove_app(inner: &mut Inner, app: &str) -> bool {
     let before = inner.apps.len();
     inner.apps.retain(|p| p.pubkey != app);
