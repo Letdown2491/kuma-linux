@@ -82,6 +82,16 @@ differently. Why it changed belongs in the commit that made it.
   pairing.** A vault from before this change migrates: its URI works
   once more, exactly once.
 
+- **The declaration carries the switch.** `inactivity_lock_secs` joins
+  the `[nostr]` declaration beside the relays it always ran: the
+  unit's exec line grows the flag when the switch is armed, the floor
+  is a build failure, and the doctor grades the armed state in words
+  a person reads. The daemon's own args stay its interface — a binary
+  with no config file of its own is a binary whose every fact arrives
+  on argv — so existing units and commands keep working unchanged.
+  The off switch stays silent in the doctor, the desktop default
+  being the PAM-open keyring.
+
 ## v44.4.0 (2026-09-28)
 
 ### Added

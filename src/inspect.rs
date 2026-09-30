@@ -2771,7 +2771,7 @@ fn check_nostr(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
             Grade::Ok,
             "nostr",
             format!(
-                "the inactivity switch is armed: the vault locks itself after {}s of nothing \
+                "the inactivity switch is armed: the vault locks itself after {} of nothing \
                  unlocking or keeping it alive",
                 human_secs(secs)
             ),
@@ -2941,7 +2941,7 @@ fn reachability_wording(relays: &[String]) -> String {
     }
 }
 
-/// A window in words: 86400 reads as "a day", 3600 as "an hour" — the
+/// A window in words: 86400 reads as "1 day", 3600 as "1 hour" — the
 /// doctor's grades are read by a person, and a person does not divide
 /// by 3600 for pleasure.
 fn human_secs(secs: u64) -> String {
