@@ -1474,13 +1474,17 @@ mod tests {
         let other = App::new();
         bunker.plan(&app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
         bunker.plan(&other.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
-
-        let ping = app.request_event(&bunker.public_key(), NostrConnectMethod::Ping, &[]);
-        assert!(matches!(bunker.plan(&ping), Plan::Answer(_)));
-        assert!(matches!(bunker.plan(&ping), Plan::Shed { .. }), "the budget is spent");
+        let ping = |bunker: &Bunker, a: &App| {
+            a.request_event(&bunker.public_key(), NostrConnectMethod::Ping, &[])
+        };
+        assert!(matches!(bunker.plan(&ping(&bunker, &app)), Plan::Answer(_)));
+        assert!(
+            matches!(bunker.plan(&ping(&bunker, &app)), Plan::Shed { .. }),
+            "the budget is spent"
+        );
 
         // The other app's budget is the other app's: unaffected.
-        let other_ping = other.request_event(&bunker.public_key(), NostrConnectMethod::Ping, &[]);
+        let other_ping = ping(&bunker, &other);
         assert!(matches!(bunker.plan(&other_ping), Plan::Answer(_)));
     }
 
@@ -1493,11 +1497,16 @@ mod tests {
         let app = App::new();
         bunker.plan(&app.request_event(&bunker.public_key(), NostrConnectMethod::Connect, &[]));
 
-        let ping = app.request_event(&bunker.public_key(), NostrConnectMethod::Ping, &[]);
-        assert!(matches!(bunker.plan(&ping), Plan::Shed { .. }));
+        let ping = |bunker: &Bunker, a: &App| {
+            a.request_event(&bunker.public_key(), NostrConnectMethod::Ping, &[])
+        };
+        assert!(matches!(bunker.plan(&ping(&bunker, &app)), Plan::Shed { .. }));
 
         tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(matches!(bunker.plan(&ping), Plan::Answer(_)), "the bucket refilled");
+        assert!(
+            matches!(bunker.plan(&ping(&bunker, &app)), Plan::Answer(_)),
+            "the bucket refilled"
+        );
     }
 
     #[tokio::test]
