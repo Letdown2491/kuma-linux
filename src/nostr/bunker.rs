@@ -760,17 +760,65 @@ impl Bunker {
                 NostrConnectResponse::with_result(ResponseResult::GetPublicKey(self.public_key()))
             }
             NostrConnectMethod::SignEvent => {
-                let unsigned = match params.first() {
-                    Some(json) => match UnsignedEvent::from_json(json) {
-                        Ok(event) => event,
-                        Err(e) => {
-                            return NostrConnectResponse::with_error(format!(
-                                "unreadable unsigned event: {e}"
-                            ))
-                        }
-                    },
+                let json = match params.first() {
+                    Some(json) => json,
                     None => return NostrConnectResponse::with_error("sign_event wants an event"),
                 };
+                // Lenient where this parse was strict: the client's
+                // event is read as the fields the NIP defines, and
+                // anything else it carries (a pre-computed id, a sig,
+                // wrapper extras) is the client's own business, not a
+                // refusal. The gate said yes; the hands must not know
+                // better and decline — an error here read to the
+                // person's approval as a denial. What is signed is
+                // exactly what the prompt showed: kind, content,
+                // tags, created_at.
+                let parsed = match serde_json::from_str::<serde_json::Value>(json) {
+                    Ok(value) => value,
+                    Err(e) => {
+                        return NostrConnectResponse::with_error(format!(
+                            "unreadable unsigned event: {e}"
+                        ))
+                    }
+                };
+                let kind = match parsed.get("kind") {
+                    Some(serde_json::Value::Number(n)) => {
+                        n.as_u64().and_then(|k| u16::try_from(k).ok()).map(Kind::from_u16)
+                    }
+                    Some(serde_json::Value::String(s)) => s.parse().ok().map(Kind::from_u16),
+                    _ => None,
+                };
+                let kind = match kind {
+                    Some(kind) => kind,
+                    None => {
+                        return NostrConnectResponse::with_error("the event carries no kind")
+                    }
+                };
+                let content =
+                    parsed.get("content").and_then(|c| c.as_str()).unwrap_or("").to_string();
+                let tags = match parsed.get("tags") {
+                    Some(value) => match serde_json::from_value::<Vec<Vec<String>>>(value.clone()) {
+                        Ok(list) => Tags::parse(list).map_err(|e| {
+                            NostrConnectResponse::with_error(format!(
+                                "the event's tags do not parse: {e}"
+                            ))
+                        }),
+                        Err(e) => Err(NostrConnectResponse::with_error(format!(
+                            "the event's tags do not parse: {e}"
+                        ))),
+                    },
+                    None => Ok(Tags::new()),
+                };
+                let tags = match tags {
+                    Ok(tags) => tags,
+                    Err(response) => return response,
+                };
+                let created_at = parsed
+                    .get("created_at")
+                    .and_then(|t| t.as_u64())
+                    .map(Timestamp::from)
+                    .unwrap_or_else(Timestamp::now);
+                let unsigned = UnsignedEvent::new(self.public_key(), created_at, kind, tags, content);
                 match self.keys.sign_event(unsigned) {
                     Ok(signed) => NostrConnectResponse::with_result(ResponseResult::SignEvent(
                         Box::new(signed),
@@ -1490,6 +1538,57 @@ mod tests {
                 let signed = Event::from_json(result.unwrap()).unwrap();
                 signed.verify().unwrap();
                 assert_eq!(signed.pubkey, bunker_pubkey);
+            }
+            other => panic!("a response came back: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_allowed_sign_signs_the_event_the_client_shaped() {
+        // The client's event as the web's clients ship them: a
+        // pre-computed id, a sig field, created_at, the wrapper's own
+        // extras. The strict typed parse refused every one of these
+        // and answered a person's approval with an error the client
+        // showed as a decline. The gate said yes; the signature must
+        // follow.
+        let (mut bunker, secret) = bunker_for_tests();
+        let app = App::new();
+        let bunker_pubkey = bunker.public_key();
+        bunker.plan(&app.connect(&bunker, &secret));
+
+        let client_event = r#"{
+            "id": "4b1e7f9cd1e0a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b",
+            "pubkey": "0000000000000000000000000000000000000000000000000000000000000000",
+            "sig": "the-client-had-a-sig-field-for-some-reason",
+            "created_at": 1790740000,
+            "kind": 22242,
+            "tags": [["u", "https://nostr.build"], ["method", "GET"]],
+            "content": ""
+        }"#;
+        let response = match bunker.plan(&app.request_event(
+            &bunker_pubkey,
+            NostrConnectMethod::SignEvent,
+            &[client_event],
+        )) {
+            Plan::Ask { request, id, method, params } => bunker
+                .execute(&request, &id, &method, &params, Decision::Allow)
+                .expect("an allowed sign answers"),
+            other => panic!("sign_event waits on the gate: {other:?}"),
+        };
+        match app.decrypt_response(&response) {
+            NostrConnectMessage::Response { result, error, .. } => {
+                assert_eq!(error, None, "an approved sign is not a decline: {error:?}");
+                let signed = Event::from_json(result.unwrap()).unwrap();
+                signed.verify().unwrap();
+                assert_eq!(signed.pubkey, bunker_pubkey, "the bunker signs as the user");
+                assert_eq!(u16::from(signed.kind), 22242, "the client's kind");
+                assert_eq!(signed.content, "", "the client's content");
+                assert_eq!(
+                    signed.created_at.as_secs(),
+                    1790740000,
+                    "the client's own timestamp, not the bunker's now"
+                );
+                assert_eq!(signed.tags.len(), 2, "the client's tags ride");
             }
             other => panic!("a response came back: {other:?}"),
         }
