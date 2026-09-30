@@ -63,6 +63,14 @@ differently. Why it changed belongs in the commit that made it.
   standing grants, and cannot reach any other app. Nothing to do
   differently.
 
+- **One app cannot spend the shared relays for every other.** The
+  bunker keeps a token bucket per sender — ten a second refilling,
+  thirty of burst headroom — and sheds over-budget requests with no
+  response, recording the shed in the activity log. Where signet
+  queues an over-budget request briefly, this bunker sheds: the
+  worker is one thread, and a delay for one app is a delay for every
+  app behind it. Nothing to do differently.
+
 ## v44.4.0 (2026-09-28)
 
 ### Added
