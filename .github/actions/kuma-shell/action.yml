@@ -81,10 +81,16 @@ runs:
         KUMA_DIR: ${{ inputs.kuma-dir }}
         # The shell is baked into the image by `kuma build` the same way
         # kuma is, so its build paths ride along into everything
-        # published. Same remap argument as kuma's own builds.
+        # published. Same remap argument as kuma's own builds. The two
+        # specific remaps first, then the catch-all: whatever under the
+        # runner's home the specific ones miss (cargo's git checkouts,
+        # the rustup dir) still loses the prefix, and a path already
+        # renamed by a specific remap no longer starts with /home/runner
+        # so the catch-all cannot double-map it.
         RUSTFLAGS: >-
           --remap-path-prefix=${{ github.workspace }}/kumaui=/kumaui
           --remap-path-prefix=/home/runner/.cargo/registry=/cargo
+          --remap-path-prefix=/home/runner/=/runner/
       run: |
         set -euo pipefail
         # The toolchain is kumaui's own pin (rust-toolchain.toml), not the
