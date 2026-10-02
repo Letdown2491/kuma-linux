@@ -1230,30 +1230,25 @@ smoke_published() {
         # RUNNING failed a machine that was perfectly correct.
         #
         # So what gets asked is the wiring: the shell is in the image,
-        # kuma's config is where the session will look for it, and the
-        # session starts it. Whether it then draws a bar is a question
-        # only a real session answers, and nothing in CI has one.
+        # and the session starts it under supervision. Whether it then
+        # draws a bar is a question only a real session answers, and
+        # nothing in CI has one.
         #
         # Asked of the niri image only, and asked by its config rather
         # than by the tag: --published takes any image, and a COSMIC one
         # failing these would be this harness reporting the wrong
         # desktop rather than a broken one.
+        #
+        # The shell ships no config file of its own — the unit's env pair
+        # is the whole surface the session hands it — so the probes here
+        # are the binary and the unit. The noctalia config probes this
+        # block carried left the rename in everything but their message
+        # strings, and no run reached them until one survived the gates
+        # ahead of this one; the first image to get this far failed them
+        # while carrying the shell the whole time.
         if guest test -f /etc/niri/config.kdl; then
-            guest 'command -v noctalia >/dev/null' \
+            guest 'command -v kuma-shell >/dev/null' \
                 || bad "the shell is not in the image"
-            guest 'test -f /usr/lib/kuma/noctalia/config.toml' \
-                || bad "the image ships no noctalia config for the shell to read"
-            guest 'grep -q NOCTALIA_CONFIG_HOME /etc/niri/config.kdl' \
-                || bad "the session would not point the shell at kuma's config"
-            # THE UNIT, not just the niri config. This assertion passed
-            # every run of 0.17 while the shell came up as stock
-            # noctalia: the shell moved out of a niri spawn and into a
-            # unit, which inherits nothing from niri's environment
-            # block, so the file it grepped was still true about a
-            # process it no longer started.
-            guest 'grep -q "^Environment=NOCTALIA_CONFIG_HOME=/usr/lib/kuma$" \
-                /usr/lib/systemd/user/kuma-shell.service' \
-                || bad "the shell unit does not point the shell at kuma's config"
             # Started by a SUPERVISED unit, not a niri spawn. A spawn
             # lands in a transient scope, a scope cannot restart, and
             # every lock on this desktop runs through that one process,
@@ -1264,7 +1259,7 @@ smoke_published() {
                 || bad "kuma-shell.service is not enabled, so nothing starts the shell"
             guest 'grep -q Restart=always /usr/lib/systemd/user/kuma-shell.service' \
                 || bad "the shell unit would not come back from a crash"
-            ok "the shell is installed, configured, and started under supervision"
+            ok "the shell is installed and started under supervision"
 
             # And the guard that refuses to sleep without it.
             guest 'test -x /usr/libexec/kuma-sleep-guard' \
