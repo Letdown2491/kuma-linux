@@ -77,11 +77,12 @@ else
     ok "no baked user declaration"
 fi
 
-# kuma's default when the declaration pins nothing. Any other value came
-# from a declaration and names somebody's machine.
+# kumaos: the default hostname since the rebrand (21f93f9) — the system
+# says kumaOS wherever a person reads its name, and new installs follow.
+# Any other value came from a declaration and names somebody's machine.
 host=$(cat "$mnt/etc/hostname" 2>/dev/null || echo "<missing>")
-if [ "$host" = "kuma" ]; then
-    ok "hostname is the default (kuma)"
+if [ "$host" = "kumaos" ]; then
+    ok "hostname is the default (kumaos)"
 else
     bad "hostname is '$host', not the default" "it names the machine that built this"
 fi
