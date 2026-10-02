@@ -41,12 +41,12 @@ differently. Why it changed belongs in the commit that made it.
   the optimistic flip and rollback the other mute keys already use, so
   the OSD raises a Microphone card. A shell carrying the verb has been in
   the release only since this cycle, so this fix and the shell ride the
-  same image; on an older image, a line in `~/.config/niri/local.kdl`
-  (included last, wins) sends the right verb as soon as the shell knows it:
-
-  ```kdl
-  XF86AudioMicMute { spawn "kuma-shell" "msg" "mic-mute"; }
-  ```
+  same image: switching to it is the fix. On an older image there is no
+  short interim override: binds cannot ride `~/.config/niri/local.kdl`
+  (niri rejects a second `binds` node, in an include same as anywhere),
+  so the road is copying the config to `~/.config/niri/config.kdl` and
+  editing the line there, accepting the shadowing and staleness that
+  costs (`kuma doctor` grades a shadowing copy).
 
 ### Added
 
