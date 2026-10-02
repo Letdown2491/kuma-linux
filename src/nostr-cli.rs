@@ -1,9 +1,9 @@
 //! `kuma-nostr` — the nostr layer's CLI.
 //!
-//! The human interface and the noctalia plugin's transport, in one
+//! The human interface and the shell signer plugin's transport, in one
 //! binary: every verb is one request line to the daemon's socket and one
 //! answer rendered. The CLI reads no keys and holds no state — the vault
-//! is the daemon's, and that separation is what lets the plugin shell
+//! is the daemon's, and that separation is what lets the panel shell
 //! this binary without widening the trust boundary.
 //!
 //! The verbs the layer has so far: `setup` (which asks rather than

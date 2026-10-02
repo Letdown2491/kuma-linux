@@ -5,9 +5,9 @@
 //! one document reads them all. Requests are newline-delimited JSON on a
 //! unix socket; the verbs here are the vault's, and they will be joined —
 //! not changed — by the policy and pairing verbs the policy engine
-//! brings, because the CLI and the noctalia plugin both talk to this one
-//! surface and a verb that changes meaning under a plugin is a bug that
-//! ships twice.
+//! brings, because the CLI and the shell's signer plugin both talk to
+//! this one surface and a verb that changes meaning under a plugin is a
+//! bug that ships twice.
 //!
 //! Everything here is offline-testable: [`Daemon`] is generic over the
 //! vault's store, and the socket layer at the bottom of the stack is the
