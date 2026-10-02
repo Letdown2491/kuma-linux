@@ -165,7 +165,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      # v7 runs on node24, which v5 only reached by the runner forcing it
+      # there over its own node20 declaration — the one warning of its
+      # kind in this tree. The module cache is off because its restore
+      # looks for a go.sum at the workspace root and the tree has none:
+      # the only Go here is the relay cloned below into /tmp, pinned and
+      # single-module, so the check failed on every run for a download
+      # the build never needed.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          cache: false
       - name: build the Go relay at its pinned commit
         run: |
           set -euo pipefail
