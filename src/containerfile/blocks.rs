@@ -3801,6 +3801,20 @@ fn labels(e: &mut Emitter<'_>) {
     // inspect` already runs there for the id and the timestamp. Running a
     // container to ask the binary its version would not.
     e.raw(&format!("LABEL io.kuma.builder=\"{}\"\n", crate::VERSION));
+    // The version bootupd reads. bootc's install writes the installed
+    // image's OCI version into /sysroot/.bootc-aleph.json, and bootupd's
+    // reader requires it as a plain string — a null fails
+    // bootloader-update.service on every boot. Nothing in kuma's pipeline
+    // supplied one: the composed base never carries a version label
+    // (rpm-ostree compose image emits none, whichever env runs it), so
+    // every image kuma has ever built installed with "version": null and
+    // a failed unit — invisible until the failed-unit grading landed, and
+    // blamed for a week on the Fedora float. The number alone, like
+    // os-release's: the full stamp's home is io.kuma.builder beside it.
+    e.raw(&format!(
+        "LABEL org.opencontainers.image.version=\"{}\"\n",
+        env!("CARGO_PKG_VERSION")
+    ));
 }
 
 fn sweep_lint(e: &mut Emitter<'_>) {

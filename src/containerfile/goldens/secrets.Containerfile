@@ -87,6 +87,7 @@ COPY kuma.toml /usr/lib/kuma/kuma.toml
 
 LABEL io.kuma.image="1"
 LABEL io.kuma.builder=<version-and-commit>
+LABEL org.opencontainers.image.version="44.4.0"
 
 RUN find /run /tmp -mindepth 1 -delete; \
     find /var/log -type f -delete; \
