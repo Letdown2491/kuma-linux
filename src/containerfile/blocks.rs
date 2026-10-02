@@ -2223,7 +2223,7 @@ read -r _
 /// Important Hotkeys overlay and generates the label from the action, so
 /// an untitled `spawn` advertises itself as its own command line: the
 /// clipboard bind read as its whole `sh -c` pipeline
-/// on the first screen of a new machine. The four worth naming are
+/// on the first screen of a new machine. The five worth naming are
 /// named, and the media keys are hidden outright — they are printed on
 /// the keyboard, and ten of them crowd out everything worth reading.
 /// The binds are spliced INTO the stock `binds {}` section during the
@@ -2243,7 +2243,7 @@ pub(crate) const NIRI_MEDIA_BINDS: &str = r#"    XF86AudioRaiseVolume allow-when
 
     XF86AudioMute allow-when-locked=true hotkey-overlay-title=null { spawn "kuma-shell" "msg" "volume-mute"; }
 
-    XF86AudioMicMute allow-when-locked=true hotkey-overlay-title=null { spawn "kuma-shell" "msg" "mute"; }
+    XF86AudioMicMute allow-when-locked=true hotkey-overlay-title=null { spawn "kuma-shell" "msg" "mic-mute"; }
 
     XF86MonBrightnessUp allow-when-locked=true hotkey-overlay-title=null { spawn "kuma-shell" "msg" "brightness-up"; }
 
@@ -2260,6 +2260,8 @@ pub(crate) const NIRI_MEDIA_BINDS: &str = r#"    XF86AudioRaiseVolume allow-when
     Mod+Alt+R hotkey-overlay-title="Record the Screen" { spawn "/usr/libexec/kuma-record"; }
 
     Mod+Print hotkey-overlay-title="Screenshot a Region, then Annotate" { spawn "sh" "-c" "grim -g \"$(slurp)\" - | swappy -f -"; }
+
+    Mod+S hotkey-overlay-title="Settings" { spawn "kuma-shell" "msg" "settings"; }
 "#;
 
 /// System-wide default apps: without associations, opening a PDF or a

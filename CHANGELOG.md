@@ -6,6 +6,33 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
+### Fixed
+
+- **The mic key muted the speakers.** The image's `XF86AudioMicMute` bind
+  spawned `kuma-shell msg mute`, and `mute` is the sink's verb (an alias
+  of `volume-mute`): pressing it toggled the output mute, the microphone
+  never changed, and the OSD faithfully showed a Volume card. The bind now
+  spawns `mic-mute`, whose request targets `@DEFAULT_AUDIO_SOURCE@` with
+  the optimistic flip and rollback the other mute keys already use, so
+  the OSD raises a Microphone card. A shell carrying the verb has been in
+  the release only since this cycle, so this fix and the shell ride the
+  same image; on an older image, a line in `~/.config/niri/local.kdl`
+  (included last, wins) sends the right verb as soon as the shell knows it:
+
+  ```kdl
+  XF86AudioMicMute { spawn "kuma-shell" "msg" "mic-mute"; }
+  ```
+
+### Added
+
+- **`Mod+S` opens the shell's settings panel.** The panel existed behind
+  the bar's gear icon only, with a debug env var as the only other road.
+  It now answers `kuma-shell msg settings` (toggle semantics: the same
+  press closes it), and the image ships the keybind, named on the hotkey
+  overlay like the record and screenshot binds. The key works against a
+  shell that carries the verb, so it and the shell above ride the same
+  image.
+
 ## v44.4.0 (2026-10-04)
 
 ### Fixed
