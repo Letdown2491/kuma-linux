@@ -61,6 +61,20 @@ runs:
         git clone --quiet https://github.com/Letdown2491/kumaui "$GITHUB_WORKSPACE/kumaui"
         git -C "$GITHUB_WORKSPACE/kumaui" checkout --quiet "$KUMAUI_REF"
 
+    # vendor/ is gitignored and travels with no clone, and it cannot:
+    # the crates.io gpui release predates the layer-shell API the shell
+    # is built on, so kumaui assembles it from zed main at the commit
+    # its own vendor script pins. Running that script here rather than
+    # cloning zed from over here keeps the zed pin in kumaui, beside the
+    # code that depends on it — bumping it is a kumaui commit, and this
+    # action follows on the next kumaui-ref bump instead of drifting.
+    - name: vendor gpui from zed at kumaui's pinned commit
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE/kumaui"
+        bash scripts/vendor-gpui.sh
+
     - name: build kuma-shell and stage it beside kuma
       shell: bash
       env:
