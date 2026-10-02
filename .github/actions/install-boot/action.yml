@@ -41,6 +41,17 @@ runs:
     - shell: bash
       run: cargo build --locked
 
+    # Every image this action leads to is a desktop image, and a desktop
+    # image needs the release's binaries together: `kuma build` copies
+    # kuma-shell from beside the kuma it runs and refuses to compose
+    # without it. The build above makes kuma; this makes its sibling. It
+    # lives here rather than in each job because every job that boots a
+    # disk builds an image through this action, and one staging gap is
+    # what made all of them red at once.
+    - uses: ./.github/actions/kuma-shell
+      with:
+        kuma-dir: target/debug
+
     # The podman step runs BEFORE the kvm action, and the order is the
     # whole point. kvm asserts podman is somewhere `kuma install` will
     # look and `exit 1`s when it is not; this step is what makes that

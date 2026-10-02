@@ -73,6 +73,12 @@ jobs:
             --remap-path-prefix=/home/runner/.cargo/registry=/cargo
         run: cargo build --locked --release
 
+      # The image above is composed by the kuma this job just built, so
+      # the shell must sit beside it in target/release.
+      - uses: ./.github/actions/kuma-shell
+        with:
+          kuma-dir: target/release
+
       # Lowercased because ghcr rejects an uppercase path, and the owner
       # here is not.
       # Two tags for one image: a moving one to track, and a pinned one

@@ -120,13 +120,20 @@ if [ -f "$mnt/usr/bin/kuma" ]; then
     # failed condition, and a binary full of paths prints "embeds no
     # build paths". Reading everything is what makes the pass mean
     # something; there is no `2>/dev/null` either, for the same reason.
-    if paths=$(grep -aoE '/(var/)?home/[a-z_][a-z0-9_-]*/' "$mnt/usr/bin/kuma" |
-        grep -v linuxbrew | sort -u) && [ -n "$paths" ]; then
-        bad "/usr/bin/kuma embeds build paths: $(echo "$paths" | tr '\n' ' ')" \
-            "build it in CI, or set trim-paths in the release profile"
-    else
-        ok "/usr/bin/kuma embeds no build paths"
-    fi
+    for bin in kuma kuma-shell; do
+        # kuma-shell rides into the image beside kuma (COPY --chmod=755
+        # kuma-shell /usr/bin/kuma-shell), so the leak applies to it the
+        # same. An image without it skips the check: nothing shipped,
+        # nothing to name.
+        [ -f "$mnt/usr/bin/$bin" ] || continue
+        if paths=$(grep -aoE '/(var/)?home/[a-z_][a-z0-9_-]*/' "$mnt/usr/bin/$bin" |
+            grep -v linuxbrew | sort -u) && [ -n "$paths" ]; then
+            bad "/usr/bin/$bin embeds build paths: $(echo "$paths" | tr '\n' ' ')" \
+                "build it in CI, or set trim-paths in the release profile"
+        else
+            ok "/usr/bin/$bin embeds no build paths"
+        fi
+    done
 fi
 
 echo

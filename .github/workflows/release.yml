@@ -358,6 +358,16 @@ jobs:
       - uses: ./.github/actions/kvm
         if: env.ATTACH_ISO == 'true' && steps.what.outputs.publish == 'true'
 
+      # The ISO's image is composed by the packaged kuma, so the shell is
+      # staged at the workspace root beside it rather than beside a cargo
+      # target. The gate is the ISO's own: a rolling run rehearses the
+      # release path without publishing, and there is no image at the end
+      # of it to build a shell for.
+      - uses: ./.github/actions/kuma-shell
+        if: env.ATTACH_ISO == 'true' && steps.what.outputs.publish == 'true'
+        with:
+          kuma-dir: .
+
       - name: live ISO
         id: iso
         if: env.ATTACH_ISO == 'true' && steps.what.outputs.publish == 'true'
