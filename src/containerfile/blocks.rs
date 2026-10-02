@@ -18,12 +18,11 @@ pub(crate) const NIRI_PACKAGES: &[&str] = &[
     "xwayland-satellite",
     "greetd",
     "tuigreet",
-    // The shell. One process for the bar, notifications, wallpaper,
-    // OSDs, idle, lock, control centre and night light, which is why
-    // waybar, mako, swaybg, swayidle, swaylock, wob and wlsunset are all
-    // gone from this list. In Fedora proper, so this costs kuma no new
-    // trust root and nothing to package.
-    "noctalia",
+    // The shell: built in this image from the kumaui tree, not packaged.
+    // One process for the bar, notifications, wallpaper, idle, lock,
+    // control centre and the nostr signer, which is why waybar, mako,
+    // swaybg, swayidle, swaylock, wob and wlsunset are all gone from
+    // this list. See the builder stage in generate().
     "kitty",
     "pipewire",
     "pipewire-pulseaudio",
@@ -1859,20 +1858,6 @@ environment {
     GTK_THEME "adw-gtk3-dark"
     XCURSOR_THEME "Adwaita"
     XCURSOR_SIZE "24"
-    // Where the shell reads kuma's config from. Undocumented in
-    // `noctalia --help` and found by grepping the binary: it redirects
-    // config-home wholesale, and it is the only thing that does.
-    // /etc/xdg and XDG_CONFIG_DIRS are both ignored, measured. Without
-    // this kuma cannot bake the desktop's look at all, so the build
-    // asserts the config survives to `config export merged`.
-    //
-    // This is HALF of the answer, and it stopped being the half that
-    // matters in 0.17. It reaches what niri spawns: the `noctalia msg`
-    // keybinds below, and a terminal where you ask the shell what it is
-    // running. The shell itself runs from kuma-shell.service now, and a
-    // unit inherits nothing from here, so [`SHELL_SERVICE`] states the
-    // same variable and a test holds the two together.
-    NOCTALIA_CONFIG_HOME "/usr/lib/kuma"
 }
 
 // Kuma session services
@@ -1934,35 +1919,27 @@ include optional=true "~/.config/niri/local.kdl"
 /// still taken the lock screen with it.
 ///
 /// `Environment=` because a unit inherits nothing from niri's
-/// `environment` block, and 0.17 shipped without it: the first boot of
-/// the supervised shell came up as stock noctalia, welcome screen and
-/// all, because the one variable that points it at kuma's config was
-/// stated only in a file that no longer applied to it. The check that
-/// should have caught it read the niri config, which still said the
-/// right thing about a process it no longer started.
+/// `environment` block. 0.17 learned that the hard way with a config
+/// pointer that existed only where the shell no longer read it; the
+/// kuma-shell needs less — its defaults are compiled in, the image's
+/// policy ships with the binary — and the cursor theme is the one pair
+/// that still has to be said here, and in niri's block for everything
+/// niri spawns, and nowhere else.
 pub(crate) const SHELL_SERVICE: &str = r#"[Unit]
-Description=Noctalia, the kuma desktop shell
+Description=kuma-shell, the kuma desktop shell
 PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
 Type=simple
-# The variable that makes this kuma's desktop rather than noctalia's.
-# niri's `environment` block reaches the processes NIRI spawns, and the
-# shell stopped being one of them the moment it moved into this unit, so
-# the same variable has to be stated here or nothing states it: /etc/xdg
-# and XDG_CONFIG_DIRS are both ignored by the shell, measured. Without
-# it the desktop comes up on stock defaults, which is a wider bar, no
-# wallpaper-derived palette, and the welcome screen kuma turns off.
-# Measured on a booted 0.17 machine, where the running shell's environ
-# held no NOCTALIA_ variable at all.
-Environment=NOCTALIA_CONFIG_HOME=/usr/lib/kuma
-# Out of the same block and lost the same way. The shell draws its own
-# surfaces, so the cursor over the bar and the lock screen is themed by
-# these or by nothing.
+# The shell draws its own surfaces, so the cursor over the bar and the
+# lock screen is themed by these or by nothing. niri's `environment`
+# block states the same pair for everything niri spawns; a unit inherits
+# nothing from there, so both places carry both values and a test holds
+# them together.
 Environment=XCURSOR_THEME=Adwaita
 Environment=XCURSOR_SIZE=24
-ExecStart=/usr/bin/noctalia
+ExecStart=/usr/bin/kuma-shell
 Restart=always
 RestartSec=1
 Slice=session.slice
@@ -1997,12 +1974,10 @@ WantedBy=graphical-session.target
 /// package set, so the chain skips it by the same existence check — no
 /// file here pretends otherwise.
 ///
-/// Inert until the shell switch: noctalia 5.2.0's lock screen uses the
-/// `login` service and never reads this file, so shipping it changes
-/// nothing on today's image — it is the ground the switch lands on.
-/// The shell's existence check reads /etc/pam.d only (Fedora vendors
-/// distro stacks in /usr/lib/pam.d, which the chain cannot see), so
-/// the path is the feature.
+/// Landed with the shell switch: the lock screen's chain starts here,
+/// so unlock attempts are named `kuma-lock` in the journal and vlock's
+/// coincidental stack is skipped by the same existence check that made
+/// it first.
 pub(crate) const KUMA_LOCK_PAM: &str = r#"#%PAM-1.0
 auth       include      system-auth
 account    required     pam_permit.so
@@ -2058,47 +2033,22 @@ while read -r id _rest; do
     [ "$type" = "wayland" ] || continue
     user=$(loginctl show-session "$id" -p Name --value 2>/dev/null || true)
     [ -n "$user" ] || continue
-    # A process is not proof the shell can act. 0.17's residual case is
-    # a shell that hangs rather than exits: it holds its logind delay
-    # inhibitor, never locks, logind waits out InhibitDelayMaxSec and
-    # suspends anyway, and the machine sleeps with the desktop on
-    # screen while pgrep says everything is fine. So the process is
-    # checked and then ASKED: the shell owns org.freedesktop.ScreenSaver
-    # on its session bus from its first moment (sdbus-c++ takes the name
-    # at connect), and Peer.Ping is answered by sd-bus itself, no shell
-    # code involved. A live shell answers in milliseconds whatever else
-    # it is doing; a hung one has an event loop that is not turning, and
-    # no answer comes. That a ping needs no argument and has no side
-    # effect is the whole reason it is the probe.
-    if ! pgrep -u "$user" -x noctalia >/dev/null 2>&1; then
+    # A process is not proof the shell can act, and 0.17's lesson was a
+    # shell that hangs rather than exits. Under noctalia that case was
+    # caught by ASKING the shell over its session bus — noctalia owned
+    # org.freedesktop.ScreenSaver from its first moment, and Peer.Ping
+    # was answered by sd-bus itself. kuma-shell owns no bus name (its
+    # lock path is logind's Lock signal, not a dbus contract), so the
+    # probe has nothing to ask and the guard keeps only the process
+    # half: a shell that hangs now passes this check, and the guard
+    # will not guess. The upside is structural — kuma-shell holds no
+    # logind delay inhibitor either, so a hung shell cannot stall sleep
+    # the way the hung noctalia could; the machine suspends on schedule
+    # with lock-before-suspend best-effort, same as any locker.
+    if ! pgrep -u "$user" -x kuma-shell >/dev/null 2>&1; then
         logger -t kuma-sleep-guard         "the desktop shell is not running in session $id; ending it rather than suspending an unlocked session"
         loginctl terminate-session "$id" || true
-        continue
     fi
-    # Without both halves of the probe there is no probe, and a guard
-    # that cannot ask must not guess: the machine falls back to the
-    # process check, which is the 0.17 answer and not a wrong one.
-    # runuser rather than sudo: this unit runs as root, where runuser
-    # asks nobody's permission, while sudo -u with an env_reset policy
-    # would strip the XDG_RUNTIME_DIR the probe depends on and turn
-    # every healthy shell into a false "not answering".
-    command -v busctl >/dev/null 2>&1 || exit 0
-    command -v runuser >/dev/null 2>&1 || exit 0
-    uid=$(id -u "$user")
-    probe() {
-        runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
-            busctl --user --timeout=3 call \
-            org.freedesktop.ScreenSaver /org/freedesktop/ScreenSaver \
-            org.freedesktop.DBus.Peer Ping >/dev/null 2>&1
-    }
-    # Twice, because the verdict is destructive and the timeout is short:
-    # a shell that was merely busy answers the second ping, and a hung
-    # one has now ignored six seconds of asking.
-    if probe || probe; then
-        exit 0
-    fi
-    logger -t kuma-sleep-guard         "the desktop shell in session $id is running but not answering; ending it rather than suspending an unlocked session"
-    loginctl terminate-session "$id" || true
 done < <(loginctl list-sessions --no-legend 2>/dev/null || true)
 "#;
 
@@ -2227,10 +2177,11 @@ read -r _
 ' kuma-launch kuma "$@"
 "#;
 
-/// The media keys. The shell owns volume and brightness natively —
-/// `noctalia msg volume-up` adjusts and draws the OSD in one step — so
-/// the binds go through it directly and the kuma-osd helper that used to
-/// sit here is gone.
+/// The media keys. The shell owns volume and brightness in its own msg
+/// interface — `kuma-shell msg volume-up` adjusts through the same
+/// sysmon the bar's widgets read from, so key and widget cannot
+/// disagree — so the binds go through it directly and the kuma-osd
+/// helper that used to sit here is gone.
 ///
 /// The helper was a script that adjusted with `wpctl` and
 /// `brightnessctl` and drew nothing: a comment claimed the shell watched
@@ -2250,230 +2201,37 @@ read -r _
 /// The binds are spliced INTO the stock `binds {}` section during the
 /// merge (niri rejects a second binds node) while the stock
 /// wpctl/brightnessctl lines are sed-stripped.
-pub(crate) const NIRI_MEDIA_BINDS: &str = r#"    XF86AudioRaiseVolume allow-when-locked=true hotkey-overlay-title=null { spawn "noctalia" "msg" "volume-up"; }
+///
+/// Two binds left with noctalia and did not come back: `Mod+Ctrl+V`
+/// (clipboard history) and `Mod+Ctrl+W` (wallpaper) opened panels the
+/// kuma-shell does not have. A bind that advertises a dead panel is the
+/// bug `no_bind_names_a_program_the_image_excludes` exists for, so they
+/// are dropped outright — kuma-clipboard-bridge stays for the apps that
+/// use it, the image ships one static wallpaper, and a shell panel for
+/// either is new work, not part of the switch.
+pub(crate) const NIRI_MEDIA_BINDS: &str = r#"    XF86AudioRaiseVolume allow-when-locked=true hotkey-overlay-title=null { spawn "kuma-shell" "msg" "volume-up"; }
 
-    XF86AudioLowerVolume allow-when-locked=true hotkey-overlay-title=null { spawn "noctalia" "msg" "volume-down"; }
+    XF86AudioLowerVolume allow-when-locked=true hotkey-overlay-title=null { spawn "kuma-shell" "msg" "volume-down"; }
 
-    XF86AudioMute allow-when-locked=true hotkey-overlay-title=null { spawn "noctalia" "msg" "volume-mute"; }
+    XF86AudioMute allow-when-locked=true hotkey-overlay-title=null { spawn "kuma-shell" "msg" "volume-mute"; }
 
-    XF86AudioMicMute allow-when-locked=true hotkey-overlay-title=null { spawn "noctalia" "msg" "mic-mute"; }
+    XF86AudioMicMute allow-when-locked=true hotkey-overlay-title=null { spawn "kuma-shell" "msg" "mute"; }
 
-    XF86MonBrightnessUp allow-when-locked=true hotkey-overlay-title=null { spawn "noctalia" "msg" "brightness-up"; }
+    XF86MonBrightnessUp allow-when-locked=true hotkey-overlay-title=null { spawn "kuma-shell" "msg" "brightness-up"; }
 
-    XF86MonBrightnessDown allow-when-locked=true hotkey-overlay-title=null { spawn "noctalia" "msg" "brightness-down"; }
+    XF86MonBrightnessDown allow-when-locked=true hotkey-overlay-title=null { spawn "kuma-shell" "msg" "brightness-down"; }
 
-    XF86AudioPlay allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "play-pause"; }
+    XF86AudioPlay allow-when-locked=true hotkey-overlay-title=null { spawn "kuma-shell" "msg" "media" "play-pause"; }
 
-    XF86AudioStop allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "stop"; }
+    XF86AudioStop allow-when-locked=true hotkey-overlay-title=null { spawn "kuma-shell" "msg" "media" "stop"; }
 
-    XF86AudioNext allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "next"; }
+    XF86AudioNext allow-when-locked=true hotkey-overlay-title=null { spawn "kuma-shell" "msg" "media" "next"; }
 
-    XF86AudioPrev allow-when-locked=true hotkey-overlay-title=null { spawn "playerctl" "previous"; }
-
-    Mod+Ctrl+V hotkey-overlay-title="Clipboard History" { spawn "noctalia" "msg" "panel-toggle" "clipboard"; }
-
-    Mod+Ctrl+W hotkey-overlay-title="Wallpaper" { spawn "noctalia" "msg" "panel-toggle" "wallpaper"; }
+    XF86AudioPrev allow-when-locked=true hotkey-overlay-title=null { spawn "kuma-shell" "msg" "media" "previous"; }
 
     Mod+Alt+R hotkey-overlay-title="Record the Screen" { spawn "/usr/libexec/kuma-record"; }
 
     Mod+Print hotkey-overlay-title="Screenshot a Region, then Annotate" { spawn "sh" "-c" "grim -g \"$(slurp)\" - | swappy -f -"; }
-"#;
-
-/// kuma's noctalia configuration, baked into the image.
-///
-/// Read through `NOCTALIA_CONFIG_HOME` (set in [`NIRI_EXTRAS`]), because
-/// noctalia ignores `/etc/xdg` and `XDG_CONFIG_DIRS` entirely. This is
-/// the authored layer; `~/.local/state/noctalia/settings.toml` is the
-/// person's and overrides it, which is the same shape as everything else
-/// kuma bakes: the image states the default and the machine may differ.
-///
-/// **Two of these are corrections, not taste.** Every
-/// `[idle.behavior.*]` ships `enabled = false`, so a stock noctalia
-/// never locks on idle at all — a regression against the swayidle line
-/// it replaces, and a sharper one since 0.15 gave machines somewhere to
-/// hibernate to. `[nightlight]` ships disabled likewise, where kuma ran
-/// wlsunset from 07:00 to 20:00.
-pub(crate) const KUMA_NOCTALIA: &str = r#"# Generated by kuma. Edit kuma.toml instead.
-#
-# This is the image's copy. Changing the desktop from its own settings
-# writes ~/.local/state/noctalia/settings.toml, which wins over this
-# file and which kuma cannot see: nothing reads it, so `kuma diff` will
-# still say the machine matches its declaration. `noctalia config export
-# merged` is what answers "which of these lines is actually in effect".
-
-# Colours derived from the wallpaper rather than a fixed palette, so a
-# person who changes the wallpaper gets a desktop that follows it. The
-# built-in palettes are noctalia's taste; this way the one visible
-# decision stays kuma's wallpaper.
-[theme]
-mode = "dark"
-source = "wallpaper"
-
-# And the desktop follows that palette, not the shell alone. Each
-# template renders the live palette into one application's own config,
-# on every palette change and again at startup, so a machine nobody
-# retunes still logs in themed (measured by deleting the rendered files
-# and restarting the shell). None of it is tied to the wallpaper: point
-# [theme] source at a built-in or community palette instead and the same
-# files re-render from that.
-#
-#   - kitty takes every colour it shows from the palette, the sixteen
-#     ANSI slots included, through noctalia's own template. That has a
-#     cost and it was chosen with the cost on screen: Material You maps
-#     every ANSI slot into the palette's hue family, so on a
-#     wallpaper-derived palette red renders #ffb4ab, green #afc8ee and
-#     blue #e3b9e2, and a diff's + and - become two tints of the same
-#     colour. A palette picked by name keeps real hues, Gruvbox's green
-#     being #b8bb26. The alternative was a terminal carrying sixteen
-#     colours from a palette the machine no longer has, which is what
-#     the old fixed set had become the moment the shell started
-#     following the wallpaper.
-#   - gtk3 is what adw-gtk3 is in the package list for. The template
-#     writes ~/.config/gtk-3.0/noctalia.css and an @import into gtk.css,
-#     and adw-gtk3 reads those colour names where stock Adwaita ignores
-#     them: measured on a booted machine, thunar's background moved to
-#     the palette's own surface colour.
-#   - gtk4 is here for one reason, and it is not its output. The two
-#     share an apply.sh that refuses to touch the GTK theme unless both
-#     files exist, so enabling gtk3 alone leaves the hook failing on
-#     every palette change. What it renders changes nothing today:
-#     libadwaita 1.9 ignores a user stylesheet that redefines its
-#     palette, by @define-color, by :root, and by the settings portal's
-#     accent colour, all three measured against GNOME 50 flatpaks.
-#     Direct CSS rules do land there, so theming libadwaita means kuma
-#     authoring rules rather than colours, which is its own change.
-#
-# The seam to know about: that apply.sh also writes gtk-theme into the
-# user's dconf. The value matches what the image sets today, but it is
-# now a user setting, and a later image that changes the theme will not
-# move a machine that has one.
-#
-# niri and qt stay out. niri's template has apply.sh CREATE
-# ~/.config/niri/config.kdl to hold its include line, and niri takes the
-# user's file INSTEAD of /etc/niri/config.kdl rather than merging it: a
-# two-line file would shadow every bind, the layout and the startup
-# list. qt has no reader here, since neither qt5ct nor qt6ct is in the
-# image.
-[theme.templates]
-builtin_ids = [ "kitty", "gtk3", "gtk4" ]
-# Nothing here enables a community template, and the shell still asks
-# api.noctalia.dev for their catalog at every startup (two failed
-# requests in the log of a machine with none configured). A desktop that
-# works offline should not call a vendor to render nothing.
-enable_community_templates = false
-
-# The same argument, for the shell's other startup calls to the network.
-# A machine whose person never mentioned weather still geolocated itself
-# and called a weather vendor on every login, and retried the call every
-# thirty seconds whenever the answer was no network yet — measured in the
-# journal of a fresh session, eight warnings in the first minute. The
-# plugin repos are git fetches to github.com at startup besides; on an
-# image-declared desktop, auto-running third-party git repos is not
-# kuma's call to make silently. Turning these off is the image stating
-# its default and the settings UI re-enabling any of them per machine,
-# the same shape as every other line in this file.
-[weather]
-enabled = false
-
-[location]
-auto_locate = false
-
-[plugins]
-auto_update = "none"
-
-[shell]
-font_family = "Noto Sans"
-
-# No "Welcome to Noctalia" on a kuma machine's first login. kuma already
-# decided the things that wizard asks about, and a second vendor's
-# onboarding on the first screen is the same incoherence the shell was
-# adopted to end. Verified honored from config-home, which is not a
-# given here: [wallpaper.default] validates and is ignored from the same
-# file.
-setup_wizard_enabled = false
-
-[bar.default]
-position = "top"
-thickness = 32
-radius = 12
-margin_ends = 10
-# The left group is where you are and what you can start; the wallpaper
-# picker is neither, and it sat between the two things a person touches
-# most. It keeps its panel, bound below.
-start = [ "launcher", "workspaces" ]
-center = [ "clock" ]
-# Notifications, then state, then the control centre, which is where the
-# rest of it lives. Three widgets left the bar in 0.16, each a glyph that
-# reported nothing: brightness, a control rather than a state and already
-# on the media keys; the clipboard, which Mod+Ctrl+V opens; and the
-# session buttons, which are one click into the control centre, whose
-# header carries the same power glyph.
-end = [
-    "tray",
-    "notifications",
-    "network",
-    "bluetooth",
-    "volume",
-    "battery",
-    "control-center"
-]
-
-[wallpaper]
-directory = "/usr/share/backgrounds/kuma"
-fill_mode = "crop"
-
-# There is deliberately no [wallpaper.default] here. The key exists and
-# `config validate` accepts it, but the shell drops it from config-home
-# and keeps its own: measured on a booted VM with a fresh home, where
-# `wallpaper-get` answered with noctalia's asset. The image replaces that
-# asset instead, see the COPY in generate().
-
-# Icons, no text. The bar is 32px and an SSID or a percentage beside
-# every glyph is what turns a bar into a status line.
-[widget.network]
-show_label = false
-
-[widget.volume]
-show_label = false
-
-[widget.battery]
-show_label = false
-
-# Replaces wlsunset, which ran on the same schedule and temperatures.
-[nightlight]
-enabled = true
-temperature_day = 6500
-temperature_night = 4000
-
-# Replaces swayidle: lock at 15 minutes, screen off a minute later.
-# Both ship disabled, so leaving this out is a machine that never locks.
-#
-# `action` is what the behavior DOES; the table name is only a label the
-# settings UI shows. A behavior with no action is dropped at
-# registration, and the shell says so once in the journal and nowhere
-# else: the config still validates, `config export merged` still shows
-# the timeout, and the machine simply never locks. The four the shell
-# accepts are `lock`, `screen_off`, `suspend` and `lock_and_suspend`,
-# measured by registering each one against a running shell; `dpms`,
-# `screen-off` and `caffeine` are all rejected as "needs an action".
-[idle.behavior.lock]
-enabled = true
-timeout = 900.0
-action = "lock"
-
-[idle.behavior.screen-off]
-enabled = true
-timeout = 960.0
-action = "screen_off"
-
-# The third clause of the swayidle line that left: `before-sleep`. The
-# shell does this by default, so this line changes nothing today and is
-# here anyway — every other security-shaped setting in this file is
-# pinned because its default was wrong, and a beta that flips this one
-# would unlock every kuma machine that suspends, silently. Pinned, and
-# asserted.
-[lockscreen]
-lock_before_suspend = true
 "#;
 
 /// System-wide default apps: without associations, opening a PDF or a
@@ -2521,14 +2279,13 @@ application/zip=org.gnome.FileRoller.desktop
 /// Polls sysfs: upower-notifier tools (poweralertd) aren't in Fedora's
 /// repos. No battery (desktops, VMs) means the loop just idles cheaply.
 ///
-/// **This overlaps the shell and the overlap is not settled.** noctalia
-/// ships `[battery] warning_threshold = 10` and carries its own
-/// low-and-critical notifications, so a discharging laptop gets warned
-/// at 15 here, at 10 by the shell, and at 5 here again: one state
-/// announced by two programs in two styles, which is the shape
-/// `DCONF_BLUEMAN` above exists to undo. Removing this in favour of the
-/// shell's own threshold is the obvious move and needs a battery to
-/// prove, because nothing in a VM ever discharges.
+/// The shell's battery widget shows the state in the bar but warns at
+/// no threshold (its own settings carry no battery section), so this
+/// script remains the only low-and-critical notice a laptop gets. If
+/// the shell grows threshold notifications, this is the first thing to
+/// go — one state announced by two programs in two styles is the shape
+/// `DCONF_BLUEMAN` above exists to undo. Removing this needs a battery
+/// to prove, because nothing in a VM ever discharges.
 pub(crate) const BATTERY_WATCH: &str = r#"#!/usr/bin/bash
 set -u
 warned=""
@@ -2558,7 +2315,8 @@ done
 /// Substituted into the stock config rather than added beside it: niri
 /// takes the last bind for a key, so a second `Mod+D` would leave the
 /// original in the file, working or not depending on merge order.
-pub(crate) const NIRI_MENU_BIND: &str = r#"Mod+D hotkey-overlay-title="Applications" { spawn "noctalia" "msg" "panel-toggle" "launcher"; }"#;
+pub(crate) const NIRI_MENU_BIND: &str =
+    r#"Mod+D hotkey-overlay-title="Applications" { spawn "kuma-shell" "msg" "launcher-toggle"; }"#;
 
 /// The stock line it replaces. Grepped for before the rewrite, so a niri
 /// release that renames it fails the build instead of shipping media
@@ -2584,9 +2342,15 @@ pub(crate) const NIRI_STOCK_ORCA: &str = r#"Super+Alt+S allow-when-locked=true h
 /// machine shows a person. It was live until the shell replaced
 /// swaylock, and swaylock is now excluded from the image outright, which
 /// is exactly the shape of change that leaves a bind pointing at nothing.
+///
+/// The rewrite targets logind, not the shell: the lock screen listens
+/// for the session's `Lock` signal, which is the same road the idle
+/// timeout and PrepareForSleep take, and a locker that answers to one
+/// trigger answers to all of them.
 pub(crate) const NIRI_STOCK_LOCK: &str =
     r#"Super+Alt+L hotkey-overlay-title="Lock the Screen: swaylock" { spawn "swaylock"; }"#;
-pub(crate) const NIRI_LOCK_BIND: &str = r#"Super+Alt+L hotkey-overlay-title="Lock the Screen" { spawn "noctalia" "msg" "session" "lock"; }"#;
+pub(crate) const NIRI_LOCK_BIND: &str =
+    r#"Super+Alt+L hotkey-overlay-title="Lock the Screen" { spawn "loginctl" "lock-session"; }"#;
 
 /// GTK theme settings travel two roads: Wayland-native apps read
 /// gsettings (the dconf defaults cover those), but X11/XWayland GTK apps
@@ -2699,18 +2463,14 @@ pub(crate) const FASTFETCH_CONFIG: &str = r#"{
 }
 "#;
 
-/// Theme files for the curated desktop. The colours here are a fallback
-/// now rather than the theme: the shell renders the live palette into
-/// `~/.config/kitty/themes/noctalia.conf` and kitty loads that on top of
-/// this file, so what is written here is what a terminal shows when the
-/// shell has not rendered anything yet. Everything else in the file
-/// (font, padding, decorations, opacity) is still the only copy.
-/// All system-wide (never /etc/skel): skel only reaches homes created after
-/// the image ships, so it strands existing users on stale copies — image
-/// updates must retheme every account. User dotfiles still win everywhere:
-/// The shell reads its own config-home, and kitty merges
-/// /etc/xdg beneath the user's file (so a one-key override keeps the rest
-/// of this theme).
+/// Theme files for the curated desktop. The kitty palette is the only
+/// copy: chosen once and shipped static, after the wallpaper-derived
+/// render died with noctalia. All system-wide (never /etc/skel): skel
+/// only reaches homes created after the image ships, so it strands
+/// existing users on stale copies — image updates must retheme every
+/// account. User dotfiles still win everywhere:
+/// kitty merges /etc/xdg beneath the user's file (so a one-key override
+/// keeps the rest of this theme).
 pub(crate) const WALLPAPER: &[u8] = include_bytes!("../../assets/kuma-wallpaper.jpg");
 pub(crate) const KITTY_CONFIG: &str = include_str!("../../assets/kitty.conf");
 
@@ -3049,39 +2809,9 @@ fn desktop_niri(e: &mut Emitter<'_>) {
     let greetd = e.stage("greetd-config.toml", greetd_config(config));
     let niri_extras = e.stage("niri-extras.kdl", NIRI_EXTRAS);
     // The nostr layer's authored pieces ride the texts they belong to,
-    // only when the declaration says so: the plugin's path source in
-    // the shell config, the panel bind beside the media binds, and the
-    // scheme handler line in the associations. A user's own settings
-    // still win over every one of them.
-    let noctalia_text = if config.nostr.enable {
-        // The enabled key joins the `[plugins]` section the config
-        // already carries — a second header is a TOML redefinition,
-        // and the build's merge proof is where noctalia says exactly
-        // that. The anchor's drift is a build failure here, where it
-        // is a message, rather than a silently absent enabled line.
-        let injected = KUMA_NOCTALIA.replace(
-            NOSTR_PLUGIN_ANCHOR,
-            &format!("{NOSTR_PLUGIN_ANCHOR}\n{NOSTR_PLUGIN_ENABLED_LINE}"),
-        );
-        assert!(
-            injected != KUMA_NOCTALIA,
-            "the [plugins] section moved in KUMA_NOCTALIA; the nostr enabled line has nowhere to land"
-        );
-        let with_bar = injected.replace(NOSTR_BAR_ANCHOR, NOSTR_BAR_WIDGET);
-        assert!(
-            with_bar != injected,
-            "the bar's end list moved in KUMA_NOCTALIA; the bunker's widget has nowhere to sit"
-        );
-        let with_instance = with_bar.replace(NOSTR_BAR_INSTANCE_ANCHOR, NOSTR_BAR_INSTANCE);
-        assert!(
-            with_instance != with_bar,
-            "the battery widget's section moved in KUMA_NOCTALIA; the bunker instance has nowhere to declare itself"
-        );
-        with_instance + NOSTR_PLUGIN_SOURCE
-    } else {
-        KUMA_NOCTALIA.to_string()
-    };
-    let noctalia = e.stage("noctalia-config.toml", noctalia_text);
+    // only when the declaration says so: the panel bind beside the
+    // media binds, and the scheme handler line in the associations. A
+    // user's own settings still win over every one of them.
     let kitty = e.stage("kitty.conf", KITTY_CONFIG);
     let clipboard = e.stage("kuma-clipboard-bridge", clipboard_bridge());
     let xsettings = e.stage("kuma-xsettings", xsettings_launcher());
@@ -3142,34 +2872,14 @@ fn desktop_niri(e: &mut Emitter<'_>) {
     e.copy(&kargs, "/usr/lib/bootc/kargs.d/10-kuma-desktop.toml");
     e.copy(&niri_extras, "/usr/lib/kuma/niri-extras.kdl");
     e.copy(&wallpaper, "/usr/share/backgrounds/kuma/kuma-wallpaper.jpg");
-    e.copy(&noctalia, "/usr/lib/kuma/noctalia/config.toml");
-    // The wallpaper the shell falls back to when nobody has chosen
-    // one, which on a new machine is always.
-    //
-    // Not settable from the config: `[wallpaper.default] path` is a
-    // real key that `config validate` accepts and the shell ignores
-    // outside its own state, so the only way to change what a first
-    // boot shows is to change the file it defaults to. kuma owns the
-    // image, so it changes the file. A person who picks another
-    // wallpaper still wins — that goes to state, which outranks this.
-    //
-    // A JPEG under a .png name on purpose: the path is noctalia's and
-    // the decoder sniffs the content rather than trusting the suffix,
-    // verified by setting one and reading it back.
-    e.raw("RUN test -f /usr/share/noctalia/assets/noctalia-wallpaper.png\n");
-    e.copy(&wallpaper, "/usr/share/noctalia/assets/noctalia-wallpaper.png");
-    // Prove the baked config is actually reachable, in the build.
-    //
-    // `noctalia config validate` is not enough: it accepts
-    // `source = "bogus"` happily, so it checks TOML syntax and key
-    // names and not values. And `NOCTALIA_CONFIG_HOME` is
-    // undocumented in `--help`, so an upstream rename would silently
-    // drop the desktop back to noctalia's own palette with nothing
-    // failing anywhere. This asks the binary what it merged and
-    // greps for two things kuma put there.
-    e.raw(
-        "RUN out=$(HOME=/tmp NOCTALIA_CONFIG_HOME=/usr/lib/kuma noctalia config export merged); \\\n                 printf '%s\\n' \"$out\"; \\\n                 printf '%s' \"$out\" | grep -q '/usr/share/backgrounds/kuma' \\\n                 && printf '%s' \"$out\" | grep -q 'timeout = 900' \\\n                 && printf '%s' \"$out\" | grep -q 'builtin_ids = \\[ \"kitty\"' \\\n                 && printf '%s' \"$out\" | grep -A1 '^\\[weather\\]' | grep -q 'enabled = false' \\\n                 && printf '%s' \"$out\" | grep -A1 '^\\[plugins\\]' | grep -q 'auto_update = \"none\"'\n",
-    );
+    // The shell: built from the kumaui tree and staged into the build
+    // context beside the running kuma, the same road kuma-nostrd rides
+    // — the release ships its binaries together, and a build whose
+    // sibling is missing is a checkout, not a release. The failure is
+    // honest and early: this COPY would name a file the context never
+    // carried.
+    let shell_bin = e.supplied("kuma-shell");
+    e.copy_exec(&shell_bin, "/usr/bin/kuma-shell");
     e.copy(&kitty, "/etc/xdg/kitty/kitty.conf");
     // kitty skips settings it doesn't recognise and starts anyway, so a
     // renamed key ships a silently unthemed terminal — which is exactly
@@ -3183,15 +2893,11 @@ fn desktop_niri(e: &mut Emitter<'_>) {
     e.raw(
         "RUN rc=0; kitty +runpy \"import sys; from kitty.config import load_config; bad = []; load_config('/etc/xdg/kitty/kitty.conf', accumulate_bad_lines=bad); sys.exit('malformed kitty.conf lines: %s' % bad if bad else 0)\" 2>/tmp/kitty.err || rc=$?; \\\n    cat /tmp/kitty.err >&2; \\\n    if grep -q 'unknown config key' /tmp/kitty.err; then rc=1; fi; \\\n    rm -f /tmp/kitty.err; exit $rc\n",
     );
-    // And prove the template the shell will render actually renders,
-    // with the same engine it uses. It catches a placeholder noctalia
-    // stopped filling in, which would ship a kitty theme full of
-    // literal {{colors...}}, and an upstream template that stopped
-    // carrying the ANSI sixteen, which would leave the terminal half
-    // on the palette and half on the image's fallback colours.
-    e.raw(
-        "RUN HOME=/tmp NOCTALIA_CONFIG_HOME=/usr/lib/kuma noctalia theme \\\n      /usr/share/backgrounds/kuma/kuma-wallpaper.jpg --dark \\\n      -r /usr/share/noctalia/assets/templates/kitty/kitty.conf:/tmp/kitty-rendered.conf \\\n    && cat /tmp/kitty-rendered.conf \\\n    && grep -Eq '^background +#[0-9a-fA-F]{6}$' /tmp/kitty-rendered.conf \\\n    && grep -qE '^color0 +#[0-9a-fA-F]{6}$' /tmp/kitty-rendered.conf \\\n    && ! grep -q '{{' /tmp/kitty-rendered.conf \\\n    && rm -f /tmp/kitty-rendered.conf\n",
-    );
+    // The theme is a static palette in that file now — the sixteen ANSI
+    // slots and background/foreground/cursor, chosen once and shipped —
+    // because the wallpaper-derived render died with noctalia. The
+    // loader check above is what keeps it honest; there is no template
+    // left to render.
     e.copy_exec(&clipboard, "/usr/libexec/kuma-clipboard-bridge");
     e.copy(&fastfetch, "/etc/xdg/fastfetch/config.jsonc");
     e.copy(&fastfetch_logo, "/usr/lib/kuma/fastfetch-logo.txt");
@@ -4222,20 +3928,9 @@ fn nostr(e: &mut Emitter<'_>) {
     // it costs a build, not at boot, where it costs the session.
     e.raw("RUN /usr/bin/kuma-nostrd --version\n");
 
-    // The plugin: a tree at a path source, the authored config naming
-    // it, and the scheme handler wiring a nostrconnect:// link to the
-    // panel. This is the niri-shaped render; cosmic gets the daemon
-    // without the face.
-    // The tree's context name is not the destination's: the CLI binary
-    // is a file named kuma-nostr beside it, and one context name cannot
-    // be both a file and a directory.
-    let plugin_tree = e.stage_tree(
-        "kuma-nostr-plugin",
-        NOSTR_PLUGIN_TREE.iter().map(|(name, text)| (name.to_string(), text.to_string().into())),
-    );
-    // COPY copies a directory's contents, so the destination names the
-    // plugin directory the path source points at.
-    e.copy(&plugin_tree, "/usr/lib/kuma/noctalia/plugins/kuma-nostr/");
+    // The scheme handler wires a nostrconnect:// link to the shell's
+    // panel — the panel itself lives in kuma-shell, which this block
+    // never had to carry.
     e.copy(&panel_desktop, "/usr/share/applications/kuma-nostr-panel.desktop");
 }
 
@@ -4319,901 +4014,27 @@ ExecStart=/usr/libexec/kuma-nostr-serve
 WantedBy=multi-user.target
 "#;
 
-/// The plugin's files, staged as a tree at
-/// /usr/lib/kuma/noctalia/plugins/kuma-nostr/ and declared by the
-/// authored config as a path source: noctalia treats path sources as
-/// immutable and runs no git ops on them, which is exactly the shape of
-/// a file kuma baked. The plugin is a face — the widget shells the CLI,
-/// the panel decides through it, and no Luau ever holds a key.
-pub(crate) const NOSTR_PLUGIN_TREE: &[(&str, &str)] = &[
-    (
-        "plugin.toml",
-        r#"id = "kuma/nostr"
-name = "kumaOS Nostr"
-description = "Bunker widget for Niri."
-# The manifest's mandatory keys are the loader's first gate: a manifest
-# without `version`, or with an `plugin_api` the host does not speak,
-# loads nothing and says nothing on the bar. Shaped against
-# `noctalia plugins lint` and a loading shell, not against guesses.
-# 9 is where callbacks become functions; 24 is where runAsync accepts
-# an argv array — the road free text takes, because a name the person
-# typed has no business being parsed by a shell.
-version = "1.0.0"
-plugin_api = 24
-
-[[widget]]
-# The bar addresses the widget by plugin-id:widget-id; without an id
-# here the address has no second half and the widget factory calls it
-# unknown, however correctly the rest is wired.
-id = "bunker"
-entry = "widget.lua"
-
-[[panel]]
-id = "panel"
-entry = "panel.lua"
-width = 560
-height = 520
-placement = "attached"
-"#,
-    ),
-    (
-        "widget.lua",
-        r#"--!nonstrict
--- The bar glyph: a bunker that exists is a glyph; asks waiting on a
--- person are a dot on it. Polling the CLI is the whole transport --
--- Luau has no sockets, and the daemon is the policy. Presentation is
--- barWidget's to own: the host renders the bar, the plugin only states
--- what it says. The glyph carries the idle state — every neighbour on
--- the bar is an icon — and the count rides beside it only when asks
--- wait, which is the one fact worth reading at a glance.
-local pending = 0
-
-local function render()
-    barWidget.setGlyph("shield-lock")
-    barWidget.setText(pending > 0 and tostring(pending) or "")
-    barWidget.setTooltip("Nostr bunker: " .. pending .. " pending")
-end
-
--- The host's tick: update(), on the interval the plugin sets itself.
--- runAsync is positional: a shell line (or an argv array) and the
--- callback that gets the CommandResult — the {cmd=, args=, callback=}
--- shape this file once carried was a table the host read as an argv of
--- nothing, so the callback never ran and the host retired the widget
--- for erroring on every tick.
-function update()
-    noctalia.setUpdateInterval(5000)
-    noctalia.runAsync("kuma-nostr prompts --json", function(result)
-        -- A wedged daemon answers with nothing, and an empty string is
-        -- still truthy in Lua: decode of it is nil, and indexing that
-        -- here is what retired this widget after repeated timeouts.
-        -- An absent answer is "no asks", not a crash.
-        local doc = noctalia.json.decode(result.stdout ~= "" and result.stdout or "{}") or {}
-        local queue = doc.prompts or {}
-        local was = pending
-        pending = #queue
-        render()
-        if pending > was then
-            noctalia.notify("kumaOS nostr", pending .. " ask"
-                .. (pending == 1 and "" or "s") .. " waiting on you")
-        end
-    end)
-end
-
-function onClick()
-    noctalia.togglePanel("kuma/nostr:panel")
-end
-"#,
-    ),
-    (
-        "panel.lua",
-        r#"--!nonstrict
--- The bunker's face, built like the shell's own panels: a rail of
--- sections on the left, the pane's content on the right, cards where
--- a decision happens, and glyphs wherever a word would shout.
---
--- The layout's two load-bearing facts, both learned the hard way:
--- the host sizes the root node, so the root is a column with
--- flexGrow and everything under it fills toward that height — a root
--- row of natural height is a panel that clips at its middle; and
--- ui.box is a leaf, so every card is a column wearing fill and
--- radius. The daemon stays the policy, the CLI stays the transport,
--- and this file is only the shape the answers wear.
-
-local PROMPTS_URL = "kuma-nostr prompts --json"
-local APPS_URL = "kuma-nostr apps --json"
-local STATUS_URL = "kuma-nostr status --json"
-local LOG_URL = "kuma-nostr log --json"
-local ICON_DIR = "icons"
-
-local prompts = {}
-local apps = {}
-local vault = nil
-local log_entries = {}
-local offered_uri = nil -- a nostrconnect:// link the handler handed in
-local tab = "asks" -- asks | apps | pair
-local tab_chosen = false -- the person's click wins over onboarding
-local panel_open = false -- the frame tick only polls while this is true
-local frame_acc = 0 -- milliseconds since the last poll, from the tick
-local selected_app = nil -- the pubkey whose detail view is open
-local clipboard_checked = false -- the clipboard is read once per open
-local render -- forward-declared: refresh's callbacks call it before the
-              -- file's bottom assigns it, and a name read before its
-              -- local exists resolves to the global — nil.
-
--- How long an open panel sits still before it asks the daemon what
--- changed: an ask arriving mid-read belongs in the list the person is
--- looking at, not behind a close-and-reopen.
-local POLL_MS = 3000
-
--- ── data ──────────────────────────────────────────────────────────────
-
--- A fetch's answer is a fact only when the fetch worked. A timed-out
--- or killed CLI run comes back with empty stdout, which decodes to a
--- document with nothing in it — and an answer that said "no apps" or
--- "no asks" would be a lie the next poll corrects three seconds later,
--- visible as the list blinking into a small centered nothing. So a
--- failed fetch keeps the last-known state, and only a real answer
--- moves it.
-local function fetched(result, field)
-    if result.exitCode ~= 0 then return nil end
-    local doc = noctalia.json.decode(result.stdout ~= "" and result.stdout or "{}")
-    local value = doc and doc[field]
-    if value == nil then return nil end
-    return value
-end
-
-local function refresh()
-    noctalia.runAsync(STATUS_URL, function(result)
-        local vault_now = fetched(result, "vault")
-        if vault_now then vault = vault_now end
-        render()
-    end)
-    noctalia.runAsync(PROMPTS_URL, function(result)
-        local prompts_now = fetched(result, "prompts")
-        if prompts_now then prompts = prompts_now end
-        render()
-    end)
-    noctalia.runAsync(LOG_URL, function(result)
-        local log_now = fetched(result, "log")
-        if log_now then log_entries = log_now end
-        render()
-    end)
-    noctalia.runAsync(APPS_URL, function(result)
-        local apps_now = fetched(result, "apps")
-        if apps_now then
-            apps = apps_now
-            -- Onboarding opens where the work is: nobody paired yet is
-            -- a person who came for the URI. A failed fetch never
-            -- counts as nobody — the last-known list is the truth a
-            -- timeout gets to keep.
-            if not tab_chosen and #apps == 0 then
-                tab = "pair"
-            end
-        end
-        render()
-    end)
-end
-
--- The args ride the argv form, always: runAsync's string form goes
--- through /bin/sh, and the day an argument arrived from the internet
--- — a nostrconnect URI, all & and ? and % — the shell shattered it
--- into background jobs and the pairing never landed. The argv array
--- executes directly; nothing is parsed, so nothing can shatter.
-local function cli(args)
-    -- Every act in this panel is a person present: the keep-alive
-    -- rides along, so answering a prompt four minutes in does not
-    -- race the vault's own lock.
-    noctalia.runAsync({ "kuma-nostr", "touch" }, nil)
-    -- A failed act says so: the CLI exits nonzero on a dead socket or
-    -- a daemon refusal, and its stderr is the sentence the person
-    -- reads. The silence here once made a working revoke look broken.
-    noctalia.runAsync({ "kuma-nostr", table.unpack(args) }, function(result)
-        if result.exitCode ~= 0 then
-            local why = (result.stderr and result.stderr ~= "" and result.stderr)
-                or (result.stdout and result.stdout ~= "" and result.stdout)
-                or "the act failed"
-            noctalia.notifyError("kumaOS nostr", why)
-        end
-        refresh()
-    end)
-end
-
--- ── small vocabulary ─────────────────────────────────────────────────
-
-local METHOD_GLYPHS = {
-    get_public_key = "key",
-    sign_event = "pencil",
-    nip04_decrypt = "lock",
-    nip44_decrypt = "lock",
-    nip04_encrypt = "lock",
-    nip44_encrypt = "lock",
-    switch_relays = "refresh",
-    logout = "logout",
-}
-
-local function short(pk)
-    return (pk or "?"):sub(1, 12) .. "…"
-end
-
--- The display name, the daemon's claim order: the name the client
--- claimed, then the name derived from the url it claimed (last two
--- host labels — account.nostr.build is nostr.build), then the pubkey
--- fragment. All of it is the client's own word; none of it decides
--- anything.
-local function displayName(a)
-    if not a then return "?" end
-    if a.name and a.name ~= "" then return a.name end
-    if a.url and a.url ~= "" then
-        local host = a.url:match("^[^/]+://([^/:?#]+)") or a.url:match("^([^/:?#]+)")
-        if host then
-            local a1, b1 = host:match("([^.]+)%.([^.]+)$")
-            if a1 then return (a1 .. "." .. b1):lower() end
-        end
-    end
-    return short(a.pubkey)
-end
-
--- A relative time, the list's second line: paired and last asked as
--- ago-words, not unix numbers.
-local function relative(ts)
-    if not ts then return nil end
-    local delta = os.time() - ts
-    if delta < 60 then
-        return "just now"
-    elseif delta < 3600 then
-        return math.floor(delta / 60) .. "m ago"
-    elseif delta < 86400 then
-        return math.floor(delta / 3600) .. "h ago"
-    end
-    return math.floor(delta / 86400) .. "d ago"
-end
-
--- The app behind an ask: the pairings carry the name and the icon the
--- connect's metadata claimed, and an ask that names nothing is a
--- stranger's fingerprint — the one thing this panel must never show.
-local function appOf(pk)
-    for _, a in ipairs(apps) do
-        if a.pubkey == pk then
-            return a
-        end
-    end
-    return nil
-end
-
-local function appName(pk)
-    local a = appOf(pk)
-    return a and a.name or nil
-end
-
--- An identity chip: the app's icon when one landed in the cache, the
--- download started once when the app claims one, and the shield glyph
--- either way until a file exists.
-local function avatar(pubkey, image, size)
-    local dest = ICON_DIR .. "/" .. pubkey:sub(1, 16) .. ".img"
-    if noctalia.readFile(dest) then
-        return ui.image({
-            path = dest, width = size, height = size, radius = size / 3, fit = "cover",
-        })
-    end
-    -- Signet's gate: https only, and the panel downloads it rather
-    -- than trusting the raw URL with anything else. A client that
-    -- claims a cleartext avatar gets the identicon like everyone else.
-    if image and image:find("^https://") then
-        noctalia.download(image, dest, function() render() end)
-    end
-    return ui.column({
-        width = size, height = size, radius = size / 3,
-        fill = "primary/0.14", align = "center", justify = "center",
-    }, { ui.glyph({ name = "puzzle", size = size / 2, color = "primary" }) })
-end
-
--- A card: the one surface vocabulary every pane shares. A column
--- wearing fill and radius — ui.box is a leaf, and a leaf cannot hold
--- the card's contents. The key is the reconciler's identity for the
--- node: a list whose cards come and go needs the name to survive a
--- re-render as the same control, or the diff reuses whatever lived at
--- that index before.
-local function card(children, key)
-    return ui.column({
-        key = key,
-        fill = "surface_variant/0.35", radius = 14, padding = 14, gap = 10, align = "stretch",
-    }, children)
-end
-
-local function paneHeader(title, badge)
-    local row = {
-        ui.label({ text = title, fontSize = 17, fontWeight = "bold", color = "on_surface", flexGrow = 1 }),
-    }
-    if badge then
-        table.insert(row, ui.column({
-            fill = "primary", radius = 9, paddingH = 8, paddingV = 1,
-            align = "center", justify = "center",
-        }, { ui.label({
-            text = tostring(badge), fontSize = 11, fontWeight = "bold", color = "on_primary",
-        }) }))
-    end
-    table.insert(row, ui.glyph({
-        name = vault and vault.unlocked and "shield-lock" or "lock",
-        size = 16,
-        color = vault and vault.unlocked and "primary/0.7" or "on_surface_variant/0.7",
-    }))
-    return ui.row({ gap = 10, align = "center" }, row)
-end
-
-local function emptyState(glyph, title, subtitle)
-    return ui.column({ gap = 10, align = "center", flexGrow = 1 }, {
-        ui.spacer({ height = 56 }),
-        ui.glyph({ name = glyph, size = 46, color = "primary/0.4" }),
-        ui.label({ text = title, fontSize = 14, fontWeight = "medium", color = "on_surface" }),
-        subtitle and ui.label({
-            text = subtitle, fontSize = 12, color = "on_surface_variant", maxLines = 2,
-        }) or nil,
-    })
-end
-
--- ── the rail ─────────────────────────────────────────────────────────
-
-local TABS = {
-    { id = "asks", glyph = "bell", title = "Requests" },
-    { id = "apps", glyph = "apps", title = "Paired apps" },
-    { id = "log", glyph = "history", title = "Activity" },
-    { id = "pair", glyph = "link", title = "Pair" },
-}
-
--- Landing on Pair reads the clipboard, once per panel open: most web
--- apps ship a copy button, not a clickable link, so the copied URI is
--- the common case and the paste step is a toll. Only the prefix is
--- matched, nothing is stored, and the offer card it fills is still
--- the person's question to answer — the tap on Pair remains the
--- approval. Defined beside the state, ABOVE the rail whose buttons
--- call it: a local read before its declaration exists is the global,
--- which is nil, and a nil call is the crash that retired the panel.
-local function checkClipboard()
-    if clipboard_checked or offered_uri then return end
-    clipboard_checked = true
-    local text = noctalia.clipboardText()
-    if text and text:find("^nostrconnect://") then
-        offered_uri = text
-    end
-end
-
-local function railButton(t)
-    local active = tab == t.id
-    -- The pending count rides in the button's own text: the rail is
-    -- narrow, and a floating badge is a second layout problem nobody
-    -- needs.
-    local count = t.id == "asks" and #prompts > 0 and tostring(#prompts) or nil
-    return ui.button({
-        variant = active and "secondary" or "ghost",
-        controlSize = "md",
-        width = 46,
-        glyph = t.glyph,
-        text = count,
-        onClick = function()
-            tab = t.id
-            tab_chosen = true
-            if t.id == "pair" then
-                checkClipboard()
-            end
-            render()
-        end,
-    })
-end
-
--- ── the panes ────────────────────────────────────────────────────────
-
-local function askCard(p)
-    local known = appOf(p.app)
-    local record = appOf(p.app)
-    local label = record and displayName(record) or (p.app and short(p.app) or "?")
-    local glyph = METHOD_GLYPHS[(p.method or ""):lower()] or "shield-lock"
-
-    local lines = {
-        ui.row({ gap = 12, align = "center" }, {
-            avatar(p.app, known and known.image or nil, 38),
-            ui.column({ gap = 1, flexGrow = 1 }, {
-                ui.label({ text = label, fontWeight = "semibold", color = "on_surface" }),
-                -- The ask in words: the daemon's label table says what
-                -- the signature would do, and this line is that
-                -- sentence, not a method name. A retrying client adds
-                -- its count here instead of stacking a second card.
-                ui.label({
-                    text = (p.retries and p.retries > 1 and ("asked " .. p.retries .. "× · ") or "")
-                        .. (p.summary or "?"),
-                    fontSize = 12, color = "on_surface_variant",
-                }),
-            }),
-        }),
-    }
-    -- Signet's cue: the kinds that change identity, spend privacy or
-    -- carry weight wear a warning, so the glance knows which asks
-    -- deserve the read.
-    if p.sensitive then
-        table.insert(lines, ui.label({
-            text = "⚠ Sensitive action — review carefully before approving",
-            fontSize = 12, color = "error",
-        }))
-    end
-    if p.kind then
-        table.insert(lines, ui.label({
-            text = "kind: " .. p.kind .. (p.kind_label and " (" .. p.kind_label .. ")" or ""),
-            fontSize = 11, color = "on_surface_variant/0.8",
-        }))
-    end
-    if p.content then
-        table.insert(lines, ui.label({
-            text = p.content, fontSize = 12, color = "on_surface", maxLines = 8,
-        }))
-    end
-    if p.detail then
-        table.insert(lines, ui.label({
-            text = p.detail, fontSize = 11, color = "on_surface_variant/0.8", maxLines = 4,
-        }))
-    end
-    table.insert(lines, ui.row({ gap = 8 }, {
-        ui.button({ text = "Approve", variant = "primary", controlSize = "sm", glyph = "check",
-            onClick = function() cli({ "approve", p.id }) end }),
-        ui.button({ text = "An hour", variant = "ghost", controlSize = "sm",
-            onClick = function() cli({ "approve", p.id, "--remember", "1" }) end }),
-        ui.button({ text = "Deny", variant = "ghost", controlSize = "sm", glyph = "x",
-            onClick = function() cli({ "deny", p.id }) end }),
-    }))
-    return card(lines, "ask-" .. p.id)
-end
-
--- The level badge, the card's right edge: the standing answer, with
--- its weight as the color — trust is the loudest thing in the layer
--- and wears the alarm, basic wears the accent, ask stays quiet.
-local function levelBadge(level)
-    local glyph, color
-    if level == "trust" then
-        glyph, color = "shield-lock", "error"
-    elseif level == "basic" then
-        glyph, color = "shield-check", "primary"
-    else
-        glyph, color = "shield", "on_surface_variant"
-    end
-    return ui.row({ gap = 4, align = "center" }, {
-        ui.glyph({ name = glyph, size = 13, color = color }),
-        ui.label({ text = level or "ask", fontSize = 11, color = color }),
-    })
-end
-
--- The list's card is a read, not a write: two lines — who the app is
--- and what it has been doing — and a tap opens the detail where the
--- acts live. Signet's shape: the list shows state, the sheet holds
--- the buttons, and no card is a control panel unto itself. The tap is
--- a chevron button, deliberately not a clickable card or row: the
--- host wraps a clickable container content-sized, and the card's
--- width is the one thing it does not keep.
-local function appCard(a)
-    local line2 = { "paired " .. (relative(a.paired_at) or "?") }
-    if a.request_count and a.request_count > 0 then
-        table.insert(line2, a.request_count .. " asks")
-    end
-    if a.last_used_at then
-        table.insert(line2, "last " .. relative(a.last_used_at))
-    end
-    return ui.column({
-        key = "app-" .. a.pubkey,
-        fill = "surface_variant/0.35", radius = 14, padding = 14, gap = 4,
-    }, {
-        ui.row({ gap = 12, align = "center" }, {
-            avatar(a.pubkey, a.image, 40),
-            ui.label({
-                text = displayName(a), fontWeight = "semibold", flexGrow = 1,
-                color = a.revoked_at and "on_surface_variant" or "on_surface",
-            }),
-            levelBadge(a.level),
-            ui.button({ variant = "ghost", controlSize = "sm", glyph = "chevron-right",
-                tooltip = "open this app's view",
-                onClick = function()
-                    selected_app = a.pubkey
-                    render()
-                end }),
-        }),
-        ui.label({
-            text = (a.revoked_at and "revoked · " or "") .. table.concat(line2, " · "),
-            fontSize = 11, maxLines = 2,
-            color = a.revoked_at and "error" or "on_surface_variant/0.8",
-        }),
-    })
-end
-
--- The scheme handler's offering: a nostrconnect:// link clicked
--- anywhere lands here as a question, never as a pairing — a click is
--- not an approval, and the person's tap on Pair is.
-local function offerCard()
-    local name = offered_uri and offered_uri:match("name=([^&]+)") or nil
-    if name then
-        name = name:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
-        name = name:gsub("%+", " ")
-    end
-    return card({
-        ui.label({ text = "A client asked to pair" .. (name and (": " .. name) or ""), fontWeight = "semibold", color = "on_surface" }),
-        ui.label({
-            text = "Pairing it signs nothing until you answer its asks. Ignore throws the invite away.",
-            fontSize = 12, color = "on_surface_variant", maxLines = 3,
-        }),
-        ui.row({ gap = 8 }, {
-            ui.button({ text = "Pair", variant = "primary", glyph = "check", onClick = function()
-                cli({ "connect", offered_uri })
-                offered_uri = nil
-            end }),
-            ui.button({ text = "Ignore", variant = "ghost", glyph = "x", onClick = function()
-                offered_uri = nil
-                render()
-            end }),
-        }),
-    })
-end
-
-local function pairPane()
-    if vault and not vault.exists then
-        -- The fresh machine: no identity yet, and unlock is not the
-        -- road — it fails with "no vault exists" and the person is
-        -- stuck. Setup is the road, and it asks which one.
-        return ui.column({ gap = 10 }, {
-            ui.label({ text = "No identity yet.", fontWeight = "semibold", color = "on_surface" }),
-            ui.label({
-                text = "Run kuma-nostr setup — it asks which road: a fresh key, or one you already hold (nsec, hex, a recovery phrase, or an ncryptsec and its passphrase).",
-                fontSize = 12, color = "on_surface_variant", maxLines = 4,
-            }),
-        })
-    end
-    if vault and not vault.unlocked then
-        return ui.column({ gap = 10 }, {
-            ui.label({ text = "The bunker is locked.", fontWeight = "semibold", color = "on_surface" }),
-            ui.label({
-                text = "Unlock from a terminal: kuma-nostr unlock. The keyring is open in this session, so it costs nothing — and the pairing URI comes with the unlock.",
-                fontSize = 12, color = "on_surface_variant", maxLines = 3,
-            }),
-        })
-    end
-    local inactivity = vault and vault.inactivity or nil
-    local children = {}
-    if offered_uri then
-        table.insert(children, offerCard())
-    end
-    table.insert(children, ui.label({
-        text = "Copy a fresh URI into any NIP-46 app. It pairs one app once — the connect burns it — so mint another for the next app.",
-        fontSize = 12, color = "on_surface_variant", maxLines = 3,
-    }))
-    table.insert(children, ui.row({ gap = 8 }, {
-        ui.button({ text = "Copy fresh URI", variant = "primary", glyph = "clipboard-copy", onClick = function()
-            -- Minting is the act: the copy takes a URI that has
-            -- never been spent, not the last one — which a used
-            -- pairing already burned. Every arm says something: the
-            -- copy, the daemon's refusal, or an answer with no URI
-            -- in it.
-            noctalia.runAsync({ "kuma-nostr", "bunker", "--json" }, function(result)
-                local doc = noctalia.json.decode(result.stdout ~= "" and result.stdout or "{}")
-                if doc and doc.uri then
-                    noctalia.copyToClipboard(doc.uri, "text/plain")
-                elseif result.exitCode == 0 then
-                    noctalia.notifyError("kumaOS nostr", "the mint answered without a URI")
-                else
-                    noctalia.notifyError("kumaOS nostr",
-                        (result.stderr and result.stderr ~= "" and result.stderr) or "the mint failed")
-                end
-                refresh()
-            end)
-        end }),
-        ui.button({ text = "Rotate", variant = "outline", glyph = "refresh", onClick = function()
-            cli({ "rotate" })
-        end }),
-    }))
-    table.insert(children, ui.label({
-        text = "Rotation retires every outstanding URI at once; apps holding old copies need a fresh one.",
-        fontSize = 11, color = "on_surface_variant/0.8", maxLines = 3,
-    }))
-    if inactivity then
-        table.insert(children, ui.label({
-            text = "the vault locks itself after " .. inactivity.remaining_secs
-                .. "s of no unlock and no keep-alive — this panel keeps it alive while you are here",
-            fontSize = 11, color = "on_surface_variant/0.8", maxLines = 3,
-        }))
-    end
-    return card(children, "pair-pane")
-end
-
-local function asksPane()
-    if #prompts == 0 then
-        return emptyState("check", "Nothing is waiting on you",
-            "Sign-in and signing asks land here")
-    end
-    local cards = {}
-    for _, p in ipairs(prompts) do
-        table.insert(cards, askCard(p))
-    end
-    return ui.column({ gap = 12, align = "stretch" }, cards)
-end
-
--- The detail view: where the acts live. The list's card opened this —
--- the acts are one tap deeper than the list, which is the whole
--- reason the list can stay clean.
-local function appDetail(a)
-    local rows = {
-        ui.button({ variant = "ghost", controlSize = "sm", glyph = "arrow-left",
-            text = "Paired apps", onClick = function()
-                selected_app = nil
-                render()
-            end }),
-        card({
-            key = "detail-head",
-            ui.row({ gap = 12, align = "center" }, {
-                avatar(a.pubkey, a.image, 48),
-                ui.column({ gap = 1, flexGrow = 1 }, {
-                    ui.label({ text = displayName(a), fontWeight = "semibold", color = "on_surface" }),
-                    ui.label({ text = a.pubkey, fontSize = 11, color = "on_surface_variant", maxLines = 2 }),
-                }),
-            }),
-            ui.label({
-                text = table.concat({
-                    "paired " .. (relative(a.paired_at) or "?"),
-                    a.request_count .. " asks",
-                    a.last_used_at and ("last " .. relative(a.last_used_at)),
-                }, " · "),
-                fontSize = 11, color = "on_surface_variant/0.8", maxLines = 2,
-            }),
-        }),
-        card({
-            key = "detail-level",
-            ui.label({ text = "Trust level", fontSize = 13, fontWeight = "semibold", color = "on_surface" }),
-            ui.label({
-                text = "basic signs only the everyday safe list; everything else asks",
-                fontSize = 11, color = "on_surface_variant/0.8", maxLines = 2,
-            }),
-            ui.row({ gap = 8 }, {
-                ui.button({ text = "ask", controlSize = "sm",
-                    variant = a.level == "ask" and "primary" or "ghost",
-                    onClick = function() cli({ "level", a.pubkey, "ask" }) end }),
-                ui.button({ text = "basic", controlSize = "sm",
-                    variant = a.level == "basic" and "primary" or "ghost",
-                    onClick = function() cli({ "level", a.pubkey, "basic" }) end }),
-                ui.button({ text = "trust", controlSize = "sm",
-                    variant = a.level == "trust" and "destructive" or "ghost",
-                    tooltip = "signs everything unattended; the doctor grades it Warn",
-                    onClick = function() cli({ "level", a.pubkey, "trust" }) end }),
-            }),
-        }),
-    }
-    if a.perms then
-        table.insert(rows, card({
-            key = "detail-perms",
-            ui.label({ text = "asks for: " .. a.perms, fontSize = 11,
-                color = "on_surface_variant/0.8", maxLines = 3 }),
-        }))
-    end
-    table.insert(rows, card({
-        key = "detail-acts",
-        ui.label({ text = "This app", fontSize = 13, fontWeight = "semibold", color = "on_surface" }),
-        ui.row({ gap = 8 }, {
-            a.revoked_at
-                and ui.button({ text = "Un-revoke", variant = "outline", controlSize = "sm", glyph = "undo",
-                    onClick = function() cli({ "unrevoke", a.pubkey }) end })
-                or ui.button({ text = "Revoke", variant = "outline", controlSize = "sm", glyph = "shield-off",
-                    tooltip = "the ban: refused even with its old URI until you clear it",
-                    onClick = function() cli({ "revoke", a.pubkey }) end }),
-            ui.button({ text = "Delete", variant = "destructive", controlSize = "sm", glyph = "trash",
-                tooltip = "the record goes; a fresh URI pairs it again",
-                onClick = function()
-                    selected_app = nil
-                    cli({ "delete", a.pubkey })
-                end }),
-        }),
-        ui.label({
-            text = a.revoked_at
-                and "a revoked app is refused whatever it carries; delete forgets it outright"
-                or "revoke is the ban; delete forgets outright, and a fresh URI pairs again",
-            fontSize = 11, color = "on_surface_variant/0.8", maxLines = 3,
-        }),
-    }))
-    return ui.column({ gap = 10, align = "stretch" }, rows)
-end
-
-local function logPane()
-    if #log_entries == 0 then
-        return emptyState("history", "Nothing has happened yet",
-            "Asks, approvals and pairings land here as they happen")
-    end
-    local rows = {}
-    -- Newest first: the last thing that happened is the thing to read.
-    for i = #log_entries, 1, -1 do
-        local e = log_entries[i]
-        local known = appOf(e.app)
-        local who = known and displayName(known) or short(e.app)
-        local verdict = e.verdict or ""
-        local color = (verdict:find("^denied") or verdict:find("expired")) and "error"
-            or (verdict:find("^allowed") and "primary" or "on_surface_variant/0.8")
-        table.insert(rows, ui.column({
-            key = "log-" .. (e.at or 0) .. "-" .. tostring(i),
-            fill = "surface_variant/0.35", radius = 10, padding = 10, gap = 2, align = "stretch",
-        }, {
-            ui.row({ gap = 8, align = "center" }, {
-                ui.label({ text = who, fontWeight = "semibold", flexGrow = 1, color = "on_surface" }),
-                ui.label({
-                    text = e.at and noctalia.formatTime("%Y-%m-%d %H:%M", e.at) or "",
-                    fontSize = 10, color = "on_surface_variant/0.8",
-                }),
-            }),
-            ui.label({ text = e.summary or "?", fontSize = 12, color = "on_surface_variant" }),
-            ui.label({ text = verdict, fontSize = 11, color = color }),
-        }))
-    end
-    return ui.column({ gap = 8, align = "stretch" }, rows)
-end
-
-local function appsPane()
-    if selected_app then
-        local a = appOf(selected_app)
-        if a then
-            return appDetail(a)
-        end
-        selected_app = nil -- the app was deleted under the open view
-    end
-    if #apps == 0 then
-        return emptyState("apps", "No apps paired yet", "Pair one from the Pair tab")
-    end
-    local cards = {}
-    for _, a in ipairs(apps) do
-        table.insert(cards, appCard(a))
-    end
-    return ui.column({ gap = 12, align = "stretch" }, cards)
-end
-
--- ── the frame ────────────────────────────────────────────────────────
-
--- The root is a column, because the host sizes the root node and only
--- a column's children fill toward that height the way the scroll
--- needs; the row inside carries the rail and the pane.
-render = function()
-    local rail = {}
-    for _, t in ipairs(TABS) do
-        table.insert(rail, railButton(t))
-    end
-
-    local title, badge, body
-    if tab == "asks" then
-        title = "Requests"
-        badge = #prompts > 0 and #prompts or nil
-        body = asksPane()
-    elseif tab == "apps" then
-        title = "Paired apps"
-        body = appsPane()
-    elseif tab == "log" then
-        title = "Activity"
-        body = logPane()
-    else
-        title = "Pair"
-        body = pairPane()
-    end
-
-    local pane = ui.column({ gap = 10, flexGrow = 1, align = "stretch" }, {
-        paneHeader(title, badge),
-        ui.separator({ color = "on_surface_variant/0.25" }),
-        ui.scroll({ flexGrow = 1, gap = 12 }, { body }),
-    })
-
-    panel.render(ui.column({ flexGrow = 1, align = "stretch" }, {
-        ui.row({ gap = 12, flexGrow = 1 }, {
-            ui.column({ gap = 8, width = 48 }, rail),
-            pane,
-        }),
-    }))
-end
-
-function onOpen(context)
-    if context and context:find("^nostrconnect://") then
-        offered_uri = context
-        tab = "pair"
-        tab_chosen = true
-    end
-    -- Open or act, the panel says a person is here.
-    noctalia.runAsync({ "kuma-nostr", "touch" }, nil)
-    -- The clipboard is read once per open, and only the Pair tab's
-    -- landing consumes the read.
-    clipboard_checked = false
-    if tab == "pair" then
-        checkClipboard()
-    end
-    -- While the panel is open it polls: the frame tick is the panel's
-    -- one clock, asked for here and given back on close, so an open
-    -- panel watches for asks instead of showing the moment it was
-    -- opened. The guard keeps an older host working — a nil API
-    -- costs the live poll, nothing else.
-    panel_open = true
-    frame_acc = 0
-    if panel.setNeedsFrameTick then
-        panel.setNeedsFrameTick(true)
-    end
-    refresh()
-end
-
-function onClose()
-    panel_open = false
-    if panel.setNeedsFrameTick then
-        panel.setNeedsFrameTick(false)
-    end
-end
-
-function onFrameTick(deltaMs)
-    if not panel_open then
-        return
-    end
-    frame_acc = frame_acc + (deltaMs or 0)
-    if frame_acc < POLL_MS then
-        return
-    end
-    frame_acc = 0
-    refresh()
-end
-"#,
-    ),
-];
-
-/// The authored config's plugin entry, appended to the noctalia config
-/// only when the declaration says so. Only the array entry rides the
-/// append — a second `[plugins]` header would be a TOML redefinition,
-/// and the build's merge proof is where noctalia says exactly that; the
-/// enabled key joins the section the config already carries, by
-/// injection where that section is written.
-///
-/// The keys are noctalia v5.1.0's own, checked against its `config
-/// validate` rather than grepped off the binary: the first spelling
-/// (`id`, `path`) came from error strings and was unknown to the shell,
-/// which warned at every boot and never loaded the plugin. A source's
-/// `location` is a root that holds plugin directories, each with its
-/// own plugin.toml inside — the tree below lands under it, which is why
-/// the path ends at the parent. The source's `name` is a label and
-/// cannot carry `/`; the plugin's id, from its plugin.toml, is what the
-/// enabled list matches.
-pub(crate) const NOSTR_PLUGIN_SOURCE: &str = r#"
-[[plugins.source]]
-name = "kuma-nostr"
-kind = "path"
-location = "/usr/lib/kuma/noctalia/plugins"
-enabled = true
-"#;
-
-/// The bunker's glyph sits after notifications — the state widgets'
-/// neighborhood, where a person glances for facts. As an instance: a
-/// plugin's bar widget is `[widget.<name>]` whose `type` names the
-/// plugin entry, and the bar's list carries the instance's name, not
-/// the plugin's id. Both halves are the nostr-enabled render's; the
-/// anchor on the battery widget's section is where the instance
-/// declaration lands.
-pub(crate) const NOSTR_BAR_ANCHOR: &str = "    \"notifications\",\n    \"network\",";
-pub(crate) const NOSTR_BAR_WIDGET: &str =
-    "    \"notifications\",\n    \"bunker\",\n    \"network\",";
-pub(crate) const NOSTR_BAR_INSTANCE_ANCHOR: &str = "[widget.battery]";
-pub(crate) const NOSTR_BAR_INSTANCE: &str =
-    "[widget.bunker]\ntype = \"kuma/nostr:bunker\"\n\n[widget.battery]";
-
-/// The enabled key's spelling inside the existing `[plugins]` section,
-/// and the line it joins.
-pub(crate) const NOSTR_PLUGIN_ENABLED_LINE: &str = "enabled = [\"kuma/nostr\"]";
-pub(crate) const NOSTR_PLUGIN_ANCHOR: &str = "[plugins]\nauto_update = \"none\"";
-
 /// The bind that opens the approval panel, joining the baked binds only
 /// when the block renders — a key that opens a panel that does not
 /// exist is exactly the dead-key shape kuma rewrites out of stock niri.
-pub(crate) const NIRI_NOSTR_BIND: &str = r#"    Mod+Ctrl+N allow-when-locked=true hotkey-overlay-title="Nostr approvals" { spawn "noctalia" "msg" "panel-toggle" "kuma/nostr:panel"; }"#;
+pub(crate) const NIRI_NOSTR_BIND: &str = r#"    Mod+Ctrl+N allow-when-locked=true hotkey-overlay-title="Nostr approvals" { spawn "kuma-shell" "msg" "nostr"; }"#;
 
 /// The scheme handler: a nostrconnect:// link clicked anywhere lands in
 /// the approval panel rather than in nothing. The desktop file is the
-/// handler; the mimeapps line names it. The verb is panel-open, not
-/// panel-toggle — a clicked link while the panel is already open must
-/// land the offer, not close the panel over it. And NoDisplay is
-/// deliberately absent: a flatpak browser's scheme clicks go through
-/// the portal, whose chooser filters NoDisplay apps to nothing — a
-/// hidden handler is a handler no browser can reach. The cost is one
-/// honest entry in the app grid; the alternative is the feature not
-/// working at all.
+/// handler; the mimeapps line names it. The verb carries the URI when
+/// the browser passes one — the offer lands even with the panel already
+/// open — and a bare `nostr` (the app-grid entry clicked with no URI)
+/// opens the panel. Neither spelling toggles: a clicked link while the
+/// panel is open must land the offer, not close the panel over it. And
+/// NoDisplay is deliberately absent: a flatpak browser's scheme clicks
+/// go through the portal, whose chooser filters NoDisplay apps to
+/// nothing — a hidden handler is a handler no browser can reach. The
+/// cost is one honest entry in the app grid; the alternative is the
+/// feature not working at all.
 pub(crate) const NOSTR_PANEL_DESKTOP: &str = r#"[Desktop Entry]
 Type=Application
-Name=kumaOS Nostr approvals
-Exec=noctalia msg panel-open kuma/nostr:panel %u
+Name=Nostr Signer
+Exec=/usr/bin/kuma-shell msg nostr %u
 MimeType=x-scheme-handler/nostrconnect;
 "#;
 

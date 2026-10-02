@@ -155,10 +155,24 @@ pub fn write_context(
     // and a build whose siblings are missing is a checkout, not a
     // release. The failure is honest and early — the nostr block's
     // COPY would otherwise name files the context never carried.
+    let parent = kuma_binary
+        .parent()
+        .with_context(|| "the running kuma has no parent directory".to_string())?;
+    // The desktop shell rides the same road, and is staged only where
+    // an image will COPY it: built from the kumaui tree, beside the
+    // running kuma, shipped with the release. On any other desktop the
+    // binary is dead weight, so it does not ride.
+    if config.system.desktop == Desktop::Niri {
+        let shell_sibling = parent.join("kuma-shell");
+        std::fs::copy(&shell_sibling, dir.join("kuma-shell")).with_context(|| {
+            format!(
+                "staging kuma-shell: it is not beside the running kuma ({}); a \
+                 desktop image needs the release's binaries together",
+                kuma_binary.display()
+            )
+        })?;
+    }
     if config.nostr.enable {
-        let parent = kuma_binary
-            .parent()
-            .with_context(|| "the running kuma has no parent directory".to_string())?;
         let mut names = vec!["kuma-nostrd", "kuma-nostr"];
         if config.nostr.relay.enable {
             names.push("nip46-relay");
@@ -212,7 +226,9 @@ mod tests {
         let stub = bin_home.path().join("stub-kuma");
         std::fs::write(&stub, b"not really a binary\n").unwrap();
         let cfg = config(toml);
-        // The nostr siblings are as fake as the stub, and as stable.
+        // The shell and the nostr siblings are as fake as the stub, and
+        // as stable.
+        std::fs::write(bin_home.path().join("kuma-shell"), "not really kuma-shell\n").unwrap();
         if cfg.nostr.enable {
             let mut names = vec!["kuma-nostrd", "kuma-nostr"];
             if cfg.nostr.relay.enable {
@@ -371,73 +387,6 @@ mod tests {
             let hash = Sha256::digest(&bytes);
             let rel = entry.strip_prefix(root).unwrap();
             lines.push(format!("{} {}", rel.display(), hex(&hash)));
-        }
-    }
-
-    /// The plugin's Lua parses, or at least balances: strings and
-    /// comments stripped, every delimiter opened is closed. Nothing
-    /// else in this pipeline reads the plugin as a program — the
-    /// golden pins its bytes, the host's lint pins its manifest, and
-    /// the one parser that matters is the loading shell on somebody's
-    /// desktop, which is exactly where a syntax error must never
-    /// surface first. This is the cheap half of a parser: blind to
-    /// every mistake but an unbalanced one, and that is the mistake
-    /// an edit-in-place already made once.
-    #[test]
-    fn the_plugin_lua_balances() {
-        for (name, text) in crate::containerfile::blocks::NOSTR_PLUGIN_TREE {
-            let mut stack = Vec::new();
-            let bytes = text.as_bytes();
-            let mut i = 0;
-            while i < bytes.len() {
-                match bytes[i] {
-                    b'-' if text[i..].starts_with("--") => {
-                        // A comment eats the rest of its line (a long
-                        // bracket would be Luau's own, and the plugin
-                        // carries none).
-                        while i < bytes.len() && bytes[i] != b'\n' {
-                            i += 1;
-                        }
-                    }
-                    b'"' | b'\'' => {
-                        let quote = bytes[i];
-                        i += 1;
-                        while i < bytes.len() && bytes[i] != quote {
-                            if bytes[i] == b'\\' {
-                                i += 1;
-                            }
-                            i += 1;
-                        }
-                        // The closing quote is consumed here, or the
-                        // next scan starts on it and the string's end
-                        // becomes the next string's beginning — half
-                        // the file swallowed into phantom strings.
-                        i += 1;
-                    }
-                    b'(' | b'[' | b'{' => {
-                        stack.push(bytes[i]);
-                        i += 1;
-                    }
-                    b')' | b']' | b'}' => {
-                        let open = stack.pop().unwrap_or_else(|| {
-                            panic!("{name} closes a {} that never opened", bytes[i] as char)
-                        });
-                        let close = match open {
-                            b'(' => b')',
-                            b'[' => b']',
-                            _ => b'}',
-                        };
-                        assert_eq!(
-                            bytes[i], close,
-                            "{name} closes {open} with {}",
-                            bytes[i] as char
-                        );
-                        i += 1;
-                    }
-                    _ => i += 1,
-                }
-            }
-            assert!(stack.is_empty(), "{name} ends with {} unclosed delimiter(s)", stack.len());
         }
     }
 
@@ -758,30 +707,26 @@ mod tests {
         assert!(
             out.contains("COPY kuma-wallpaper.jpg /usr/share/backgrounds/kuma/kuma-wallpaper.jpg")
         );
-        // The shell's config, in place of waybar's two files and mako's
-        // one. Its reachability is checked in the build itself, see
-        // the_baked_shell_config_is_proved_reachable.
-        assert!(out.contains("COPY noctalia-config.toml /usr/lib/kuma/noctalia/config.toml"));
+        // The shell's terminal config, in place of waybar's two files
+        // and mako's one.
+        assert!(out.contains("COPY kitty.conf /etc/xdg/kitty/kitty.conf"));
         // system-wide, never /etc/skel — skel strands existing homes on
         // stale copies (the fuzzel-DPI lesson)
         assert!(!out.contains("/etc/skel"));
-        // systemd user sessions activate via SystemdService, not Exec —
-        // without the drop-in the wrapper never runs where it matters
-        assert!(out.contains("COPY kitty.conf /etc/xdg/kitty/kitty.conf"));
         // an unparseable theme must fail the build, not ship unthemed —
         // and unknown keys only ever reach stderr, so both halves matter
         assert!(out.contains("kitty +runpy"));
         assert!(out.contains("accumulate_bad_lines=bad"));
         assert!(out.contains("grep -q 'unknown config key' /tmp/kitty.err"));
         // The palette owns every colour the terminal shows, all sixteen
-        // ANSI slots included, so the build renders the template it will
-        // actually use and insists on both halves being there. The
-        // image's own colours stay as the fallback for a terminal opened
-        // before the shell has rendered anything.
+        // ANSI slots included, and it is STATIC now: the wallpaper-
+        // derived render died with noctalia, so the palette's presence
+        // in the shipped file is the whole story.
+        assert!(KITTY_CONFIG.contains("background"));
         assert!(KITTY_CONFIG.contains("color0"));
-        assert!(out.contains("grep -qE '^color0 +#[0-9a-fA-F]{6}$' /tmp/kitty-rendered.conf"));
-        // and the config that turns the templates on at all
-        assert!(KUMA_NOCTALIA.contains("builtin_ids = [ \"kitty\", \"gtk3\", \"gtk4\" ]"));
+        assert!(KITTY_CONFIG.contains("color15"));
+        // and no template placeholder survived into the static file
+        assert!(!KITTY_CONFIG.contains("{{"));
         // the GTK3 half only themes anything with adw-gtk3 present, and
         // GTK_THEME outranks gsettings, so all four names move together
         assert!(NIRI_PACKAGES.contains(&"adw-gtk3-theme"));
@@ -790,9 +735,6 @@ mod tests {
         assert!(XSETTINGSD_CONF.contains("Net/ThemeName \"adw-gtk3-dark\""));
         assert!(GTK3_SETTINGS_INI.contains("gtk-theme-name = adw-gtk3-dark"));
         assert!(out.contains("RUN test -d /usr/share/themes/adw-gtk3-dark"));
-        // niri's template would have apply.sh create ~/.config/niri/config.kdl,
-        // which niri takes instead of /etc/niri/config.kdl rather than merging
-        assert!(!KUMA_NOCTALIA.contains("\"niri\""));
         // upstream niri spawns alacritty; the image ships kitty, so the sed
         // must rewrite the bind, and the grep guard must keep it honest
         assert!(out.contains("grep -q '\"alacritty\"' /usr/share/doc/niri/default-config.kdl"));
@@ -1184,51 +1126,28 @@ mod tests {
         assert!(SLEEP_GUARD.contains("seat0"), "{SLEEP_GUARD}");
         // The property: no shell means the session ends rather than the
         // machine sleeping with the desktop on screen.
-        assert!(SLEEP_GUARD.contains("pgrep -u \"$user\" -x noctalia"), "{SLEEP_GUARD}");
+        assert!(SLEEP_GUARD.contains("pgrep -u \"$user\" -x kuma-shell"), "{SLEEP_GUARD}");
         assert!(SLEEP_GUARD.contains("loginctl terminate-session"), "{SLEEP_GUARD}");
-        // The residual case: a shell that hangs rather than exits. The
-        // process check passes it; the guard must then ASK the shell,
-        // over the session bus it owns from its first moment, and end
-        // the session when nothing answers. Peer.Ping because sd-bus
-        // answers it without shell code, and runuser because sudo's
-        // env_reset would strip the XDG_RUNTIME_DIR the probe needs and
-        // turn every healthy shell into a false positive.
-        assert!(
-            SLEEP_GUARD.contains("org.freedesktop.DBus.Peer Ping"),
-            "the probe is a ping, not a guess"
-        );
-        assert!(
-            SLEEP_GUARD.contains("runuser -u \"$user\" -- env XDG_RUNTIME_DIR"),
-            "the probe runs as the session's user with the session's runtime dir"
-        );
-        assert!(
-            SLEEP_GUARD.contains("if probe || probe; then"),
-            "the destructive verdict needs two failures, not one"
-        );
-        assert!(
-            SLEEP_GUARD.contains("not answering"),
-            "the hung-shell termination says why, in the journal"
-        );
+        // The bus probe that noctalia's guard carried is gone with it:
+        // kuma-shell owns no session-bus name, so there is nothing to
+        // ask, and a guard that cannot ask must not guess.
+        assert!(!SLEEP_GUARD.contains("org.freedesktop.DBus.Peer"), "{SLEEP_GUARD}");
         // And it runs on the way down, on every path into sleep.
         assert!(SLEEP_GUARD_SERVICE.contains("Before=sleep.target"), "{SLEEP_GUARD_SERVICE}");
         assert!(SLEEP_GUARD_SERVICE.contains("WantedBy=sleep.target"), "{SLEEP_GUARD_SERVICE}");
     }
 
-    /// The unit carries what the spawn used to hand it.
+    /// The unit carries what the shell needs and nothing it cannot use.
     ///
-    /// 0.17 moved the shell into kuma-shell.service and left
-    /// NOCTALIA_CONFIG_HOME behind in niri's `environment` block, which
-    /// a unit does not read. The machine booted, the shell ran, the
-    /// service was active and every check was green, and the desktop
-    /// was stock noctalia: a wider bar, no wallpaper-derived palette,
-    /// and the welcome screen. Every variable the shell needs is now
-    /// asserted in the unit, and asserted to say what the niri block
-    /// says, because two places holding one value drift silently.
+    /// 0.17's lesson, kept as a shape: a unit inherits nothing from
+    /// niri's `environment` block, so every variable the shell needs is
+    /// asserted in the unit AND in the niri block, because two places
+    /// holding one value drift silently. The kuma-shell needs only the
+    /// cursor pair — its defaults are compiled in — and it must run the
+    /// binary the context stages, not some leftover.
     #[test]
     fn the_shell_unit_carries_the_shells_environment() {
-        for var in
-            ["NOCTALIA_CONFIG_HOME=/usr/lib/kuma", "XCURSOR_THEME=Adwaita", "XCURSOR_SIZE=24"]
-        {
+        for var in ["XCURSOR_THEME=Adwaita", "XCURSOR_SIZE=24"] {
             assert!(
                 SHELL_SERVICE.contains(&format!("Environment={var}")),
                 "the shell unit does not set {var}, so the session will not:\n{SHELL_SERVICE}"
@@ -1241,6 +1160,13 @@ mod tests {
                 "{name} disagrees between the unit and niri's environment block"
             );
         }
+        // The flip's core: the unit starts kuma-shell, and no
+        // noctalia variable survives anywhere in either file — a
+        // variable pointing at a config directory nothing reads is
+        // 0.17's bug wearing today's clothes.
+        assert!(SHELL_SERVICE.contains("ExecStart=/usr/bin/kuma-shell"), "{SHELL_SERVICE}");
+        assert!(!SHELL_SERVICE.contains("noctalia"), "{SHELL_SERVICE}");
+        assert!(!NIRI_EXTRAS.contains("NOCTALIA_"), "{NIRI_EXTRAS}");
     }
 
     /// The lock screen authenticates under its own name.
@@ -1521,19 +1447,17 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
         let wallpaper = std::fs::read(dir.path().join("kuma-wallpaper.jpg")).unwrap();
         assert!(!wallpaper.is_empty());
         let extras = std::fs::read_to_string(dir.path().join("niri-extras.kdl")).unwrap();
-        // The wallpaper is still the image's, but the shell draws it from
-        // its own config rather than a swaybg argument in here.
-        assert!(KUMA_NOCTALIA.contains("/usr/share/backgrounds/kuma"));
+        // The wallpaper ships as the image's own file; the shell's
+        // default is compiled to point at exactly that path.
         // The shell is a supervised unit now, not a spawn: a niri
         // spawn lands in a transient scope, and a scope cannot restart.
-        assert!(!extras.contains("spawn-at-startup \"noctalia\""), "{extras}");
+        assert!(!extras.contains("spawn-at-startup \"kuma-shell\""), "{extras}");
         assert!(dir.path().join("kuma-shell.service").exists());
         assert!(SHELL_SERVICE.contains("Restart=always"), "{SHELL_SERVICE}");
         assert!(extras.contains("kuma-clipboard-bridge"));
         assert!(dir.path().join("kuma-clipboard-bridge").exists());
         let greetd = std::fs::read_to_string(dir.path().join("greetd-config.toml")).unwrap();
         assert!(greetd.contains("Welcome to kumaOS"));
-        assert!(dir.path().join("noctalia-config.toml").exists());
         assert!(dir.path().join("kitty.conf").exists());
         let ff = std::fs::read_to_string(dir.path().join("fastfetch-config.jsonc")).unwrap();
         assert!(ff.contains("/usr/lib/kuma/fastfetch-logo.txt"));
@@ -2677,21 +2601,16 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
         assert!(NIRI_STOCK_LAUNCHER.contains(r#"spawn "fuzzel";"#));
     }
 
-    /// Nothing greets a person on kuma's behalf but kuma.
-    ///
-    /// The shell ships a first-run wizard, and a kuma machine has
-    /// already answered what it asks. Asserted because it is a
-    /// first-impression setting: it is invisible on every boot after the
-    /// first, so losing it would be noticed by strangers and by nobody
-    /// testing.
     /// Suspending locks, which was a clause of the swayidle line that
-    /// left and is not covered by the two idle behaviors that replaced
-    /// it. The shell defaults to it; kuma pins it, because a beta that
-    /// flips this default unlocks every machine that suspends and says
-    /// nothing.
+    /// left. The contract now lives in the shell's compiled defaults —
+    /// `lock_before_suspend = true` beside the 900/960 idle timeouts,
+    /// pinned by kuma-shell's own test — so the image-side assertion is
+    /// that the binary carrying it is the one this image ships.
     #[test]
     fn suspending_locks_the_screen() {
-        assert!(KUMA_NOCTALIA.contains("lock_before_suspend = true"));
+        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
+        assert!(out.contains("COPY --chmod=755 kuma-shell /usr/bin/kuma-shell"));
+        assert!(SHELL_SERVICE.contains("ExecStart=/usr/bin/kuma-shell"));
     }
 
     /// Every icon an entry names is checked in the build, not the first.
@@ -2708,34 +2627,11 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
         }
     }
 
-    #[test]
-    fn no_other_vendor_greets_the_person_on_first_login() {
-        assert!(KUMA_NOCTALIA.contains("setup_wizard_enabled = false"));
-    }
-
-    /// The shell's fallback wallpaper is kuma's.
-    ///
-    /// `[wallpaper.default] path` in kuma's config is not the mechanism
-    /// and cannot be: the shell accepts the key and ignores it outside
-    /// its own state, so a first boot showed noctalia's asset with kuma's
-    /// config loaded and validating clean. Replacing the file is the only
-    /// lever, and the `test -f` in front of it means an upstream rename
-    /// fails the build rather than quietly restoring their wallpaper.
-    #[test]
-    fn the_shells_default_wallpaper_is_kumas() {
-        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
-        let guard = out.find("RUN test -f /usr/share/noctalia/assets/noctalia-wallpaper.png");
-        let copy = out.find("COPY kuma-wallpaper.jpg /usr/share/noctalia/assets/");
-        assert!(guard.is_some() && copy.is_some(), "the asset is not replaced");
-        assert!(guard < copy, "the guard must run before the file is overwritten");
-        // The table header, not the string: the config explains in a
-        // comment why the key is absent, and a substring check reads its
-        // own explanation as the thing it forbids.
-        assert!(
-            !KUMA_NOCTALIA.lines().any(|line| line.trim() == "[wallpaper.default]"),
-            "that key reads as if it works; it does not"
-        );
-    }
+    /// The shell's fallback wallpaper is kuma's — and with noctalia gone
+    /// there is no other wallpaper in the image to fall back FROM: the
+    /// file the COPY above ships is the only one, and the shell's
+    /// compiled default names exactly that path (pinned in kuma-shell's
+    /// own tests). Nothing to replace and no key pretending to work.
 
     /// No bind advertises a program the image does not have.
     ///
@@ -2798,51 +2694,14 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
     }
 
     #[test]
-    fn session_polish_ships_osd_and_battery_watch() {
-        // Locking and screen-off were swayidle arguments; they are the
-        // shell's now, and they ship DISABLED, so kuma turning them on is
-        // the difference between a machine that locks and one that does
-        // not. Asserted on the config because that is where it lives.
-        assert!(KUMA_NOCTALIA.contains("[idle.behavior.lock]"));
-        assert!(KUMA_NOCTALIA.contains("[idle.behavior.screen-off]"));
-        assert_eq!(
-            KUMA_NOCTALIA.matches("enabled = true").count(),
-            3,
-            "lock, screen-off, nightlight"
-        );
-        // The offline defaults: a machine nobody said anything about
-        // still geolocated itself, called a weather vendor, and git
-        // fetched two plugin repos from github on every login, all
-        // failing while the network came up. The keys are ones the
-        // shell's own validator accepts, and the build's merged-export
-        // assert re-checks both against the real binary.
-        assert!(KUMA_NOCTALIA.contains("[weather]\nenabled = false"));
-        assert!(KUMA_NOCTALIA.contains("[plugins]\nauto_update = \"none\""));
-        assert!(KUMA_NOCTALIA.contains("[location]\nauto_locate = false"));
-        // `enabled = true` was not enough, and a booted machine is how
-        // that was found: both behaviors were dropped at registration
-        // for want of an `action`, on an image whose config validated
-        // and whose merged export showed both timeouts. Every behavior
-        // carries one now, and it has to be one of the four the shell
-        // takes, or the machine silently never locks again.
-        let actions: Vec<&str> = KUMA_NOCTALIA
-            .lines()
-            .filter_map(|l| l.strip_prefix("action = \""))
-            .filter_map(|l| l.strip_suffix('"'))
-            .collect();
-        assert_eq!(
-            actions.len(),
-            KUMA_NOCTALIA.matches("[idle.behavior.").count(),
-            "every idle behavior needs an action: {actions:?}"
-        );
-        for a in &actions {
-            assert!(
-                ["lock", "screen_off", "suspend", "lock_and_suspend"].contains(a),
-                "the shell rejects idle action `{a}`"
-            );
-        }
+    fn session_polish_ships_battery_watch_and_media_verb_binds() {
+        // Locking, screen-off and lock-before-suspend were swayidle
+        // arguments, then noctalia config keys; they are the shell's
+        // compiled defaults now (kuma-shell's own tests pin the
+        // numbers), so there is no image-side config left to assert.
+        // What the image still owns is the wiring: the battery watch
+        // rides the session, and the media keys reach the shell.
         assert!(NIRI_EXTRAS.contains("kuma-battery-watch"));
-        assert!(NIRI_EXTRAS.contains("noctalia"));
         // Both X11 helpers wait for a DISPLAY that does not exist yet
         // when they are spawned. They share one copy of that wait, so
         // this asks the rendered scripts rather than the const: a
@@ -2853,8 +2712,10 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
             assert!(script.trim_end().ends_with("-x") || script.contains("exec xsettingsd"));
         }
         // media keys go through the shell's own msg interface, which
-        // adjusts and draws the OSD in one step
-        assert!(NIRI_MEDIA_BINDS.contains("spawn \"noctalia\" \"msg\" \"volume-up\""));
+        // adjusts through the same sysmon the bar's widgets read from
+        assert!(NIRI_MEDIA_BINDS.contains("spawn \"kuma-shell\" \"msg\" \"volume-up\""));
+        assert!(NIRI_MEDIA_BINDS.contains("spawn \"kuma-shell\" \"msg\" \"brightness-up\""));
+        assert!(!NIRI_MEDIA_BINDS.contains("playerctl"));
         assert!(!NIRI_MEDIA_BINDS.contains("kuma-osd"));
         let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
         assert!(out.contains("-e '/XF86Audio/d'"));
@@ -2988,12 +2849,12 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
 
     #[test]
     fn daily_driver_glue() {
-        // The clipboard and wallpaper widgets both left the bar in 0.16,
-        // so these two binds are the only routes to their panels left in
-        // the image. Losing a bind here strands a panel.
-        assert!(NIRI_MEDIA_BINDS.contains(r#"panel-toggle" "clipboard"#));
-        assert!(NIRI_MEDIA_BINDS.contains(r#"panel-toggle" "wallpaper"#));
-        assert!(KUMA_NOCTALIA.contains(r#"start = [ "launcher", "workspaces" ]"#));
+        // The clipboard and wallpaper binds left with noctalia — the
+        // panels they opened were noctalia's, and a bind that advertises
+        // a dead panel is the bug the icon test exists for. Their keys
+        // are free; a shell panel for either is new work.
+        assert!(!NIRI_MEDIA_BINDS.contains(r#"panel-toggle" "clipboard"#));
+        assert!(!NIRI_MEDIA_BINDS.contains(r#"panel-toggle" "wallpaper"#));
         assert!(MIMEAPPS.contains("application/pdf=org.gnome.Papers.desktop"));
         assert!(MIMEAPPS.contains("inode/directory=thunar.desktop"));
         let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));

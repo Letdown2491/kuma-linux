@@ -36,15 +36,16 @@ rather than twice here. What that rule costs in practice is
 
 Hand-assembled, because niri is a window manager rather than a desktop: it
 requires nothing beyond itself, so every part of a working session is named
-explicitly. Most of that session is now one program. Noctalia draws the bar,
-notifications, wallpaper, on-screen displays, the lock screen and a control
-centre, where kuma previously assembled seven separate tools that agreed on
-colour and on nothing else.
+explicitly. Most of that session is now one program. kuma-shell — built from
+the kumaui tree and shipped in the image — draws the bar, notifications,
+wallpaper, the lock screen, a control centre and the Nostr Signer, where kuma
+previously assembled seven separate tools that agreed on colour and on nothing
+else.
 
 | | |
 |---|---|
 | Session | `niri`, `xwayland-satellite`, `greetd`, `tuigreet` |
-| Shell | `noctalia` (bar, notifications, wallpaper, OSDs, idle, lock, control centre) |
+| Shell | `kuma-shell` (bar, notifications, wallpaper, idle, lock, control centre, Nostr Signer) |
 | Terminal and files | `kitty`, `thunar` (+ archive plugin), `file-roller`, `gvfs`, `udiskie`, `7zip`, `unar` |
 | Portals | `xdg-desktop-portal-gtk`, `xdg-desktop-portal-gnome` |
 | Audio | `pipewire`, `pipewire-pulseaudio`, `wireplumber`, `pavucontrol` |
@@ -55,10 +56,10 @@ colour and on nothing else.
 | Session glue | `polkit`, `mate-polkit`, `dconf`, `gnome-keyring`, `xsettingsd`, `xdg-user-dirs`, `firewalld`, `flatpak`, `desktop-file-utils` |
 | Fonts and icons | sans, mono, emoji, CJK, Font Awesome (free and brands), `adwaita-icon-theme`, `adw-gtk3-theme` |
 
-The control centre owns the everyday cases: wifi, bluetooth, audio,
-brightness, night light, and the power button in its header opens lock, log
+The control centre owns the everyday cases: bluetooth, audio, brightness,
+and the power button in its header opens lock, log
 out, suspend, reboot and shut down. The separate settings tools stay for what
-it does not reach: `nm-connection-editor` for a VPN or a static route,
+it does not reach: `nm-connection-editor` for wifi, a VPN or a static route,
 `pavucontrol` for per-application routing, `system-config-printer` for
 printers. All of it is machine state rather than system definition: the declaration describes what a
 machine is, and picking a network is not that.
@@ -67,57 +68,40 @@ machine is, and picking a network is not that.
 Idle lock, `Super+Alt+L` and locking before suspend are all the shell's, so it
 runs as a systemd user service that restarts if it stops rather than as a
 one-shot spawn that could vanish quietly. `kuma doctor` grades that it is
-running, that it came up reading the image's config rather than the shell's
-own defaults, and that the shell accepted the idle behaviours it was given.
-That last one is graded from the shell's journal because nowhere else says
-so: a behaviour with a timeout and no action is thrown away at startup, and
-the config still validates and still exports the timeout. If the shell is not
-there at all when the machine is asked to
+running and that its idle watcher is alive. The idle contract — lock at 15
+minutes, screens off a minute later, lock before sleep — is compiled into the
+shell rather than baked as a config file, so there is nothing a broken
+override can silently disagree with; the one failure mode left (a compositor
+without the idle protocol, a dead Wayland connection) is what the journal
+says, and the doctor grades exactly that. If the shell is not there at all
+when the machine is asked to
 sleep, the session ends instead of suspending: a session with no shell has no
-lock screen, and sleeping into one means an unlocked machine in a bag. A shell
-that hangs rather than exits is caught the same way: on the way into sleep,
-the guard asks it over the session bus it owns, and a shell that cannot
-answer twice has its session ended like a dead one.
+lock screen, and sleeping into one means an unlocked machine in a bag. The
+guard checks the process by name on the way into sleep; noctalia's session-bus
+probe is gone with it, because kuma-shell owns no bus name and the guard will
+not guess.
 
-**The desktop's own look comes from the image.** kumaOS bakes a noctalia config
-(bar layout, fonts, wallpaper, and the idle lock and night light that noctalia
-ships turned off) and the shell reads it from there. The baked config also
-ships the shell quiet: no weather lookups, no IP geolocation, and no plugin
-repository fetches at startup, because a desktop that was never told about
-weather should not call a weather vendor to render nothing. Every one of
-those is a settings toggle away. The path reaches the
-shell through the service that starts it, so a shell started any other way
-comes up on noctalia's defaults: a different bar, no palette taken from the
-wallpaper, and a first-run wizard. Changing anything from the desktop's own
-settings writes `~/.local/state/noctalia/settings.toml`, which wins over the
-image. That file is yours and the image will not overwrite it. kuma does not
-write it either, so `kuma diff` will not mention it: what kuma does is say
-where your desktop differs from the image, which `kuma doctor` names by key
-with `noctalia config export merged` as the command that answers for the
-values.
+**The desktop's own look comes from the image.** The shell's defaults are
+compiled in, and the machine's own choices live in
+`~/.config/kuma-shell/config.toml`, which the shell reads and the image never
+writes: what kuma bakes is the default, and what you change is yours. There is
+no exporter and no state file for `kuma diff` to miss — the shell that draws
+the desktop reads the same file you would edit.
 
-**The terminal and GTK3 applications follow the shell's palette.** Noctalia
-derives that palette from the wallpaper by default, and whatever it is showing,
-the shell renders it into `~/.config/kitty/themes/noctalia.conf` and
-`~/.config/gtk-3.0/noctalia.css` whenever it changes and again at login. Point
-the shell at one of its built-in palettes instead and the terminal, thunar,
-pavucontrol and the rest move with it. The image ships `adw-gtk3-theme` for
-this: stock Adwaita GTK3 ignores the colour names a palette can set.
-
-That includes the terminal's sixteen ANSI colours. A palette generated from a
-wallpaper maps every one of them into its own hue family, so red, green and
-blue come out as tints of the same colour and a diff's `+` and `-` stop being
-easy to tell apart. A palette you pick by name keeps real hues. To go back to
-the image's fixed colours, delete `~/.config/kitty/themes/noctalia.conf` and
-the include line in `~/.config/kitty/kitty.conf`.
+**The terminal follows the image's palette.** kitty's theme is a static
+palette in `/etc/xdg/kitty/kitty.conf` — chosen once, shipped with the image —
+so the terminal, thunar, pavucontrol and the rest agree with the shell the way
+they always did. The image ships `adw-gtk3-theme` for the GTK3 half: stock
+Adwaita GTK3 ignores the colour names a palette can set.
 
 GTK4 applications do not follow, which on a kuma machine mostly means
 flatpaks. libadwaita ignores a user stylesheet that redefines its palette, so
 they keep their own dark theme.
 
-The bar carries state and little else, so the two panels that are not state
-are on keys: `Mod+Ctrl+V` for clipboard history, `Mod+Ctrl+W` for the
-wallpaper picker. `Mod+Shift+/` lists every bind the session has.
+The bar carries state and little else. `Mod+Shift+/` lists every bind the
+session has; the two binds noctalia's panels owned — `Mod+Ctrl+V` for
+clipboard history and `Mod+Ctrl+W` for the wallpaper picker — left with
+noctalia, because the shell has no panel for either yet.
 
 `Mod+D` opens the shell's launcher. Your applications are in it, and so are
 kuma's own verbs, the same desktop entries on every desktop kuma builds.

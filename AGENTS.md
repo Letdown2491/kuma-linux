@@ -35,28 +35,34 @@ drop-in (`~/.config/systemd/user/kuma-nostrd.service.d/override.conf`)
 re-points `ExecStart` at `target/release/kuma-nostrd`, marked TEMPORARY
 until the image ships the fixed daemon. So the deploy is: commit, then
 `cargo build --release` + `cargo install --path .` in the container
-(the CLI the panel spawns comes from `~/.cargo/bin`; the daemon runs
-from `target/release`), then `systemctl --user restart kuma-nostrd`.
+(the CLI comes from `~/.cargo/bin`; the daemon runs from
+`target/release`), then `systemctl --user restart kuma-nostrd`.
 
-The panel is a noctalia path source at
-`~/.local/state/noctalia/plugins/kuma-nostr/`, extracted from
-`NOSTR_PLUGIN_TREE` in `src/containerfile/blocks.rs` (a python regex
-over the `r#"..."#` blocks works; verify by comparing hashes with the
-staging manifest), then `noctalia msg plugins update kuma-nostr`. The
-host retires entries that error or time out — resurrect with the
-settings.toml road: set `[plugins] enabled = []`, then back to
-`["kuma/nostr"]`; the config watcher re-loads. `noctalia msg plugins
-enable` is broken upstream (parse error on a clean path source) — do
-not use it. Verify reloads in the shell's journal
-(`journalctl --user -u kuma-shell`): a `luau_load failed` line means a
-broken deploy, a `hot reload: reloaded` line a good one.
+## The desktop shell's dev loop (44.4.0)
 
-## The noctalia host API's loaded facts (each learned the hard way)
+The shell is the kumaui tree (`~/Documents/kumaui`), not this repo: a
+GPUI program whose binary lands at `/usr/bin/kuma-shell` in the image
+and whose dev deploy rides the same unit. Build and test only inside
+its `localhost/kuma-dev-rust` container (`./scripts/build.sh`), never
+on the host — this machine has no C compiler, and a host build poisons
+shared target artifacts. The host install (`cp` from the container's
+`target/release`) fails with "Text file busy" while the session is
+running; stop `kuma-shell.service` first, run `~/.local/bin/kuma-shell`
+by hand for the verification pass, and put the service back after. Two
+shells cannot share the layer surfaces or the logind lock listener, so
+a quiet moment is a requirement, not a preference.
+
+An image build needs the release binary beside the running kuma in the
+build context (`kuma-shell`, with `kuma-nostrd`/`kuma-nostr` when the
+nostr layer is enabled) — the same road every release ships.
+
+## The gpui host API's loaded facts (each learned the hard way)
 
 - A Luau local read before its declaration exists resolves to the
   global — nil. The panel forward-declares `render` for this reason;
   every helper a callback calls must be declared above the callback's
-  definer too.
+  definer too. (The noctalia plugin is gone; the fact stays because the
+  pattern recurs in any event-callback host language.)
 - A flex container (column/row/scroll) centers its children on the
   cross axis by default: pass `align = "stretch"` for full-width. The
   docs page says the stretch is the default; the reference
@@ -69,12 +75,12 @@ broken deploy, a `hot reload: reloaded` line a good one.
 - `NoDisplay=true` on a scheme-handler desktop file hides it from
   xdg-desktop-portal's chooser — a flatpak browser then reports "no
   supported apps". Handlers stay visible.
-- The argv form of `runAsync` (plugin_api 24) is the road for every
-  argument that is not a literal: a nostrconnect URI joined into a
-  shell line is shattered by its own `&`s.
-- `noctalia plugins lint` checks manifests, not Luau bodies; the
-  goldens pin bytes. The balance test (`the_plugin_lua_balances`) is
-  the only parse-shape gate — keep it honest.
+- The argv form of any subprocess call is the road for every argument
+  that is not a literal: a nostrconnect URI joined into a shell line is
+  shattered by its own `&`s.
+- `cx.spawn` takes the 2-arg form `async move |this, cx|`; `cx.listener`
+  closures are `Fn` — clone captured ids before the listener AND inside
+  it. Goldens pin bytes; a moving golden is the review.
 
 ## Agent skills
 

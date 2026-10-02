@@ -817,7 +817,6 @@ pub fn doctor(json: bool, as_report: bool) -> Result<()> {
         check_enablements(Path::new("/etc/systemd/user"), &mut report);
         check_snapshots(&mut report);
         check_shell(&mut report);
-        check_shell_config(&mut report);
         check_niri_shadow(&mut report);
         check_backup(&mut report);
         check_nostr(&mut report);
@@ -1800,79 +1799,6 @@ pub fn shell_overrides(baked: &toml::Value, merged: &toml::Value) -> Vec<String>
     out
 }
 
-/// What the desktop is running, against what the image asked for.
-///
-/// **The gap 0.16 shipped and documented as a Known limit.** The shell
-/// writes changes to `~/.local/state/noctalia/settings.toml`, which wins
-/// over the config kuma bakes and which nothing in kuma reads, so
-/// `kuma diff` said a machine matched its declaration while its bar was
-/// visibly something else. Measured on a booted machine, where an
-/// override that had rewritten the bar produced "No drift".
-///
-/// The state file is a full snapshot rather than a list of changes, so
-/// once it exists it pins every key it covers: a kuma release that
-/// changes the baked default does not reach a machine whose state file
-/// predates it. That makes this delta the one place that difference is
-/// visible, and it is also why the wording names no author. The state
-/// file's values are whatever the desktop last accepted, whether a
-/// person's taste or defaults frozen at setup time; the check cannot
-/// tell and does not claim to.
-///
-/// **Graded OK, deliberately, and once warn.** A personalization is not
-/// a diagnosis, and a warning that fires for the life of the machine on
-/// a person who customized once cannot distinguish expected drift from
-/// anything else. The 0.16 point stands unchanged: it stops being
-/// invisible, by name, here in doctor's output, with the exporter named
-/// for the values.
-///
-/// Asked through the shell's own exporter rather than by reading the
-/// state file, for the reason that file taught us: what is in effect is
-/// what the merged answer says, not what any single file says.
-fn check_shell_config(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
-    const BAKED: &str = "/usr/lib/kuma/noctalia/config.toml";
-    if !Path::new(BAKED).exists() {
-        return;
-    }
-    let Ok(baked_text) = std::fs::read_to_string(BAKED) else {
-        return;
-    };
-    let Ok(merged_text) = host_output(&[
-        "sh",
-        "-c",
-        "NOCTALIA_CONFIG_HOME=/usr/lib/kuma noctalia config export merged",
-    ]) else {
-        // No shell on this machine, or it refused to answer. Not a fault
-        // to report here: check_shell already grades whether it is
-        // running at all.
-        return;
-    };
-    let (Ok(baked), Ok(merged)) =
-        (toml::from_str::<toml::Value>(&baked_text), toml::from_str::<toml::Value>(&merged_text))
-    else {
-        return;
-    };
-    let overridden = shell_overrides(&baked, &merged);
-    if overridden.is_empty() {
-        report(Grade::Ok, "shell config", "the desktop is running what the image set".into(), None);
-        return;
-    }
-    report(
-        Grade::Ok,
-        "shell config",
-        format!(
-            "the desktop runs {} of the image's settings differently: {}. The shell's \
-             own state file wins, and nothing overwrites it",
-            overridden.len(),
-            overridden.join(", ")
-        ),
-        Some(Action::new(
-            "compare",
-            "noctalia config export merged",
-            "what the shell is actually running",
-        )),
-    );
-}
-
 /// Absolute-path programs a niri config's binds and startup list spawn,
 /// in order of appearance, deduplicated.
 ///
@@ -2028,16 +1954,28 @@ fn check_niri_shadow(report: &mut impl FnMut(Grade, &str, String, Option<Action>
 /// not a claim: the unit can say it, the niri config can say it, and
 /// neither settles what the process that is drawing the screen was
 /// given. Same user, so it reads without sudo.
-/// The idle behaviors this shell actually armed, and the ones it threw
-/// away, by name. The journal is the only witness: a behavior the shell
-/// refuses is refused silently everywhere else. `noctalia config
-/// validate` passes, `noctalia config export merged` still prints the
-/// timeout, and the desktop simply never locks.
+/// The parse, kept apart from the journal so it can be tested against a
+/// log rather than against a machine.
 ///
-/// The last word about a name wins, because the config can be reloaded
-/// and an answer from before a reload is not this machine's answer.
-/// `None` means the journal could not be read, which is not a finding.
-fn shell_idle_unarmed() -> Option<Vec<String>> {
+/// The LAST failure line is the finding, because a later failure
+/// replaces an earlier one as this moment's answer. Success is silent —
+/// the watcher logs nothing when it is running — so a failure followed
+/// by silence still reads as a failure: conservative on purpose, and
+/// the message quotes the journal so a stale report can be checked
+/// against the machine it names.
+fn idle_watcher_failure(log: &str) -> Option<String> {
+    log.lines()
+        .rev()
+        .find(|line| line.contains("idle watcher stopped") || line.contains("idle locking is off"))
+        .map(str::to_string)
+}
+
+/// The idle watcher's failure line, if this boot's journal carries one.
+///
+/// Outer `None` — the journal could not be read, which is not a
+/// finding. Inner `Some(line)` — the watcher logged a failure. Inner
+/// `None` — the journal is readable and says nothing is wrong.
+fn shell_idle_broken() -> Option<Option<String>> {
     let log = host_output_any(&[
         "journalctl",
         "--user",
@@ -2049,40 +1987,7 @@ fn shell_idle_unarmed() -> Option<Vec<String>> {
         "cat",
     ])
     .ok()?;
-    let mut unarmed = idle_verdicts(&log)?;
-    // The journal remembers the whole boot, including behaviors that
-    // have since been deleted. Somebody who fixes a dead behavior by
-    // removing it would otherwise be told it is still dead until they
-    // reboot, which is this check failing a machine that is correct.
-    // Only what the shell is running now can be wrong now. An
-    // unreadable config is not a reason to drop evidence, so the
-    // journal's answer stands on its own if this cannot be asked.
-    if let Ok(merged) = host_output_any(&["noctalia", "config", "export", "merged"]) {
-        unarmed.retain(|name| merged.contains(&format!("[idle.behavior.{name}]")));
-    }
-    Some(unarmed)
-}
-
-/// The parse, kept apart from the journal so it can be tested against a
-/// log rather than against a machine.
-fn idle_verdicts(log: &str) -> Option<Vec<String>> {
-    let mut seen: Vec<(String, bool)> = Vec::new();
-    for line in log.lines() {
-        let armed = line.contains("registered idle behavior '");
-        if !armed && !(line.contains("idle behavior '") && line.contains("ignored")) {
-            continue;
-        }
-        let Some(rest) = line.split_once("idle behavior '") else { continue };
-        let Some(name) = rest.1.split('\'').next() else { continue };
-        match seen.iter_mut().find(|(n, _)| n == name) {
-            Some(entry) => entry.1 = armed,
-            None => seen.push((name.to_string(), armed)),
-        }
-    }
-    if seen.is_empty() {
-        return None;
-    }
-    Some(seen.into_iter().filter(|(_, armed)| !armed).map(|(n, _)| n).collect())
+    Some(idle_watcher_failure(&log))
 }
 
 fn shell_env_missing() -> Option<String> {
@@ -2104,7 +2009,10 @@ fn shell_env_missing() -> Option<String> {
     // be asked is not a machine where it is known to be wrong.
     let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
     let set: Vec<&[u8]> = environ.split(|b| *b == 0).collect();
-    ["NOCTALIA_CONFIG_HOME=/usr/lib/kuma"]
+    // The variables the unit states, in the order the unit states them.
+    // kuma-shell's own config is compiled in, so the cursor pair is all
+    // the environ contract left.
+    ["XCURSOR_THEME=Adwaita", "XCURSOR_SIZE=24"]
         .into_iter()
         .find(|want| !set.contains(&want.as_bytes()))
         .map(|want| want.split('=').next().unwrap_or(want).to_string())
@@ -2134,20 +2042,20 @@ fn check_shell(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
             // `environment` block, which a unit does not inherit. The
             // machine booted, the unit was active, the config was in
             // the image and the niri file still named the variable, so
-            // every check passed while the desktop drew stock noctalia:
-            // a wider bar, no wallpaper-derived palette, and the
-            // welcome screen the config turns off. Nothing on that
-            // machine was readable as wrong except the process itself,
-            // so the process is what this asks.
+            // every check passed while the desktop drew stock noctalia.
+            // Nothing on that machine was readable as wrong except the
+            // process itself, so the process is what this asks. The
+            // kuma-shell needs less of an environ — its defaults are
+            // compiled in — but what its unit states must reach it, or
+            // the cursor over the bar and the lock screen is the
+            // compositor's default.
             if let Some(missing) = shell_env_missing() {
                 report(
                     Grade::Fail,
                     "shell",
                     format!(
-                        "the desktop shell is running without {missing}, so it is drawing \
-                         noctalia's defaults rather than this image's: the bar, \
-                         the wallpaper-derived palette and the welcome screen are \
-                         all its own"
+                        "the desktop shell is running without {missing}, so the cursor over \
+                         its surfaces is the compositor's default rather than the image's"
                     ),
                     Some(Action::new(
                         "read",
@@ -2168,43 +2076,34 @@ fn check_shell(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
             //
             // Every niri image kuma ever built set an idle lock at 15
             // minutes and screen-off at 16, and no machine ever armed
-            // either: the shell wants each behavior to name an `action`
+            // either: noctalia wanted each behavior to name an `action`
             // and kuma gave it only a timeout, so both were dropped at
-            // startup. Nothing above could see it. The unit was active,
-            // the environment was right, the config validated, and the
-            // merged config printed both timeouts. Only the shell knows,
-            // and it says so once, in the journal.
-            match shell_idle_unarmed() {
-                Some(unarmed) if !unarmed.is_empty() => report(
+            // startup, invisibly. The kuma-shell's contract is compiled
+            // in instead — the same numbers, in the binary — so the
+            // failure mode is narrower now, and the journal says it in
+            // one line when it happens.
+            match shell_idle_broken() {
+                Some(Some(line)) => report(
                     Grade::Fail,
                     "idle lock",
                     format!(
-                        "the shell threw away {}, so this desktop does not lock itself",
-                        if unarmed.len() == 1 {
-                            format!(
-                                "the idle behavior {}, which names a timeout and no action",
-                                unarmed[0]
-                            )
-                        } else {
-                            format!(
-                                "{} idle behaviors ({}), each naming a timeout and no action",
-                                unarmed.len(),
-                                unarmed.join(", ")
-                            )
-                        }
+                        "the shell's idle watcher is not running — its journal says \
+                         \"{line}\" — so this desktop does not lock itself on idle"
                     ),
                     Some(Action::new(
                         "read",
-                        "journalctl --user -b -u kuma-shell.service | grep 'idle behavior'",
-                        "each behavior needs action = lock, screen_off, suspend or \
-                         lock_and_suspend; an override in \
-                         ~/.local/state/noctalia/settings.toml is read before the image",
+                        "journalctl --user -b -u kuma-shell.service | grep -i idle",
+                        "the watcher's failures name their cause; the contract itself \
+                         (lock at 15 min, screens off at 16, lock before sleep) is \
+                         compiled into kuma-shell and has no config file to mis-edit",
                     )),
                 ),
-                Some(_) => report(
+                Some(None) => report(
                     Grade::Ok,
                     "idle lock",
-                    "the shell armed every idle behavior it was given".into(),
+                    "the shell's idle watcher is running: lock at 15 minutes, screens \
+                     off a minute later, lock before sleep"
+                        .into(),
                     None,
                 ),
                 None => report(
@@ -3464,30 +3363,40 @@ mod tests {
         items.iter().map(|s| s.to_string()).collect()
     }
 
-    /// The lines below are real, copied off a machine that had shipped a
-    /// dead idle lock since the shell arrived. The log is colored and
-    /// reloadable, so the parse has to survive escape codes in the
-    /// middle of a line and has to take the LAST word about a name: a
-    /// behavior fixed by a reload is armed, not broken, and one that was
-    /// armed and then edited into nonsense is broken, not armed.
+    /// The lines below are the watcher's own failure vocabulary,
+    /// copied from the idle module's log calls. The parse takes the
+    /// LAST failure line, because a later failure replaces an earlier
+    /// one as this moment's answer, and reads a healthy journal — which
+    /// says nothing about idle at all — as healthy: a watcher that logs
+    /// nothing is the one that is working. There is no "started fine"
+    /// line to look for; silence is the success signal.
     #[test]
-    fn the_last_word_about_an_idle_behavior_is_the_one_that_counts() {
-        let log = "\
-03:31:37.902 [\u{1b}[33mWRN\u{1b}[0m] [idle] idle behavior 'lock' ignored: needs an action\n\
-03:31:37.902 [WRN] [idle] idle behavior 'screen-off' ignored: needs an action\n\
-03:38:17.588 [INF] [idle] registered idle behavior 'lock' timeout=900s\n\
-03:38:17.588 [INF] [idle] idle behavior 'lock' triggered\n";
-        assert_eq!(idle_verdicts(log), Some(vec!["screen-off".to_string()]));
-
-        // Armed, then edited into nonsense and reloaded.
-        let log = "registered idle behavior 'lock' timeout=900s\n\
-                   idle behavior 'lock' ignored: needs an action\n";
-        assert_eq!(idle_verdicts(log), Some(vec!["lock".to_string()]));
-
-        // All good, and a machine whose journal says nothing about idle
-        // at all, which is unknown rather than broken.
-        assert_eq!(idle_verdicts("registered idle behavior 'lock' timeout=900s"), Some(vec![]));
-        assert_eq!(idle_verdicts("[config] idle behaviors=2"), None);
+    fn the_last_word_about_the_idle_watcher_is_the_one_that_counts() {
+        // a failure is the finding
+        assert_eq!(
+            idle_watcher_failure("idle watcher stopped: connection closed"),
+            Some("idle watcher stopped: connection closed".to_string())
+        );
+        // the protocol-missing line is the same finding in other words
+        assert_eq!(
+            idle_watcher_failure(
+                "the compositor does not advertise ext-idle-notify-v1; idle locking is off"
+            ),
+            Some(
+                "the compositor does not advertise ext-idle-notify-v1; idle locking is off"
+                    .to_string()
+            )
+        );
+        // silence is health
+        assert_eq!(idle_watcher_failure("hot reload: reloaded\nbar started"), None);
+        // the last word wins: the newest failure is the live one
+        assert_eq!(
+            idle_watcher_failure(
+                "idle watcher stopped: connection closed\n\
+                 idle watcher stopped: compositor went away"
+            ),
+            Some("idle watcher stopped: compositor went away".to_string())
+        );
     }
 
     /// `systemctl show` answers for many units in one flat stream, and
@@ -4495,7 +4404,7 @@ mod tests {
 
         // Every absolute program the image's media binds name must come
         // through, deduplicated. The media binds now go through the
-        // shell's bare-name `noctalia msg` interface — doctor's blind
+        // shell's bare-name `kuma-shell msg` interface — doctor's blind
         // spot by design — so the record helper is the only absolute
         // path left in the set, and this pins that.
         assert_eq!(niri_spawn_targets(NIRI_MEDIA_BINDS), ["/usr/libexec/kuma-record".to_string()]);

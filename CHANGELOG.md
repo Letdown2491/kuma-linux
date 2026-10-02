@@ -10,6 +10,66 @@ differently. Why it changed belongs in the commit that made it.
 
 ### Added
 
+- **The desktop is kuma-shell, and it locks on idle.** The shell's
+  idle contract is the swayidle line kuma has run since before
+  noctalia, compiled in rather than configured: lock after 15 minutes
+  of stillness, power the monitors off a minute later, and lock when
+  the machine is about to sleep. Idleness is the compositor's to say —
+  ext-idle-notify-v1 — so a video playing or a download's progress bar
+  counts as the activity it is, which an input-polling blanker cannot
+  see. All three clauses land in the same lock path logind's `Lock`
+  signal drives: one lock screen, one password field, one PAM chain,
+  whichever of the three triggers fires. The timeouts are
+  `~/.config/kuma-shell/config.toml`'s `[idle]` keys (`lock_timeout`,
+  `screen_off_timeout`, `lock_before_suspend`; a 0 disables a clause),
+  and a change applies without restarting anything.
+
+- **The Nostr Signer is the shell's own panel.** The approval face the
+  nostr layer shipped as a noctalia plugin is native now, and arrives
+  with the shell: the bar's shield glyph counts pending asks, the
+  panel (Mod+Ctrl+N, or a `nostrconnect://` link clicked anywhere)
+  carries ask cards with Approve / Deny and an hour's remember, the
+  app list with its levels and revoke and delete, the activity log
+  newest-first, and the Pair pane with the vault's gates. Two things
+  the plugin could not do are in: avatars on ask cards and the app
+  list (fetched over https, cached in your state directory, an
+  identicon when an app has none), and copy-to-clipboard pairing —
+  the fresh URI lands in the clipboard with a mint-and-copy button
+  instead of a QR code to scan with the device you are holding.
+
+### Changed
+
+- **The desktop shell is kuma-shell.** noctalia 5.2.0 leaves the image
+  and the shell built from the kumaui tree takes its place — one
+  process for the bar, notifications, wallpaper, idle, lock, control
+  centre and the Nostr Signer, supervised by `kuma-shell.service` as
+  before, with the binary staged into the build context beside kuma
+  the way the nostr binaries ride. The keybinds follow: `Mod+D` opens
+  the shell's launcher, the media and brightness keys go through its
+  msg interface (the same sysmon the bar's widgets read, so key and
+  widget cannot disagree), and `Super+Alt+L` targets logind —
+  `loginctl lock-session` — which is the same road the idle timeout
+  and sleep take, so the one lock screen answers all of them.
+  `Mod+Ctrl+N` opens the Nostr Signer, and the `nostrconnect://`
+  scheme handler lands in it with the offer. Two binds left and did
+  not come back: `Mod+Ctrl+V` (clipboard history) and `Mod+Ctrl+W`
+  (wallpaper) opened panels the shell does not have, and a bind that
+  advertises a dead panel is worse than no bind; the shell's control
+  centre and the Nostr Signer are new work away, not part of the
+  switch. The kitty palette is static now — chosen once, shipped in
+  the image — because the wallpaper-derived render died with noctalia.
+  `kuma doctor` follows the shell: the environ check grades the cursor
+  pair the unit must hand it, the idle check grades the watcher's own
+  journal line instead of a config's promises, and the shell-config
+  drift check is gone — the image's policy is in the binary, so there
+  is no baked config for a machine to drift from. The sleep guard
+  checks the process by name and no longer pings a session bus the
+  shell never owned. Install note: the release's `kuma-shell` binary
+  must sit beside `kuma` when building an image, exactly like the
+  nostr binaries.
+
+### Added
+
 - **The lock screen authenticates under its own name.** The image
   ships `/etc/pam.d/kuma-lock`, the locker-shaped stack — auth riding
   `system-auth`, account auto-permitting — that makes the first entry
@@ -17,10 +77,9 @@ differently. Why it changed belongs in the commit that made it.
   instead of borrowing kbd's vlock file. No password or session
   modules, on purpose: the shell never opens a PAM session, and
   keeping pam_unix out of the account phase keeps its setuid journal
-  noise out of every unlock. The file is inert while noctalia's lock
-  screen (the `login` service) is what runs, and nothing to do
-  differently either way — `loginctl unlock-session` stays the
-  backdoor.
+  noise out of every unlock. Unlock attempts are named `kuma-lock` in
+  the journal, and nothing to do differently either way —
+  `loginctl unlock-session` stays the backdoor.
 
 - **The activity log persists, and the panel reads it.** What was
   asked, by whom, and how it went now survives daemon restarts —
@@ -68,13 +127,10 @@ differently. Why it changed belongs in the commit that made it.
   login keyring and answering paired apps over the relays; `kuma-nostr`,
   the CLI (`setup`, `generate`, `import`, `unlock`, `lock`, `touch`,
   `status`, `bunker --qr`, `connect`, `prompts`, `approve`, `deny`,
-  `apps`, `revoke`, `unrevoke`, `level`, `rotate`, `destroy`); the
-  noctalia plugin (a bar glyph that counts pending asks, and the approval
-  panel behind it — `Mod+Ctrl+N` opens it, and a `nostrconnect://` link
-  clicked anywhere lands there as an offer the person pairs or ignores;
-  the panel keeps the vault's keep-alive while it is in use, mints a
-  fresh pairing URI on copy, shows the revoked state with its undo, and
-  carries each app's requested permissions). A freshly paired app can ask for
+  `apps`, `revoke`, `unrevoke`, `level`, `rotate`, `destroy`); and the
+  face in the shell — the bar glyph that counts pending asks and the
+  approval panel behind it (see the Nostr Signer entry above, which is
+  where that face lives now). A freshly paired app can ask for
   everything and signs nothing until a person answers; relaxing an app
   to Basic signs only the kinds an explicit safe list vouches for —
   notes, reposts, reactions, long-form, the everyday social surface —
