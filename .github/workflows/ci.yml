@@ -175,6 +175,13 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           cache: false
+          # The relay's go.mod at the pinned commit asks for go >= 1.25.4,
+          # and GOTOOLCHAIN=local in this job's environment refuses to fetch
+          # a toolchain to satisfy it. The runner's preinstalled go is
+          # whatever the image last shipped (1.24.13 on the day this broke),
+          # so the job names the version the go.mod asks for and bumps when
+          # the pin bumps.
+          go-version: '1.25.4'
       - name: build the Go relay at its pinned commit
         run: |
           set -euo pipefail
