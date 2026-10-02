@@ -10,6 +10,12 @@ differently. Why it changed belongs in the commit that made it.
 
 ### Fixed
 
+- **A locked session reported itself open.** The lock screen never set
+  logind's `LockedHint`, so anything reading the session's state (and
+  anything a future greeter would read) saw a session that claimed to
+  be unlocked while the lock screen was up. The shell now sets the
+  hint through the same logind path that drives the lock, on every
+  trigger: `lock-session`, the idle timeout, and sleep.
 - **A laptop got its battery warning from every session it ever
   opened.** `kuma-battery-watch` is spawned by niri's
   `spawn-at-startup`, which re-runs whenever niri's config reloads,
