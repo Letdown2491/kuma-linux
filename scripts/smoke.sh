@@ -1284,8 +1284,11 @@ smoke_published() {
             # Mod+D, read out of the baked config rather than assumed.
             # niri's stock bind spawns fuzzel, which this image does not
             # have, so a merge that stopped substituting leaves the
-            # most-used key on the machine spawning nothing at all.
-            guest 'grep -qE "Mod\\+D.*panel-toggle.*launcher" /etc/niri/config.kdl' \
+            # most-used key on the machine spawning nothing at all. The
+            # probe reads the bind's own tokens; the rename (dd38c18)
+            # changed the bind and left this regex behind, and no run
+            # reached the difference until one survived the gates ahead.
+            guest 'grep -qE "Mod\\+D.*kuma-shell.*launcher-toggle" /etc/niri/config.kdl' \
                 || bad "Mod+D does not open the shell's launcher in the baked config"
             guest grep -q fuzzel /etc/niri/config.kdl \
                 && bad "the baked niri config still names fuzzel, which is not in the image"
