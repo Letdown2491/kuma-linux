@@ -3811,10 +3811,7 @@ fn labels(e: &mut Emitter<'_>) {
     // a failed unit — invisible until the failed-unit grading landed, and
     // blamed for a week on the Fedora float. The number alone, like
     // os-release's: the full stamp's home is io.kuma.builder beside it.
-    e.raw(&format!(
-        "LABEL org.opencontainers.image.version=\"{}\"\n",
-        env!("CARGO_PKG_VERSION")
-    ));
+    e.raw(&format!("LABEL org.opencontainers.image.version=\"{}\"\n", env!("CARGO_PKG_VERSION")));
 }
 
 fn sweep_lint(e: &mut Emitter<'_>) {
