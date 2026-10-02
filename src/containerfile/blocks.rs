@@ -2261,7 +2261,7 @@ pub(crate) const NIRI_MEDIA_BINDS: &str = r#"    XF86AudioRaiseVolume allow-when
 
     Mod+Print hotkey-overlay-title="Screenshot a Region, then Annotate" { spawn "sh" "-c" "grim -g \"$(slurp)\" - | swappy -f -"; }
 
-    Mod+S hotkey-overlay-title="Settings" { spawn "kuma-shell" "msg" "settings"; }
+    Mod+S hotkey-overlay-title="Toggle Kuma Settings menu" { spawn "kuma-shell" "msg" "settings"; }
 "#;
 
 /// System-wide default apps: without associations, opening a PDF or a
@@ -2357,7 +2357,7 @@ done
 /// takes the last bind for a key, so a second `Mod+D` would leave the
 /// original in the file, working or not depending on merge order.
 pub(crate) const NIRI_MENU_BIND: &str =
-    r#"Mod+D hotkey-overlay-title="Applications" { spawn "kuma-shell" "msg" "launcher-toggle"; }"#;
+    r#"Mod+D hotkey-overlay-title="Toggle Applications menu" { spawn "kuma-shell" "msg" "launcher-toggle"; }"#;
 
 /// The stock line it replaces. Grepped for before the rewrite, so a niri
 /// release that renames it fails the build instead of shipping media

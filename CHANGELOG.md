@@ -39,14 +39,15 @@ differently. Why it changed belongs in the commit that made it.
   never changed, and the OSD faithfully showed a Volume card. The bind now
   spawns `mic-mute`, whose request targets `@DEFAULT_AUDIO_SOURCE@` with
   the optimistic flip and rollback the other mute keys already use, so
-  the OSD raises a Microphone card. A shell carrying the verb has been in
-  the release only since this cycle, so this fix and the shell ride the
-  same image: switching to it is the fix. On an older image there is no
-  short interim override: binds cannot ride `~/.config/niri/local.kdl`
-  (niri rejects a second `binds` node, in an include same as anywhere),
-  so the road is copying the config to `~/.config/niri/config.kdl` and
-  editing the line there, accepting the shadowing and staleness that
-  costs (`kuma doctor` grades a shadowing copy).
+  the OSD raises a Microphone card. The verb needs this cycle's shell,
+  so the fix and the shell ride the same image: switching to it is the
+  fix. A machine already running a shell that carries the verb can hold
+  the key over in `~/.config/niri/local.kdl` (included last; an
+  included binds node merges over the image's, per key):
+
+  ```kdl
+  XF86AudioMicMute { spawn "kuma-shell" "msg" "mic-mute"; }
+  ```
 
 ### Added
 
