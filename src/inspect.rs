@@ -1753,52 +1753,6 @@ fn backup_stamp(text: &str) -> Option<i64> {
     text.split_whitespace().next()?.parse().ok()
 }
 
-/// The check the whole feature is pointed at.
-///
-/// A backup fails quietly in more ways than a snapshot does. The unit
-/// exits 0 on a machine with no credential, no snapshot and no
-/// repository, all three deliberately, so "last run succeeded" is true
-/// of a machine that has never copied a byte. The timer being active is
-/// true of a machine whose repository has been unreachable for a month.
-/// Neither is answerable from `Result=`, which is why the converger
-/// stamps only on a run that actually copied something, and why this
-/// grades the stamp rather than the unit.
-///
-/// Deliberately offline and passwordless. Asking the repository would
-/// need the credential and the network, which turns a health check into
-/// a thing that hangs on a train and prompts for a secret to tell you
-/// how you are. The stamp answers the question that matters, which is
-/// whether this machine is still managing to send its data somewhere.
-/// Every key the image sets, and what the machine is actually using.
-///
-/// Pure so the walk is testable without a shell. Returns the dotted paths
-/// where the merged answer is not what the image asked for, which is the
-/// only comparison worth making: the merged export carries several
-/// hundred keys of the shell's own defaults, and kuma has an opinion
-/// about twenty-six of them.
-pub fn shell_overrides(baked: &toml::Value, merged: &toml::Value) -> Vec<String> {
-    fn walk(node: &toml::Value, prefix: &str, merged: &toml::Value, out: &mut Vec<String>) {
-        let Some(table) = node.as_table() else { return };
-        for (key, value) in table {
-            let path = if prefix.is_empty() { key.clone() } else { format!("{prefix}.{key}") };
-            if value.is_table() {
-                walk(value, &path, merged, out);
-                continue;
-            }
-            let mut cursor = Some(merged);
-            for part in path.split('.') {
-                cursor = cursor.and_then(|node| node.get(part));
-            }
-            if cursor != Some(value) {
-                out.push(path);
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(baked, "", merged, &mut out);
-    out
-}
-
 /// Absolute-path programs a niri config's binds and startup list spawn,
 /// in order of appearance, deduplicated.
 ///
@@ -2134,6 +2088,14 @@ fn check_shell(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     }
 }
 
+/// A backup fails quietly in more ways than a snapshot does. The unit
+/// exits 0 on a machine with no credential, no snapshot and no
+/// repository, all three deliberately, so "last run succeeded" is true
+/// of a machine that has never copied a byte. The timer being active is
+/// true of a machine whose repository has been unreachable for a month.
+/// Neither is answerable from `Result=`, which is why the converger
+/// stamps only on a run that actually copied something, and why this
+/// grades the stamp rather than the unit.
 fn check_backup(report: &mut impl FnMut(Grade, &str, String, Option<Action>)) {
     let Ok(config) = Config::load(Path::new(BAKED_CONFIG)) else {
         // check_snapshots already named an unreadable baked declaration;
@@ -4482,66 +4444,5 @@ mod tests {
         put("var/home/x/.config/niri/local.kdl", "output \"eDP-1\" { scale 1 }\n");
         let found = run_niri_shadow_check(root);
         assert_eq!(found.len(), 1, "only the shadowing account is graded");
-    }
-}
-
-#[cfg(test)]
-mod shell_config_tests {
-    use super::shell_overrides;
-
-    /// The walk names what the machine changed and stays quiet about the
-    /// several hundred keys the image has no opinion on.
-    #[test]
-    fn only_the_keys_the_image_set_are_compared() {
-        let baked: toml::Value = toml::from_str(
-            r#"
-[bar.default]
-position = "top"
-thickness = 32
-[idle.behavior.lock]
-enabled = true
-timeout = 900.0
-"#,
-        )
-        .unwrap();
-
-        // A machine running exactly what the image asked for, plus a pile
-        // of the shell's own defaults kuma never mentions.
-        let agreeing: toml::Value = toml::from_str(
-            r#"
-[bar.default]
-position = "top"
-thickness = 32
-radius = 12
-[idle.behavior.lock]
-enabled = true
-timeout = 900.0
-[weather]
-enabled = false
-"#,
-        )
-        .unwrap();
-        assert!(shell_overrides(&baked, &agreeing).is_empty());
-
-        // And one where the person moved the bar and turned the idle
-        // lock off, which is the case that used to be invisible.
-        let overridden: toml::Value = toml::from_str(
-            r#"
-[bar.default]
-position = "bottom"
-thickness = 32
-[idle.behavior.lock]
-enabled = false
-timeout = 900.0
-"#,
-        )
-        .unwrap();
-        let found = shell_overrides(&baked, &overridden);
-        assert_eq!(found, vec!["bar.default.position", "idle.behavior.lock.enabled"], "{found:?}");
-
-        // A key the image sets and the machine does not have at all is a
-        // difference too: it means the shell is not honouring it.
-        let missing: toml::Value = toml::from_str("[bar.default]\nposition = \"top\"\n").unwrap();
-        assert!(shell_overrides(&baked, &missing).contains(&"idle.behavior.lock.enabled".into()));
     }
 }

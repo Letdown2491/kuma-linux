@@ -2633,11 +2633,11 @@ for a in \"$@\"; do printf '%s\\n' \"$a\"; done
         }
     }
 
-    /// The shell's fallback wallpaper is kuma's — and with noctalia gone
-    /// there is no other wallpaper in the image to fall back FROM: the
-    /// file the COPY above ships is the only one, and the shell's
-    /// compiled default names exactly that path (pinned in kuma-shell's
-    /// own tests). Nothing to replace and no key pretending to work.
+    // The shell's fallback wallpaper is kuma's — and with noctalia gone
+    // there is no other wallpaper in the image to fall back FROM: the
+    // file the COPY above ships is the only one, and the shell's
+    // compiled default names exactly that path (pinned in kuma-shell's
+    // own tests). Nothing to replace and no key pretending to work.
 
     /// No bind advertises a program the image does not have.
     ///
