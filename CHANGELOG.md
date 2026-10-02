@@ -16,6 +16,15 @@ differently. Why it changed belongs in the commit that made it.
   be unlocked while the lock screen was up. The shell now sets the
   hint through the same logind path that drives the lock, on every
   trigger: `lock-session`, the idle timeout, and sleep.
+- **The greeter refused a good password for half a minute after the
+  sleep guard ended a session.** The guard terminates the session's
+  scope, but the compositor and the shell are user units outside that
+  scope — niri.service outlived its session by 28 seconds, and every
+  password typed at the greeter in that window was answered by
+  niri-session's own "A niri session is already running." check. The
+  guard now stops `graphical-session.target` after the terminate —
+  the same teardown niri-session performs — under a timeout, so a
+  wedged stop cannot stall the sleep it runs under.
 - **A laptop got its battery warning from every session it ever
   opened.** `kuma-battery-watch` is spawned by niri's
   `spawn-at-startup`, which re-runs whenever niri's config reloads,

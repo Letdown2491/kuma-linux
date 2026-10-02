@@ -1128,6 +1128,12 @@ mod tests {
         // machine sleeping with the desktop on screen.
         assert!(SLEEP_GUARD.contains("pgrep -u \"$user\" -x kuma-shell"), "{SLEEP_GUARD}");
         assert!(SLEEP_GUARD.contains("loginctl terminate-session"), "{SLEEP_GUARD}");
+        // The terminate's tail: the session's units are ended with the
+        // session, or a greeter login races their teardown and buys
+        // niri-session's "A niri session is already running." — and
+        // bounded, so the stop cannot stall the sleep it runs under.
+        assert!(SLEEP_GUARD.contains("stop graphical-session.target"), "{SLEEP_GUARD}");
+        assert!(SLEEP_GUARD.contains("timeout 15"), "{SLEEP_GUARD}");
         // The bus probe that noctalia's guard carried is gone with it:
         // kuma-shell owns no session-bus name, so there is nothing to
         // ask, and a guard that cannot ask must not guess.

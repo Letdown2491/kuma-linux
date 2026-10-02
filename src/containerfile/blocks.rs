@@ -1996,6 +1996,16 @@ account    required     pam_permit.so
 /// machine sleeps showing a greeter instead of sleeping showing your
 /// work.
 ///
+/// The terminate has a tail the guard also owns: the compositor and
+/// the shell are user units, not members of the scope a terminate
+/// kills, so niri.service outlived its session by 28 seconds when this
+/// fired for real (2026-10-02) — and every password typed at the
+/// greeter in that window was refused by niri-session's own
+/// already-running check. The guard therefore stops
+/// `graphical-session.target` after the session — the same teardown
+/// niri-session performs — under a timeout, so a wedged stop cannot
+/// stall the sleep this runs under.
+///
 /// Ordered `Before=sleep.target` and pulled in by it, so it runs on the
 /// way down and on every path into sleep rather than only on the lid.
 pub(crate) const SLEEP_GUARD_SERVICE: &str = r#"[Unit]
@@ -2048,6 +2058,24 @@ while read -r id _rest; do
     if ! pgrep -u "$user" -x kuma-shell >/dev/null 2>&1; then
         logger -t kuma-sleep-guard         "the desktop shell is not running in session $id; ending it rather than suspending an unlocked session"
         loginctl terminate-session "$id" || true
+        # The terminate kills the session's scope, and the scope is not
+        # where the desktop lives: niri and the shell are user units,
+        # which outlive the scope by however long the user manager
+        # takes to notice — 28 seconds, measured the first time this
+        # fired for real. Every password typed at the greeter in that
+        # window bought niri-session's "A niri session is already
+        # running." — its is-active check saw the ghost, the session
+        # command exited, and greetd reset to the greeter. So the guard
+        # ends the desktop with the session: graphical-session.target
+        # is the umbrella both units hang from (niri BindsTo it, the
+        # shell PartOf it), the same teardown niri-session performs.
+        # timeout bounds it — a wedged stop must not stall the sleep
+        # this runs under — and || true takes the ordinary case, a
+        # user manager already gone, without complaint.
+        uid=$(id -u "$user")
+        timeout 15 runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
+            systemctl --user --quiet stop graphical-session.target \
+            2>/dev/null || true
     fi
 done < <(loginctl list-sessions --no-legend 2>/dev/null || true)
 "#;
