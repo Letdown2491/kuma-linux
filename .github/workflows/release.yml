@@ -263,6 +263,17 @@ jobs:
       # the draft stays a draft with the binary already attached, which is
       # a release waiting for a decision rather than a page nobody can
       # install from.
+      #
+      # No --target here, though the tag naming an exact commit is the
+      # point: gh's release create with --target against a commit hash is
+      # refused with "Resource not accessible by integration" no matter
+      # what the token's permissions say — declared write, the repo's
+      # default set to write, write-all, all refused, and the same call
+      # with a personal token or without the flag goes through
+      # (cli/cli#9514, still open after two years). The flag is inert on
+      # this flow anyway: the tag already exists when the run starts, and
+      # target_commitish only names where GitHub should create a tag that
+      # does not exist.
       - name: publish
         if: steps.what.outputs.publish == 'true'
         run: |
@@ -319,7 +330,6 @@ jobs:
           NOTES
           fi
           )" \
-            --target '${{ github.sha }}' \
             kuma-x86_64-unknown-linux-musl \
             kuma-x86_64-unknown-linux-musl.sha256 \
             kuma-x86_64-unknown-linux-musl.bundle \
