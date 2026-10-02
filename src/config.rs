@@ -5,7 +5,17 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 pub const CURRENT_SCHEMA: u32 = 1;
-pub const DEFAULT_BASE: &str = "quay.io/fedora/fedora-bootc:44";
+// The compose environment is pinned by digest to the last Fedora float
+// with which a composed base still installs green: floats since
+// 20260930 compose a base whose install writes "version": null into
+// .bootc-aleph.json, and bootupd's reader refuses nulls (#18). The
+// mirror lives in its own package because ghcr.io/letdown2491/kuma is
+// signature-gated on kuma machines (policy.json) and unsigned mirrors
+// do not belong in the signed repo. When upstream composes an
+// installing float again, move this back to
+// quay.io/fedora/fedora-bootc:44 — by commit, so the diff is the review.
+pub const DEFAULT_BASE: &str =
+    "ghcr.io/letdown2491/kuma-compose-env@sha256:2762dc035ed07669f38eb6399d8140de23baf6a7a7b9f2ab566dda9df7b26a60";
 
 /// A kuma system declaration: the one file that describes a machine.
 #[derive(Debug, Deserialize, JsonSchema)]
