@@ -1243,6 +1243,37 @@ mod tests {
         }
     }
 
+    /// The lock screen authenticates under its own name.
+    ///
+    /// The shell's chain can only skip a service whose /etc/pam.d file
+    /// is absent — a missing service and a wrong password are the same
+    /// answer from Linux-PAM — so the image ships the chain's first
+    /// entry. The test pins both halves: the bytes (the locker stack,
+    /// vlock's shape) and the destination (/etc/pam.d, the one
+    /// directory the shell's existence check reads — /usr/lib/pam.d,
+    /// where Fedora vendors stacks, is invisible to the chain).
+    #[test]
+    fn the_lock_screen_has_its_own_pam_service() {
+        let dir = tempfile::tempdir().unwrap();
+        context("schema_version = 1\n[system]\ndesktop = \"niri\"\n", dir.path());
+        let staged = std::fs::read_to_string(dir.path().join("kuma-lock")).unwrap();
+        assert_eq!(staged, KUMA_LOCK_PAM, "the staged stack is the locker shape, byte for byte");
+        let out = generate(&config("schema_version = 1\n[system]\ndesktop = \"niri\"\n"));
+        assert!(
+            out.contains("COPY kuma-lock /etc/pam.d/kuma-lock"),
+            "the file lands where the shell's existence check reads it:\n{out}"
+        );
+        // Scoped to the desktop that runs the shell: a COSMIC image has
+        // no kuma-lock chain to feed, and the file would be an unused
+        // service name answering from the `other` policy — the exact
+        // thing the chain skips.
+        let cosmic = generate(&config("schema_version = 1\n[system]\ndesktop = \"cosmic\"\n"));
+        assert!(
+            !cosmic.contains("kuma-lock"),
+            "the PAM service rides the shell's desktop, not the image:\n{cosmic}"
+        );
+    }
+
     #[test]
     fn kuma_launch_parses_as_shell() {
         use std::io::Write;

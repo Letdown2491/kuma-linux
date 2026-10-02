@@ -1971,6 +1971,43 @@ Slice=session.slice
 WantedBy=graphical-session.target
 "#;
 
+/// The lock screen's PAM service, and the reason it is ours to ship.
+///
+/// kuma-shell authenticates through a chain — kuma-lock, swaylock,
+/// vlock — where the first *installed* service wins (the shell's
+/// docs/adr/0008): Linux-PAM answers a missing service from the `other`
+/// policy, pam_deny here, which is exactly the answer a wrong password
+/// gets — the two are indistinguishable from the caller's side, so the
+/// shell can only tell them apart by checking /etc/pam.d/<service> and
+/// skipping what is not there. On a stock image that check lands on
+/// vlock's file, shipped by kbd: a stack shaped like this one by
+/// coincidence, named like nothing the session runs. This file makes
+/// the chain's first entry real — unlock attempts are named
+/// `kuma-lock` in the journal, and the shell picks the stack it was
+/// written for.
+///
+/// The stack is vlock's, on purpose: the locker shape, verified
+/// working as a uid-1000 caller. Auth rides system-auth (authselect's
+/// symlink; pam_unix verifies through the setuid-root unix_chkpwd
+/// helper) and account auto-permits. Deliberately absent: password and
+/// session phases. The shell never opens a PAM session, and pam_unix
+/// in the account phase under a uid-1000 caller journals a "setuid
+/// failed: Operation not permitted" line on every unlock (measured
+/// against the `login` service). swaylock is excluded from the image's
+/// package set, so the chain skips it by the same existence check — no
+/// file here pretends otherwise.
+///
+/// Inert until the shell switch: noctalia 5.2.0's lock screen uses the
+/// `login` service and never reads this file, so shipping it changes
+/// nothing on today's image — it is the ground the switch lands on.
+/// The shell's existence check reads /etc/pam.d only (Fedora vendors
+/// distro stacks in /usr/lib/pam.d, which the chain cannot see), so
+/// the path is the feature.
+pub(crate) const KUMA_LOCK_PAM: &str = r#"#%PAM-1.0
+auth       include      system-auth
+account    required     pam_permit.so
+"#;
+
 /// Do not sleep into an unlocked session.
 ///
 /// The residual case after supervision: the shell is gone at the moment
@@ -3064,6 +3101,7 @@ fn desktop_niri(e: &mut Emitter<'_>) {
     let record = e.stage("kuma-record", RECORD_SCRIPT);
     let battery = e.stage("kuma-battery-watch", BATTERY_WATCH);
     let shell = e.stage("kuma-shell.service", SHELL_SERVICE);
+    let pam_lock = e.stage("kuma-lock", KUMA_LOCK_PAM);
     let guard_service = e.stage("kuma-sleep-guard.service", SLEEP_GUARD_SERVICE);
     let guard = e.stage("kuma-sleep-guard", SLEEP_GUARD);
     let gtk3 = e.stage("gtk3-settings.ini", GTK3_SETTINGS_INI);
@@ -3175,6 +3213,10 @@ fn desktop_niri(e: &mut Emitter<'_>) {
     e.copy(&mimeapps, "/etc/xdg/mimeapps.list");
     e.copy(&dconf_profile, "/etc/dconf/profile/user");
     e.raw(&keyring_pam("greetd"));
+    // The lock screen's own service, beside the other PAM stack this
+    // layer touches. Inert until kuma-shell is what kuma-shell.service
+    // runs; see KUMA_LOCK_PAM for why it ships ahead of that switch.
+    e.copy(&pam_lock, "/etc/pam.d/kuma-lock");
     e.copy(&dconf_dark, "/etc/dconf/db/local.d/10-kuma-dark");
     e.copy(&dconf_blueman, "/etc/dconf/db/local.d/10-kuma-blueman");
     e.raw("RUN dconf update\n");

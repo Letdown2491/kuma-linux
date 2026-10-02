@@ -54,6 +54,7 @@ COPY mimeapps.list /etc/xdg/mimeapps.list
 COPY dconf-profile /etc/dconf/profile/user
 RUN test -f /usr/lib64/security/pam_gnome_keyring.so \
     && grep -q pam_gnome_keyring /etc/pam.d/greetd /usr/lib/pam.d/greetd 2>/dev/null
+COPY kuma-lock /etc/pam.d/kuma-lock
 COPY dconf-kuma-dark /etc/dconf/db/local.d/10-kuma-dark
 COPY dconf-kuma-blueman /etc/dconf/db/local.d/10-kuma-blueman
 RUN dconf update

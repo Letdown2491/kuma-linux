@@ -6,9 +6,21 @@ Entries land with the change they describe; the next tag takes this section
 as its release notes. Say what changed and what a reader has to do
 differently. Why it changed belongs in the commit that made it.
 
-## v44.4.0 (2026-09-30)
+## v44.4.0 (2026-10-04)
 
 ### Added
+
+- **The lock screen authenticates under its own name.** The image
+  ships `/etc/pam.d/kuma-lock`, the locker-shaped stack — auth riding
+  `system-auth`, account auto-permitting — that makes the first entry
+  of the desktop shell's `kuma-lock` → swaylock → vlock chain real
+  instead of borrowing kbd's vlock file. No password or session
+  modules, on purpose: the shell never opens a PAM session, and
+  keeping pam_unix out of the account phase keeps its setuid journal
+  noise out of every unlock. The file is inert while noctalia's lock
+  screen (the `login` service) is what runs, and nothing to do
+  differently either way — `loginctl unlock-session` stays the
+  backdoor.
 
 - **The activity log persists, and the panel reads it.** What was
   asked, by whom, and how it went now survives daemon restarts —
