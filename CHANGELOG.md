@@ -8,6 +8,17 @@ differently. Why it changed belongs in the commit that made it.
 
 ## v44.4.0 (2026-10-04)
 
+### Fixed
+
+- **A laptop got its battery warning from every session it ever
+  opened.** `kuma-battery-watch` is spawned by niri's
+  `spawn-at-startup`, which re-runs whenever niri's config reloads,
+  and a session's end never reaches the loop it starts — so each
+  reload and each re-login added another copy, all polling and all
+  notifying. Four copies were alive on one machine. The script now
+  takes an flock in the user's runtime directory and a second copy
+  exits silently: one watcher per account, whichever started first.
+
 ### Added
 
 - **The desktop is kuma-shell, and it locks on idle.** The shell's
@@ -21,8 +32,10 @@ differently. Why it changed belongs in the commit that made it.
   signal drives: one lock screen, one password field, one PAM chain,
   whichever of the three triggers fires. The timeouts are
   `~/.config/kuma-shell/config.toml`'s `[idle]` keys (`lock_timeout`,
-  `screen_off_timeout`, `lock_before_suspend`; a 0 disables a clause),
-  and a change applies without restarting anything.
+  `screen_off_timeout`, `lock_before_suspend`; a 0 disables a clause).
+  Hand-edited keys apply at the next shell start, same as kitty's; the
+  running shell re-mints its watcher when the settings change under
+  it, so a future settings panel gets live-apply for free.
 
 - **The Nostr Signer is the shell's own panel.** The approval face the
   nostr layer shipped as a noctalia plugin is native now, and arrives

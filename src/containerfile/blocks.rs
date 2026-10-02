@@ -2286,8 +2286,19 @@ application/zip=org.gnome.FileRoller.desktop
 /// go — one state announced by two programs in two styles is the shape
 /// `DCONF_BLUEMAN` above exists to undo. Removing this needs a battery
 /// to prove, because nothing in a VM ever discharges.
+///
+/// One watcher per account, by flock. niri re-runs `spawn-at-startup`
+/// when its config reloads, and a session's end never reaches this
+/// loop, so an unguarded start adds another warning source on every
+/// reload and re-login — four was measured on one machine. The lock
+/// file lives in the user's runtime directory: it dies with the user
+/// manager, and oldest-wins is the right way to be wrong, because the
+/// survivor is a working watcher writing to the same user bus either
+/// way.
 pub(crate) const BATTERY_WATCH: &str = r#"#!/usr/bin/bash
 set -u
+exec 9>"${XDG_RUNTIME_DIR:?no session runtime directory}/kuma-battery-watch.lock"
+flock -n 9 || exit 0
 warned=""
 while sleep 60; do
     bat=$(ls /sys/class/power_supply 2>/dev/null | grep -m1 "^BAT" || true)
