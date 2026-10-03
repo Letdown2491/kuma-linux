@@ -1422,10 +1422,11 @@ smoke_published() {
             # is a question only real hardware answers; what a headless
             # session proves is that the session started the unit, and
             # that supervision held on the way down.
-            # gsudo rather than guest: the Started line lives in the
-            # system journal (the user manager forwards there), and the
-            # account is in wheel, not in systemd-journal.
-            gsudo journalctl -q -u kuma-shell.service \
+            # The user journal, text-grepped: the Started line is the
+            # user manager's own message about the unit, so a `-u` unit
+            # filter misses it, and the system journal is closed to this
+            # account. The failure dump reads the same line back.
+            guest journalctl --user -b -q \
                 | grep -q "Started kuma-shell.service" \
                 || bad "the shell never started in a real session"
             ok "the session started the shell's unit; whether it draws is real hardware's question"
