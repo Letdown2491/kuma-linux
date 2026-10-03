@@ -15,8 +15,8 @@ pub const CURRENT_SCHEMA: u32 = 1;
 // was kuma's own composed bases carrying no version label, fixed in
 // the generated Containerfile and base-independent. The float is
 // followed again; the heartbeat below is its tripwire. The mirror
-// package (kuma-compose-env) and the ci.yml mirror job are the pin's
-// leftovers.
+// package (kuma-compose-env) is the pin's leftover; its last-good tag
+// now names the September float the pin served and has no consumer.
 pub const DEFAULT_BASE: &str = "quay.io/fedora/fedora-bootc:44";
 
 /// A kuma system declaration: the one file that describes a machine.
