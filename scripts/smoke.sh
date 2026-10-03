@@ -1422,14 +1422,13 @@ smoke_published() {
             # is a question only real hardware answers; what a headless
             # session proves is that the session started the unit, and
             # that supervision held on the way down.
-            # The user journal, text-grepped: the Started line is the
-            # user manager's own message about the unit, so a `-u` unit
-            # filter misses it, and the system journal is closed to this
-            # account. The failure dump reads the same line back. Polled,
-            # because the unit starts when the session's target does —
-            # seconds after loginctl can already see the session.
+            # The system journal, text-grepped — the dump's own proven
+            # shape: the user manager forwards unit lines there, and this
+            # account reads them back (the failure dump proves both).
+            # Polled, because the unit starts when the session's target
+            # does — seconds after loginctl can already see the session.
             local shell_deadline=$((SECONDS + 60))
-            until guest journalctl --user -b -q | grep -q "Started kuma-shell.service"; do
+            until guest 'journalctl -b --no-pager | grep -q "Started kuma-shell.service"'; do
                 [ $SECONDS -lt $shell_deadline ] || bad "the shell never started in a real session"
                 sleep 5
             done
