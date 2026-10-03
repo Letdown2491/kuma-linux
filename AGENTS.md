@@ -82,6 +82,23 @@ nostr layer is enabled) — the same road every release ships.
   closures are `Fn` — clone captured ids before the listener AND inside
   it. Goldens pin bytes; a moving golden is the review.
 
+## The vm smoke's loaded facts (44.4.0)
+
+- A `-u` unit filter misses the "Started" line: `journalctl -u` filters
+  by `_SYSTEMD_UNIT`, and a start line belongs to the manager that
+  wrote it, not the unit it names. The user manager forwards to the
+  system journal and the smoketest account reads it back; a `--user`
+  probe came back empty while the system journal carried the line.
+  The failure dump's `journalctl -b` shape is the proven reader.
+- Displayless (`virtio-vga` + `QEMU_DISPLAY: none`), niri dies on
+  early import and the GPUI shell follows — "window not found" —
+  restart-looping until the unit's start limit ends the waves. A probe
+  that needs a live shell process is a coin flip wearing a deadline:
+  the notification name and the sleep inhibitor exist only while a
+  wave is. Ask what shipped and what the journal recorded instead.
+- `egl-headless` wants a host DRM node a runner lacks. The GPU-less
+  console combo is `virtio-vga` plus `none`.
+
 ## Agent skills
 
 ### Issue tracker
