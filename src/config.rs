@@ -5,17 +5,19 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 pub const CURRENT_SCHEMA: u32 = 1;
-// The compose environment is pinned by digest to the last Fedora float
-// with which a composed base still installs green: floats since
-// 20260930 compose a base whose install writes "version": null into
-// .bootc-aleph.json, and bootupd's reader refuses nulls (#18). The
-// mirror lives in its own package because ghcr.io/letdown2491/kuma is
-// signature-gated on kuma machines (policy.json) and unsigned mirrors
-// do not belong in the signed repo. When upstream composes an
-// installing float again, move this back to
-// quay.io/fedora/fedora-bootc:44 — by commit, so the diff is the review.
-pub const DEFAULT_BASE: &str =
-    "ghcr.io/letdown2491/kuma-compose-env@sha256:2762dc035ed07669f38eb6399d8140de23baf6a7a7b9f2ab566dda9df7b26a60";
+// The compose environment a compose runs in when a declaration names
+// none. It followed the quay float until the 2026-09-30 boot failures
+// got blamed on the float — a composed base whose install writes
+// "version": null into .bootc-aleph.json, which bootupd's reader
+// refuses (#18) — and was pinned by digest to a ghcr mirror of the
+// last float that installed green. The pin guarded nothing: its tools
+// proved byte-identical to the floating env's, and the real root cause
+// was kuma's own composed bases carrying no version label, fixed in
+// the generated Containerfile and base-independent. The float is
+// followed again; the heartbeat below is its tripwire. The mirror
+// package (kuma-compose-env) and the ci.yml mirror job are the pin's
+// leftovers.
+pub const DEFAULT_BASE: &str = "quay.io/fedora/fedora-bootc:44";
 
 /// A kuma system declaration: the one file that describes a machine.
 #[derive(Debug, Deserialize, JsonSchema)]

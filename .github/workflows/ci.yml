@@ -32,17 +32,16 @@ env:
   CARGO_TERM_COLOR: always
   # The 2026-09-30 fedora-bootc float (44.20260930.0) broke every boot
   # stage at once: the composed tree's bootloader-update.service died
-  # parsing the .bootc-aleph.json its own install writes. While the base
-  # floated by tag, the daily heartbeat below was the tripwire for
-  # upstream fixing itself, and pinning the good bytes was impossible:
-  # quay garbage-collects a manifest once its tag moves, and no registry
-  # reachable from here held the Sep 29 build. Both facts are now
-  # history: src/config.rs pins the compose environment by digest to a
-  # mirror on ghcr (ghcr.io/letdown2491/kuma-compose-env, pushed from
-  # the only store that still had the bytes), so upstream cannot move
-  # the base until the pin is moved back by hand. The heartbeat keeps
-  # its job for the day that happens. See the issue this failure filed
-  # for the whole chain.
+  # parsing the .bootc-aleph.json its own install writes. While that
+  # looked like upstream's bug, the base was pinned by digest to a ghcr
+  # mirror of the last good float (quay garbage-collects a manifest
+  # once its tag moves, and no registry reachable from here held the
+  # Sep 29 build). The pin came off when a recompose proved its tools
+  # byte-identical to the floating ones and the real root cause turned
+  # out to be kuma's own composed bases shipping no version label,
+  # which the generator now stamps. The heartbeat below is the tripwire
+  # for the next time the float breaks something this tree did not
+  # cause. See the issue this failure filed for the whole chain.
 
 # Declared rather than inherited. The repository default is already
 # read-only (measured, not assumed: `default_workflow_permissions` is
