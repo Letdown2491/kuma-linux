@@ -1449,14 +1449,14 @@ smoke_published() {
             done
             ok "the shell owns org.freedesktop.Notifications"
 
-            # Lock before suspend: `lock_before_suspend = true` is baked,
-            # and the readback is the shell's logind sleep inhibitor.
-            # The same kumaui fix keeps it held through output loss; the
-            # guard below still proves the no-shell half of the property.
-            guest systemd-inhibit --list --no-pager \
-                | awk '$1 == "kuma-shell" && $6 ~ /sleep/ { found = 1 } END { exit !found }' \
-                || bad "the shell holds no sleep inhibitor: this machine suspends without locking"
-            ok "the shell inhibits sleep to lock first"
+            # Lock before suspend: kuma-shell deliberately holds no logind
+            # delay inhibitor — the shipped sleep guard's own prose says
+            # so, so a hung shell cannot stall sleep the way the hung
+            # noctalia could — and lock-before-suspend is niri's
+            # `lock_before_suspend`, best-effort, same as any locker.
+            # A probe here asserts noctalia's contract, not this
+            # desktop's. The guard below is the property's readback: a
+            # session with no shell ends instead of suspending unlocked.
 
             # And the guard for when the shell is not there at all.
             #

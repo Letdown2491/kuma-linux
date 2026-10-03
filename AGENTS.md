@@ -95,10 +95,14 @@ nostr layer is enabled) — the same road every release ships.
   restart-looping until the unit's start limit ended the waves: a
   probe needing a live shell process was a coin flip wearing a
   deadline. kumaui's idle-without-windows fix (Oct 2026, e90884c)
-  keeps the shell alive holding its names and inhibitor through
-  output loss, and the notification and inhibitor probes are armed
-  again. The lesson stands: a probe that needs a live process asks
-  the runner's timing unless the process is guaranteed alive.
+  keeps the shell alive holding its DBus names through output loss,
+  and the notification probe is armed again. The sleep-inhibitor
+  check stayed retired: kuma-shell holds no logind delay inhibitor
+  by design (a hung shell cannot stall sleep), so that probe
+  asserted noctalia's contract, not this desktop's. Two lessons: a
+  probe that needs a live process asks the runner's timing unless
+  the process is guaranteed alive; and a fix's report that claims
+  more than its diff gets caught by the gate that runs the diff.
 - `egl-headless` wants a host DRM node a runner lacks. The GPU-less
   console combo is `virtio-vga` plus `none`.
 
