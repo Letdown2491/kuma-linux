@@ -91,11 +91,14 @@ nostr layer is enabled) — the same road every release ships.
   probe came back empty while the system journal carried the line.
   The failure dump's `journalctl -b` shape is the proven reader.
 - Displayless (`virtio-vga` + `QEMU_DISPLAY: none`), niri dies on
-  early import and the GPUI shell follows — "window not found" —
-  restart-looping until the unit's start limit ends the waves. A probe
-  that needs a live shell process is a coin flip wearing a deadline:
-  the notification name and the sleep inhibitor exist only while a
-  wave is. Ask what shipped and what the journal recorded instead.
+  early import and the pre-fix shell followed — "window not found" —
+  restart-looping until the unit's start limit ended the waves: a
+  probe needing a live shell process was a coin flip wearing a
+  deadline. kumaui's idle-without-windows fix (Oct 2026, e90884c)
+  keeps the shell alive holding its names and inhibitor through
+  output loss, and the notification and inhibitor probes are armed
+  again. The lesson stands: a probe that needs a live process asks
+  the runner's timing unless the process is guaranteed alive.
 - `egl-headless` wants a host DRM node a runner lacks. The GPU-less
   console combo is `virtio-vga` plus `none`.
 

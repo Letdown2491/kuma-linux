@@ -1435,25 +1435,28 @@ smoke_published() {
             ok "the session started the shell's unit; whether it draws is real hardware's question"
 
             # Notifications: mako left with the swap, and the shell took
-            # the name. Whether the name is HELD is this VM's timing, not
-            # the machine's: displayless, the shell survives in
-            # restart-waves until the start limit ends them, and the name
-            # exists only while a wave is — a polled busctl here is a
-            # coin flip wearing a deadline. What CI asserts is that the
-            # daemon shipped (the binary and the unit, above) and that
-            # the session started it; whether a notify-send lands
-            # somewhere real is the same question as whether it draws,
-            # and real hardware answers both.
+            # the name. Since kumaui's idle-without-windows fix the shell
+            # holds the name for the session's life, displayless or not;
+            # polled anyway, because the unit starts seconds after
+            # loginctl can already see the session.
+            local owner_call='busctl --user call org.freedesktop.DBus'
+            owner_call="$owner_call /org/freedesktop/DBus org.freedesktop.DBus"
+            owner_call="$owner_call GetNameOwner s org.freedesktop.Notifications"
+            local notif_deadline=$((SECONDS + 60))
+            until guest "XDG_RUNTIME_DIR=/run/user/\$(id -u) $owner_call" >/dev/null; do
+                [ $SECONDS -lt $notif_deadline ] || bad "nothing owns org.freedesktop.Notifications in a live session"
+                sleep 5
+            done
+            ok "the shell owns org.freedesktop.Notifications"
 
             # Lock before suspend: `lock_before_suspend = true` is baked,
             # and the readback is the shell's logind sleep inhibitor.
-            # That readback is a real-hardware question in this VM — the
-            # shell survives here in restart-waves, and an inhibitor
-            # exists only while a wave is, so asserting it asserts the
-            # runner's timing rather than the machine's. The wiring that
-            # makes it true is kumaui's to hold; the guard below proves
-            # the no-shell half of the property, which is the half this
-            # VM can see.
+            # The same kumaui fix keeps it held through output loss; the
+            # guard below still proves the no-shell half of the property.
+            guest systemd-inhibit --list --no-pager \
+                | awk '$1 == "kuma-shell" && $6 ~ /sleep/ { found = 1 } END { exit !found }' \
+                || bad "the shell holds no sleep inhibitor: this machine suspends without locking"
+            ok "the shell inhibits sleep to lock first"
 
             # And the guard for when the shell is not there at all.
             #
