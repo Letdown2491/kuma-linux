@@ -1425,10 +1425,14 @@ smoke_published() {
             # The user journal, text-grepped: the Started line is the
             # user manager's own message about the unit, so a `-u` unit
             # filter misses it, and the system journal is closed to this
-            # account. The failure dump reads the same line back.
-            guest journalctl --user -b -q \
-                | grep -q "Started kuma-shell.service" \
-                || bad "the shell never started in a real session"
+            # account. The failure dump reads the same line back. Polled,
+            # because the unit starts when the session's target does —
+            # seconds after loginctl can already see the session.
+            local shell_deadline=$((SECONDS + 60))
+            until guest journalctl --user -b -q | grep -q "Started kuma-shell.service"; do
+                [ $SECONDS -lt $shell_deadline ] || bad "the shell never started in a real session"
+                sleep 5
+            done
             ok "the session started the shell's unit; whether it draws is real hardware's question"
 
             # What the RUNNING shell was handed, read off the process
